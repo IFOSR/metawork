@@ -73,6 +73,12 @@ function TaskActions({ conversationId, task, ws }: {
   };
   return <>
     {task.status === 'needs_action' && <button onClick={() => send(`/task resume ${task.taskId} --generation ${task.executionGeneration}${task.graphRevision ? ` --revision ${task.graphRevision}` : ''}`)}>继续未完成部分</button>}
+    {task.status === 'failed' && <button onClick={() => send(`/task retry ${task.taskId}`)}>重试未完成部分</button>}
+    {/* A failed Task is historical: the ordinary next step is a new round
+        described in chat, with the recorded failure as its starting point. */}
+    {task.status === 'failed' && (
+      <p className="task-actions-hint">直接用下方说明要继续或修复什么，系统会用真实错误开启新的一轮；旧任务记录会保留，无需先清理。</p>
+    )}
     <button onClick={() => send(`/task show ${task.taskId}`)}>查看任务详情</button>
     <button onClick={() => send('/task dashboard')}>查看 Dashboard</button>
     {message && <p role="status">{message}</p>}

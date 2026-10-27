@@ -32,7 +32,12 @@ function createHarness(
     ) VALUES ('revision-test', 'sha256:test-configuration', 'native', ?)
   `).run('2026-08-12T00:00:00.000Z');
   const taskRepo = new TaskRepo(db);
-  const taskEngine = new TaskEngine(taskRepo, '/tmp/metaclaw-planner-mcp');
+  const engine = new TaskEngine(taskRepo, '/tmp/metaclaw-planner-mcp');
+  const accountId = 'local-default';
+  const taskEngine = {
+    // Every Planner fact is account-scoped; fixtures must not straddle accounts.
+    create: (input: Parameters<typeof engine.create>[0]) => engine.create({ accountId, ...input }),
+  } as unknown as TaskEngine;
   return {
     db,
     taskRepo,
@@ -49,6 +54,8 @@ function createHarness(
         affordances: [],
         modelPolicy: { mode: 'fixed', modelRef: 'test-model' },
       }],
+      // TaskEngine fixtures persist their Tasks under the legacy account, so the
+      // reader must use the same isolation boundary these facts live in.
     }), conversationId, () => manuals, 'local-default', attachments),
   };
 }
@@ -655,5 +662,156 @@ describe('PlannerDataReader', () => {
     expect(server).not.toContain("server.registerTool('list_executor_classes'");
     expect(server).toContain('when the user asks why execution is blocked');
     expect(authority).toContain('only through an explicit read-only diagnostic tool when the');
+  });
+});
+
+describe('Planner task failure diagnosis', () => {
+  it('projects the real failure so a follow-up request does not repeat it', () => {
+    const { db, taskEngine, taskRepo, reader } = createHarness('sess-f', 'conversation-f');
+    const task = taskEngine.create({
+      title: 'run the service',
+      goal: 'run the backend service',
+      conversationId: 'conversation-f',
+    });
+    db.prepare('UPDATE tasks SET status = ?, state_detail_json = ? WHERE id = ?').run(
+      'failed',
+      JSON.stringify({
+        reason: {
+          code: 'service_start_failed',
+          message: '服务进程已退出，需显式重启',
+          evidenceRefs: ['service:backend'],
+        },
+        unresolved: [],
+        phase: null,
+        pendingActions: [],
+        requiredWork: [],
+        cleanup: { state: 'none', objects: [] },
+        nextWakeAt: null,
+      }),
+      task.id,
+    );
+    db.prepare(`INSERT INTO task_operation_results (
+      task_id, operation_key, operation_kind, outcome, reason_code, message, evidence_refs_json, updated_at
+    ) VALUES (?,?,?,?,?,?,?,?)`).run(
+      task.id, 'service:start:backend:r1:attempt:0', 'service', 'definite_failure',
+      'service_start_failed', '退出码 1', '[]', '2026-10-27T00:00:00.000Z',
+    );
+    const context = reader.getTaskContext(task.id);
+    expect(context.found).toBe(true);
+    if (!context.found) throw new Error('task missing');
+    expect(context.task.failure).toMatchObject({
+      reason: { code: 'service_start_failed', message: '服务进程已退出，需显式重启' },
+      operations: [{ kind: 'service', outcome: 'definite_failure', reasonCode: 'service_start_failed' }],
+      lastFailedAttempt: null,
+    });
+    const listed = reader.searchTasks({ query: 'run the service' }).tasks[0];
+    expect(listed?.reason).toEqual({
+      code: 'service_start_failed',
+      message: '服务进程已退出，需显式重启',
+    });
+  });
+});
+
+describe('Planner failure facts: vocabulary, isolation and terminal states', () => {
+  function insertFailedAttempt(
+    db: Database.Database,
+    input: { taskId: string; attemptId: string; terminalState: string; failure: unknown; completedAt?: string },
+  ): void {
+    const now = input.completedAt ?? '2026-10-27T00:00:00.000Z';
+    db.prepare(`INSERT OR IGNORE INTO subtasks (
+      id, task_id, title, goal, status, required_capabilities_json, executor_bindings_json,
+      acceptance_json, created_at, updated_at
+    ) VALUES (?,?,?,?,'done','[]','[]','[]',?,?)`).run(
+      'subtask-1', input.taskId, 'Work', 'Do the work', now, now,
+    );
+    db.prepare(`INSERT OR IGNORE INTO work_units (
+      id, agent_class_name, agent_class_kind, state, created_at, updated_at
+    ) VALUES (?,?,?,'idle',?,?)`).run('wu-1', 'pi-engineering', 'executor', now, now);
+    db.prepare(`INSERT INTO executor_attempt_receipts (
+      attempt_id, execution_id, task_id, subtask_id, work_unit_id, agent_class_name,
+      started_at, completed_at, terminal_state, raw_response, completion_schema_version,
+      parsing_json, verification_json, error_code, error_detail, graph_revision,
+      generation_id, attempt_kind, source_attempt_id, failure_json, recovery_mode,
+      configuration_revision, authorized_binding_json, binding_fingerprint
+    ) VALUES (?,?,?,?,?,?,?,?,?,'',NULL,'{}','{}','error_x','detail',1,'generation_1','primary',NULL,?,'fresh',?, '{}', 'fp')`).run(
+      input.attemptId, `exec-${input.attemptId}`, input.taskId, 'subtask-1', 'wu-1', 'pi-engineering',
+      now, now, input.terminalState,
+      input.failure === null ? null : JSON.stringify(input.failure),
+      'revision-test',
+    );
+  }
+
+  it('rejects historical Task status vocabulary instead of silently widening the query', () => {
+    const { taskEngine, reader } = createHarness('sess-v', 'conversation-v');
+    taskEngine.create({ title: 'legacy filter', goal: 'goal', conversationId: 'conversation-v' });
+    const result = reader.searchTasks({ statuses: ['done', 'blocked'] });
+    expect(result.count).toBe(0);
+    expect(result.tasks).toEqual([]);
+    expect(result.invalidStatuses).toEqual(['done', 'blocked']);
+    expect(result.allowedStatuses).toEqual([
+      'queued', 'running', 'needs_action', 'succeeded', 'failed', 'cancelled',
+    ]);
+    // The current vocabulary is accepted (a fresh Task is `queued`).
+    expect(reader.searchTasks({ statuses: ['queued'] }).count).toBe(1);
+  });
+
+  it('never projects a healthy Task as a failure', () => {
+    const { db, taskEngine, reader } = createHarness('sess-h', 'conversation-h');
+    const task = taskEngine.create({ title: 'healthy work', goal: 'do it', conversationId: 'conversation-h' });
+    db.prepare('UPDATE tasks SET status = ?, state_detail_json = ? WHERE id = ?').run(
+      'succeeded',
+      JSON.stringify({
+        reason: { code: 'none', message: '用户要求的必需工作已全部完成。', evidenceRefs: [] },
+      }),
+      task.id,
+    );
+    const context = reader.getTaskContext(task.id);
+    expect(context.found).toBe(true);
+    if (!context.found) throw new Error('missing');
+    expect(context.task.failure).toBeNull();
+    expect(reader.searchTasks({ query: 'healthy work' }).tasks[0]?.reason).toBeUndefined();
+  });
+
+  it('scopes task facts to the owning account', () => {
+    const { db, taskEngine } = createHarness('sess-a1', 'conversation-a1');
+    const task = taskEngine.create({ title: 'account scoped', goal: 'goal', conversationId: 'conversation-a1' });
+    const foreign = new PlannerDataReader(db, 'sess-a2', () => ({
+      version: 2,
+      configurationRevision: 'revision-test',
+      capabilities: [],
+      agentClasses: [],
+    }), 'conversation-a1', () => [], 'another-account');
+    expect(foreign.getTaskContext(task.id)).toEqual({ found: false, taskId: task.id });
+    expect(foreign.searchTasks({ query: 'account scoped' }).count).toBe(0);
+  });
+
+  it('reports contract failures and ignores an uncertified result', () => {
+    const { db, taskEngine, reader } = createHarness('sess-t', 'conversation-t');
+    const task = taskEngine.create({ title: 'attempt facts', goal: 'goal', conversationId: 'conversation-t' });
+    insertFailedAttempt(db, {
+      taskId: task.id,
+      attemptId: 'attempt-uncertified',
+      terminalState: 'uncertified_result',
+      failure: { code: 'completion_malformed', summary: 'awaiting a user decision' },
+    });
+    const uncertified = reader.getTaskContext(task.id);
+    if (!uncertified.found) throw new Error('missing');
+    expect(uncertified.task.failure?.lastFailedAttempt).toBeNull();
+
+    insertFailedAttempt(db, {
+      taskId: task.id,
+      attemptId: 'attempt-blocked',
+      terminalState: 'contract_blocked',
+      failure: { code: 'completion_missing', summary: 'completion protocol was not satisfied' },
+      completedAt: '2026-10-27T00:05:00.000Z',
+    });
+    const blocked = reader.getTaskContext(task.id);
+    if (!blocked.found) throw new Error('missing');
+    expect(blocked.task.failure?.lastFailedAttempt).toMatchObject({
+      attemptId: 'attempt-blocked',
+      terminalState: 'contract_blocked',
+      failureCode: 'completion_missing',
+      failureSummary: 'completion protocol was not satisfied',
+    });
   });
 });

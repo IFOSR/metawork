@@ -74,6 +74,7 @@ import type {
 } from '../kernel/control-kernel.js';
 import {
   captureWorkspaceState,
+  captureWorkspaceStateAtPaths,
   deriveWorkspaceDelta,
   parseWorkspaceDelta,
   parseWorkspaceState,
@@ -310,7 +311,19 @@ export class SubtaskAttemptRunner {
       // In-place rounds have no private worktree to compare. Accept the declared
       // outputs as the change set when the Executor could not produce a Git
       // baseline (a Workspace that is not a repository).
-      rootPath = sourceRuntime?.workspaceRoot ?? '';
+      const binding = this.deps.workspaceExecutionBindingRepo?.find(
+        expected.taskId,
+        expected.generationId,
+      );
+      rootPath = sourceRuntime?.workspaceRoot ?? binding?.canonicalPath ?? '';
+      // Historical read/execute Attempts persisted their disposable scratch
+      // root. If that root was cleaned before acceptance, recover the same
+      // canonical Workspace from the immutable Generation binding.
+      try {
+        if (rootPath) statSync(rootPath);
+      } catch {
+        rootPath = binding?.canonicalPath ?? '';
+      }
       if (!rootPath) throw new Error('结果工作区不可用');
       delta ??= declaredOutputsDelta(rootPath, subtask.fileOutputs ?? []);
       if (!delta) throw new Error('无法确认文件变更，结果尚不能交付');
@@ -477,6 +490,16 @@ export class SubtaskAttemptRunner {
       && subtask.deliveryKind === 'report'
       && (subtask.fileOutputs?.length ?? 0) === 0,
     );
+    // Running an existing program is a command-capable, non-mutating action.
+    // It must use the canonical Workspace as cwd while keeping the Workspace
+    // itself read-only. Treating it as `read_only` removes the shell tool and
+    // turns an explicit run request into an uncertified report.
+    const commandOnlyExecution = Boolean(
+      task.workspaceIntent?.operation === 'run_in_target'
+      && subtask.deliveryKind === 'report'
+      && (subtask.fileOutputs?.length ?? 0) === 0,
+    );
+    const nonWritingExecution = readOnlyExecution || commandOnlyExecution;
     const sourceReceipt = sourceAttemptId
       ? this.receiptRepo.findByAttemptId(sourceAttemptId)
       : null;
@@ -523,7 +546,7 @@ export class SubtaskAttemptRunner {
     // and working directory. When the Runtime is configured with a binding
     // repository, a missing binding fails closed instead of falling back to the
     // current Task row or to the ambient source root.
-    if (!workspaceBinding && this.deps.workspaceExecutionBindingRepo && !readOnlyExecution) {
+    if (!workspaceBinding && this.deps.workspaceExecutionBindingRepo && !nonWritingExecution) {
       throw new Error(
         `attempt ${attemptId} has no durable Workspace binding for ${input.taskId}/${subtask.generationId}`,
       );
@@ -539,7 +562,7 @@ export class SubtaskAttemptRunner {
     const resolvedBinding = workspaceBinding ?? {
       taskId: task.id,
       generationId: subtask.generationId,
-      workspaceId: task.workspaceId ?? (readOnlyExecution ? `read-only:${task.id}` : ''),
+      workspaceId: task.workspaceId ?? (nonWritingExecution ? `read-only:${task.id}` : ''),
       canonicalPath: fallbackCanonicalPath,
       executionMode: fallbackExecutionMode,
       authorizedWorkingDirectory: fallbackExecutionMode === 'in_place'
@@ -567,8 +590,8 @@ export class SubtaskAttemptRunner {
     if (attemptKind === 'merge_repair') {
       throw new Error('merge-repair Worktree attempts are retired; re-plan the edit in the target Workspace');
     }
-    const inPlaceExecution = !readOnlyExecution;
-    const directCompletion = inPlaceExecution || readOnlyExecution;
+    const inPlaceExecution = !nonWritingExecution;
+    const directCompletion = inPlaceExecution || nonWritingExecution;
     if (inPlaceExecution && !workspaceId) {
       throw new Error(`in-place attempt requires a Workspace identity: ${task.id}`);
     }
@@ -580,17 +603,30 @@ export class SubtaskAttemptRunner {
     const inPlaceCanonicalRoot = inPlaceExecution
       ? (await canonicalizeWorkspacePath(authorizedSourceRoot)).canonicalPath
       : null;
-    // The failure reason is kept, not swallowed: a missing Git channel due to a
-    // broken command is reported as `unavailable`, while a non-repository
-    // Workspace degrades to the declared-output channel.
+    // The Git failure reason is kept for change-record diagnostics. A missing
+    // Git channel falls back to bounded observation of the authorized targets;
+    // only a missing target scope leaves the delta unavailable.
     let gitChannelFailure: WorkspaceCaptureFailure | null = null;
-    const captureStateSafely = (root: string): WorkspaceState | null => {
+    const captureStateSafely = (
+      root: string,
+      targetPaths: readonly string[] = [],
+      preferredSource?: WorkspaceState['source'],
+    ): WorkspaceState | null => {
+      if (preferredSource === 'filesystem') {
+        return captureWorkspaceStateAtPaths(root, targetPaths);
+      }
       try {
         return captureWorkspaceState(root);
       } catch (error) {
         gitChannelFailure = classifyWorkspaceCaptureFailure(error);
-        // A Workspace that is not a Git repository has no status baseline; the
-        // declared-output channel still authorizes completion.
+        if (targetPaths.length > 0) {
+          // The Kernel has already pinned an authoritative, bounded target
+          // scope. Capture those files directly whenever Git is unavailable
+          // (ordinary directories, a missing Git binary, or a transient Git
+          // command failure) so a healthy target edit does not become a
+          // misleading empty delta and an unnecessary acceptance prompt.
+          return captureWorkspaceStateAtPaths(root, targetPaths);
+        }
         return null;
       }
     };
@@ -672,6 +708,8 @@ export class SubtaskAttemptRunner {
     };
     let finalCheckpointReason: 'success' | 'failure' | 'cancelled' = 'failure';
     let executionDiagnostics: Record<string, unknown> | undefined;
+    let declaredTargetPaths: string[] = [];
+    let observationRoot = executionContext.canonicalWorkspacePath;
     const heartbeat = setInterval(() => {
       claim.heartbeat();
       this.deps.resourceLeaseService.heartbeat(attemptId, leaseToken);
@@ -709,7 +747,7 @@ export class SubtaskAttemptRunner {
         generationId: subtask.generationId,
         subtaskId: subtask.id,
       };
-      if (readOnlyExecution) {
+      if (nonWritingExecution) {
         workspace = await this.deps.workspaceStore.bindReadOnlyWorkspace(
           workspaceIdentity,
           attemptId,
@@ -722,11 +760,29 @@ export class SubtaskAttemptRunner {
         );
       }
       if (!workspace) throw new Error('Workspace binding did not produce an execution directory');
+      observationRoot = nonWritingExecution
+        ? executionContext.canonicalWorkspacePath
+        : workspace.filesPath;
       // The authorized working directory is a hard invariant, not a hint: an
       // Attempt whose real directory falls outside it must not run.
       if (inPlaceExecution) {
         if (workspace.filesPath !== executionContext.canonicalWorkspacePath) {
           throw new Error('in-place working directory does not match its authorized Workspace');
+        }
+      }
+      const serviceRepair = dispatch.attemptPayload?.protocol === 'metawork:service-repair:v1'
+        ? dispatch.attemptPayload
+        : null;
+      if (serviceRepair) {
+        // The Kernel authorized exactly one repair round; the Attempt must not
+        // run with a payload whose ordinal or service identity changed.
+        if (attemptKind !== 'continuation' || !sourceAttemptId) {
+          throw new Error('service repair payload changed after authorization');
+        }
+        if (serviceRepair.workspaceId
+          && task.workspaceId
+          && serviceRepair.workspaceId !== task.workspaceId) {
+          throw new Error('service repair payload targets a different Workspace');
         }
       }
       if ((attemptKind as string) === 'merge_repair') {
@@ -800,7 +856,7 @@ export class SubtaskAttemptRunner {
       const handoffsPath = join(workspace.rootPath, 'handoffs');
       await Promise.all([mkdir(inputsPath, { recursive: true }), mkdir(handoffsPath, { recursive: true })]);
       await materializeImageTaskResources(task.resources, subtask, inputsPath);
-      if (!inPlaceExecution && !readOnlyExecution) {
+      if (!inPlaceExecution && !nonWritingExecution) {
         // Checkpoints snapshot the private worktree. An in-place Attempt never
         // copies the user's Workspace, so it records no snapshot.
         const startCheckpoint = await this.deps.workspaceStore.createCheckpoint(workspace, {
@@ -818,12 +874,14 @@ export class SubtaskAttemptRunner {
           objects: checkpointObjects(startCheckpoint),
         });
       }
-      const targetPath = workspace.filesPath;
+      const targetPath = nonWritingExecution
+        ? executionContext.canonicalWorkspacePath
+        : workspace.filesPath;
       // Planner authorization is Workspace-relative and durable on the
       // Generation binding. The Executor context must receive those paths
       // resolved against the actual execution root; passing the whole root as
       // the only target silently widened the model's declared scope.
-      const declaredTargetPaths = task.workspaceTargetPaths
+      declaredTargetPaths = task.workspaceTargetPaths
         ?? workspaceBinding?.targetPaths
         ?? [];
       const executorTargetPaths = readOnlyExecution
@@ -845,7 +903,7 @@ export class SubtaskAttemptRunner {
       const sourceRuntime = sourceAttemptId
         ? this.attemptRuntimeRepo.find(sourceAttemptId)
         : null;
-      const currentWorkspaceBaseline = captureStateSafely(workspace.filesPath);
+      const currentWorkspaceBaseline = captureStateSafely(observationRoot, declaredTargetPaths);
       // Tree baseline for the DeepSeek-Harness-style change record. Captured
       // before the Executor runs, through a private index and object store.
       gitSnapshotScratch = inPlaceExecution
@@ -869,7 +927,11 @@ export class SubtaskAttemptRunner {
       this.attemptRuntimeRepo.start({
         attemptId,
         sourceAttemptId,
-        workspaceRoot: workspace.filesPath,
+        // Read/execute Attempts use disposable scratch directories for inputs
+        // and logs, but their authorized Workspace root is the canonical path.
+        // Persist that root so correction/acceptance never points at a cleaned
+        // scratch directory.
+        workspaceRoot: observationRoot,
         workspaceBaseline: { ...(workspaceBaseline ?? { kind: 'git_status_v1', paths: {}, truncated: false }) },
         recoverySafety: deriveRecoverySafety(subtask.requiredCapabilities),
         now: startedAt,
@@ -896,9 +958,9 @@ export class SubtaskAttemptRunner {
           workingDirectory: workspace.filesPath,
           targetPaths: executorTargetPaths,
           ...(workspaceId ? { workspaceId } : {}),
-          executionMode: inPlaceExecution || readOnlyExecution ? 'in_place' : 'worktree',
-          accessMode: readOnlyExecution ? 'read' : 'write',
-          ...(readOnlyExecution
+          executionMode: inPlaceExecution || nonWritingExecution ? 'in_place' : 'worktree',
+          accessMode: readOnlyExecution ? 'read' : commandOnlyExecution ? 'execute' : 'write',
+          ...(nonWritingExecution
             ? { readOnlySourcePath: executionContext.canonicalWorkspacePath }
             : {}),
           ...(inPlaceExecution
@@ -927,7 +989,9 @@ export class SubtaskAttemptRunner {
         recovery: {
           mode: recoveryMode,
           sourceAttemptId,
-          packet: recoveryMode === 'fresh' ? null : boundedRecoveryPacket(sourceReceipt, sourceRuntime),
+          packet: recoveryMode === 'fresh'
+            ? null
+            : boundedRecoveryPacket(sourceReceipt, sourceRuntime, serviceRepair),
         },
       });
       evidenceCapability = built.evidenceCapability;
@@ -1117,7 +1181,9 @@ export class SubtaskAttemptRunner {
       }
       rawResponse = execution.output;
       executionDiagnostics = execution.diagnostics;
-      const afterState = workspace ? captureStateSafely(workspace.filesPath) : null;
+      const afterState = workspace
+        ? captureStateSafely(observationRoot, declaredTargetPaths, workspaceBaseline?.source)
+        : null;
       if (workspaceBaseline && workspace && afterState) {
         workspaceDelta = deriveWorkspaceDelta(
           workspaceBaseline,
@@ -1130,9 +1196,9 @@ export class SubtaskAttemptRunner {
         );
       }
       if (inPlaceExecution && workspace && !workspaceDelta) {
-        // A Workspace that is not a Git repository has no status baseline, so the
-        // declared outputs are the only provable change set. Without it the
-        // completion contract would reject every in-place round there.
+        // Keep a declared-output fallback for legacy bindings or a failed
+        // filesystem observation. Modern schema-9 in-place rounds normally
+        // receive a target-scoped filesystem delta above.
         workspaceDelta = declaredOutputsDelta(workspace.filesPath, subtask.fileOutputs ?? []);
         this.attemptRuntimeRepo.recordWorkspaceDelta(attemptId, workspaceDelta, new Date().toISOString());
       }
@@ -1187,12 +1253,10 @@ export class SubtaskAttemptRunner {
           // Change observation is best effort.
         }
       }
-      if (readOnlyExecution && !workspaceDelta) {
-        // Read-only attempts may write bounded scratch files, but those files
-        // are outside the user Workspace delivery contract. Give completion
-        // validation an explicit empty Workspace delta so a report is not
-        // downgraded to an uncertified result merely because no write delta
-        // exists to capture.
+      if (nonWritingExecution && !workspaceDelta) {
+        // Read/execute attempts never publish Workspace changes. Keep an
+        // explicit empty delta so completion validation can certify an inline
+        // report without depending on the disposable attempt scratch root.
         workspaceDelta = {
           kind: 'git_status_delta_v1',
           changed: [],
@@ -1246,7 +1310,7 @@ export class SubtaskAttemptRunner {
               rawResponse: execution.output,
               subtask,
               outgoingHandoffs: [],
-              workspaceRoot: workspace?.filesPath ?? sourceRoot,
+              workspaceRoot: observationRoot,
               workspaceDelta,
             })
           : null;
@@ -1386,7 +1450,9 @@ export class SubtaskAttemptRunner {
         rawResponse,
         subtask,
         outgoingHandoffs,
-        workspaceRoot: built.context.workspaceContext.workingDirectory,
+        workspaceRoot: nonWritingExecution
+          ? executionContext.canonicalWorkspacePath
+          : built.context.workspaceContext.workingDirectory,
         workspaceDelta,
         incomingUsageByTarget: new Map(outgoingHandoffs.map(contract => [
           contract.toSubtaskId,
@@ -1638,6 +1704,10 @@ export class SubtaskAttemptRunner {
         warnings: completion.warnings,
         executorName: execution.executorName,
         durationMs: execution.durationMs,
+        // A report (or a zero-change edit) has no Workspace publication to
+        // carry its business result. Keep the safe projection on the
+        // completed outcome so the Kernel can deliver it to the Conversation.
+        resultId: resultObjects.safeProjectionId ?? undefined,
       };
     } catch (error) {
       if (error instanceof InPlaceWriteUncertaintyError) {
@@ -1733,7 +1803,7 @@ export class SubtaskAttemptRunner {
     } finally {
       closeUsageSpan('uncertain');
       clearInterval(heartbeat);
-      if (workspace && !inPlaceExecution && !readOnlyExecution) {
+      if (workspace && !inPlaceExecution && !nonWritingExecution) {
         try {
           const checkpoint = await this.deps.workspaceStore.createCheckpoint(workspace, {
             reason: finalCheckpointReason,
@@ -1756,7 +1826,11 @@ export class SubtaskAttemptRunner {
       }
       if (!workspaceDelta && workspaceBaseline && workspace) {
         try {
-          const afterState = captureStateSafely(workspace.filesPath);
+          const afterState = captureStateSafely(
+            observationRoot,
+            declaredTargetPaths,
+            workspaceBaseline?.source,
+          );
           if (afterState) {
             this.attemptRuntimeRepo.recordWorkspaceDelta(
               attemptId,
@@ -1775,7 +1849,7 @@ export class SubtaskAttemptRunner {
       if (this.hasSealedTerminal(attemptId)) {
         this.deps.resourceLeaseService.release(attemptId, leaseToken);
         claim.release();
-        if (workspace && (inPlaceExecution || readOnlyExecution)) {
+        if (workspace && (inPlaceExecution || nonWritingExecution)) {
           // Inputs, handoffs and result staging belong to this Attempt, not to
           // the user's Workspace. Once the terminal receipt is sealed they no
           // longer participate in recovery and can be retired safely. An
@@ -1942,8 +2016,21 @@ export class SubtaskAttemptRunner {
       const correctionInPlace = task.executionMode === 'in_place';
       // An in-place correction validates against the real Workspace: the private
       // `files/` directory only exists for managed worktrees.
+      const correctionBinding = this.deps.workspaceExecutionBindingRepo?.find(
+        task.id,
+        subtask.generationId,
+      );
       const correctionWorkspaceRoot = correctionInPlace
-        ? sourceRuntime.workspaceRoot
+        ? (() => {
+            const persistedRoot = sourceRuntime.workspaceRoot;
+            if (!persistedRoot) return correctionBinding?.canonicalPath ?? null;
+            try {
+              statSync(persistedRoot);
+              return persistedRoot;
+            } catch {
+              return correctionBinding?.canonicalPath ?? null;
+            }
+          })()
         : sourceWorkspace?.rootUri.startsWith('file:')
           ? join(fileURLToPath(sourceWorkspace.rootUri), 'files')
           : null;
@@ -2761,22 +2848,49 @@ function extractReferenceId(message: string): string | null {
 function boundedRecoveryPacket(
   receipt: ExecutorAttemptReceipt | null,
   runtime: ExecutorAttemptRuntimeRecord | null,
+  serviceRepair?: Extract<KernelAttemptPayload, { protocol: 'metawork:service-repair:v1' }> | null,
 ): Record<string, unknown> {
   const packet = {
     sourceAttemptId: receipt?.attemptId ?? runtime?.attemptId ?? null,
-    failure: receipt ? {
-      terminalState: receipt.terminalState,
-      code: receipt.failure?.code ?? receipt.errorCode,
-      // Passthrough facts for the retry attempt: the upstream text, and the
-      // localized headline/step the Runtime diagnosed alongside it.
-      summary: receipt.failure?.summary ?? receipt.errorDetail?.slice(0, 1_000) ?? null,
-      ...(receipt.failure?.label ? { label: receipt.failure.label } : {}),
-      ...(receipt.failure?.step ? { step: receipt.failure.step } : {}),
-    } : null,
-    knownProgress: runtime?.progress ?? {},
+    failure: serviceRepair
+      // A service repair is not an executor failure: the Attempt succeeded and
+      // the required service did not become healthy (2026-10-27 §4.3).
+      ? {
+          kind: serviceRepair.failure.kind,
+          code: serviceRepair.failure.code,
+          summary: serviceRepair.failure.summary,
+          terminalState: 'service_verification_failed' as const,
+        }
+      : receipt ? {
+        terminalState: receipt.terminalState,
+        code: receipt.failure?.code ?? receipt.errorCode,
+        // Passthrough facts for the retry attempt: the upstream text, and the
+        // localized headline/step the Runtime diagnosed alongside it.
+        summary: receipt.failure?.summary ?? receipt.errorDetail?.slice(0, 1_000) ?? null,
+        ...(receipt.failure?.label ? { label: receipt.failure.label } : {}),
+        ...(receipt.failure?.step ? { step: receipt.failure.step } : {}),
+      } : null,
+    ...(serviceRepair ? {
+      service: {
+        serviceId: serviceRepair.serviceId,
+        workspaceId: serviceRepair.workspaceId,
+        specificationRevision: serviceRepair.specificationRevision,
+        repairOrdinal: serviceRepair.repairOrdinal,
+        command: serviceRepair.service.command,
+        args: [...serviceRepair.service.args],
+        healthUrl: serviceRepair.service.healthUrl,
+        state: serviceRepair.service.state,
+        exitObserved: serviceRepair.service.exitObserved,
+        healthStatus: serviceRepair.service.healthStatus,
+        logTail: serviceRepair.service.logTail,
+      },
+    } : {}),
+    knownProgress: serviceRepair ? [...serviceRepair.knownProgress] : runtime?.progress ?? {},
     workspaceDelta: runtime?.workspaceDelta ?? {},
     confirmedCompleted: [] as string[],
-    unknownItems: ['Verify the current workspace and remaining acceptance criteria before making changes.'],
+    unknownItems: serviceRepair
+      ? [...serviceRepair.unknownItems]
+      : ['Verify the current workspace and remaining acceptance criteria before making changes.'],
   };
   const serialized = JSON.stringify(packet);
   return serialized.length <= 16_000

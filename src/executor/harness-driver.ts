@@ -86,6 +86,8 @@ export interface HarnessLaunchInput {
   providerRef?: string;
   modelId?: string;
   responseOnly?: boolean;
+  /** Workspace capability exposed to the harness. */
+  workspaceAccess?: 'read' | 'execute' | 'write';
   requiredCapabilities?: readonly string[];
   executionTarget?: 'host' | 'container';
 }

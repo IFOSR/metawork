@@ -1,5 +1,4 @@
 import { ProviderProtocolSelect } from './ProviderProtocolSelect';
-import type { ProviderProtocol } from '../../../src/configuration/types';
 import { ModelCapabilityDetails } from './ModelCapabilityDetails';
 import { ExecutorTools } from './ExecutorTools';
 import { sameAiText, aiActionError, type ResponsibilityRewriteFeedback } from './AiActionStatus';
@@ -44,6 +43,7 @@ import {
   AgentClassConfig,
 } from './AgentClassConfig';
 import {
+  buildProviderCards,
   buildProviderModelOptions,
   invalidRoutingDrafts,
   humanizeProviderRef,
@@ -186,59 +186,19 @@ export function rankOpenRouterCandidates(
 function loadCatalog(config: RawRecord, completion?: ConfigurationCompletionResult): CatalogDraft {
   const rawProviders = asRecord(config.providers);
   const rawModels = asRecord(config.models);
-  const completionProviders = completion?.providers ?? {};
-  const providers = Object.fromEntries(Object.entries(rawProviders).map(([providerRef, raw]) => {
-    const provider = asRecord(raw);
-    const completed = completionProviders[providerRef];
-    const baseUrl = String(provider.baseUrl ?? completed?.baseUrl ?? '');
-    const preset = completion?.providerPresets.find(candidate => (
-      candidate.providerRef === providerRef || candidate.baseUrl === baseUrl
-    ));
-    return [
-      providerRef,
-      {
-        providerRef,
-        displayName: typeof provider.displayName === 'string' && provider.displayName.trim()
-          ? provider.displayName.trim()
-          : completed?.displayName
-          ?? preset?.displayName
-          ?? resolveProviderDisplayName(providerRef),
-        baseUrl,
-        protocol: (provider.protocol ?? 'openai-compatible') as ProviderProtocol,
-        modelIds: [...new Set([
-          ...(completed?.modelIds ?? []),
-          ...(preset?.modelIds ?? []),
-        ])],
-        apiKey: '',
-        maskedApiKey: completed?.maskedApiKey ?? null,
-        ...(completed?.credentialFingerprint ? { credentialFingerprint: completed.credentialFingerprint } : {}),
-        credentialState: completed?.credentialState ?? '需要确认',
-        enabled: provider.enabled !== false,
-        ...(provider.systemManaged === true ? { systemManaged: true } : {}),
-      },
-    ];
-  }));
-  for (const [providerRef, completed] of Object.entries(completionProviders)) {
-    const baseUrl = completed.baseUrl ?? '';
-    if (
-      providers[providerRef]
-      || completed.credentialState === '缺失'
-    ) {
-      continue;
-    }
-    providers[providerRef] = {
-      providerRef,
-      displayName: completed.displayName,
-      protocol: 'openai-compatible',
-      baseUrl,
-      modelIds: completed.modelIds,
-      apiKey: '',
-      maskedApiKey: completed.maskedApiKey ?? null,
-      ...(completed.credentialFingerprint ? { credentialFingerprint: completed.credentialFingerprint } : {}),
-        credentialState: completed.credentialState,
-        enabled: true,
-    };
-  }
+  // Membership is the active configuration's, never the completion catalog's:
+  // presets, local Agent discovery and the public catalog only describe a
+  // Provider the user already saved, so a deleted Provider cannot resurrect.
+  const providerCards = buildProviderCards({
+    configured: Object.fromEntries(
+      Object.entries(rawProviders).map(([providerRef, raw]) => [providerRef, asRecord(raw)]),
+    ),
+    ...(completion?.providers ? { completionProviders: completion.providers } : {}),
+    ...(completion?.providerPresets ? { providerPresets: completion.providerPresets } : {}),
+  });
+  const providers: Record<string, ProviderDraft> = Object.fromEntries(
+    Object.entries(providerCards).map(([providerRef, card]) => [providerRef, { ...card, apiKey: '' }]),
+  );
   const providerAliases: Record<string, string> = {};
   const identityOwners = new Map<string, string>();
   for (const provider of Object.values(providers)) {

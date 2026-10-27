@@ -270,6 +270,7 @@ export function buildAccountRuntimeComposition(deps: {
     maxConcurrentAttemptsPerTask: deps.stagedConfiguration.snapshot.config.runtimePolicy.maxConcurrentAttemptsPerTask
       ?? 2,
     onTaskTerminal: taskId => startupRecovery?.onTaskTerminal(taskId),
+    onTaskQueued: taskId => startupRecovery?.onTaskQueued(taskId),
     getConfigurationRevision: deps.getConfigurationRevision,
     getRuntimeConfiguration: deps.getRuntimeConfiguration,
     taskRuntimeService: taskServices.taskRuntimeService,

@@ -132,6 +132,12 @@ Credential precedence clarification (2026-10-05): automatic local Agent import
 may initialize a missing Key only for an unambiguous matching Provider. Startup
 preheating and subsequent imports must preserve every non-empty MetaWork Key.
 URL-only matching is not sufficient to import credentials into another Provider.
+The startup preheating step itself was removed on 2026-10-26: importing
+credentials for fixed Provider references the user never configured created
+Providers that reappeared after deletion. Import now only applies to Providers
+already present in the activation, and a committed activation removes the
+credential of a Provider it deleted (see
+[`docs/plans/2026-10-26-provider-ownership-and-bundled-memory-engine.md`](../plans/2026-10-26-provider-ownership-and-bundled-memory-engine.md)).
 Settings identify duplicate connections by normalized Base URL plus complete Key
 identity, never URL, display name, masked suffix or unknown credentials alone.
 

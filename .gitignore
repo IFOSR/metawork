@@ -25,3 +25,6 @@ tests/fixtures/workspace-source/.git/
 
 # vendored AnyFusion-Pi planner keeps its own nested .gitignore
 # (planner/AnyFusion-Pi/node_modules and dist stay untracked)
+
+# Fetched TDAI memory engine (pinned by memory/engine.lock.json, built in CI)
+memory/tdai/

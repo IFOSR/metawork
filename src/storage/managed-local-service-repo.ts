@@ -73,23 +73,35 @@ export class ManagedLocalServiceRepo implements LocalServiceStore {
 
   save(record: LocalServiceRecord, options: { allowSpecificationChange?: boolean } = {}): void {
     if (record.accountId !== this.accountId) throw new Error('服务账户不匹配');
-    const revision = record.specificationRevision
-      || localServiceSpecificationRevision(record.specification);
+    const storedRevision = localServiceSpecificationRevision(record.specification);
+    const revision = record.specificationRevision || storedRevision;
+    // The row must describe one launch contract: a caller cannot pair a new
+    // specification with a stale revision to bypass the explicit update path.
+    if (revision !== storedRevision && !options.allowSpecificationChange) {
+      throw new Error('服务标识已绑定其他启动规格');
+    }
+    // The launch contract revision, not the owning Task, is the identity of a
+    // specification. Restarting the same contract from a later Task is a
+    // handover of provenance: the row keeps describing the *current*
+    // specification instead of resurrecting a historical Task.
     const result = this.db.prepare(`INSERT INTO managed_local_services(
       service_id, account_id, workspace_id, task_id, specification_revision, specification_json,
       state, process_id, process_token, health_message, updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?)
       ON CONFLICT(account_id, workspace_id, service_id) DO UPDATE
-      SET specification_revision=CASE WHEN ? OR managed_local_services.specification_revision = ''
-        THEN excluded.specification_revision ELSE managed_local_services.specification_revision END,
-          specification_json=CASE WHEN ? THEN excluded.specification_json ELSE managed_local_services.specification_json END,
-          state=excluded.state, process_id=excluded.process_id,
-          process_token=excluded.process_token, health_message=excluded.health_message, updated_at=excluded.updated_at
-      WHERE (? OR (managed_local_services.specification_json=excluded.specification_json
-        AND (managed_local_services.specification_revision=excluded.specification_revision
-          OR managed_local_services.specification_revision='')))`)
+      SET task_id=CASE WHEN ? OR managed_local_services.specification_revision = excluded.specification_revision
+          THEN excluded.task_id ELSE managed_local_services.task_id END,
+        specification_revision=CASE WHEN ? OR managed_local_services.specification_revision = ''
+          THEN excluded.specification_revision ELSE managed_local_services.specification_revision END,
+        specification_json=CASE WHEN ? OR managed_local_services.specification_revision = excluded.specification_revision
+          THEN excluded.specification_json ELSE managed_local_services.specification_json END,
+        state=excluded.state, process_id=excluded.process_id,
+        process_token=excluded.process_token, health_message=excluded.health_message, updated_at=excluded.updated_at
+      WHERE (? OR managed_local_services.specification_revision = ''
+        OR managed_local_services.specification_revision = excluded.specification_revision)`)
       .run(record.specification.serviceId, this.accountId, record.workspaceId ?? '',
         record.specification.taskId, revision, JSON.stringify(record.specification),
         record.state, record.processId, record.processToken, record.healthMessage, record.updatedAt,
+        options.allowSpecificationChange ? 1 : 0,
         options.allowSpecificationChange ? 1 : 0,
         options.allowSpecificationChange ? 1 : 0,
         options.allowSpecificationChange ? 1 : 0);

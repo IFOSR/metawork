@@ -472,6 +472,7 @@ function sanitizeExecutionTimeline(
     statusLabel: sanitizeInteractionTraceText(timeline.statusLabel, 80),
     stateVersion: timeline.stateVersion,
     reasonCode: sanitizeInteractionTraceText(timeline.reasonCode, 80),
+    reasonMessage: sanitizeInteractionTraceText(timeline.reasonMessage ?? '', 1000),
     explanation: sanitizeInteractionTraceText(timeline.explanation ?? '', 1000),
     stages: timeline.stages.map(sanitizeTimelineStage),
   };

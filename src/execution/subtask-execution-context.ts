@@ -57,6 +57,22 @@ export interface SelectedExecutionArtifact {
   contentHash: string;
 }
 
+function safeParseRecord(value: string): Record<string, unknown> {
+  try {
+    const parsed = JSON.parse(value) as unknown;
+    return parsed && typeof parsed === 'object' && !Array.isArray(parsed)
+      ? parsed as Record<string, unknown>
+      : {};
+  } catch {
+    return {};
+  }
+}
+
+function boundText(value: string, maxLength: number): string {
+  const normalized = value.replace(/\s+/gu, ' ').trim();
+  return normalized.length <= maxLength ? normalized : `${normalized.slice(0, maxLength - 1)}…`;
+}
+
 export interface SelectedExecutionAttachment {
   ref: Extract<ContextRef, { kind: 'attachment' }>;
   attachmentId: string;
@@ -64,6 +80,14 @@ export interface SelectedExecutionAttachment {
   relativeInputPath: string;
   mediaType: string;
   contentHash: string;
+}
+
+export interface PreviousRoundDiagnosis {
+  taskId: string;
+  goal: string;
+  reasonCode: string | null;
+  reason: string;
+  operations: Array<{ kind: string; outcome: string; reasonCode: string | null; message: string }>;
 }
 
 export interface SubtaskExecutionContext {
@@ -92,6 +116,12 @@ export interface SubtaskExecutionContext {
     sourceAttemptId: string | null;
     packet: Record<string, unknown> | null;
   };
+  /**
+   * The most recent failed round in this Conversation's Workspace, when it is a
+   * different Task (2026-10-27 realignment §5.3). A user who re-requests the
+   * same goal gets the real diagnosis instead of repeating the failing command.
+   */
+  previousRound?: PreviousRoundDiagnosis;
   evidenceTools: {
     availability: 'available' | 'unavailable';
     reason: string;
@@ -180,6 +210,7 @@ export class SubtaskExecutionContextBuilder {
       workspaceRoot: input.workspaceContext.canonicalRoot ?? input.workspaceContext.workingDirectory,
     });
     const selectedAttachments = this.resolveSelectedAttachments(input, selectedArtifacts.length);
+    const previousRound = this.resolvePreviousRound(input.task);
     const exactEvidenceIds = new Set(selectedEvidence
       .filter((item): item is SelectedExecutionEvidence & {
         ref: Extract<ContextRef, { kind: 'interaction'; side: 'assistant' }>;
@@ -245,6 +276,7 @@ export class SubtaskExecutionContextBuilder {
         completionContract: input.completionContractOverride
           ?? { marker: COMPLETION_MARKER_V4, schemaVersion: 4 },
         recovery: input.recovery,
+        ...(previousRound ? { previousRound } : {}),
         evidenceTools: input.evidenceToolsAvailable
           ? {
               availability: 'available',
@@ -254,6 +286,68 @@ export class SubtaskExecutionContextBuilder {
             }
           : { availability: 'unavailable', reason: 'this Executor Adapter does not support the evidence tool protocol' },
       },
+    };
+  }
+
+  /**
+   * Diagnosis of the last failed round in this Task's Conversation.
+   *
+   * Bounded to one Task and four operation facts. It is context only: the new
+   * Task keeps its own authorized graph, acceptance and Workspace binding, and
+   * nothing here reopens, retries or re-authorized the earlier round.
+   */
+  private resolvePreviousRound(task: Task): PreviousRoundDiagnosis | null {
+    if (!task.conversationId) return null;
+    // A retry Task already carries its own continuation facts:
+    // `task.retryOfTaskId` points at the round it continues.
+    if (task.retryOfTaskId) return null;
+    // Only the round that immediately preceded this Task can be "the previous
+    // attempt": if any other Task was updated after it, this Task is unrelated
+    // new work in the same Conversation and must not inherit its diagnosis.
+    const row = this.db.prepare(`
+      SELECT t.id, t.goal, t.state_detail_json
+      FROM tasks t
+      WHERE t.conversation_id = ? AND t.id <> ? AND t.status = 'failed'
+        AND COALESCE(t.workspace_id, '') = COALESCE(?, '')
+        AND NOT EXISTS (
+          SELECT 1 FROM tasks newer
+          WHERE newer.conversation_id = t.conversation_id
+            AND newer.id NOT IN (t.id, ?)
+            AND newer.updated_at > t.updated_at
+        )
+      ORDER BY t.updated_at DESC
+      LIMIT 1
+    `).get(
+      task.conversationId,
+      task.id,
+      task.workspaceId ?? '',
+      task.id,
+    ) as Record<string, unknown> | undefined;
+    if (!row) return null;
+    const detail = typeof row.state_detail_json === 'string'
+      ? safeParseRecord(row.state_detail_json)
+      : {};
+    const reason = detail.reason && typeof detail.reason === 'object'
+      ? detail.reason as Record<string, unknown>
+      : {};
+    const operations = (this.db.prepare(`
+      SELECT operation_kind, outcome, reason_code, message
+      FROM task_operation_results
+      WHERE task_id = ? AND outcome <> 'success'
+      ORDER BY updated_at DESC
+      LIMIT 4
+    `).all(String(row.id)) as Array<Record<string, unknown>>).map(operation => ({
+      kind: String(operation.operation_kind ?? ''),
+      outcome: String(operation.outcome ?? ''),
+      reasonCode: operation.reason_code ? String(operation.reason_code) : null,
+      message: boundText(String(operation.message ?? ''), 400),
+    }));
+    return {
+      taskId: String(row.id),
+      goal: boundText(String(row.goal ?? ''), 600),
+      reasonCode: typeof reason.code === 'string' && reason.code !== 'none' ? reason.code : null,
+      reason: boundText(typeof reason.message === 'string' ? reason.message : '', 600),
+      operations,
     };
   }
 

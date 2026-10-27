@@ -192,6 +192,14 @@ When two current ADRs appear to overlap, the more specific topic ADR defines its
 
 - [ADR-0043](0043-explicit-conversation-observation-and-client-read-models.md), accepted 2026-10-03: implementation remains local pending user validation. See the [design](../plans/2026-10-02-frontend-observation-architecture-upgrade-design.md) and [evidence and remaining gates](../plans/2026-10-02-frontend-observation-implementation.md).
 
+- [ADR-0051](0051-service-identity-specification-revision-and-handover.md), accepted 2026-10-27:
+  a managed service's identity is `(account, workspace, serviceId)`; the stored
+  `taskId` is provenance that moves to the current Task when it re-launches the
+  same launch contract. `specificationRevision` hashes the launch contract only,
+  so a historical `failed`/`stopped` record never blocks the current
+  specification. See the [realignment plan](../plans/2026-10-27-agent-execution-architecture-realignment-plan.md).
+
+
 ## Status rules
 
 - `Accepted`: current decision authority, including explicit amendments listed in the file.

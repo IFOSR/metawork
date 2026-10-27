@@ -87,7 +87,6 @@ describe('in-place attempt recovery facts', () => {
     const view = projectPublicDelivery({
       task: { id: 'task_1', executionMode: 'in_place' },
       workspace,
-      pendingDecision: false,
       artifacts: [],
       publications: [{ id: 'p1', subtaskId: 's1', createdAt: '2026-10-24T00:00:00.000Z', status: 'conflicted' } as never],
       delivery: () => null,

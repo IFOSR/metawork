@@ -2,10 +2,7 @@ import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
-import {
-  importLocalAgentCredentials,
-  importLocalAgentCredentialsForRefs,
-} from '../../src/configuration/local-agent-credentials.js';
+import { importLocalAgentCredentials } from '../../src/configuration/local-agent-credentials.js';
 import type { ProviderDefinition } from '../../src/configuration/types.js';
 import type { SecretReference, SecretStore } from '../../src/configuration/secret-store.js';
 
@@ -135,7 +132,7 @@ describe('local Agent credential import', () => {
     expect(store.puts).toEqual([]);
   });
 
-  it('keeps same-endpoint Provider keys isolated across repeated startup imports and preheating', async () => {
+  it('keeps same-endpoint Provider keys isolated across repeated startup imports', async () => {
     const home = await mkdtemp(join(tmpdir(), 'anyfusion-local-credentials-'));
     roots.push(home);
     await mkdir(join(home, '.pi', 'agent'), { recursive: true });
@@ -150,8 +147,6 @@ describe('local Agent credential import', () => {
       apiKeyRef: `file-secret:anyfusion/providers/${ref}`, region: 'international', enabled: true,
     });
     for (let restart = 0; restart < 2; restart++) {
-      await importLocalAgentCredentialsForRefs({ home, environment: {}, secretStore: store,
-        providers: { 'code-cli': 'file-secret:anyfusion/providers/code-cli' } });
       await importLocalAgentCredentials({ home, environment: {}, secretStore: store, providers: {
         'code-cli': provider('code-cli'), 'custom-model-4': provider('custom-model-4'),
         'new-provider': provider('new-provider'),
@@ -179,8 +174,6 @@ describe('local Agent credential import', () => {
       apiKeyRef: 'file-secret:anyfusion/providers/code-cli', region: 'international', enabled: true,
     } };
     await importLocalAgentCredentials({ home, environment: {}, plannerHomes: [extraHome], providers, secretStore: store });
-    await importLocalAgentCredentialsForRefs({ home, environment: {}, plannerHomes: [extraHome],
-      providers: { 'code-cli': 'file-secret:anyfusion/providers/code-cli' }, secretStore: store });
     providers['code-cli']!.baseUrl = 'https://different.example/v1';
     await importLocalAgentCredentials({ home, environment: {}, providers, secretStore: store });
     expect(store.puts).toEqual([]);
@@ -213,36 +206,6 @@ describe('local Agent credential import', () => {
       .resolves.toBe('kimi-local-secret');
   });
 
-  it('preheats a built-in Provider credential before that Provider is in the active configuration', async () => {
-    const home = await mkdtemp(join(tmpdir(), 'anyfusion-local-credentials-'));
-    roots.push(home);
-    await mkdir(join(home, '.codex'), { recursive: true });
-    await writeFile(
-      join(home, '.codex', 'auth.json'),
-      JSON.stringify({ OPENAI_API_KEY: 'codex-local-secret' }),
-    );
-    await writeFile(join(home, '.codex', 'config.toml'), [
-      'model_provider = "code-cli"',
-      '',
-      '[model_providers.code-cli]',
-      'base_url = "https://www.code-cli.cn/v1"',
-      '',
-    ].join('\n'));
-
-    const store = new MemorySecretStore();
-    await importLocalAgentCredentialsForRefs({
-      home,
-      environment: {},
-      providers: {
-        'code-cli': 'file-secret:anyfusion/providers/code-cli',
-      },
-      secretStore: store,
-    });
-
-    await expect(store.get('file-secret:anyfusion/providers/code-cli'))
-      .resolves.toBe('codex-local-secret');
-  });
-
   it('imports the Codex env_key credential from the process environment', async () => {
     const home = await mkdtemp(join(tmpdir(), 'anyfusion-local-credentials-'));
     roots.push(home);
@@ -261,11 +224,17 @@ describe('local Agent credential import', () => {
     ].join('\n'));
 
     const store = new MemorySecretStore();
-    await importLocalAgentCredentialsForRefs({
+    await importLocalAgentCredentials({
       home,
       environment: { CODE_CLI_API_KEY: 'environment-secret' },
       providers: {
-        'code-cli': 'file-secret:anyfusion/providers/code-cli',
+        'code-cli': {
+          protocol: 'openai-compatible',
+          baseUrl: 'https://www.code-cli.cn/v1',
+          apiKeyRef: 'file-secret:anyfusion/providers/code-cli',
+          region: 'international',
+          enabled: true,
+        },
       },
       secretStore: store,
     });
@@ -288,11 +257,17 @@ describe('local Agent credential import', () => {
     ].join('\n'));
 
     const store = new MemorySecretStore();
-    await importLocalAgentCredentialsForRefs({
+    await importLocalAgentCredentials({
       home,
       environment: { CODE_CLI_API_KEY: 'environment-secret' },
       providers: {
-        'code-cli': 'file-secret:anyfusion/providers/code-cli',
+        'code-cli': {
+          protocol: 'openai-compatible',
+          baseUrl: 'https://www.code-cli.cn/v1',
+          apiKeyRef: 'file-secret:anyfusion/providers/code-cli',
+          region: 'international',
+          enabled: true,
+        },
       },
       secretStore: store,
     });

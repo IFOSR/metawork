@@ -72,6 +72,12 @@ export interface ConfigurationCompletionInput {
 /**
  * Completes only safe, structural configuration facts. It does not read
  * arbitrary files and never returns credential material.
+ *
+ * Provider membership comes from the active configuration only. Presets, the
+ * public catalog and local Agent discovery are enrichment sources: they may
+ * describe a Provider the user already saved, but they never add one. A
+ * Provider exists because the user added it (installer or settings), and it
+ * disappears when the user deletes it.
  */
 export class ConfigurationCompletionService {
   constructor(private readonly deps: {
@@ -90,12 +96,7 @@ export class ConfigurationCompletionService {
     const catalog = new Map((this.deps.providerCatalog ?? []).map(item => [item.providerRef, item]));
     const presets = new Map((this.deps.presets ?? []).map(item => [item.providerRef, item]));
 
-    const providerRefs = new Set([
-      ...Object.keys(input.providers ?? {}),
-      ...local.keys(),
-      ...catalog.keys(),
-      ...presets.keys(),
-    ]);
+    const providerRefs = new Set(Object.keys(input.providers ?? {}));
     for (const providerRef of [...providerRefs].sort()) {
       const configured = input.providers?.[providerRef] ?? {};
       const localProvider = local.get(providerRef);

@@ -1,0 +1,203 @@
+diff --git a/src/gateway/server.ts b/src/gateway/server.ts
+index 1da5592..b2268af 100644
+--- a/src/gateway/server.ts
++++ b/src/gateway/server.ts
+@@ -23,6 +23,8 @@ import { loadGatewayConfig } from "./config.js";
+ import type { GatewayConfig } from "./config.js";
+ import { initDataDirectories } from "../utils/pipeline-factory.js";
+ import { SessionFilter } from "../utils/session-filter.js";
++import { buildFtsQuery } from "../core/store/sqlite.js";
++import type { MemoryRecord } from "../core/record/l1-writer.js";
+ import type {
+   HealthResponse,
+   RecallRequest,
+@@ -260,6 +262,21 @@ export class TdaiGateway {
+       if (!this.checkAuth(req, res)) return;
+ 
+       switch (`${method} ${pathname}`) {
++        // MetaWork's anti-corruption adapter speaks the v3 data-plane shape.
++        // Keep these routes as a thin compatibility layer over the same Core
++        // and store used by the native Gateway routes below.
++        case "POST /v3/conversation/add":
++          return await this.handleMetaWorkConversationAdd(req, res);
++        case "POST /v3/atomic/search":
++          return await this.handleMetaWorkAtomicSearch(req, res);
++        case "POST /v3/atomic/query":
++          return await this.handleMetaWorkAtomicQuery(req, res);
++        case "POST /v3/atomic/update":
++          return await this.handleMetaWorkAtomicUpdate(req, res);
++        case "POST /v3/atomic/delete":
++          return await this.handleMetaWorkAtomicDelete(req, res);
++        case "POST /v3/core/read":
++          return await this.handleMetaWorkCoreRead(req, res);
+         case "POST /recall":
+           return await this.handleRecall(req, res);
+         case "POST /capture":
+@@ -355,6 +372,147 @@ export class TdaiGateway {
+   // Route handlers
+   // ============================
+ 
++  private sendMetaWorkResponse(res: http.ServerResponse, data: unknown): void {
++    sendJson(res, 200, { code: 0, message: "ok", data });
++  }
++
++  private async handleMetaWorkConversationAdd(
++    req: http.IncomingMessage,
++    res: http.ServerResponse,
++  ): Promise<void> {
++    const body = await parseJsonBody<{
++      session_id?: string;
++      messages?: Array<{ role?: string; content?: string }>;
++    }>(req);
++    const messages = (body.messages ?? [])
++      .filter(message => typeof message.content === "string" && message.content.length > 0)
++      .map(message => ({ role: message.role ?? "user", content: message.content! }));
++    if (messages.length === 0) {
++      sendError(res, 400, "Missing required field: messages");
++      return;
++    }
++    const sessionKey = body.session_id ?? `metawork:${Date.now()}`;
++    let accepted = 0;
++    for (let index = 0; index < messages.length; index += 2) {
++      const user = messages[index];
++      const assistant = messages[index + 1];
++      if (!user || !assistant) break;
++      const result = await this.core.handleTurnCommitted({
++        userText: user.content,
++        assistantText: assistant.content,
++        messages: [user, assistant],
++        sessionKey,
++        sessionId: body.session_id,
++      });
++      accepted += result.l0RecordedCount;
++    }
++    this.sendMetaWorkResponse(res, { accepted_ids: [], total_count: accepted });
++  }
++
++  private async handleMetaWorkAtomicSearch(
++    req: http.IncomingMessage,
++    res: http.ServerResponse,
++  ): Promise<void> {
++    const body = await parseJsonBody<{ query?: string; limit?: number; type?: string }>(req);
++    const store = this.core.getVectorStore();
++    if (!store || !body.query) {
++      this.sendMetaWorkResponse(res, { items: [] });
++      return;
++    }
++    const ftsQuery = buildFtsQuery(body.query);
++    const rows = ftsQuery ? await store.searchL1Fts(ftsQuery, Math.min(100, Math.max(1, body.limit ?? 20))) : [];
++    const items = rows
++      .filter(row => !body.type || row.type === body.type)
++      .map(row => ({
++        id: row.record_id,
++        type: row.type,
++        content: row.content,
++        background: null,
++        created_at: row.timestamp_start,
++        updated_at: row.timestamp_end,
++        score: row.score,
++      }));
++    this.sendMetaWorkResponse(res, { items });
++  }
++
++  private async handleMetaWorkAtomicQuery(
++    req: http.IncomingMessage,
++    res: http.ServerResponse,
++  ): Promise<void> {
++    const body = await parseJsonBody<{ limit?: number; offset?: number }>(req);
++    const store = this.core.getVectorStore();
++    const rows = store ? await store.queryL1Records() : [];
++    const offset = Math.max(0, body.offset ?? 0);
++    const limit = Math.min(100, Math.max(1, body.limit ?? 100));
++    const items = rows.slice(offset, offset + limit).map(row => ({
++      id: row.record_id,
++      type: row.type,
++      content: row.content,
++      background: null,
++      created_at: row.created_time,
++      updated_at: row.updated_time,
++    }));
++    this.sendMetaWorkResponse(res, { items, total: rows.length });
++  }
++
++  private async handleMetaWorkAtomicUpdate(
++    req: http.IncomingMessage,
++    res: http.ServerResponse,
++  ): Promise<void> {
++    const body = await parseJsonBody<{ id?: string; content?: string }>(req);
++    const store = this.core.getVectorStore();
++    if (!store || !body.id || typeof body.content !== "string") {
++      sendError(res, 400, "Missing required fields: id, content");
++      return;
++    }
++    const current = (await store.queryL1Records()).find(row => row.record_id === body.id);
++    if (!current) {
++      sendError(res, 404, `memory_asset_not_found: ${body.id}`);
++      return;
++    }
++    const updatedAt = new Date().toISOString();
++    let metadata: Record<string, unknown> = {};
++    try { metadata = JSON.parse(current.metadata_json) as Record<string, unknown>; } catch { /* keep empty */ }
++    const record: MemoryRecord = {
++      id: current.record_id,
++      content: body.content,
++      type: current.type as MemoryRecord["type"],
++      priority: current.priority,
++      scene_name: current.scene_name,
++      source_message_ids: [],
++      metadata,
++      timestamps: [current.timestamp_str || updatedAt],
++      createdAt: current.created_time,
++      updatedAt,
++      sessionKey: current.session_key,
++      sessionId: current.session_id,
++    };
++    if (!(await store.upsertL1(record))) {
++      sendError(res, 500, `memory_asset_update_failed: ${body.id}`);
++      return;
++    }
++    this.sendMetaWorkResponse(res, { id: body.id, version: updatedAt });
++  }
++
++  private async handleMetaWorkAtomicDelete(
++    req: http.IncomingMessage,
++    res: http.ServerResponse,
++  ): Promise<void> {
++    const body = await parseJsonBody<{ ids?: string[] }>(req);
++    const store = this.core.getVectorStore();
++    const ids = Array.isArray(body.ids) ? body.ids.filter(id => typeof id === "string") : [];
++    const deleted = store && ids.length > 0 ? await store.deleteL1Batch(ids) : false;
++    this.sendMetaWorkResponse(res, { deleted_count: deleted ? ids.length : 0 });
++  }
++
++  private async handleMetaWorkCoreRead(
++    req: http.IncomingMessage,
++    res: http.ServerResponse,
++  ): Promise<void> {
++    await parseJsonBody<Record<string, unknown>>(req);
++    this.sendMetaWorkResponse(res, { content: null, updated_at: null });
++  }
++
+   private handleHealth(res: http.ServerResponse): void {
+     const response: HealthResponse = {
+       status: this.core.getVectorStore() ? "ok" : "degraded",
+@@ -362,6 +520,7 @@ export class TdaiGateway {
+       uptime: Math.floor((Date.now() - this.startTime) / 1000),
+       stores: {
+         vectorStore: !!this.core.getVectorStore(),
++        ftsAvailable: this.core.getVectorStore()?.isFtsAvailable() ?? false,
+         embeddingService: !!this.core.getEmbeddingService(),
+       },
+     };
+diff --git a/src/gateway/types.ts b/src/gateway/types.ts
+index 50b2ff4..6fd5a1e 100644
+--- a/src/gateway/types.ts
++++ b/src/gateway/types.ts
+@@ -21,6 +21,7 @@ export interface HealthResponse {
+   uptime: number;
+   stores: {
+     vectorStore: boolean;
++    ftsAvailable: boolean;
+     embeddingService: boolean;
+   };
+ }

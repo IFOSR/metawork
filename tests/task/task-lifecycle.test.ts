@@ -100,6 +100,19 @@ describe('six-state Task contract', () => {
     expect(isSubtaskTransitionAllowed('completed', 'executing')).toBe(false);
   });
 
+  it('reopens a completed Subtask only for a Kernel-authorized repair round', async () => {
+    const { isSubtaskReopen } = await import('../../src/task/task-lifecycle.js');
+    // A completed node has exactly one outgoing transition: the repair reopen.
+    expect(isSubtaskTransitionAllowed('completed', 'awaiting_completion')).toBe(true);
+    expect(isSubtaskReopen('completed', 'awaiting_completion')).toBe(true);
+    for (const target of ['pending', 'executing', 'blocked', 'cancelled'] as const) {
+      expect(isSubtaskTransitionAllowed('completed', target)).toBe(false);
+    }
+    // Nothing else may reopen a terminal node, and cancelling stays terminal.
+    expect(isSubtaskTransitionAllowed('cancelled', 'awaiting_completion')).toBe(false);
+    expect(isSubtaskReopen('blocked', 'awaiting_completion')).toBe(false);
+  });
+
   it('separates Attempt protocol state from Attempt outcome', () => {
     expect(toAttemptLifecycleState('pending_launch')).toBe('authorized');
     expect(toAttemptLifecycleState('launching')).toBe('launched');

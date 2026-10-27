@@ -42,6 +42,7 @@ export function BlockedActions({ ws, http, conversationId, taskId, lifecycle, pe
   } | undefined);
   const reason = lifecycle?.reason?.message?.trim() ?? legacy?.userStateReason?.trim() ?? '';
   const needsAction = lifecycle?.status === 'needs_action' || legacy?.userState === 'needs_action';
+  const failed = lifecycle?.status === 'failed';
   const pendingActions = lifecycle?.pendingActions ?? (legacy?.pendingDecision?.actions ?? []).map(action => ({
     actionId: `legacy:${action}`,
     kind: action === 'retry_attempt' ? 'retry_attempt' : 'accept_result',
@@ -72,12 +73,14 @@ export function BlockedActions({ ws, http, conversationId, taskId, lifecycle, pe
   // noise next to accept/retry.
   const canAcceptCandidate = Boolean(taskId) && Boolean(candidateAction);
   const canResume = Boolean(taskId) && !pendingDecision && !canAcceptCandidate && needsAction;
+  const canRetryRemaining = Boolean(taskId) && !pendingDecision && failed;
   const canResolveRecovery = Boolean(taskId) && (Boolean(recoveryAction) || Boolean(legacy?.recoveryDiagnosis));
   const primaryAction = primaryActionFor(lifecycle?.nextAuthorizedAction, {
     canAcceptCandidate,
     canAcceptResult,
     canRetryAttempt,
     canResume,
+    canRetryRemaining,
     canResolveRecovery,
   });
   const recommendation = recommendationFor(primaryAction);
@@ -173,7 +176,7 @@ export function BlockedActions({ ws, http, conversationId, taskId, lifecycle, pe
     }
   };
 
-  if (!hasPermission && !pendingDecision && !needsAction) return null;
+  if (!hasPermission && !pendingDecision && !needsAction && !canRetryRemaining) return null;
 
   return (
     <section className="blocked-actions" data-kind={hasPermission ? 'permission' : pendingDecision ? 'decision' : 'recovery'}>
@@ -197,10 +200,15 @@ export function BlockedActions({ ws, http, conversationId, taskId, lifecycle, pe
           )}
         </>
       )}
-      {!hasPermission && (pendingDecision || needsAction) && (
+      {!hasPermission && (pendingDecision || needsAction || canRetryRemaining) && (
         <>
-          <p className="blocked-actions-title">需要你的处理才能继续</p>
+          <p className="blocked-actions-title">{failed ? '任务失败，需要处理' : '需要你的处理才能继续'}</p>
           {reason && <p className="blocked-actions-hint">{reason}</p>}
+          {failed && (
+            <p className="blocked-actions-hint">
+              直接在下方说明要继续或修复什么，系统会用上面的真实错误开启新的一轮；旧任务记录会保留，无需先清理。
+            </p>
+          )}
           {recommendation && <p className="blocked-actions-recommendation">{recommendation}</p>}
           <div className="blocked-actions-buttons">
             {/* The Kernel already decided which action is authorized next; the
@@ -224,6 +232,14 @@ export function BlockedActions({ ws, http, conversationId, taskId, lifecycle, pe
                 disabled={busy}
                 onClick={() => runCommand(`/task resume ${taskId}`)}>继续未完成部分</button>
             )}
+            {canRetryRemaining && (
+              <button type="button"
+                className={primaryAction === 'retry_remaining' && !failed ? 'primary' : undefined}
+                disabled={busy}
+                onClick={() => runCommand(`/task retry ${taskId}`)}>
+                重试未完成部分
+              </button>
+            )}
             {canResolveRecovery && (
               <button type="button" className={primaryAction === 'resolve_recovery' ? 'primary' : undefined}
                 disabled={busy}
@@ -240,7 +256,7 @@ export function BlockedActions({ ws, http, conversationId, taskId, lifecycle, pe
   );
 }
 
-type BlockedPrimaryAction = 'accept_result' | 'accept_candidate' | 'retry_attempt' | 'resume' | 'resolve_recovery' | null;
+type BlockedPrimaryAction = 'accept_result' | 'accept_candidate' | 'retry_attempt' | 'resume' | 'retry_remaining' | 'resolve_recovery' | null;
 
 /**
  * Picks the one highlighted action from the Kernel's own `nextAuthorizedAction`,
@@ -253,6 +269,7 @@ function primaryActionFor(
     canAcceptResult: boolean;
     canRetryAttempt: boolean;
     canResume: boolean;
+    canRetryRemaining?: boolean;
     canResolveRecovery: boolean;
   },
 ): BlockedPrimaryAction {
@@ -268,12 +285,15 @@ function primaryActionFor(
         ? 'resume'
         : nextAuthorizedAction === 'resolve_uncertain_application' && available.canResolveRecovery
           ? 'resolve_recovery'
+          : nextAuthorizedAction === 'none' && available.canRetryRemaining
+            ? 'retry_remaining'
           : null;
   if (candidate) return candidate;
   // Fall back to the only available action when the Kernel named none of them.
   if (available.canAcceptResult) return 'accept_result';
   if (available.canAcceptCandidate) return 'accept_candidate';
   if (available.canResume) return 'resume';
+  if (available.canRetryRemaining) return 'retry_remaining';
   if (available.canResolveRecovery) return 'resolve_recovery';
   if (available.canRetryAttempt) return 'retry_attempt';
   return null;
@@ -292,6 +312,8 @@ function recommendationFor(action: BlockedPrimaryAction): string {
       return '下一步：点「继续未完成部分」，已完成的部分不会重跑。';
     case 'resolve_recovery':
       return '下一步：点「查看恢复项」，先确认上次执行是否留下了外部影响。';
+    case 'retry_remaining':
+      return '下一步：点「重试未完成部分」。已完成的代码不会重新执行，只补做失败的交付或服务启动。';
     default:
       return '';
   }

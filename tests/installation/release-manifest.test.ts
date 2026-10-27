@@ -14,6 +14,7 @@ const trustedPublicKey = publicKey.export({ format: 'pem', type: 'spki' }).toStr
 
 const metaworkBytes = Buffer.from('metawork artifact');
 const plannerBytes = Buffer.from('planner artifact');
+const memoryBytes = Buffer.from('memory engine artifact');
 
 function sha256(bytes: Buffer): string {
   return createHash('sha256').update(bytes).digest('hex');
@@ -45,6 +46,14 @@ function baseManifest(overrides: Partial<ReleaseManifestInput> = {}): ReleaseMan
       url: 'https://releases.example.test/planner.tgz',
       byteSize: plannerBytes.byteLength,
       sha256: sha256(plannerBytes),
+    },
+    memory: {
+      // The engine is an upstream MIT project pinned independently of MetaWork.
+      source: 'https://github.com/TencentCloud/TencentDB-Agent-Memory.git',
+      revision: 'memory-engine-revision-pin',
+      url: 'https://releases.example.test/memory.tgz',
+      byteSize: memoryBytes.byteLength,
+      sha256: sha256(memoryBytes),
     },
     compatibility: {
       configurationSchema: 2,
@@ -116,6 +125,7 @@ describe('release manifest parsing and verification', () => {
       artifacts: {
         metawork: { byteSize: metaworkBytes.byteLength, sha256: sha256(metaworkBytes) },
         planner: { byteSize: plannerBytes.byteLength, sha256: sha256(plannerBytes) },
+        memory: { byteSize: memoryBytes.byteLength, sha256: sha256(memoryBytes) },
       },
     })).toMatchObject({ releaseId: '2.0.0' });
   });
@@ -133,6 +143,7 @@ describe('release manifest parsing and verification', () => {
       artifacts: {
         metawork: { byteSize: metaworkBytes.byteLength, sha256: sha256(metaworkBytes) },
         planner: { byteSize: plannerBytes.byteLength, sha256: sha256(plannerBytes) },
+        memory: { byteSize: memoryBytes.byteLength, sha256: sha256(memoryBytes) },
       },
     };
 
@@ -168,6 +179,34 @@ describe('release manifest parsing and verification', () => {
     })).toThrow(/hash/i);
   });
 
+  it('requires the memory engine artifact and verifies its bytes', () => {
+    const { memory: _memory, ...withoutMemory } = baseManifest() as ReleaseManifestInput & { memory?: unknown };
+    expect(() => parseReleaseManifest(withoutMemory)).toThrow(/memory/i);
+
+    const options = {
+      expectedChannel: 'stable' as const,
+      expectedPlatform: 'darwin' as const,
+      expectedArch: 'arm64' as const,
+      currentInstallerVersion: '1.0.0',
+      currentNodeVersion: '22.19.0',
+      now: new Date('2026-08-12T00:00:00.000Z'),
+      trustedKeys: { 'release-2026-01': trustedPublicKey },
+      revokedKeyIds: [] as string[],
+      artifacts: {
+        metawork: { byteSize: metaworkBytes.byteLength, sha256: sha256(metaworkBytes) },
+        planner: { byteSize: plannerBytes.byteLength, sha256: sha256(plannerBytes) },
+        memory: { byteSize: memoryBytes.byteLength, sha256: sha256(memoryBytes) },
+      },
+    };
+    expect(() => verifyReleaseManifest(baseManifest(), {
+      ...options,
+      artifacts: {
+        ...options.artifacts,
+        memory: { byteSize: memoryBytes.byteLength, sha256: sha256(Buffer.from('tampered')) },
+      },
+    })).toThrow(/memory artifact hash/i);
+  });
+
   it('rejects manifests that require a newer installer or Node runtime', () => {
     const options = {
       expectedChannel: 'stable' as const,
@@ -181,6 +220,7 @@ describe('release manifest parsing and verification', () => {
       artifacts: {
         metawork: { byteSize: metaworkBytes.byteLength, sha256: sha256(metaworkBytes) },
         planner: { byteSize: plannerBytes.byteLength, sha256: sha256(plannerBytes) },
+        memory: { byteSize: memoryBytes.byteLength, sha256: sha256(memoryBytes) },
       },
     };
 

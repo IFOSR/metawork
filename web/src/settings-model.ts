@@ -148,6 +148,71 @@ export function resolveProviderDisplayName(
   return configured?.trim() || humanizeProviderRef(providerRef);
 }
 
+export interface ProviderCardCompletionFacts {
+  displayName?: string;
+  baseUrl?: string | null;
+  credentialState?: ConfigurationFieldState;
+  maskedApiKey?: string | null;
+  credentialFingerprint?: string;
+  modelIds?: string[];
+}
+
+export interface ProviderCardPresetFacts {
+  providerRef: string;
+  displayName: string;
+  baseUrl: string;
+  modelIds: string[];
+}
+
+/**
+ * Project the Provider cards of the settings workbench.
+ *
+ * Membership comes from the active configuration only: a Provider card exists
+ * exactly when the user saved one (installer or settings). Completion facts
+ * (dependency probe, local Agent discovery, public catalog) and presets are
+ * descriptions of an existing card — they can never add one, otherwise a
+ * deleted Provider resurrects on the next settings load.
+ */
+export function buildProviderCards(input: {
+  configured: Record<string, Record<string, unknown>>;
+  completionProviders?: Record<string, ProviderCardCompletionFacts>;
+  providerPresets?: readonly ProviderCardPresetFacts[];
+}): Record<string, SettingsProviderEntry> {
+  const completionProviders = input.completionProviders ?? {};
+  const presets = input.providerPresets ?? [];
+  return Object.fromEntries(Object.entries(input.configured).map(([providerRef, provider]) => {
+    const completed = completionProviders[providerRef];
+    const baseUrl = String(provider.baseUrl ?? completed?.baseUrl ?? '');
+    const preset = presets.find(candidate => (
+      candidate.providerRef === providerRef || candidate.baseUrl === baseUrl
+    ));
+    return [
+      providerRef,
+      {
+        providerRef,
+        displayName: typeof provider.displayName === 'string' && provider.displayName.trim()
+          ? provider.displayName.trim()
+          : completed?.displayName
+          ?? preset?.displayName
+          ?? resolveProviderDisplayName(providerRef),
+        baseUrl,
+        protocol: (provider.protocol ?? 'openai-compatible') as ProviderProtocol,
+        modelIds: [...new Set([
+          ...(completed?.modelIds ?? []),
+          ...(preset?.modelIds ?? []),
+        ])],
+        credentialState: completed?.credentialState ?? '需要确认',
+        maskedApiKey: completed?.maskedApiKey ?? null,
+        ...(completed?.credentialFingerprint
+          ? { credentialFingerprint: completed.credentialFingerprint }
+          : {}),
+        enabled: provider.enabled !== false,
+        ...(provider.systemManaged === true ? { systemManaged: true } : {}),
+      } satisfies SettingsProviderEntry,
+    ];
+  }));
+}
+
 export function executorManualInputKey(
   draft: AgentClassRoutingDraft,
   models: readonly SettingsModelEntry[],

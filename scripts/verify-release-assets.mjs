@@ -103,7 +103,11 @@ export async function verifyReleaseAssets(directory, tag, options = {}) {
       || manifest.planner?.revision !== revision
       || !['https://github.com/IFOSR/metawork', 'https://github.com/IFOSR/metawork.git']
         .includes(manifest.metawork.source)
-      || manifest.planner.source !== manifest.metawork.source) {
+      || manifest.planner.source !== manifest.metawork.source
+      || !manifest.memory
+      || typeof manifest.memory.source !== 'string'
+      || typeof manifest.memory.revision !== 'string'
+      || manifest.memory.revision.length === 0) {
       throw new Error(`${target}: release/revision identity mismatch`);
     }
     const currentIdentity = stable({
@@ -114,7 +118,7 @@ export async function verifyReleaseAssets(directory, tag, options = {}) {
     identity ??= currentIdentity;
     if (identity !== currentIdentity) throw new Error(`${target}: mixed release set`);
     files.push({ name, byteSize: body.length, sha256: createHash('sha256').update(body).digest('hex') });
-    for (const kind of ['metawork', 'planner']) {
+    for (const kind of ['metawork', 'planner', 'memory']) {
       const artifact = manifest[kind];
       const expectedName = `${kind}-${manifest.releaseId}-${target}${target.startsWith('win32') ? '.zip' : '.tar.gz'}`;
       const expectedUrl = `https://github.com/IFOSR/metawork/releases/download/${tag}/${expectedName}`;

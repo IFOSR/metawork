@@ -508,3 +508,350 @@ describe('SubtaskExecutionContextBuilder', () => {
 function requireArtifactHash(path: string): string {
   return `sha256:${createHash('sha256').update(readFileSync(path)).digest('hex')}`;
 }
+
+describe('previous round diagnosis', () => {
+  function sqlTask(db: Database.Database, input: {
+    id: string; conversationId: string; workspaceId: string | null; status: string;
+    reasonCode?: string; reason?: string;
+  }): void {
+    db.prepare(`
+      INSERT INTO tasks (
+        id, title, goal, status, summary, snapshot_json, resources_json, artifacts_json,
+        dependencies_json, priority_json, last_scheduling_reason,
+        last_interruption_reason, interruption_count, conversation_id, workspace_id,
+        state_detail_json, created_at, updated_at
+      ) VALUES (?,?,?,?,'','[]','[]','[]','[]','{}','','',0,?,?,?,?,?)
+    `).run(
+      input.id,
+      `title ${input.id}`,
+      `goal ${input.id}`,
+      input.status,
+      input.conversationId,
+      input.workspaceId,
+      JSON.stringify({
+        reason: {
+          code: input.reasonCode ?? 'none',
+          message: input.reason ?? '',
+          evidenceRefs: [],
+        },
+      }),
+      '2026-10-27T00:00:00.000Z',
+      '2026-10-27T00:00:00.000Z',
+    );
+  }
+
+  it('hands the failed round in the same Conversation and Workspace to the Executor', () => {
+    const db = new Database(':memory:');
+    runMigrations(db);
+    sqlTask(db, {
+      id: 'task_previous',
+      conversationId: 'conversation_ctx',
+      workspaceId: 'workspace_ctx',
+      status: 'failed',
+      reasonCode: 'service_start_failed',
+      reason: '服务进程已退出，需显式重启',
+    });
+    db.prepare(`INSERT INTO task_operation_results (
+      task_id, operation_key, operation_kind, outcome, reason_code, message, evidence_refs_json, updated_at
+    ) VALUES (?,?,?,?,?,?,?,?)`).run(
+      'task_previous', 'service:start:backend:r1:attempt:0', 'service', 'definite_failure',
+      'service_start_failed', '退出码 1', '[]', '2026-10-27T00:00:01.000Z',
+    );
+    sqlTask(db, {
+      id: 'task_context',
+      conversationId: 'conversation_ctx',
+      workspaceId: 'workspace_ctx',
+      status: 'running',
+    });
+    seedWorkGraphRevision(db, { taskId: 'task_context', generationId: 'generation_context', configurationRevision: 'revision_context' });
+    const subtask = node('a', 'A');
+    new SubtaskRepo(db).upsert(subtask);
+    const task: Task = {
+      id: 'task_context',
+      title: 'Task background',
+      goal: 'fix the service',
+      status: 'running',
+      conversationId: 'conversation_ctx',
+      workspaceId: 'workspace_ctx',
+      summary: '',
+      stateVersion: 1,
+      stateDetail: EMPTY_TASK_STATE_DETAIL,
+      completedAt: null,
+      archivedAt: null,
+      retryOfTaskId: null,
+      snapshots: [],
+      resources: [],
+      artifacts: [],
+      dependencies: [],
+      prioritySignals: { dueAt: null, isReady: true, progressRatio: 0, blocksOthers: false, idleHours: 0 },
+      lastSchedulingReason: '',
+      lastInterruptionReason: '',
+      interruptionCount: 0,
+      createdAt: '2026-10-27T00:02:00.000Z',
+      updatedAt: '2026-10-27T00:02:00.000Z',
+    };
+
+    const built = new SubtaskExecutionContextBuilder(db, {
+      accountId: 'local-default',
+      resultRoot: '/tmp/metawork-context-results-previous',
+    }).build({
+      executionId: 'exec',
+      task,
+      subtask,
+      allSubtasks: [subtask],
+      attemptId: 'attempt_ctx',
+      workUnitId: 'wu',
+      sessionId: 'session',
+      workspaceContext: { allowFilesystem: true, workingDirectory: '/repo', targetPaths: [] },
+      evidenceToolsAvailable: false,
+    });
+
+    expect(built.context.previousRound).toMatchObject({
+      taskId: 'task_previous',
+      goal: 'goal task_previous',
+      reasonCode: 'service_start_failed',
+      reason: '服务进程已退出，需显式重启',
+      operations: [{ kind: 'service', outcome: 'definite_failure', reasonCode: 'service_start_failed', message: '退出码 1' }],
+    });
+  });
+
+  it('does not borrow a failure from another Conversation or Workspace', () => {
+    const db = new Database(':memory:');
+    runMigrations(db);
+    sqlTask(db, {
+      id: 'task_other_conversation',
+      conversationId: 'conversation_other',
+      workspaceId: 'workspace_ctx',
+      status: 'failed',
+      reasonCode: 'service_start_failed',
+      reason: 'other failure',
+    });
+    sqlTask(db, {
+      id: 'task_other_workspace',
+      conversationId: 'conversation_ctx',
+      workspaceId: 'workspace_other',
+      status: 'failed',
+      reasonCode: 'service_start_failed',
+      reason: 'other workspace failure',
+    });
+    sqlTask(db, {
+      id: 'task_context',
+      conversationId: 'conversation_ctx',
+      workspaceId: 'workspace_ctx',
+      status: 'running',
+    });
+    seedWorkGraphRevision(db, { taskId: 'task_context', generationId: 'generation_context', configurationRevision: 'revision_context' });
+    const subtask = node('a', 'A');
+    new SubtaskRepo(db).upsert(subtask);
+    const task: Task = {
+      id: 'task_context',
+      title: 'Task background',
+      goal: 'unrelated work',
+      status: 'running',
+      conversationId: 'conversation_ctx',
+      workspaceId: 'workspace_ctx',
+      summary: '',
+      stateVersion: 1,
+      stateDetail: EMPTY_TASK_STATE_DETAIL,
+      completedAt: null,
+      archivedAt: null,
+      retryOfTaskId: null,
+      snapshots: [],
+      resources: [],
+      artifacts: [],
+      dependencies: [],
+      prioritySignals: { dueAt: null, isReady: true, progressRatio: 0, blocksOthers: false, idleHours: 0 },
+      lastSchedulingReason: '',
+      lastInterruptionReason: '',
+      interruptionCount: 0,
+      createdAt: '2026-10-27T00:02:00.000Z',
+      updatedAt: '2026-10-27T00:02:00.000Z',
+    };
+
+    const built = new SubtaskExecutionContextBuilder(db, {
+      accountId: 'local-default',
+      resultRoot: '/tmp/metawork-context-results-previous-scope',
+    }).build({
+      executionId: 'exec',
+      task,
+      subtask,
+      allSubtasks: [subtask],
+      attemptId: 'attempt_ctx',
+      workUnitId: 'wu',
+      sessionId: 'session',
+      workspaceContext: { allowFilesystem: true, workingDirectory: '/repo', targetPaths: [] },
+      evidenceToolsAvailable: false,
+    });
+
+    expect(built.context.previousRound).toBeUndefined();
+  });
+});
+
+describe('previous round relation gates', () => {
+  function sqlTask(db: Database.Database, input: {
+    id: string;
+    conversationId: string;
+    workspaceId: string | null;
+    status: string;
+    retryOfTaskId?: string | null;
+    updatedAt: string;
+    reasonCode?: string;
+  }): void {
+    db.prepare(`
+      INSERT INTO tasks (
+        id, title, goal, status, summary, snapshot_json, resources_json, artifacts_json,
+        dependencies_json, priority_json, last_scheduling_reason,
+        last_interruption_reason, interruption_count, conversation_id, workspace_id,
+        retry_of_task_id, state_detail_json, created_at, updated_at
+      ) VALUES (?,?,?,?,'','[]','[]','[]','[]','{}','','',0,?,?,?,?,?,?)
+    `).run(
+      input.id,
+      `title ${input.id}`,
+      `goal ${input.id}`,
+      input.status,
+      input.conversationId,
+      input.workspaceId,
+      input.retryOfTaskId ?? null,
+      JSON.stringify({
+        reason: { code: input.reasonCode ?? 'service_start_failed', message: 'failed earlier', evidenceRefs: [] },
+      }),
+      input.updatedAt,
+      input.updatedAt,
+    );
+  }
+
+  function buildFor(db: Database.Database, task: Task): ReturnType<SubtaskExecutionContextBuilder['build']> {
+    // The Subtask node is bound to generation_context/revision 1, so the Task
+    // needs exactly that active Work Graph revision before the node is written.
+    seedWorkGraphRevision(db, {
+      taskId: task.id,
+      generationId: 'generation_context',
+      configurationRevision: 'revision_context',
+    });
+    const subtask = node('a', 'A');
+    if (!db.prepare('SELECT 1 FROM subtasks WHERE id = ?').get(subtask.id)) {
+      new SubtaskRepo(db).upsert(subtask);
+    }
+    return new SubtaskExecutionContextBuilder(db, {
+      accountId: 'local-default',
+      resultRoot: `/tmp/metawork-context-previous-${task.id}`,
+    }).build({
+      executionId: 'exec',
+      task,
+      subtask,
+      allSubtasks: [subtask],
+      attemptId: 'attempt_ctx',
+      workUnitId: 'wu',
+      sessionId: 'session',
+      workspaceContext: { allowFilesystem: true, workingDirectory: '/repo', targetPaths: [] },
+      evidenceToolsAvailable: false,
+    });
+  }
+
+  function task(overrides: Partial<Task> = {}): Task {
+    return {
+      id: 'task_context',
+      title: 'Task background',
+      goal: 'fix it',
+      status: 'running',
+      conversationId: 'conversation_ctx',
+      workspaceId: 'workspace_ctx',
+      summary: '',
+      stateVersion: 1,
+      stateDetail: EMPTY_TASK_STATE_DETAIL,
+      completedAt: null,
+      archivedAt: null,
+      retryOfTaskId: null,
+      snapshots: [],
+      resources: [],
+      artifacts: [],
+      dependencies: [],
+      prioritySignals: { dueAt: null, isReady: true, progressRatio: 0, blocksOthers: false, idleHours: 0 },
+      lastSchedulingReason: '',
+      lastInterruptionReason: '',
+      interruptionCount: 0,
+      createdAt: '2026-10-27T00:02:00.000Z',
+      updatedAt: '2026-10-27T00:02:00.000Z',
+      ...overrides,
+    };
+  }
+
+  it('does not inject a failed round into an explicit retry Task', () => {
+    const db = new Database(':memory:');
+    runMigrations(db);
+    sqlTask(db, {
+      id: 'task_failed',
+      conversationId: 'conversation_ctx',
+      workspaceId: 'workspace_ctx',
+      status: 'failed',
+      updatedAt: '2026-10-27T00:00:00.000Z',
+    });
+    sqlTask(db, {
+      id: 'task_context',
+      conversationId: 'conversation_ctx',
+      workspaceId: 'workspace_ctx',
+      status: 'running',
+      retryOfTaskId: 'task_failed',
+      updatedAt: '2026-10-27T00:01:00.000Z',
+    });
+    // The retry Task carries its own continuation facts.
+    expect(buildFor(db, task({ retryOfTaskId: 'task_failed' })).context.previousRound).toBeUndefined();
+  });
+
+  it('does not inject a failed round once unrelated work came after it', () => {
+    const db = new Database(':memory:');
+    runMigrations(db);
+    sqlTask(db, {
+      id: 'task_failed',
+      conversationId: 'conversation_ctx',
+      workspaceId: 'workspace_ctx',
+      status: 'failed',
+      updatedAt: '2026-10-27T00:00:00.000Z',
+    });
+    sqlTask(db, {
+      id: 'task_between',
+      conversationId: 'conversation_ctx',
+      workspaceId: 'workspace_ctx',
+      status: 'succeeded',
+      updatedAt: '2026-10-27T00:01:00.000Z',
+    });
+    sqlTask(db, {
+      id: 'task_context',
+      conversationId: 'conversation_ctx',
+      workspaceId: 'workspace_ctx',
+      status: 'running',
+      updatedAt: '2026-10-27T00:02:00.000Z',
+    });
+    expect(buildFor(db, task()).context.previousRound).toBeUndefined();
+  });
+
+  it('injects the immediately preceding failed round', () => {
+    const db = new Database(':memory:');
+    runMigrations(db);
+    sqlTask(db, {
+      id: 'task_older',
+      conversationId: 'conversation_ctx',
+      workspaceId: 'workspace_ctx',
+      status: 'succeeded',
+      updatedAt: '2026-10-26T00:00:00.000Z',
+    });
+    sqlTask(db, {
+      id: 'task_failed',
+      conversationId: 'conversation_ctx',
+      workspaceId: 'workspace_ctx',
+      status: 'failed',
+      updatedAt: '2026-10-27T00:00:00.000Z',
+    });
+    sqlTask(db, {
+      id: 'task_context',
+      conversationId: 'conversation_ctx',
+      workspaceId: 'workspace_ctx',
+      status: 'running',
+      updatedAt: '2026-10-27T00:01:00.000Z',
+    });
+    expect(buildFor(db, task()).context.previousRound).toMatchObject({
+      taskId: 'task_failed',
+      reasonCode: 'service_start_failed',
+    });
+  });
+});

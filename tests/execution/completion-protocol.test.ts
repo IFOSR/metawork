@@ -526,7 +526,7 @@ describe('Completion Protocol result-first assessment', () => {
     }).ok).toBe(true);
   });
 
-  it('rejects a no-change reason when an edit changed files', () => {
+  it('trusts the observed delta when an edit carries a stale no-change reason', () => {
     const workspaceRoot = root();
     writeFileSync(join(workspaceRoot, 'changed.md'), 'changed');
     const result = validate({
@@ -535,7 +535,8 @@ describe('Completion Protocol result-first assessment', () => {
       workspaceDelta: delta([{ path: 'changed.md', beforeHash: null, afterHash: 'hash' }]),
       rawResponse: response(report({ noChangeReason: 'not applicable' })),
     });
-    expect(result.warnings.join('\n')).toContain('noChangeReason');
+    expect(result.assessment.certification.status).toBe('certified');
+    expect(result.warnings).toEqual([]);
   });
 
   it('preserves safe text but holds certification for missing, malformed, or truncated deltas', () => {

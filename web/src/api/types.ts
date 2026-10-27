@@ -78,6 +78,7 @@ export interface ExecutionTimeline {
   statusLabel: string;
   stateVersion: number;
   reasonCode: string;
+  reasonMessage?: string;
   explanation: string;
   taskId: string;
   title: string;

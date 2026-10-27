@@ -11,6 +11,11 @@
 //   --source-meta-root <dir>  Source tree for version metadata such as the
 //                            database schema version (default: script parent)
 //   --planner-root <dir>     Vendored Planner root (default: <source>/planner/AnyFusion-Pi)
+//   --memory-root <dir>      Memory engine tree, TDAI MemoryCore (default:
+//                            $METAWORK_MEMORY_ENGINE_ROOT or <source>/memory/tdai).
+//                            Must contain a compiled dist/gateway/server.js.
+//   --memory-source <url>    Upstream source recorded in the manifest
+//   --memory-revision <rev>  Upstream revision recorded in the manifest
 //   --out-dir <dir>          Output directory (default: <source>/dist-release)
 //   --channel <name>         Release channel (default: stable)
 //   --release-id <id>        Release ID (default: stable build ID or <version>-preview.N)
@@ -37,7 +42,7 @@ import { createHash, generateKeyPairSync, sign as ed25519Sign } from 'node:crypt
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { spawn, spawnSync } from 'node:child_process';
 import { promisify } from 'node:util';
-import { dirname, join, resolve } from 'node:path';
+import { basename, dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const scriptDir = dirname(fileURLToPath(import.meta.url));
@@ -47,6 +52,9 @@ function parseArguments(argv) {
     sourceRoot: resolve(scriptDir, '..'),
     sourceMetaRoot: undefined,
     plannerRoot: undefined,
+    memoryRoot: undefined,
+    memorySource: undefined,
+    memoryRevision: undefined,
     outDir: undefined,
     channel: 'stable',
     releaseId: undefined,
@@ -72,6 +80,9 @@ function parseArguments(argv) {
       case '--source-root': options.sourceRoot = resolve(requireValue()); break;
       case '--source-meta-root': options.sourceMetaRoot = resolve(requireValue()); break;
       case '--planner-root': options.plannerRoot = resolve(requireValue()); break;
+      case '--memory-root': options.memoryRoot = resolve(requireValue()); break;
+      case '--memory-source': options.memorySource = requireValue(); break;
+      case '--memory-revision': options.memoryRevision = requireValue(); break;
       case '--out-dir': options.outDir = resolve(requireValue()); break;
       case '--channel': options.channel = requireValue(); break;
       case '--release-id': options.releaseId = requireValue(); break;
@@ -88,6 +99,9 @@ function parseArguments(argv) {
     }
   }
   options.plannerRoot ??= join(options.sourceRoot, 'planner', 'AnyFusion-Pi');
+  options.memoryRoot ??= process.env.METAWORK_MEMORY_ENGINE_ROOT
+    ? resolve(process.env.METAWORK_MEMORY_ENGINE_ROOT)
+    : join(options.sourceRoot, 'memory', 'tdai');
   options.sourceMetaRoot ??= resolve(scriptDir, '..');
   options.outDir ??= join(options.sourceRoot, 'dist-release');
   return options;
@@ -113,10 +127,10 @@ export function archiveExtension(platform) {
 }
 
 export function archiveName(kind, releaseId, platform, arch) {
-  if (kind !== 'metawork' && kind !== 'planner') {
+  if (kind !== 'metawork' && kind !== 'planner' && kind !== 'memory') {
     throw new Error(`unsupported release artifact: ${kind}`);
   }
-  return `${kind === 'metawork' ? 'metawork' : 'planner'}-${releaseId}-${platform}-${arch}${archiveExtension(platform)}`;
+  return `${kind}-${releaseId}-${platform}-${arch}${archiveExtension(platform)}`;
 }
 
 /** Release IDs for preview artifacts are ordered SemVer prereleases. */
@@ -180,6 +194,12 @@ function gitSourceUrl(sourceRoot) {
 }
 
 function assertPackagableTree(options) {
+  if (basename(options.memoryRoot) !== 'tdai') {
+    throw new Error(
+      `memory engine root must be a directory named "tdai" (got ${basename(options.memoryRoot)});`
+      + ' every installer extracts it to <releaseRoot>/memory/tdai',
+    );
+  }
   const required = [
     join(options.sourceRoot, 'dist', 'install-cli.js'),
     join(options.sourceRoot, 'dist', 'planning-agent-plan-v9.schema.json'),
@@ -188,6 +208,8 @@ function assertPackagableTree(options) {
     join(options.plannerRoot, 'package.json'),
     join(options.plannerRoot, 'packages', 'coding-agent', 'dist'),
     join(options.plannerRoot, 'node_modules'),
+    join(options.memoryRoot, 'package.json'),
+    join(options.memoryRoot, 'dist', 'gateway', 'server.js'),
   ];
   for (const path of required) {
     if (!existsSync(path)) {
@@ -219,6 +241,18 @@ const waitForExit = promisify((child, callback) => {
   });
   child.on('error', callback);
 });
+
+const memoryArchiveExcludes = [
+  '.DS_Store',
+  '**/*.map',
+  '**/*.d.ts',
+  '**/test',
+  '**/tests',
+  '**/__tests__',
+  '**/.git',
+  '**/.cache',
+  '**/.vite',
+];
 
 const runtimeArchiveExcludes = [
   '.DS_Store',
@@ -407,6 +441,7 @@ async function main() {
 
   const runtimeArchiveName = archiveName('metawork', releaseId, platform, arch);
   const plannerArchiveName = archiveName('planner', releaseId, platform, arch);
+  const memoryArchiveName = archiveName('memory', releaseId, platform, arch);
   await packageArchive({
     sourceRoot: options.sourceRoot,
     stagingRoot,
@@ -436,9 +471,19 @@ async function main() {
     outputPath: join(options.outDir, plannerArchiveName),
     platform,
   });
+  await packageArchive({
+    sourceRoot: dirname(options.memoryRoot),
+    stagingRoot,
+    prefix: 'memory',
+    entries: [basename(options.memoryRoot)],
+    exclude: memoryArchiveExcludes,
+    outputPath: join(options.outDir, memoryArchiveName),
+    platform,
+  });
   rmSync(stagingRoot, { recursive: true, force: true });
 
   const base = options.artifactBaseUrl.replace(/\/$/u, '');
+  const lockSha256 = memoryLockSha256(options.memoryRoot);
   const manifest = {
     manifestSchemaVersion: 1,
     releaseId,
@@ -462,6 +507,14 @@ async function main() {
       url: base === '.' ? plannerArchiveName : `${base}/${plannerArchiveName}`,
       byteSize: statSize(join(options.outDir, plannerArchiveName)),
       sha256: sha256sum(join(options.outDir, plannerArchiveName)),
+    },
+    memory: {
+      source: options.memorySource ?? memorySourceUrl(options.memoryRoot),
+      revision: options.memoryRevision ?? memoryRevision(options.memoryRoot),
+      url: base === '.' ? memoryArchiveName : `${base}/${memoryArchiveName}`,
+      byteSize: statSize(join(options.outDir, memoryArchiveName)),
+      sha256: sha256sum(join(options.outDir, memoryArchiveName)),
+      ...(lockSha256 ? { lockSha256 } : {}),
     },
     compatibility: options.compat
       ? JSON.parse(options.compat)
@@ -496,10 +549,33 @@ async function main() {
     `release: ${releaseId} (${platform}-${arch}, channel ${options.channel})`,
     `runtime: ${runtimeArchiveName} (${signedManifest.metawork.byteSize} bytes)`,
     `planner: ${plannerArchiveName} (${signedManifest.planner.byteSize} bytes)`,
+    `memory: ${memoryArchiveName} (${signedManifest.memory.byteSize} bytes)`,
     `manifest: ${manifestPath}`,
     `signed by: ${options.keyId}`,
   ].join('\n'));
   process.stdout.write('\n');
+}
+
+/** Upstream revision of the memory engine; the release records it per artifact. */
+function memoryRevision(memoryRoot) {
+  const configured = process.env.METAWORK_MEMORY_ENGINE_REVISION?.trim();
+  if (configured) return configured;
+  const result = spawnSync('git', ['-C', memoryRoot, 'rev-parse', 'HEAD'], { encoding: 'utf8' });
+  return result.status === 0 ? result.stdout.trim() : 'unknown';
+}
+
+function memorySourceUrl(memoryRoot) {
+  const configured = process.env.METAWORK_MEMORY_ENGINE_SOURCE?.trim();
+  if (configured) return configured;
+  const result = spawnSync('git', ['-C', memoryRoot, 'remote', 'get-url', 'origin'], { encoding: 'utf8' });
+  if (result.status !== 0) return 'https://github.com/TencentCloud/TencentDB-Agent-Memory.git';
+  return result.stdout.trim();
+}
+
+/** SHA-256 of the engine dependency lockfile, so the shipped tree is reproducible. */
+function memoryLockSha256(memoryRoot) {
+  const path = join(memoryRoot, 'package-lock.json');
+  return existsSync(path) ? sha256sum(path) : undefined;
 }
 
 function statSize(path) {

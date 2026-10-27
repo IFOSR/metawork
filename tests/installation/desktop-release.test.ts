@@ -15,7 +15,8 @@ const signed = (value: object) => ({ ...value, signature: { algorithm: 'ed25519'
 async function fixture(development = false) {
   const root = await mkdtemp(join(tmpdir(), 'desktop-release-')); roots.push(root);
   const payload = join(root, 'payload');
-  for (const file of ['metawork/dist/index.js', 'metawork/dist/desktop-install-cli.js',
+  for (const file of ['memory/tdai/dist/gateway/server.js',
+    'metawork/dist/index.js', 'metawork/dist/desktop-install-cli.js',
     'metawork/dist/desktop-update-cli.js', 'metawork/web/dist/index.html',
     'metawork/dist/planning-agent-plan-v9.schema.json',
     'metawork/desktop-tools/node/bin/node', 'metawork/desktop-tools/git/bin/git',
@@ -27,7 +28,7 @@ async function fixture(development = false) {
   const runtime = signed({ manifestSchemaVersion: 1, releaseId: '1.0.0', channel: 'stable',
     publishedAt: new Date().toISOString(), expiresAt: new Date(Date.now() + 86400000).toISOString(),
     minimumInstallerVersion: '0.1.0', minimumNodeVersion: '22.19.0', platform: 'darwin', arch: 'arm64',
-    metawork: artifact, planner: artifact, previousCompatibleRelease: null,
+    metawork: artifact, planner: artifact, memory: artifact, previousCompatibleRelease: null,
     compatibility: { configurationSchema: 2, plannerHostProtocol: 2, planningPlanSchema: 8,
       planningPlanSchemaHash: 'schema-hash', workGraphSchema: 7, kernelDecisionSchema: 6, databaseSchema: 47 },
   });

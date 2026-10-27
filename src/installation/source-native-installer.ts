@@ -39,6 +39,12 @@ export interface SourceNativeInstallInput {
   releaseId: string;
   sourceRoot: string;
   plannerRoot: string;
+  /**
+   * Memory engine tree (TDAI MemoryCore). Releases ship it with the runtime, so
+   * the settings switch works without a separate download. Omitted only for
+   * source installs that cannot provide the engine tree.
+   */
+  memoryRoot?: string;
   executorPreset?: 'desktop-pi';
   provider?: {
     baseUrl: string;
@@ -117,6 +123,7 @@ export class SourceNativeInstaller {
         release.releaseRoot,
         input.releaseId,
         paths.appCurrent,
+        input.memoryRoot,
       );
       if (secretReference && input.provider) {
         assertSecretReference(secretReference);
@@ -403,6 +410,7 @@ export async function stageSourceRelease(
   releaseRoot: string,
   releaseId: string,
   appCurrentPointer: string,
+  memoryRoot?: string,
 ): Promise<void> {
   await assertReleaseRootReplaceable(releaseRoot, appCurrentPointer, releaseId);
   const stageRoot = `${releaseRoot}.stage-${randomUUID()}`;
@@ -418,6 +426,12 @@ export async function stageSourceRelease(
         filter: source => basename(source) !== '.git',
       }),
       writeReleaseIdentity(stageRoot, releaseId),
+      ...(memoryRoot
+        ? [cp(memoryRoot, join(stageRoot, 'memory', 'tdai'), {
+          recursive: true,
+          filter: source => basename(source) !== '.git',
+        })]
+        : []),
     ]);
     const desktopTools = join(sourceRoot, 'desktop-tools');
     if (await lstat(desktopTools).then(entry => entry.isDirectory(), () => false)) {

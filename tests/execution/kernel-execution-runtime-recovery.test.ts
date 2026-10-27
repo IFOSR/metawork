@@ -260,6 +260,67 @@ describe('KernelExecutionRuntime executor recovery', () => {
     }));
   });
 
+  it.each([
+    { deliveryKind: 'report' as const, changed: ['hello.py'] },
+    { deliveryKind: 'edit' as const, changed: [] },
+  ])('delivers a completed $deliveryKind result when no publication carries it', async ({ deliveryKind, changed }) => {
+    const recordResultDelivery = vi.fn();
+    const appendOutput = vi.fn();
+    const formatExecutorFinalResult = vi.fn().mockReturnValue('formatted executor result');
+    const runtime = new KernelExecutionRuntime({
+      ...recordingRuntimeTaskState(),
+      attemptReceiptRepo: { findByAttemptId: vi.fn().mockReturnValue(null) },
+      attemptRuntimeRepo: { find: vi.fn().mockReturnValue({ workspaceDelta: { changed } }) },
+      subtaskRepo: {
+        findById: vi.fn().mockReturnValue({
+          id: 'subtask-inline-result', taskId: 'task-inline-result', title: 'Run program',
+          goal: 'Run the existing program and show its output', deliveryKind,
+          requiredCapabilities: ['workspace-engineering'], acceptance: [],
+        }),
+      },
+      taskRuntimeService: {
+        findTask: vi.fn().mockReturnValue({ id: 'task-inline-result', status: 'running' }),
+        attachResource: vi.fn(),
+      },
+      attemptRunner: {
+        run: vi.fn().mockResolvedValue({
+          outcome: 'completed', attemptId: 'attempt-inline-result', output: 'See you later',
+          artifacts: [], warnings: [], executorName: AGENT_CLASS, durationMs: 10,
+          resultId: 'result-inline-result',
+        }),
+      },
+      presentation: { formatExecutorDispatch: vi.fn().mockReturnValue([]), formatExecutorFinalResult },
+      callbacks: {
+        recordResultDelivery,
+        appendOutput,
+        appendExecutionTrace: vi.fn(),
+        setRunningExecutorName: vi.fn(),
+        clearRunningExecutorName: vi.fn(),
+      },
+      kernelExecutorStatusProjector: { recordExecutionOutcome: vi.fn() },
+      taskEventRepo: {}, dispatchItemRepo: {}, maxConcurrentAttempts: 4,
+    } as never);
+
+    const event = await (runtime as unknown as {
+      runDispatchItem(input: Record<string, unknown>): Promise<KernelEvent>;
+    }).runDispatchItem({
+      item: {
+        ...historicalDispatch(), attemptId: 'attempt-inline-result', taskId: 'task-inline-result',
+        subtaskId: 'subtask-inline-result', authorizedBinding: binding('revision-a'), status: 'running',
+      },
+      executionId: 'execution-inline-result',
+      request: { workspacePath: '/tmp/metawork-test-source', executionMode: 'in_place' },
+      progressTracker: { onProgress: vi.fn() },
+    });
+
+    expect(event).toMatchObject({ type: 'execution_outcome', terminalKind: 'completed' });
+    expect(recordResultDelivery).toHaveBeenCalledWith({
+      resultId: 'result-inline-result', content: 'See you later', completeness: 'complete', certification: 'certified',
+    });
+    expect(formatExecutorFinalResult).toHaveBeenCalledWith(expect.objectContaining({ output: 'See you later' }));
+    expect(appendOutput).toHaveBeenCalledWith('formatted executor result');
+  });
+
   it('streams presentation-only heartbeats while an Executor is silent', async () => {
     let reportProgress!: (event: import('../../src/executor/adapter.js').ExecutorProgressEvent, executor: { name: string }) => void;
     let releaseAttempt!: () => void;

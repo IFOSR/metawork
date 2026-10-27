@@ -71,7 +71,7 @@ export interface MemoryRuntimeStatus {
 const RECALL_PREVIEW_CHARS = 240;
 
 /** Secret reference that holds the memory engine Bearer gate. */
-export const MEMORY_KERNEL_AUTH_SECRET_REFERENCE = 'file-secret:anyfusion/memory/kernel-auth-token' as const;
+export const MEMORY_KERNEL_AUTH_SECRET_REFERENCE = 'file-secret:anyfusion/internal/memory-kernel-auth-token' as const;
 /**
  * Secret reference for the installation-level, read-only engine user key.
  *
@@ -84,7 +84,7 @@ export const MEMORY_KERNEL_AUTH_SECRET_REFERENCE = 'file-secret:anyfusion/memory
  * so a deployment that requires the user key authenticates correctly, and the
  * key can be revoked independently of the Server.
  */
-export const MEMORY_INSTALLATION_USER_KEY_SECRET_REFERENCE = 'file-secret:anyfusion/memory/user-key' as const;
+export const MEMORY_INSTALLATION_USER_KEY_SECRET_REFERENCE = 'file-secret:anyfusion/internal/memory-user-key' as const;
 
 export class MemoryRuntime {
   private scheduler: MemoryFlushScheduler | null = null;
@@ -136,7 +136,7 @@ export class MemoryRuntime {
 
     // Design §6.5/§6.4: optional account-level read-only user key.
     const userKey = await readSecret(
-      options.secretStore, MEMORY_INSTALLATION_USER_KEY_SECRET_REFERENCE, logger, 'user key',
+      options.secretStore, MEMORY_INSTALLATION_USER_KEY_SECRET_REFERENCE, undefined, 'user key',
     );
     const kernelAuthToken = await resolveKernelAuthToken(options);
 
@@ -394,13 +394,13 @@ export function resolveDataDir(policy: MemoryRuntimePolicy, fallback: string): s
 async function readSecret(
   store: SecretStore,
   reference: string,
-  logger: (message: string) => void,
+  logger: ((message: string) => void) | undefined,
   label: string,
 ): Promise<string> {
   try {
     return await store.get(reference as SecretReference);
   } catch (error) {
-    logger(`memory ${label} unavailable: ${(error as Error).message}`);
+    logger?.(`memory ${label} unavailable: ${(error as Error).message}`);
     return '';
   }
 }

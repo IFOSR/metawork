@@ -10,6 +10,21 @@
 import type { MemoryRuntime } from '../memory/memory-runtime.js';
 import type { MemoryAssetSummary } from '../memory/memory-types.js';
 
+/**
+ * Why memory cannot serve the user, as a stable code the client can render.
+ *
+ * "The engine is not installed" and "the engine's SQLite has no FTS5" are
+ * different failures with different fixes; collapsing them into one
+ * "BM25 检索不可用" message sent users looking for the wrong problem.
+ */
+export type MemoryEngineProblem =
+  | 'extraction_model_required'
+  | 'extraction_credential_missing'
+  | 'engine_missing'
+  | 'engine_unreachable'
+  | 'engine_unhealthy'
+  | 'fts5_unavailable';
+
 export interface MemoryStatusView {
   /** The product switch. */
   enabled: boolean;
@@ -20,6 +35,8 @@ export interface MemoryStatusView {
   modelRef: string | null;
   engineReady: boolean;
   ftsAvailable: boolean;
+  /** Actionable reason the engine cannot serve memory; absent when it can. */
+  engineProblem?: MemoryEngineProblem;
   /** Extraction Model display name, resolved from the configuration. */
   modelName: string | null;
   /** Extraction Model price, so the user sees whose quota is spent. */
@@ -97,6 +114,37 @@ export interface MemoryManagementOptions {
   }>;
 }
 
+/**
+ * Classify one runtime state into the reason the user has to act on.
+ *
+ * `disabled` is a product decision, not a problem, and an operational runtime
+ * has no problem. Everything else is one of the fixes the settings page can
+ * describe: choose a model, provide a credential, install the engine, start it,
+ * repair it, or rebuild it with FTS5.
+ */
+export function classifyMemoryEngineProblem(input: {
+  mode: 'disabled' | 'needs-model' | 'enabled' | 'degraded';
+  engineReady: boolean;
+  ftsAvailable: boolean;
+  detail?: string | undefined;
+}): MemoryEngineProblem | undefined {
+  if (input.mode === 'disabled' || input.mode === 'enabled') return undefined;
+  if (input.mode === 'needs-model') return 'extraction_model_required';
+  const detail = input.detail ?? '';
+  if (detail === 'memory_extraction_credential_missing') return 'extraction_credential_missing';
+  if (!input.engineReady && detail.startsWith('memory sidecar installation')) return 'engine_missing';
+  if (detail === 'fts5_unavailable') return 'fts5_unavailable';
+  if (!input.ftsAvailable && input.engineReady) return 'fts5_unavailable';
+  if (detail.startsWith('health_unreachable') || detail.startsWith('health_http_')) {
+    return 'engine_unreachable';
+  }
+  if (detail.startsWith('engine_status_') || detail === 'memory_bm25_unavailable') {
+    return 'engine_unhealthy';
+  }
+  if (detail.startsWith('memory_engine_')) return 'engine_unreachable';
+  return input.ftsAvailable ? 'engine_unreachable' : 'engine_unhealthy';
+}
+
 /** Build the management view over the memory runtime. */
 export function createMemoryManagementQuery(options: MemoryManagementOptions): MemoryManagementQuery {
   const { accountId } = options;
@@ -140,10 +188,17 @@ export function createMemoryManagementQuery(options: MemoryManagementOptions): M
           ...(unsupportedReason ? { unsupportedReason } : {}),
         };
       });
+      const engineProblem = classifyMemoryEngineProblem({
+        mode: runtimeStatus.mode,
+        engineReady: runtimeStatus.engineReady,
+        ftsAvailable: runtimeStatus.ftsAvailable,
+        detail: runtimeStatus.detail,
+      });
       return {
         enabled: runtimeStatus.mode === 'enabled',
         mode: runtimeStatus.mode,
         ...(runtimeStatus.detail ? { detail: runtimeStatus.detail } : {}),
+        ...(engineProblem ? { engineProblem } : {}),
         providerRef,
         modelRef,
         engineReady: runtimeStatus.engineReady,

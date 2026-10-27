@@ -101,6 +101,35 @@ export type KernelAttemptPayload =
       conflictChainId: string;
       conflictingPaths: string[];
     }
+  /**
+   * Kernel-authorized service repair (2026-10-27 realignment §4.3).
+   *
+   * The Attempt already ended; the required local service did not reach health.
+   * This payload is the bounded diagnosis the same Executor category receives so
+   * it can repair the service in place. It carries no retry loop: the Kernel owns
+   * the repair budget through `repairOrdinal`, and every round is a new
+   * authorized Attempt.
+   */
+  | {
+      protocol: 'metawork:service-repair:v1';
+      serviceId: string;
+      workspaceId: string | null;
+      specificationRevision: string;
+      /** Zero-based repair round; the Kernel refuses anything but the next one. */
+      repairOrdinal: number;
+      failure: { kind: 'service'; code: string; summary: string };
+      service: {
+        command: string;
+        args: string[];
+        healthUrl: string;
+        state: string;
+        exitObserved: boolean;
+        healthStatus: number | null;
+        logTail: string | null;
+      };
+      knownProgress: string[];
+      unknownItems: string[];
+    }
   | null;
 
 export interface KernelEventEnvelope {
@@ -452,6 +481,8 @@ export type KernelSnapshot = { productionAuthorization?: ProductionAuthorization
       availableSlots: number;
       resourceConflictSubtaskIds: string[];
       capacityProbeBindingFingerprints: Record<string, string[]>;
+      /** Durable count of Kernel-authorized service repair rounds per Subtask. */
+      serviceRepairAttemptsBySubtask?: Record<string, number>;
       executorStatuses: KernelExecutorStatusProjection[];
       correctionSupportedAgentClasses: string[];
       nativeContinuationAgentClasses: string[];
@@ -839,6 +870,15 @@ export interface KernelDecision {
 const STATE_CHANGE_ACTIONS = new Set<KernelPlanProposal['action']>(['task_control', 'plan_work_graph']);
 const MAX_CORRECTION_INPUT_BYTES = 128 * 1024;
 
+/**
+ * Kernel-owned service repair budget (2026-10-27 realignment §4.3). Three
+ * authorized rounds are enough for a real diagnosis-and-fix loop; after that the
+ * Task reports the real error and the attempted repairs instead of retrying.
+ */
+const MAX_SERVICE_REPAIR_ATTEMPTS = 3;
+/** Bounded log tail accepted inside one service repair payload. */
+const MAX_SERVICE_REPAIR_LOG_BYTES = 8 * 1024;
+
 /** Pure strategic interpreter for every Phase 3 control-plane event. */
 export class ControlKernel {
   decide(event: KernelEvent, snapshot: KernelSnapshot): KernelDecision {
@@ -910,7 +950,33 @@ export class ControlKernel {
       case 'managed_service_requested': {
         const facts = snapshot as Extract<KernelSnapshot, { type: 'service_control' }>;
         const resourceTaskId = facts.retryOfTaskId ?? event.taskId;
-        if (!event.taskId || facts.task?.id !== event.taskId || (facts.serviceTaskId && facts.serviceTaskId !== resourceTaskId)
+        // A registration left by an earlier Task is a historical fact. When it
+        // is the same Workspace and the same launch revision, the current Task
+        // takes the service over instead of being refused for identity
+        // (2026-10-27 realignment §4.2). A different Workspace or revision still
+        // requires its own explicit authorization below.
+        if (event.workspaceId && facts.serviceWorkspaceId && facts.serviceWorkspaceId !== event.workspaceId) {
+          return decision(event, { type: 'reject_request' }, `服务不属于该 Workspace：serviceId=${event.serviceId}`);
+        }
+        const registrationFromOtherTask = Boolean(
+          facts.serviceTaskId && facts.serviceTaskId !== resourceTaskId,
+        );
+        // The registration may be inherited only when both sides name the same
+        // Workspace; the revision check below then decides whether it is the
+        // same launch contract.
+        const sameWorkspaceRegistration = Boolean(
+          registrationFromOtherTask
+          && event.workspaceId
+          && facts.serviceWorkspaceId
+          && facts.serviceWorkspaceId === event.workspaceId,
+        );
+        const inheritedRegistration = Boolean(
+          sameWorkspaceRegistration
+          && event.specificationRevision
+          && facts.serviceRevision === event.specificationRevision,
+        );
+        if (!event.taskId || facts.task?.id !== event.taskId
+          || (registrationFromOtherTask && !sameWorkspaceRegistration && !inheritedRegistration)
           || (event.specification && (event.specification.taskId !== resourceTaskId || event.specification.serviceId !== event.serviceId))) {
           return decision(event, { type: 'reject_request' },
             `服务归属不匹配：serviceId=${event.serviceId}，请求任务=${event.taskId ?? '未指定'}，`
@@ -919,9 +985,6 @@ export class ControlKernel {
         if (event.specification && event.specificationRevision
           && localServiceSpecificationRevision(event.specification) !== event.specificationRevision) {
           return decision(event, { type: 'reject_request' }, `服务规格 revision 与请求内容不一致：serviceId=${event.serviceId}`);
-        }
-        if (event.workspaceId && facts.serviceWorkspaceId && facts.serviceWorkspaceId !== event.workspaceId) {
-          return decision(event, { type: 'reject_request' }, `服务不属于该 Workspace：serviceId=${event.serviceId}`);
         }
         if (event.operation !== 'update' && event.specificationRevision
           && facts.serviceRevision && facts.serviceRevision !== event.specificationRevision) {
@@ -1246,12 +1309,45 @@ export class ControlKernel {
           event.recovery.authorizedBinding,
         )
         || event.recovery.authorizedBinding.configurationRevision !== event.configurationRevision
+        // The binding must still be one the Subtask is authorized to use. A
+        // rotated, revoked or expired binding cannot be reused just because its
+        // fingerprint is self-consistent.
+        || !subtask.executorBindings.some(binding =>
+          authorizedExecutorBindingFingerprint(binding) === event.recovery!.bindingFingerprint)
       ) {
         return decision(event, {
           type: 'block_work',
           taskId: event.taskId,
           subtaskId: event.subtaskId ?? null,
         }, 'workspace recovery dispatch identity is incomplete or stale');
+      }
+      if (event.recovery.attemptPayload?.protocol === 'metawork:service-repair:v1') {
+        // A service repair is a bounded, ordered continuation. The Kernel owns
+        // the budget and the ordinal: a replay of an already-used round, or a
+        // round past the budget, is refused instead of re-running the executor.
+        const payload = event.recovery.attemptPayload;
+        const used = snapshot.serviceRepairAttemptsBySubtask?.[subtask.id] ?? 0;
+        if (
+          event.recovery.attemptKind !== 'continuation'
+          || !event.recovery.sourceAttemptId
+          || payload.repairOrdinal !== used
+          || used >= MAX_SERVICE_REPAIR_ATTEMPTS
+          || typeof payload.serviceId !== 'string'
+          || !payload.serviceId
+          || typeof payload.specificationRevision !== 'string'
+          || !payload.specificationRevision
+          || typeof payload.service?.command !== 'string'
+          || !Array.isArray(payload.service?.args)
+          || (payload.service.logTail?.length ?? 0) > MAX_SERVICE_REPAIR_LOG_BYTES
+        ) {
+          return decision(event, {
+            type: 'block_work',
+            taskId: event.taskId,
+            subtaskId: subtask.id,
+          }, used >= MAX_SERVICE_REPAIR_ATTEMPTS
+            ? `service repair budget exhausted after ${used} rounds: ${payload.failure?.summary ?? 'service did not become healthy'}`
+            : 'service repair continuation identity is incomplete, stale or out of order');
+        }
       }
       return decision(event, singleDispatchBatch(
         event,

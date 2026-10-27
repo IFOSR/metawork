@@ -47,6 +47,7 @@ export function buildExecutorContextPrompt(input: ExecutorInput): string {
           noChangeReason: null,
         }),
         'Return only evidence and noChangeReason. Runtime derives changed files and injects schema identity, attempt/work-unit/subtask IDs, acceptance keys, and handoff identities from the bound contract.',
+        'Only provide noChangeReason when the requested edit produced no Workspace changes. Runtime treats its observed before/after delta as authoritative when files did change.',
         'Workspace changes are allowed for every delivery kind when needed for the task. Runtime tracks changes for Git publication and audit. File delivery follows the Planner-declared fileOutputs below, independently of edit/report.',
         'If the Subtask cannot be completed, return {"failure":{"kind":"task_failed","code":"<stable_code>","summary":"<concise explanation>"}} instead.',
         'The marker shown above is illustrative. Emit it exactly once, only at the end of your final response.',
@@ -77,6 +78,19 @@ export function buildExecutorContextPrompt(input: ExecutorInput): string {
     '',
     `Task background: ${context.taskBackground.title}`,
     `Background goal: ${context.taskBackground.goal}`,
+    ...(context.previousRound ? [
+      '',
+      'Previous failed round in this Workspace:',
+      `  Goal: ${context.previousRound.goal}`,
+      ...(context.previousRound.reason ? [`  Conclusion: ${context.previousRound.reason}`] : []),
+      ...(context.previousRound.reasonCode ? [`  Reason code: ${context.previousRound.reasonCode}`] : []),
+      ...(context.previousRound.operations.length > 0
+        ? ['  Recorded operation results:', ...context.previousRound.operations.map(operation =>
+            `  - ${operation.kind}: ${operation.outcome}${operation.reasonCode ? ` (${operation.reasonCode})` : ''}`
+            + `${operation.message ? ` — ${operation.message}` : ''}`)]
+        : []),
+      'Confirm the current state does not reproduce that failure. Do not repeat the same failing command or configuration; fix the recorded cause.',
+    ] : []),
     '',
     `Current Subtask: ${context.currentSubtask.title}`,
     `Operative goal: ${context.currentSubtask.goal}`,
@@ -178,6 +192,14 @@ export function buildExecutorContextPrompt(input: ExecutorInput): string {
           'Workspace access: read-only. Inspect the source Workspace through the provided read-only boundary; write temporary files only under the attempt scratch directory.',
           'Do not modify, delete, rename, or create files in the source Workspace.',
         ]
+      : context.workspaceContext.accessMode === 'execute'
+        ? [
+            ...(context.workspaceContext.readOnlySourcePath
+              ? [`Authorized command Workspace: ${context.workspaceContext.readOnlySourcePath}`]
+              : []),
+            'Workspace access: execute-only. You may run the user-requested command or program in the authorized Workspace and report its stdout/stderr and exit status.',
+            'Do not modify, delete, rename, or create files in the Workspace. Do not use commands that write files, install packages, start persistent background services, or alter external state.',
+          ]
       : []),
     `Evidence tool: ${context.evidenceTools.availability} — ${context.evidenceTools.reason}`,
     ...(context.recovery && context.recovery.mode !== 'fresh' ? [
@@ -185,6 +207,14 @@ export function buildExecutorContextPrompt(input: ExecutorInput): string {
       `Recovery mode: ${context.recovery.mode}`,
       'Inspect current state before continuing. Preserve confirmed work and perform only the remaining work.',
       `Recovery packet: ${JSON.stringify(modelRecoveryPacket(context.recovery.packet), null, 2)}`,
+      ...(context.recovery.packet && context.recovery.packet.failure
+        && typeof context.recovery.packet.failure === 'object'
+        && (context.recovery.packet.failure as { kind?: string }).kind === 'service'
+        ? [
+            'This round repairs a local service that did not become healthy. The code is already in the Workspace.',
+            'Repair the real cause (command, port, code, health path), run the service yourself to confirm it answers, then report completion.',
+          ]
+        : []),
     ] : []),
     '',
     ...completionProtocol,
@@ -196,6 +226,8 @@ function modelRecoveryPacket(packet: Record<string, unknown> | null): Record<str
   if (!packet) return {};
   return {
     failure: packet.failure,
+    // A service repair hands the model the exact service facts it must fix.
+    ...(packet.service ? { service: packet.service } : {}),
     knownProgress: packet.knownProgress,
     workspaceDelta: packet.workspaceDelta,
     confirmedCompleted: packet.confirmedCompleted,

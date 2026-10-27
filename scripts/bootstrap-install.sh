@@ -16,6 +16,10 @@ TRUSTED_RELEASE_PUBLIC_KEY='-----BEGIN PUBLIC KEY-----
 MCowBQYDK2VwAyEAJm/qnGNd9Aeg+41GoIjKOgpasxivfCXJCsZwyMbyIVE=
 -----END PUBLIC KEY-----'
 REVOKED_RELEASE_KEY_IDS="metawork-release-2026-01,release-2026-preview-01,metawork-release-2026-02"
+# Trust-root overrides exist for key rotation and for tests; published installs
+# always use the checked-in key.
+KEY_ID="${METAWORK_INSTALL_TRUSTED_KEY_ID:-$TRUSTED_RELEASE_KEY_ID}"
+PUBLIC_KEY="${METAWORK_INSTALL_TRUSTED_PUBLIC_KEY:-$TRUSTED_RELEASE_PUBLIC_KEY}"
 
 if [[ -z "$RELEASE_ID" || -z "$MANIFEST_URL" ]]; then
   echo "usage: bootstrap-install.sh <release-id> <manifest-url>" >&2
@@ -40,6 +44,7 @@ trap 'rm -rf "$STAGING_DIR"' EXIT
 MANIFEST_PATH="$STAGING_DIR/manifest.json"
 RUNTIME_ARCHIVE="$STAGING_DIR/release.tar.gz"
 PLANNER_ARCHIVE="$STAGING_DIR/planner.tar.gz"
+MEMORY_ARCHIVE="$STAGING_DIR/memory.tar.gz"
 
 platform_name() {
   case "$(uname -s)" in
@@ -59,8 +64,8 @@ architecture_name() {
 
 verify_manifest() {
   node --input-type=module - "$1" "$RELEASE_ID" "$EXPECTED_CHANNEL" \
-    "$(platform_name)" "$(architecture_name)" "$TRUSTED_RELEASE_KEY_ID" \
-    "$TRUSTED_RELEASE_PUBLIC_KEY" "$REVOKED_RELEASE_KEY_IDS" \
+    "$(platform_name)" "$(architecture_name)" "$KEY_ID" \
+    "$PUBLIC_KEY" "$REVOKED_RELEASE_KEY_IDS" \
     "$BOOTSTRAP_INSTALLER_VERSION" <<'NODE'
 import { readFileSync } from 'node:fs';
 import { verify } from 'node:crypto';
@@ -89,6 +94,7 @@ const required = [
   'minimumNodeVersion',
   'metawork',
   'planner',
+  'memory',
   'compatibility',
   'previousCompatibleRelease',
   'signature',
@@ -109,6 +115,7 @@ if (manifest.signature.keyId !== trustedKeyId) throw new Error('unknown release 
 for (const [name, artifact] of Object.entries({
   metawork: manifest.metawork,
   planner: manifest.planner,
+  memory: manifest.memory,
 })) {
   if (
     !artifact
@@ -194,19 +201,28 @@ verify_manifest "$MANIFEST_PATH"
 
 RUNTIME_URL="$(manifest_field metawork.url)"
 PLANNER_URL="$(manifest_field planner.url)"
+MEMORY_URL="$(manifest_field memory.url)"
 curl -fsSL "$RUNTIME_URL" -o "$RUNTIME_ARCHIVE"
 curl -fsSL "$PLANNER_URL" -o "$PLANNER_ARCHIVE"
+curl -fsSL "$MEMORY_URL" -o "$MEMORY_ARCHIVE"
 verify_artifact "$MANIFEST_PATH" metawork "$RUNTIME_ARCHIVE"
 verify_artifact "$MANIFEST_PATH" planner "$PLANNER_ARCHIVE"
+verify_artifact "$MANIFEST_PATH" memory "$MEMORY_ARCHIVE"
 
 mkdir -p "$STAGING_DIR/runtime" "$STAGING_DIR/planner"
 tar -xzf "$RUNTIME_ARCHIVE" --strip-components=1 -C "$STAGING_DIR/runtime"
 tar -xzf "$PLANNER_ARCHIVE" --strip-components=1 -C "$STAGING_DIR/planner"
+tar -xzf "$MEMORY_ARCHIVE" -C "$STAGING_DIR"
 
 test -f "$STAGING_DIR/runtime/dist/install-cli.js" || {
   echo "verified Runtime artifact is missing dist/install-cli.js" >&2
   exit 1
 }
+test -f "$STAGING_DIR/memory/tdai/dist/gateway/server.js" || {
+  echo "verified Memory engine artifact is missing dist/gateway/server.js" >&2
+  exit 1
+}
 exec node "$STAGING_DIR/runtime/dist/install-cli.js" install "$RELEASE_ID" \
   --source-root "$STAGING_DIR/runtime" \
-  --planner-root "$STAGING_DIR/planner"
+  --planner-root "$STAGING_DIR/planner" \
+  --memory-root "$STAGING_DIR/memory/tdai"

@@ -15,6 +15,11 @@ const ReleaseArtifactSchema = z.object({
   url: z.string().trim().url(),
   byteSize: z.number().int().positive(),
   sha256: Sha256Schema,
+  /**
+   * SHA-256 of the dependency lockfile the artifact was built from. Optional so
+   * older manifests stay parseable, but every new artifact records it.
+   */
+  lockSha256: Sha256Schema.optional(),
 }).strict();
 
 const CompatibilitySchema = z.object({
@@ -45,6 +50,11 @@ export const ReleaseManifestSchema = z.object({
   arch: z.enum(['arm64', 'x64']),
   metawork: ReleaseArtifactSchema,
   planner: ReleaseArtifactSchema,
+  /**
+   * The memory engine (TDAI MemoryCore) ships with the release as its own
+   * tree under `memory/tdai`; it has its own upstream revision and lockfile.
+   */
+  memory: ReleaseArtifactSchema,
   compatibility: CompatibilitySchema,
   signature: SignatureSchema,
   previousCompatibleRelease: SemverSchema.nullable(),
@@ -85,6 +95,7 @@ export interface ReleaseManifestVerificationOptions {
   artifacts: {
     metawork: ArtifactVerification;
     planner: ArtifactVerification;
+    memory: ArtifactVerification;
   };
 }
 
@@ -170,6 +181,7 @@ export function verifyReleaseManifest(
 
   verifyArtifact('metawork', manifest.metawork, options.artifacts.metawork);
   verifyArtifact('planner', manifest.planner, options.artifacts.planner);
+  verifyArtifact('memory', manifest.memory, options.artifacts.memory);
 
   return manifest;
 }
@@ -217,7 +229,7 @@ function verifyManifestSignature(manifest: ReleaseManifest, trustedPublicKey: st
 }
 
 function verifyArtifact(
-  name: 'metawork' | 'planner',
+  name: 'metawork' | 'planner' | 'memory',
   expected: ReleaseManifest['metawork'],
   actual: ArtifactVerification,
 ): void {

@@ -79,6 +79,30 @@ function turnFailureFacts(turn: ConversationTurnProjection): TurnFailureFacts | 
       ...(provider?.httpStatus !== undefined ? { provider: `HTTP ${String(provider.httpStatus)}` } : {}),
     };
   }
+  // Terminal Task failures are durable facts projected through the execution
+  // timeline. They may have no Executor trace failure (for example, a service
+  // health check or port bind failed after the code was written), so fall back
+  // to the Task reason instead of showing a generic "see details" prompt.
+  const timeline = turn.executionTimeline;
+  if (timeline && timeline.status === 'failed'
+    && timeline.reasonCode !== 'none') {
+    const labels: Record<string, string> = {
+      service_start_failed: '服务启动失败',
+      service_health_timeout: '服务健康检查超时',
+      port_in_use: '服务端口被占用',
+      command_not_found: '服务启动命令不存在',
+      delivery_failed: '文件交付失败',
+      execution_failed: '任务执行失败',
+      external_outcome_unknown: '外部操作结果需要核实',
+    };
+    return {
+      code: timeline.reasonCode,
+      summary: timeline.reasonMessage || timeline.explanation,
+      label: labels[timeline.reasonCode] ?? '任务未完成',
+      stage: timeline.reasonCode.startsWith('service_') || timeline.reasonCode === 'port_in_use'
+        || timeline.reasonCode === 'command_not_found' ? 'starting_service' : undefined,
+    };
+  }
   return null;
 }
 

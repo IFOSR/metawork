@@ -65,7 +65,6 @@ export function projectPublicDelivery(input: {
     workspaceDeliveryPolicy?: Task['workspaceDeliveryPolicy'];
   };
   workspace: string | null;
-  pendingDecision: boolean;
   artifacts: readonly Pick<TaskArtifactRecord, 'status' | 'taskId' | 'publishedPath' | 'relativePath'>[];
   publications: readonly WorkspacePublicationRecord[];
   delivery(id: string): ReturnType<WorkspacePublicationRepo['delivery']>;
@@ -90,12 +89,15 @@ export function projectPublicDelivery(input: {
     && (taskDirectory === null || item.publishedPath === resolve(taskDirectory, item.relativePath)))
     .map(item => item.relativePath))].sort();
   const failed = false;
-  const awaiting = false;
+  // The Workspace file state reports file facts only. A pending result decision
+  // is a Task-level action (accept/retry the Executor result), not a delivery
+  // state: In-place files are already in the user's Workspace, so presenting
+  // them as "awaiting acceptance" would invent a publication gate that does not
+  // exist (2026-10-27 realignment §6).
   const publishing = publications.some(item => ['pending', 'applying'].includes(item.status))
-    || deliveries.some(item => item.status === 'pending' && !awaiting);
+    || deliveries.some(item => item.status === 'pending');
   const state: PublicDeliveryView['state'] = failed ? 'failed'
     : publishing ? 'publishing'
-    : awaiting || input.pendingDecision ? 'awaiting_acceptance'
     : deliveries.some(item => item.status === 'succeeded') || files.length > 0 ? 'published' : 'not_published';
   const candidate: CandidateDeliveryState = 'none';
   return {

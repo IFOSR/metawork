@@ -42,6 +42,8 @@ export interface SourceNativeUpdateInput {
   releaseId: string;
   sourceRoot: string;
   plannerRoot: string;
+  /** Memory engine tree shipped with the release (see `stageSourceRelease`). */
+  memoryRoot?: string;
 }
 
 export interface SourceNativeUpdateResult {
@@ -122,6 +124,7 @@ export class SourceNativeUpdater {
         release.releaseRoot,
         input.releaseId,
         paths.appCurrent,
+        input.memoryRoot,
       );
       const sourceSchema = readSchemaVersion(accountPaths.database);
       if (!isSupportedDatabaseSchema(sourceSchema)) {

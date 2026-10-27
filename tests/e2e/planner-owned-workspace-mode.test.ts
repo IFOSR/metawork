@@ -231,6 +231,66 @@ describe('Planner-owned Workspace execution mode end-to-end', () => {
     }
   }, 60_000);
 
+  it('auto-completes a non-Git Workspace edit without a file delivery contract', async () => {
+    const h = harness({
+      goal: '直接修改 app.txt，不需要单独下载文件',
+      fileOutputs: [],
+      intent: {
+        operation: 'modify_existing',
+        targetPaths: ['app.txt'],
+        originalFilePolicy: 'may_replace',
+        reason: '用户要求直接修改目标工作区中的代码文件',
+      },
+      responder: (_input, workspace) => {
+        writeFileSync(join(workspace, 'app.txt'), 'non-git-after');
+        // The fake backend uses this list to model that the Executor observed
+        // a write; Runtime still filters it through the Planner contract.
+        return { body: '已修改 app.txt。', artifacts: ['app.txt'] };
+      },
+    });
+    try {
+      await run(h, '直接修改 app.txt，不需要单独下载文件');
+      const task = h.repo.findAll()[0]!;
+      expect(task.status).toBe('succeeded');
+      expect(readFileSync(join(h.userRoot, 'app.txt'), 'utf8')).toBe('non-git-after');
+      expect(new SubtaskRepo(h.db).listByTask(task.id)[0]!.status).toBe('done');
+      expect(h.db.prepare('SELECT terminal_state FROM executor_attempt_receipts WHERE task_id = ?').get(task.id))
+        .toMatchObject({ terminal_state: 'completed' });
+    } finally {
+      h.db.close();
+    }
+  }, 60_000);
+
+  it('auto-completes a non-Git code file creation without an acceptance fallback', async () => {
+    const h = harness({
+      goal: '写一个 Hello World Python 程序并保存到 hello.py',
+      fileOutputs: [],
+      intent: {
+        operation: 'create_in_target',
+        targetPaths: ['hello.py'],
+        originalFilePolicy: 'may_replace',
+        reason: '用户要求在当前 Workspace 新建代码文件',
+      },
+      responder: (_input, workspace) => {
+        writeFileSync(join(workspace, 'hello.py'), 'print("Hello, World!")\n');
+        return { body: '已创建 hello.py。', artifacts: [] };
+      },
+    });
+    try {
+      await run(h, '写一个 Hello World Python 程序并保存到 hello.py');
+      const task = h.repo.findAll()[0]!;
+      expect(task.status).toBe('succeeded');
+      expect(readFileSync(join(h.userRoot, 'hello.py'), 'utf8')).toBe('print("Hello, World!")\n');
+      expect(new SubtaskRepo(h.db).listByTask(task.id)[0]!.status).toBe('done');
+      expect(h.db.prepare('SELECT terminal_state FROM executor_attempt_receipts WHERE task_id = ?').get(task.id))
+        .toMatchObject({ terminal_state: 'completed' });
+      expect(h.db.prepare('SELECT COUNT(*) AS count FROM task_state_changes WHERE task_id = ? AND operation_key LIKE ?')
+        .get(task.id, 'accept_result:%')).toMatchObject({ count: 0 });
+    } finally {
+      h.db.close();
+    }
+  }, 60_000);
+
   it('applies multiple declared changes directly without a publication phase', async () => {
     const h = harness({
       goal: '直接修改 notes.md 和 app.txt',
@@ -304,30 +364,30 @@ describe('Planner-owned Workspace execution mode end-to-end', () => {
   it('keeps the fixed mode across a retry of the same Task', async () => {
     let attempts = 0;
     const h = harness({
-      goal: '修改 app.txt，第一次失败后重试',
-      fileOutputs: ['app.txt'],
+      goal: '创建 new.txt，第一次失败后重试',
+      fileOutputs: ['new.txt'],
       intent: {
-        operation: 'modify_existing',
-        targetPaths: ['app.txt'],
+        operation: 'create_in_target',
+        targetPaths: ['new.txt'],
         proposedMode: 'in_place',
         reason: '普通工作区编辑',
       },
       responder: (_input, workspace) => {
         attempts += 1;
         if (attempts === 1) return { body: '第一次尝试。', artifacts: [] };
-        writeFileSync(join(workspace, 'app.txt'), 'retried');
-        return { body: '已重试完成。', artifacts: ['app.txt'] };
+        writeFileSync(join(workspace, 'new.txt'), 'retried');
+        return { body: '已重试完成。', artifacts: ['new.txt'] };
       },
     });
     try {
-      await run(h, '修改 app.txt，第一次失败后重试');
+      await run(h, '创建 new.txt，第一次失败后重试');
       const task = h.repo.findAll()[0]!;
       expect(task.executionMode).toBe('in_place');
       expect(task.workspaceExecutionSource).toBe('planner');
       // A missing declared output keeps the round uncertified; the Task keeps
       // its fixed mode and never silently switches to a copy tree.
       expect(task.status).not.toBe('succeeded');
-      expect(readFileSync(join(h.userRoot, 'app.txt'), 'utf8')).toBe('before');
+      expect(existsSync(join(h.userRoot, 'new.txt'))).toBe(false);
       expect(new SubtaskRepo(h.db).listByTask(task.id)[0]!.status).not.toBe('done');
     } finally {
       h.db.close();

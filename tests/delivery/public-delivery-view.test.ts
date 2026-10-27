@@ -17,7 +17,6 @@ describe('public delivery projection', () => {
     const view = projectPublicDelivery({
       task: { id: 'task_1', publicTaskDirectory: 'metaclaw-tasks/deck-abc', executionMode: 'in_place' },
       workspace,
-      pendingDecision: false,
       artifacts: [artifact('out/deck.pptx', `${workspace}/out/deck.pptx`)],
       publications: [],
       delivery: () => null,
@@ -41,7 +40,6 @@ describe('public delivery projection', () => {
     const view = projectPublicDelivery({
       task: { id: 'task_1', executionMode: 'in_place' },
       workspace,
-      pendingDecision: false,
       artifacts: [],
       publications: [],
       delivery: () => null,
@@ -62,7 +60,6 @@ describe('public delivery projection', () => {
         workspaceDeliveryPolicy: 'auto_publish',
       },
       workspace,
-      pendingDecision: false,
       artifacts: [artifact('out.pptx', `${workspace}/out.pptx`)],
       publications: [],
       delivery: () => null,
@@ -86,7 +83,6 @@ describe('public delivery projection', () => {
     const view = projectPublicDelivery({
       task: { id: 'task_1', publicTaskDirectory: 'project', publicProject: true, executionMode: 'in_place' },
       workspace,
-      pendingDecision: false,
       artifacts: [artifact('out.pptx', `${workspace}/project/out.pptx`)],
       publications: [],
       delivery: () => null,
@@ -94,7 +90,7 @@ describe('public delivery projection', () => {
     expect(view).toMatchObject({ taskDirectory: `${workspace}/project`, files: ['out.pptx'] });
   });
 
-  it('does not expose historical candidate acceptance in the current Workspace view', () => {
+  it('never presents Workspace files as awaiting acceptance', () => {
     const view = projectPublicDelivery({
       task: {
         id: 'task_1',
@@ -103,7 +99,6 @@ describe('public delivery projection', () => {
         workspaceDeliveryPolicy: 'await_acceptance',
       },
       workspace,
-      pendingDecision: true,
       artifacts: [],
       publications: [{
         id: 'p1', subtaskId: 's1', createdAt: '2026-10-25T00:00:00.000Z',
@@ -111,8 +106,10 @@ describe('public delivery projection', () => {
       } as never],
       delivery: () => ({ status: 'pending', projections: [], failures: [] }),
     });
+    // A pending result decision is a Task-level action; the In-place Workspace
+    // files are already written and their state reports that fact only.
     expect(view).toMatchObject({
-      state: 'awaiting_acceptance',
+      state: 'not_published',
       candidate: 'none',
       deliveryPolicy: 'await_acceptance',
     });
@@ -122,7 +119,6 @@ describe('public delivery projection', () => {
     const failed = projectPublicDelivery({
       task: { id: 'task_1', executionMode: 'in_place' },
       workspace,
-      pendingDecision: false,
       artifacts: [],
       publications: [{ id: 'p1', subtaskId: 's1', createdAt: '2026-10-23T00:00:00.000Z', status: 'conflicted' } as never],
       delivery: () => null,

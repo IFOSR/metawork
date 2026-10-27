@@ -261,3 +261,71 @@ describe('Subtask execution prompt layering', () => {
     expect(prompt).not.toContain('metawork-document-reader');
   });
 });
+
+describe('service repair feedback reaches the Executor', () => {
+  it('hands the model the exact service facts it must repair', () => {
+    const request = input();
+    request.context.recovery = {
+      mode: 'recovery_packet',
+      sourceAttemptId: 'attempt-source',
+      packet: {
+        failure: {
+          kind: 'service',
+          code: 'service_start_failed',
+          summary: '服务进程已退出，需显式重启',
+          terminalState: 'service_verification_failed',
+        },
+        service: {
+          serviceId: 'backend',
+          specificationRevision: 'service_revision_x',
+          repairOrdinal: 0,
+          command: 'node',
+          args: ['server.mjs'],
+          healthUrl: 'http://127.0.0.1:8811/health',
+          state: 'failed',
+          exitObserved: true,
+          healthStatus: 503,
+          logTail: 'Error: listen EADDRINUSE :::8811',
+        },
+        knownProgress: ['代码已经写入授权 Workspace'],
+        unknownItems: ['当前代码是否已修复服务未就绪的真实原因'],
+      },
+    };
+    const prompt = buildExecutorContextPrompt(request);
+    expect(prompt).toContain('Recovery mode: recovery_packet');
+    expect(prompt).toContain('"serviceId": "backend"');
+    expect(prompt).toContain('Error: listen EADDRINUSE');
+    expect(prompt).toContain('"healthStatus": 503');
+    expect(prompt).toContain('"repairOrdinal": 0');
+    expect(prompt).toContain('当前代码是否已修复服务未就绪的真实原因');
+    // The model is told the code is already in place and to verify its own fix.
+    expect(prompt).toContain('This round repairs a local service that did not become healthy');
+    expect(prompt).toContain('run the service yourself to confirm it answers');
+  });
+});
+
+describe('previous round context', () => {
+  it('tells the Executor which failure not to repeat', () => {
+    const request = input();
+    request.context.previousRound = {
+      taskId: 'task_previous',
+      goal: 'run the backend service',
+      reasonCode: 'service_start_failed',
+      reason: '服务进程已退出，需显式重启',
+      operations: [
+        { kind: 'service', outcome: 'definite_failure', reasonCode: 'service_start_failed', message: '退出码 1' },
+      ],
+    };
+    const prompt = buildExecutorContextPrompt(request);
+    expect(prompt).toContain('Previous failed round in this Workspace:');
+    expect(prompt).toContain('Goal: run the backend service');
+    expect(prompt).toContain('Conclusion: 服务进程已退出，需显式重启');
+    expect(prompt).toContain('Reason code: service_start_failed');
+    expect(prompt).toContain('service: definite_failure (service_start_failed) — 退出码 1');
+    expect(prompt).toContain('Do not repeat the same failing command or configuration');
+  });
+
+  it('omits the section when no earlier round failed', () => {
+    expect(buildExecutorContextPrompt(input())).not.toContain('Previous failed round');
+  });
+});

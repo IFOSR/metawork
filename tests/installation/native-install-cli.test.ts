@@ -38,11 +38,14 @@ describe('native install CLI', () => {
       '/source',
       '--planner-root',
       '/planner',
+      '--memory-root',
+      '/memory/tdai',
     ])).toMatchObject({
       command: 'install',
       releaseId: '1.2.0-preview.0',
       sourceRoot: '/source',
       plannerRoot: '/planner',
+      memoryRoot: '/memory/tdai',
     });
     expect(parseNativeInstallArgs(['rollback', '1.1.0'])).toMatchObject({
       command: 'rollback',

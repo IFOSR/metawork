@@ -188,3 +188,73 @@ describe('task state review regressions', () => {
     expect(decision.action.type).toBe('control_managed_service');
   });
 });
+
+describe('service failure is repairable, not final', () => {
+  const serviceRequirement = {
+    key: 'service', kind: 'service' as const, label: '启动服务', subtaskId: null, serviceId: null,
+  };
+  const serviceOperation = (outcome: 'repair_pending' | 'definite_failure' | 'success') => ({
+    operationKey: `service:start:backend:service_revision_x:attempt-1:0`,
+    operationKind: 'service',
+    outcome,
+    reasonCode: outcome === 'success' ? null : 'service_start_failed',
+    message: outcome === 'success' ? '服务已通过健康检查。' : '服务进程已退出，需显式重启',
+    evidenceRefs: ['service:backend', 'attempt:attempt-1'],
+  });
+
+  it('keeps the Task running while a Kernel-authorized repair round is queued', () => {
+    const facts = raw({
+      subtasks: [{ id: 'a', title: 'A', status: 'done', dependencySubtaskIds: [] }],
+      service: { serviceId: 'backend', state: 'failed', healthMessage: '服务进程已退出，需显式重启' },
+      serviceRequired: true,
+      completionRequirements: [
+        { key: 'execution:a', kind: 'execution', label: 'A', subtaskId: 'a', serviceId: null },
+        serviceRequirement,
+      ],
+      operationResults: [serviceOperation('repair_pending')],
+    });
+    const input = readTaskEvaluationInput(facts);
+    expect(input.requiredWork.find(work => work.kind === 'service')).toMatchObject({ state: 'running' });
+    expect(input.activeOperation?.phase).toBe('retrying');
+    const evaluation = evaluate(facts);
+    expect(evaluation.status).toBe('running');
+    expect(evaluation.detail.reason.message).toContain('服务进程已退出');
+    expect(evaluation.detail.phase).toBe('retrying');
+    expect(evaluation.detail.pendingActions).toEqual([]);
+  });
+
+  it('reports a definite service failure only after the repair budget is spent', () => {
+    const facts = raw({
+      subtasks: [{ id: 'a', title: 'A', status: 'done', dependencySubtaskIds: [] }],
+      service: { serviceId: 'backend', state: 'failed', healthMessage: '服务进程已退出，需显式重启' },
+      serviceRequired: true,
+      completionRequirements: [
+        { key: 'execution:a', kind: 'execution', label: 'A', subtaskId: 'a', serviceId: null },
+        serviceRequirement,
+      ],
+      operationResults: [serviceOperation('definite_failure')],
+    });
+    expect(readTaskEvaluationInput(facts).requiredWork.find(work => work.kind === 'service'))
+      .toMatchObject({ state: 'failed' });
+    expect(evaluate(facts).status).toBe('failed');
+  });
+
+  it('reads the latest service operation instead of one fixed key', () => {
+    const facts = raw({
+      subtasks: [{ id: 'a', title: 'A', status: 'done', dependencySubtaskIds: [] }],
+      service: { serviceId: 'backend', state: 'failed', healthMessage: '服务进程已退出，需显式重启' },
+      serviceRequired: true,
+      completionRequirements: [
+        { key: 'execution:a', kind: 'execution', label: 'A', subtaskId: 'a', serviceId: null },
+        serviceRequirement,
+      ],
+      operationResults: [
+        { ...serviceOperation('success'), operationKey: 'service:start:backend:revision_old:attempt-0:0' },
+        { ...serviceOperation('repair_pending'), operationKey: 'service:start:backend:revision_new:attempt-1:1' },
+      ],
+    });
+    // The newest round decides: the older success belongs to a superseded spec.
+    expect(readTaskEvaluationInput(facts).requiredWork.find(work => work.kind === 'service'))
+      .toMatchObject({ state: 'running' });
+  });
+});

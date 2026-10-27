@@ -1,6 +1,25 @@
 import { useCallback, useEffect, useState } from 'react';
 import { memoryAssetViewState } from '../api/memory';
-import type { MemoryApiClient, MemoryAssetListView, MemoryStatusView } from '../api/memory';
+import type {
+  MemoryApiClient,
+  MemoryAssetListView,
+  MemoryEngineProblem,
+  MemoryStatusView,
+} from '../api/memory';
+
+const ENGINE_PROBLEM_NOTES: Record<MemoryEngineProblem, string> = {
+  extraction_model_required: '请选择记忆抽取使用的 Provider 和模型；在此之前不会产生任何记忆请求或费用。',
+  extraction_credential_missing: '所选 Provider 缺少可用的 API Key，请先在模型服务中补齐凭据。',
+  engine_missing: '记忆引擎没有随当前发布包安装到本机（缺少 memory/tdai），请更新或重新安装 MetaWork。',
+  engine_unreachable: '记忆引擎没有运行或无法连接，请检查安装状态后重试。',
+  engine_unhealthy: '记忆引擎自检未通过，暂时无法写入或召回记忆。',
+  fts5_unavailable: '记忆引擎的 SQLite 缺少 FTS5，BM25 召回会静默失效，因此记忆暂不可用。',
+};
+
+/** One actionable sentence for the first problem the user has to fix. */
+export function memoryEngineProblemNote(problem: MemoryEngineProblem | undefined): string | null {
+  return problem ? ENGINE_PROBLEM_NOTES[problem] : null;
+}
 
 export interface MemorySettingsDraft {
   enabled: boolean;
@@ -50,6 +69,7 @@ export function MemorySettingsPanel({ api, draft, onChange, disabled }: MemorySe
   const unsupported = (status?.selectableProviders ?? []).filter(provider => provider.unsupportedReason);
   const currentProvider = selectable.find(provider => provider.providerRef === draft.providerRef);
   const models = (currentProvider?.models ?? []).filter(model => model.supportsStructuredOutput && model.enabled);
+  const engineNote = memoryEngineProblemNote(status?.engineProblem);
 
   const toggleAsset = async (memoryId: string, enabled: boolean) => {
     setBusy(true);
@@ -145,10 +165,14 @@ export function MemorySettingsPanel({ api, draft, onChange, disabled }: MemorySe
               {unsupported.map(provider => `${provider.displayName}（${provider.unsupportedReason}）`).join('、')}
             </p>
           )}
-          {!status?.ftsAvailable && status && (
+          {currentProvider && models.length === 0 && (
             <p className="memory-note memory-note-warning">
-              记忆引擎的 BM25 检索不可用（FTS5 缺失），召回会静默失效，因此记忆暂不可用。
+              该 Provider 下还没有可用于抽取的模型。需要先在「模型服务」中为该 Provider
+              添加模型，并确认模型已启用且声明了结构化输出能力。
             </p>
+          )}
+          {engineNote && (
+            <p className="memory-note memory-note-warning">{engineNote}</p>
           )}
         </div>
       )}

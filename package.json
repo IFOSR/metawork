@@ -1,6 +1,6 @@
 {
   "name": "metawork",
-  "version": "0.1.19",
+  "version": "0.1.20",
   "description": "A commercial AI Task OS for durable, policy-governed agent workflows.",
   "private": true,
   "type": "module",
@@ -50,7 +50,9 @@
     "smoke:desktop": "node apps/desktop/tests/electron-smoke.mjs",
     "smoke:pi-pdf": "node scripts/smoke-pi-pdf.mjs",
     "benchmark:desktop": "node apps/desktop/tests/startup-benchmark.mjs",
-    "package:desktop": "npm run package:mac --prefix apps/desktop"
+    "package:desktop": "npm run package:mac --prefix apps/desktop",
+    "prepare:memory-engine": "node scripts/prepare-memory-engine.mjs",
+    "verify:memory-engine": "node scripts/verify-memory-engine.mjs"
   },
   "dependencies": {
     "@larksuiteoapi/node-sdk": "^1.71.1",

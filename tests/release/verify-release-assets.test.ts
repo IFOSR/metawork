@@ -29,11 +29,18 @@ function fixture(absolute = true, preview = false) {
   for (const target of RELEASE_TARGETS) {
     const [platform, arch] = target.split('-');
     const artifacts: Record<string, unknown> = {};
-    for (const kind of ['metawork', 'planner']) {
+    for (const kind of ['metawork', 'planner', 'memory']) {
       const name = `${kind}-${fixtureReleaseId}-${target}${platform === 'win32' ? '.zip' : '.tar.gz'}`;
       writeFileSync(join(root, name), body);
-      artifacts[kind] = { source: 'https://github.com/IFOSR/metawork.git', revision,
-        url: absolute ? `https://github.com/IFOSR/metawork/releases/download/${fixtureTag}/${name}` : name, ...facts };
+      const engine = kind === 'memory';
+      artifacts[kind] = {
+        source: engine
+          ? 'https://github.com/TencentCloud/TencentDB-Agent-Memory.git'
+          : 'https://github.com/IFOSR/metawork.git',
+        revision: engine ? 'memory-engine-revision' : revision,
+        url: absolute ? `https://github.com/IFOSR/metawork/releases/download/${fixtureTag}/${name}` : name,
+        ...facts,
+      };
     }
     writeFileSync(join(root, `manifest.${target}.json`), JSON.stringify(signed({
       manifestSchemaVersion: 1, channel: fixtureChannel, platform, arch, releaseId: fixtureReleaseId, ...artifacts,
@@ -54,7 +61,7 @@ function fixture(absolute = true, preview = false) {
 describe('complete latest release gate', () => {
   it.each([true, false])('accepts a coherent native/Desktop set (absolute URLs: %s)', async absolute => {
     const release = await verifyReleaseAssets(fixture(absolute), tag, { ...options, sourceCommit: revision });
-    expect(release.files).toHaveLength(18);
+    expect(release.files).toHaveLength(22);
   });
   it('accepts an ordered preview release ID without a commit suffix', async () => {
     const release = await verifyReleaseAssets(fixture(true, true), 'v0.1.5-preview.1', { ...options, sourceCommit: revision });
@@ -62,7 +69,7 @@ describe('complete latest release gate', () => {
   });
   it('accepts a stable release set before the independent Windows upload', async () => {
     const root = fixture();
-    for (const kind of ['metawork', 'planner']) {
+    for (const kind of ['metawork', 'planner', 'memory']) {
       rmSync(join(root, `${kind}-${releaseId}-win32-x64.zip`));
     }
     rmSync(join(root, 'manifest.win32-x64.json'));
@@ -71,7 +78,7 @@ describe('complete latest release gate', () => {
       targets: ['darwin-arm64', 'darwin-x64', 'linux-x64'],
       sourceCommit: revision,
     });
-    expect(release.files).toHaveLength(15);
+    expect(release.files).toHaveLength(18);
   });
   it('rejects a missing Desktop architecture instead of publishing a partial release', async () => {
     const root = fixture(); rmSync(join(root, 'MetaWork-darwin-x64.dmg'));
@@ -101,6 +108,6 @@ describe('complete latest release gate', () => {
     });
     vi.stubGlobal('fetch', fetch); vi.spyOn(console, 'log').mockImplementation(() => undefined);
     await verifyPublishedRelease(release, base);
-    expect(fetch).toHaveBeenCalledTimes(18);
+    expect(fetch).toHaveBeenCalledTimes(22);
   });
 });

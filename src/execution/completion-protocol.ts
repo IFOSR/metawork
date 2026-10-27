@@ -613,13 +613,11 @@ function validateWorkspaceDelivery(
         'edit delivery without workspace changes requires a no-change reason',
       ));
     }
-    if (delta.changed.length > 0 && noChangeReason !== null) {
-      violations.push(contractViolation(
-        'completion_no_change_reason_mismatch',
-        'noChangeReason',
-        'edit delivery with workspace changes requires noChangeReason to be null',
-      ));
-    }
+    // The Runtime's before/after observation is authoritative. A model may
+    // carry over a stale explanation after it has edited a file; that metadata
+    // cannot turn a real Workspace delta into a no-change result, so it is
+    // treated as null by the completion contract instead of sending the
+    // user through an avoidable acceptance or correction step.
   }
 
   // Only Planner-selected outputs become file deliveries. An absent contract

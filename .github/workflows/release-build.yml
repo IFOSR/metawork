@@ -90,6 +90,12 @@ jobs:
         run: |
           printf '%s\n' "$RELEASE_SIGNING_KEY" > "$RUNNER_TEMP/metawork-release-key.pem"
 
+      - name: Prepare pinned memory engine
+        run: node scripts/prepare-memory-engine.mjs
+
+      - name: Verify memory engine (FTS5 gate)
+        run: node scripts/verify-memory-engine.mjs
+
       - name: Build and package Unix release
         if: runner.os != 'Windows'
         env:

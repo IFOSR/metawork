@@ -19,6 +19,7 @@ import type {
 } from '../configuration/types.js';
 import type { HarnessDriverRegistry } from '../executor/harness-driver-registry.js';
 import { AutoModelResolver } from '../routing/auto-model-resolver.js';
+import { projectRunContract, runContractDiagnostics } from './run-contract.js';
 import { projectConfigurationCandidates } from '../routing/configuration-candidate-projection.js';
 import { PERMISSION_PROFILE_IDS, type PermissionProfileId } from '../resource/index.js';
 
@@ -412,6 +413,7 @@ export class ExecutionRuntime implements ActiveExecutionControl {
     if (active.cancelled) {
       return this.toExecutionResult({
         input,
+        authorizedBinding: input.authorizedBinding,
         executor,
         result: {
           success: false, interrupted: true, output: '',
@@ -443,6 +445,7 @@ export class ExecutionRuntime implements ActiveExecutionControl {
     );
     return this.toExecutionResult({
       input,
+      authorizedBinding: input.authorizedBinding,
       executor,
       result,
       subtaskResults: [],
@@ -487,7 +490,25 @@ export class ExecutionRuntime implements ActiveExecutionControl {
     executor: ExecutorAdapter;
     result: ExecutorResult;
     subtaskResults: SubtaskResult[];
+    authorizedBinding: AuthorizedExecutorBinding;
   }): ExecutionResult {
+    // One Run Contract per authorized Attempt: an input projection the Harness
+    // receives, never a loop/metadata authority (2026-10-27 realignment §4.1).
+    const runContract = projectRunContract({
+      context: input.input.executorInput.context,
+      executionBinding: input.input.executorInput.executionBinding
+        ? {
+            taskId: input.input.executorInput.executionBinding.taskId,
+            generationId: input.input.executorInput.executionBinding.generationId,
+            subtaskId: input.input.executorInput.executionBinding.subtaskId,
+            workUnitId: input.input.executorInput.executionBinding.workUnitId,
+            configurationRevision: input.authorizedBinding.configurationRevision,
+            bindingFingerprint: authorizedExecutorBindingFingerprint(
+              input.authorizedBinding,
+            ),
+          }
+        : null,
+    });
     return {
       taskId: input.input.taskId,
       executionId: input.input.executionId,
@@ -503,7 +524,10 @@ export class ExecutionRuntime implements ActiveExecutionControl {
       durationMs: input.result.durationMs,
       userPrompt: input.input.executorInput.context.currentSubtask.goal,
       context: input.input.executorInput.context,
-      ...(input.result.diagnostics ? { diagnostics: input.result.diagnostics } : {}),
+      diagnostics: {
+        ...(input.result.diagnostics ?? {}),
+        runContract: runContractDiagnostics(runContract),
+      },
     };
   }
 

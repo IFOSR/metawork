@@ -42,7 +42,9 @@ const { signature: runtimeSignature, ...runtimePayload } = manifest;
 if (!trustedKeys[runtimeSignature.keyId] || !verify(null, Buffer.from(canonical(runtimePayload)),
   trustedKeys[runtimeSignature.keyId], Buffer.from(runtimeSignature.value, 'base64'))) throw new Error('Runtime manifest signature rejected');
 if (manifest.platform !== 'darwin' || manifest.arch !== process.arch || Date.parse(manifest.expiresAt) <= Date.now()
-  || !sourceCommit.startsWith(manifest.metawork.revision) || manifest.planner.revision !== manifest.metawork.revision) throw new Error('Runtime compatibility matrix mismatch');
+  || !sourceCommit.startsWith(manifest.metawork.revision) || manifest.planner.revision !== manifest.metawork.revision
+  || !manifest.memory || typeof manifest.memory.revision !== 'string'
+  || !/^[a-f0-9]{64}$/.test(manifest.memory.sha256 ?? '')) throw new Error('Runtime compatibility matrix mismatch');
 if (!development) {
   const source = fileURLToPath(new URL('../../../', import.meta.url));
   const dirty = run('git', ['status', '--porcelain'], source);
@@ -72,7 +74,7 @@ async function removePythonBytecode(directory) {
   }
 }
 try {
-  for (const name of ['metawork', 'planner']) {
+  for (const name of ['metawork', 'planner', 'memory']) {
     const artifact = manifest[name];
     const archive = join(artifacts, basename(artifact.url));
     const bytes = await readFile(archive);
@@ -87,6 +89,9 @@ try {
     if (details.split('\n').some(line => !['-', 'd', 'h'].includes(line[0]))) throw new Error('Release archive contains links or special files');
     run('/usr/bin/tar', ['-xzf', archive, '-C', payload]);
   }
+  // The memory engine is a required part of the product: the settings switch
+  // must work offline, without the user fetching a sidecar.
+  await readFile(join(payload, 'memory', 'tdai', 'dist', 'gateway', 'server.js'));
   // Electron Builder omits dot-file placeholders while copying extraResources.
   await removeArchiveMarkers(payload);
   // Python bytecode is generated at import time and excluded from the signed

@@ -1,7 +1,10 @@
 import { beforeEach, describe, expect, it } from 'vitest';
 import Database from 'better-sqlite3';
 import { runMigrations } from '../../src/storage/migrations.js';
-import { createMemoryManagementQuery } from '../../src/management/memory-management.js';
+import {
+  classifyMemoryEngineProblem,
+  createMemoryManagementQuery,
+} from '../../src/management/memory-management.js';
 import { MemoryRuntime } from '../../src/memory/memory-runtime.js';
 import { MemoryBindingsRepo } from '../../src/storage/memory-bindings-repo.js';
 
@@ -106,6 +109,58 @@ describe('memory management view', () => {
       degraded: true,
       degradedReason: 'memory_engine_unreachable',
     });
+  });
+
+  it('separates "engine not installed" from "engine without FTS5"', () => {
+    expect(classifyMemoryEngineProblem({
+      mode: 'degraded',
+      engineReady: false,
+      ftsAvailable: false,
+      detail: 'memory sidecar installation not found (/x/memory/tdai) (health_unreachable: boom)',
+    })).toBe('engine_missing');
+    expect(classifyMemoryEngineProblem({
+      mode: 'degraded',
+      engineReady: false,
+      ftsAvailable: false,
+      detail: 'fts5_unavailable',
+    })).toBe('fts5_unavailable');
+    expect(classifyMemoryEngineProblem({
+      mode: 'degraded',
+      engineReady: false,
+      ftsAvailable: false,
+      detail: 'health_unreachable: ECONNREFUSED',
+    })).toBe('engine_unreachable');
+    expect(classifyMemoryEngineProblem({
+      mode: 'needs-model',
+      engineReady: false,
+      ftsAvailable: false,
+    })).toBe('extraction_model_required');
+    expect(classifyMemoryEngineProblem({
+      mode: 'enabled',
+      engineReady: true,
+      ftsAvailable: true,
+    })).toBeUndefined();
+    expect(classifyMemoryEngineProblem({
+      mode: 'disabled',
+      engineReady: false,
+      ftsAvailable: false,
+    })).toBeUndefined();
+  });
+
+  it('exposes the engine problem on the disabled and degraded status views', async () => {
+    const disabled = createMemoryManagementQuery({
+      resolveRuntime: () => stubRuntime('disabled'),
+      accountId: ACCOUNT,
+      readConfiguration: async () => configuration,
+    });
+    expect((await disabled.status()).engineProblem).toBeUndefined();
+
+    const degraded = createMemoryManagementQuery({
+      resolveRuntime: () => stubRuntime('degraded'),
+      accountId: ACCOUNT,
+      readConfiguration: async () => configuration,
+    });
+    expect((await degraded.status()).engineProblem).toBe('engine_unreachable');
   });
 
   it('asks for an extraction model when the switch is on without one', async () => {

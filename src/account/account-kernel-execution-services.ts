@@ -75,6 +75,7 @@ export function buildAccountKernelExecutionServices(deps: {
   maxConcurrentAttempts: number;
   maxConcurrentAttemptsPerTask?: number;
   onTaskTerminal?: (taskId: string) => void | Promise<void>;
+  onTaskQueued?: (taskId: string) => void | Promise<void>;
   getConfigurationRevision: () => string;
   getRuntimeConfiguration?: (revisionId: string) => RuntimeConfigurationView | null;
   taskRuntimeService: TaskRuntimeService;
@@ -159,6 +160,7 @@ export function buildAccountKernelExecutionServices(deps: {
     maxConcurrentAttemptsPerTask: deps.maxConcurrentAttemptsPerTask,
     conversationTaskSchedulerRepo: deps.conversationTaskSchedulerRepo,
     onTaskTerminal: deps.onTaskTerminal,
+    onTaskQueued: deps.onTaskQueued,
     publicationWorker: new WorkspacePublicationWorker({
       db: deps.db,
       sessionId: deps.sessionId,

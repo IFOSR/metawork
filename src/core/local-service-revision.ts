@@ -1,6 +1,15 @@
 import { createHash } from 'node:crypto';
 
-/** Pure, dependency-light identity of a managed local service specification. */
+/**
+ * Pure, dependency-light identity of a managed local service specification.
+ *
+ * The revision describes the *launch contract* only: what command runs, where,
+ * with which environment references, on which loopback address and health path.
+ * The owning `taskId` is provenance, not part of the contract, so a new Task in
+ * the same Workspace that asks for the very same service keeps the same
+ * revision instead of forcing a specification update (2026-10-27 realignment
+ * §4.2: historical service facts must not block the current specification).
+ */
 export interface LocalServiceRevisionInput {
   serviceId: string;
   taskId: string;
@@ -20,7 +29,6 @@ export function localServiceSpecificationRevision(
 ): string {
   const material = JSON.stringify([
     specification.serviceId,
-    specification.taskId,
     specification.command,
     specification.args,
     specification.directory ?? null,

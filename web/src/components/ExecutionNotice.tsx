@@ -39,8 +39,8 @@ export function ExecutionNotice({ turn, failure, receipts }: {
       {configurationMismatch ? <p className="execution-notice-explanation">
         执行器读取到的模型配置与任务授权的配置不一致，系统已停止本次执行。依赖这些结果的后续工作也无法继续。
       </p> : needsAction && <p className="execution-notice-explanation">
-        {failure?.label ? '本次执行未完成。请先处理上述原因，再继续未完成部分。'
-          : failure?.summary ?? '部分工作未能继续，请查看执行详情确认原因。'}
+        {failure?.summary ? `原因：${failure.summary}`
+          : '部分工作未能继续，请查看执行详情确认原因。'}
       </p>}
       {needsAction && subtasks.length > 0 && <div className="execution-notice-impact">
         <h4>子任务进度 <span>{subtasks.filter(task => task.status === 'done').length} / {subtasks.length} 已完成</span></h4>
@@ -58,8 +58,11 @@ export function ExecutionNotice({ turn, failure, receipts }: {
       {needsAction && <div className="execution-notice-next">
         <h4>下一步</h4>
         <p>{configurationMismatch
-          ? '先修复任务所用版本的运行配置，再使用「继续未完成部分」恢复任务。恢复时系统会重新校验配置；反复重试无法跳过这项检查。'
-          : failure?.userAction ?? '查看下方错误详情，处理原因后，使用「继续未完成部分」恢复任务。'}</p>
+          ? '先修复任务所用版本的运行配置，再使用「继续未完成部分」恢复任务。恢复时系统会重新校验配置。'
+          : failure?.userAction
+            ?? (turn.status === 'failed'
+              ? '代码已经保留。处理上面的原因后，点击下方「重试未完成部分」，系统只会重试失败的交付或服务启动。'
+              : '处理上面的原因后，点击下方「继续未完成部分」，系统会从未完成的步骤继续。')}</p>
       </div>}
       {(failure || receipts.length > 0) && <details className="execution-notice-details">
         <summary>查看错误与运行详情</summary>

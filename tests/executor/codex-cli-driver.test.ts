@@ -72,6 +72,16 @@ describe('CodexCliDriver', () => {
     expect(launch.args).not.toContain('danger-full-access');
   });
 
+  it('keeps execute-only Workspace runs in a read-only sandbox', () => {
+    const driver = new CodexCliDriver({ probeCommand: vi.fn() });
+    const launch = driver.buildLaunch({
+      prompt: 'python hello.py', cwd: '/workspace', runtimeHomePath: '/attempt/home',
+      workspaceAccess: 'execute',
+    });
+    expect(launch.args).toContain('read-only');
+    expect(launch.args).not.toContain('danger-full-access');
+  });
+
   it('normalizes result output', () => {
     const driver = new CodexCliDriver({ probeCommand: vi.fn() });
     expect(driver.parseResult({ exitCode: 0, stdout: 'done\n', stderr: '' }))

@@ -18,8 +18,32 @@ import { truncateText } from '../utils/truncate-text.js';
 import { hashContent } from '../storage/task-artifact-repo.js';
 
 const MAX_RESULTS = 20;
+
+/**
+ * The persisted Task conclusion reason, bounded for a Planner fact projection.
+ */
+function taskStateReason(stateDetailJson: unknown): { code: string; message: string } | null {
+  const detail = typeof stateDetailJson === 'string'
+    ? safeJson<Record<string, unknown>>(stateDetailJson, {})
+    : {};
+  const reason = detail.reason && typeof detail.reason === 'object'
+    ? detail.reason as Record<string, unknown>
+    : null;
+  const code = typeof reason?.code === 'string' ? reason.code.trim() : '';
+  const message = typeof reason?.message === 'string' ? reason.message.trim() : '';
+  // `none` is the absence of a reason (a healthy Task), not a diagnosis. A
+  // running or succeeded Task must never be projected as a failure.
+  if (!code || code === 'none') return null;
+  return { code, message: truncateText(message, 600) };
+}
+
 const DEFAULT_RESULTS = 10;
-const TASK_STATUSES = ['created', 'ready', 'running', 'parked', 'blocked', 'done', 'archived', 'cancelled'] as const;
+/**
+ * The current six persisted Task states (task-state.ts). Older enum values are
+ * historical data, never a valid filter: an unknown filter is rejected instead of
+ * silently widening the query.
+ */
+const TASK_STATUSES = ['queued', 'running', 'needs_action', 'succeeded', 'failed', 'cancelled'] as const;
 
 export class PlannerDataReader {
   constructor(
@@ -34,7 +58,17 @@ export class PlannerDataReader {
 
   searchTasks(input: { query?: string; statuses?: string[]; limit?: number }) {
     const limit = boundedLimit(input.limit);
-    const statuses = (input.statuses ?? []).filter(status => TASK_STATUSES.includes(status as typeof TASK_STATUSES[number]));
+    const requested = (input.statuses ?? []).map(status => status.trim().toLowerCase()).filter(Boolean);
+    const unknown = requested.filter(status => !TASK_STATUSES.includes(status as typeof TASK_STATUSES[number]));
+    if (unknown.length > 0) {
+      return {
+        count: 0,
+        tasks: [],
+        invalidStatuses: [...new Set(unknown)],
+        allowedStatuses: [...TASK_STATUSES],
+      };
+    }
+    const statuses = [...new Set(requested)];
     const clauses: string[] = [];
     const params: unknown[] = [];
     if (input.query?.trim()) {
@@ -47,9 +81,12 @@ export class PlannerDataReader {
     }
     clauses.push('conversation_id = ?');
     params.push(this.conversationId);
+    // The account is the isolation boundary; a Conversation id alone is not.
+    clauses.push('account_id = ?');
+    params.push(this.accountId);
     params.push(limit);
     const rows = this.db.prepare(`
-      SELECT id, title, status, summary, priority_json, updated_at
+      SELECT id, title, status, summary, priority_json, state_detail_json, updated_at
       FROM tasks
       ${clauses.length > 0 ? `WHERE ${clauses.join(' AND ')}` : ''}
       ORDER BY updated_at DESC
@@ -57,25 +94,29 @@ export class PlannerDataReader {
     `).all(...params) as Array<Record<string, unknown>>;
     return {
       count: rows.length,
-      tasks: rows.map(row => ({
-        id: row.id,
-        title: truncateText(String(row.title ?? ''), 160),
-        status: row.status,
-        summary: truncateText(String(row.summary ?? ''), 320),
-        priority: sanitizePriority(row.priority_json),
-        updatedAt: row.updated_at,
-      })),
+      tasks: rows.map(row => {
+        const reason = taskStateReason(row.state_detail_json);
+        return {
+          id: row.id,
+          title: truncateText(String(row.title ?? ''), 160),
+          status: row.status,
+          summary: truncateText(String(row.summary ?? ''), 320),
+          ...(reason ? { reason } : {}),
+          priority: sanitizePriority(row.priority_json),
+          updatedAt: row.updated_at,
+        };
+      }),
     };
   }
 
   getTaskContext(taskId: string) {
     const row = this.db.prepare(`
       SELECT id, title, goal, status, summary, snapshot_json, resources_json,
-             artifacts_json, dependencies_json, priority_json,
+             artifacts_json, dependencies_json, priority_json, state_detail_json,
              last_scheduling_reason, last_interruption_reason, interruption_count,
              created_at, updated_at
-      FROM tasks WHERE id = ? AND conversation_id = ?
-    `).get(taskId, this.conversationId) as Record<string, unknown> | undefined;
+      FROM tasks WHERE id = ? AND conversation_id = ? AND account_id = ?
+    `).get(taskId, this.conversationId, this.accountId) as Record<string, unknown> | undefined;
     if (!row) return { found: false, taskId };
     const snapshots = safeJson<Array<Record<string, unknown>>>(row.snapshot_json, []);
     const dependencies = safeJson<Array<Record<string, unknown>>>(row.dependencies_json, []);
@@ -99,10 +140,78 @@ export class PlannerDataReader {
         lastSchedulingReason: truncateText(String(row.last_scheduling_reason ?? ''), 320),
         lastInterruptionReason: truncateText(String(row.last_interruption_reason ?? ''), 320),
         interruptionCount: row.interruption_count,
+        // The real diagnosis a follow-up turn must work from (2026-10-27
+        // realignment §5.3): the Task conclusion reason, the latest normalized
+        // operation results and the last failed Attempt.
+        failure: this.taskFailureDiagnosis(taskId, row.state_detail_json),
         createdAt: row.created_at,
         updatedAt: row.updated_at,
       },
     };
+  }
+
+  /**
+   * Bounded, secret-free failure facts for one Task.
+   *
+   * A user who re-requests the same goal must not have to guess what went wrong:
+   * the Planner reads these facts and plans the fix from the real error instead
+   * of repeating a failing command.
+   */
+  private taskFailureDiagnosis(taskId: string, stateDetailJson: unknown): {
+    reason: { code: string; message: string } | null;
+    operations: Array<{ kind: string; outcome: string; reasonCode: string | null; message: string }>;
+    lastFailedAttempt: {
+      attemptId: string;
+      attemptKind: string;
+      terminalState: string;
+      failureCode: string | null;
+      failureSummary: string;
+    } | null;
+  } | null {
+    const reason = taskStateReason(stateDetailJson);
+    const operations = (this.db.prepare(`
+      SELECT o.operation_kind, o.outcome, o.reason_code, o.message, o.updated_at
+      FROM task_operation_results o
+      INNER JOIN tasks t ON t.id = o.task_id
+      WHERE o.task_id = ? AND o.outcome <> 'success' AND t.account_id = ?
+      ORDER BY o.updated_at DESC
+      LIMIT 4
+    `).all(taskId, this.accountId) as Array<Record<string, unknown>>).map(operation => ({
+      kind: String(operation.operation_kind ?? ''),
+      outcome: String(operation.outcome ?? ''),
+      reasonCode: operation.reason_code ? String(operation.reason_code) : null,
+      message: truncateText(String(operation.message ?? ''), 400),
+    }));
+    // Only real execution failures. `uncertified_result` means the safe result
+    // awaits a user decision, and a contract failure is its own terminal state.
+    const attempt = this.db.prepare(`
+      SELECT r.attempt_id, r.attempt_kind, r.terminal_state, r.error_code, r.error_detail, r.failure_json
+      FROM executor_attempt_receipts r
+      INNER JOIN tasks t ON t.id = r.task_id
+      WHERE r.task_id = ? AND t.account_id = ?
+        AND r.terminal_state IN ('executor_failed', 'heartbeat_lost', 'contract_blocked')
+      ORDER BY r.completed_at DESC
+      LIMIT 1
+    `).get(taskId, this.accountId) as Record<string, unknown> | undefined;
+    const failure = typeof attempt?.failure_json === 'string'
+      ? safeJson<Record<string, unknown>>(attempt.failure_json, {})
+      : {};
+    const lastFailedAttempt = attempt ? {
+      attemptId: String(attempt.attempt_id),
+      attemptKind: String(attempt.attempt_kind ?? 'primary'),
+      terminalState: String(attempt.terminal_state ?? ''),
+      failureCode: typeof failure.code === 'string'
+        ? failure.code
+        : attempt.error_code ? String(attempt.error_code) : null,
+      failureSummary: truncateText(
+        typeof failure.summary === 'string'
+          ? failure.summary
+          : String(attempt.error_detail ?? ''),
+        600,
+      ),
+    } : null;
+    if (!reason && operations.length === 0 && !lastFailedAttempt) return null;
+    return { reason, operations, lastFailedAttempt };
   }
 
   getCurrentSessionContext(limit?: number) {
@@ -470,7 +579,7 @@ export class PlannerDataReader {
 export function createPlannerMcpServer(reader: PlannerDataReader): McpServer {
   const server = new McpServer({ name: 'metaclaw-planner', version: '1.0.0' });
   server.registerTool('search_tasks', {
-    description: 'Search persisted MetaClaw tasks by text and status. Results are durable history; use get_runtime_state for the current active-task snapshot.',
+    description: 'Search persisted MetaClaw tasks by text and status. Status values are exactly queued, running, needs_action, succeeded, failed, cancelled; any other value is rejected with invalidStatuses. Results are durable history; use get_runtime_state for the current active-task snapshot.',
     inputSchema: {
       query: z.string().max(500).optional(),
       statuses: z.array(z.enum(TASK_STATUSES)).max(TASK_STATUSES.length).optional(),
@@ -478,7 +587,7 @@ export function createPlannerMcpServer(reader: PlannerDataReader): McpServer {
     },
   }, async input => toolResult(reader.searchTasks(input)));
   server.registerTool('get_task_context', {
-    description: 'Read one task status, snapshot, blockers, resources, completed items, pending items, and next step.',
+    description: 'Read one task status, snapshot, blockers, resources, completed items, pending items, next step, and the bounded failure diagnosis (conclusion reason, non-success operation results, last failed Attempt with its failure code and summary). Read it before re-requesting or repairing work from an earlier Task.',
     inputSchema: { taskId: z.string().min(1).max(160) },
   }, async input => toolResult(reader.getTaskContext(input.taskId)));
   server.registerTool('get_current_session_context', {

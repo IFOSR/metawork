@@ -129,7 +129,7 @@ export interface TaskStateRawFacts {
   readonly operationResults: readonly {
     readonly operationKey: string;
     readonly operationKind: string;
-    readonly outcome: 'success' | 'definite_failure' | 'unknown';
+    readonly outcome: 'success' | 'definite_failure' | 'unknown' | 'repair_pending';
     readonly reasonCode: string | null;
     readonly message: string;
     readonly evidenceRefs: readonly string[];
@@ -317,6 +317,10 @@ export function readTaskEvaluationInput(raw: TaskStateRawFacts): TaskEvaluationI
   );
   // An unverified external outcome is not a live operation: the driver must be
   // reconciled before the Task can claim it is doing work.
+  // A required operation whose failure the authorized Executor can still repair
+  // keeps the Task running: the repair continuation is work in progress, not a
+  // user decision (2026-10-27 realignment §4.3/§5.2).
+  const serviceRepairPending = latestServiceOperation(raw)?.outcome === 'repair_pending';
   const activeOperation = raw.externalOutcomeUnknown ? null : activeDispatch
     ? { phase: 'executing' as const, reason: null }
     : publishing
@@ -325,9 +329,18 @@ export function readTaskEvaluationInput(raw: TaskStateRawFacts): TaskEvaluationI
         ? { phase: 'delivering' as const, reason: null }
         : startingService
           ? { phase: 'starting_service' as const, reason: null }
-          : activeReplan
-            ? { phase: 'verifying' as const, reason: null }
-            : null;
+          : serviceRepairPending
+            ? {
+                phase: 'retrying' as const,
+                reason: createTaskReason(
+                  'service_start_failed',
+                  latestServiceOperation(raw)?.message || '服务未能就绪，正在自动修复。',
+                  [...(latestServiceOperation(raw)?.evidenceRefs ?? [])],
+                ),
+              }
+            : activeReplan
+              ? { phase: 'verifying' as const, reason: null }
+              : null;
 
   const boundedRecovery = armedRetry
     ? { nextWakeAt: armedRetry.resumeAt, reason: createTaskReason('none', '自动重试已排期。') }
@@ -399,9 +412,24 @@ function resolveRequiredWork(input: {
   const base = { key: requirement.key, kind: requirement.kind, label: requirement.label };
   if (requirement.kind === 'service') {
     const service = input.raw.service;
-    const operation = latestOperation(input.raw, 'service', 'service:start');
-    if (service?.state === 'healthy' || operation?.outcome === 'success') {
+    // Service operations are keyed per source Attempt, revision and repair
+    // round (2026-10-27 realignment §4.3), so the requirement reads the latest
+    // service operation fact instead of one fixed key.
+    const operation = latestServiceOperation(input.raw);
+    if (operation?.outcome === 'success' || (service?.state === 'healthy'
+      && operation?.outcome !== 'definite_failure' && operation?.outcome !== 'repair_pending')) {
       return { fact: { ...base, state: 'completed', reason: null }, failureReason: null };
+    }
+    if (operation?.outcome === 'repair_pending') {
+      // The failure is real, but the authorized repair round has not run yet.
+      // This is not a conclusion: the Task stays running and the reason keeps
+      // the real diagnosis visible.
+      const reason = createTaskReason(
+        operationReasonCode(operation.reasonCode, 'service_start_failed'),
+        operation.message || '服务未能就绪，正在自动修复。',
+        [...operation.evidenceRefs],
+      );
+      return { fact: { ...base, state: 'running', reason }, failureReason: null };
     }
     if (operation?.outcome === 'definite_failure') {
       const reason = createTaskReason(
@@ -591,6 +619,12 @@ function resolveRequiredWork(input: {
     return { fact: { ...base, state: 'waiting_for_user', reason: null }, failureReason: null };
   }
   return { fact: { ...base, state: 'pending', reason: null }, failureReason: null };
+}
+
+function latestServiceOperation(
+  raw: TaskStateRawFacts,
+): TaskStateRawFacts['operationResults'][number] | null {
+  return latestOperation(raw, 'service');
 }
 
 function latestOperation(

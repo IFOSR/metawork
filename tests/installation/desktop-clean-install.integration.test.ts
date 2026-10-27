@@ -30,6 +30,8 @@ describe.skipIf(process.platform === 'win32')('clean Desktop installer transacti
       const contents: Record<string, string> = {
         'metawork/package.json': '{"name":"metawork","version":"0.1.5"}',
         'planner/package.json': '{"name":"planner"}',
+        'memory/tdai/package.json': '{"name":"tdai"}',
+        'memory/tdai/dist/gateway/server.js': '// memory engine fixture',
         'metawork/dist/index.js': '// runtime fixture',
         'metawork/dist/planning-agent-plan-v9.schema.json': '{}',
         'metawork/dist/desktop-install-cli.js': '// fixture',
@@ -45,12 +47,13 @@ describe.skipIf(process.platform === 'win32')('clean Desktop installer transacti
         await writeFile(file, body, { mode: 0o755 });
       }
       for (const name of ['metawork', 'planner']) await mkdir(join(payload, name, 'node_modules'));
+      await mkdir(join(payload, 'memory', 'tdai', 'node_modules'));
       const artifact = { source: 'https://example.test/source', revision: 'a'.repeat(40),
         url: 'https://example.test/archive.tar.gz', byteSize: 1, sha256: 'b'.repeat(64) };
       const runtime = signed({ manifestSchemaVersion: 1, releaseId: '0.1.5-build-aaaaaaa', channel: 'stable',
         publishedAt: new Date().toISOString(), expiresAt: new Date(Date.now() + 86400000).toISOString(),
         minimumInstallerVersion: '1.2.0', minimumNodeVersion: '22.19.0', platform: 'darwin', arch: process.arch,
-        metawork: artifact, planner: artifact, previousCompatibleRelease: null,
+        metawork: artifact, planner: artifact, memory: artifact, previousCompatibleRelease: null,
         compatibility: { configurationSchema: 2, plannerHostProtocol: 2, planningPlanSchema: 8,
           planningPlanSchemaHash: 'schema', workGraphSchema: 7, kernelDecisionSchema: 6, databaseSchema: 47 },
       });

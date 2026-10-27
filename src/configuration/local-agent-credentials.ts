@@ -2,11 +2,7 @@ import { readFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import type { ProviderDefinition } from './types.js';
-import {
-  assertSecretReference,
-  type SecretReference,
-  type SecretStore,
-} from './secret-store.js';
+import { assertSecretReference, type SecretStore } from './secret-store.js';
 
 export interface LocalAgentCredentialImportInput {
   home?: string;
@@ -40,39 +36,6 @@ export async function importLocalAgentCredentials(
     input.providers,
     input.secretStore,
   );
-}
-
-export async function importLocalAgentCredentialsForRefs(input: {
-  home?: string;
-  codexHomes?: readonly string[];
-  piHomes?: readonly string[];
-  plannerHomes?: readonly string[];
-  environment?: NodeJS.ProcessEnv;
-  providers: Record<string, SecretReference>;
-  secretStore: SecretStore;
-}): Promise<LocalAgentCredentialImportResult> {
-  const candidates = await readLocalAgentCredentialCandidates(
-    input,
-    input.environment ?? process.env,
-  );
-  const imported: string[] = [];
-  const skipped: string[] = [];
-  for (const [providerRef, reference] of Object.entries(input.providers)) {
-    const candidate = uniqueCredential(candidates.filter(value => matchesProviderRef(providerRef, value)));
-    if (!candidate) continue;
-    try {
-      const existing = await input.secretStore.get(reference);
-      if (existing.trim()) {
-        skipped.push(providerRef);
-        continue;
-      }
-    } catch {
-      // A missing SecretStore entry is the import case.
-    }
-    await input.secretStore.put(reference, candidate.apiKey);
-    imported.push(providerRef);
-  }
-  return { imported, skipped };
 }
 
 async function importCandidatesForProviders(

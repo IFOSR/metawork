@@ -117,14 +117,19 @@ export function buildWorkspaceChangeRecord(input: {
   for (const output of input.declaredOutputs) add(output);
   for (const path of input.capturedPaths ?? []) add(path);
 
+  const filesystemChannel = input.before?.source === 'filesystem' || input.after?.source === 'filesystem';
   const hasGitChannel = snapshotFiles !== null
-    || (input.before !== null && input.after !== null && input.delta !== null);
+    || (!filesystemChannel && input.before !== null && input.after !== null && input.delta !== null);
   const hasCaptureChannel = captured.size > 0;
   const hasDeclaredChannel = declared.size > 0;
   const missingReasons: string[] = [];
   const gitFailure = snapshot?.failure ?? input.gitChannelFailure ?? null;
   if (!hasGitChannel) {
-    if (gitFailure === 'command_failed' || gitFailure === 'timeout') {
+    if (filesystemChannel) {
+      // Target-scoped filesystem observation proves the authorized paths, but
+      // cannot claim complete coverage for the rest of a non-Git Workspace.
+      missingReasons.push('filesystem_scope_limited');
+    } else if (gitFailure === 'command_failed' || gitFailure === 'timeout') {
       missingReasons.push(gitFailure === 'timeout' ? 'git_timeout' : 'git_command_failed');
     } else if (gitFailure === 'output_limited') {
       missingReasons.push('output_limited');

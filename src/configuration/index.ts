@@ -112,8 +112,13 @@ export {
 } from './production-secret-store.js';
 export { createProductionConfigurationProbe } from './production-configuration-probe.js';
 export {
+  cleanupProviderCredentials,
+  orphanedProviderCredentialReferences,
+  type ProviderCredentialCleanupInput,
+  type ProviderCredentialCleanupOptions,
+} from './provider-credential-cleanup.js';
+export {
   importLocalAgentCredentials,
-  importLocalAgentCredentialsForRefs,
   type LocalAgentCredentialImportInput,
   type LocalAgentCredentialImportResult,
 } from './local-agent-credentials.js';

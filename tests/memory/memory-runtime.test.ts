@@ -239,6 +239,17 @@ describe('resolveMemorySidecarCommand', () => {
     expect(resolution.command!.args).toContain('--import');
   });
 
+  it('prefers the compiled gateway shipped by releases', () => {
+    const installRoot = tempRoot();
+    const sidecarRoot = join(installRoot, 'memory', 'tdai');
+    mkdirSync(join(sidecarRoot, 'dist', 'gateway'), { recursive: true });
+    writeFileSync(join(sidecarRoot, 'dist', 'gateway', 'server.js'), '// compiled');
+    const resolution = resolveMemorySidecarCommand({ installRoot, env: {} as NodeJS.ProcessEnv });
+    expect(resolution.command?.cwd).toBe(sidecarRoot);
+    expect(resolution.command?.args).toEqual([join(sidecarRoot, 'dist', 'gateway', 'server.js')]);
+    expect(resolution.command?.args).not.toContain('--import');
+  });
+
   it('finds a managed installation under the install root', () => {
     const installRoot = tempRoot();
     const sidecarRoot = join(installRoot, 'memory', 'tdai');

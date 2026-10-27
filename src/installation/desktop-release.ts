@@ -91,7 +91,10 @@ export async function verifyDesktopRelease(resources: string, options: {
     'metawork/dist/desktop-update-cli.js', 'metawork/web/dist/index.html',
     'metawork/dist/planning-agent-plan-v9.schema.json',
     'metawork/desktop-tools/node/bin/node', 'metawork/desktop-tools/git/bin/git',
-    'metawork/desktop-tools/executor/bin/pi', 'planner/packages/coding-agent/dist/cli.js']) {
+    'metawork/desktop-tools/executor/bin/pi', 'planner/packages/coding-agent/dist/cli.js',
+    // Long-term memory ships with the product; a Desktop payload without the
+    // engine would present a switch that can never work.
+    'memory/tdai/dist/gateway/server.js']) {
     if (!inventory[required]) throw new Error('Required Desktop runtime dependency is missing');
   }
   for (const executable of ['metawork/desktop-tools/node/bin/node', 'metawork/desktop-tools/git/bin/git',

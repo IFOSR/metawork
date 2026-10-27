@@ -71,6 +71,8 @@ process.stdout.write(JSON.stringify({
   runtimeSha256: manifest.metawork.sha256,
   plannerUrl: manifest.planner.url,
   plannerSha256: manifest.planner.sha256,
+  memoryUrl: manifest.memory?.url,
+  memorySha256: manifest.memory?.sha256,
 }));
 '@ | Set-Content -Encoding UTF8 $verifyScript
 
@@ -78,31 +80,43 @@ process.stdout.write(JSON.stringify({
   $manifestUri = [Uri]$ManifestUrl
   $runtimeUri = [Uri]::new($manifestUri, [string]$metadata.runtimeUrl)
   $plannerUri = [Uri]::new($manifestUri, [string]$metadata.plannerUrl)
+  if (-not $metadata.memoryUrl) { throw 'Release manifest is missing the Memory engine artifact.' }
+  $memoryUri = [Uri]::new($manifestUri, [string]$metadata.memoryUrl)
   $runtimeArchive = Join-Path $staging 'metawork.zip'
   $plannerArchive = Join-Path $staging 'planner.zip'
+  $memoryArchive = Join-Path $staging 'memory.zip'
   Invoke-WebRequest -UseBasicParsing -Uri $runtimeUri -OutFile $runtimeArchive
   Invoke-WebRequest -UseBasicParsing -Uri $plannerUri -OutFile $plannerArchive
+  Invoke-WebRequest -UseBasicParsing -Uri $memoryUri -OutFile $memoryArchive
 
   $runtimeHash = (Get-FileHash -Algorithm SHA256 $runtimeArchive).Hash.ToLowerInvariant()
   $plannerHash = (Get-FileHash -Algorithm SHA256 $plannerArchive).Hash.ToLowerInvariant()
+  $memoryHash = (Get-FileHash -Algorithm SHA256 $memoryArchive).Hash.ToLowerInvariant()
   if ($runtimeHash -ne [string]$metadata.runtimeSha256) { throw 'Runtime artifact hash mismatch.' }
   if ($plannerHash -ne [string]$metadata.plannerSha256) { throw 'Planner artifact hash mismatch.' }
+  if ($memoryHash -ne [string]$metadata.memorySha256) { throw 'Memory engine artifact hash mismatch.' }
 
   $runtimeRoot = Join-Path $staging 'runtime'
   $plannerRoot = Join-Path $staging 'planner'
+  $memoryRoot = Join-Path $staging 'memory'
   Expand-Archive -Path $runtimeArchive -DestinationPath $runtimeRoot -Force
   Expand-Archive -Path $plannerArchive -DestinationPath $plannerRoot -Force
+  Expand-Archive -Path $memoryArchive -DestinationPath $memoryRoot -Force
   $runtimeRoot = Join-Path $runtimeRoot 'metawork'
   $plannerRoot = Join-Path $plannerRoot 'planner'
+  $memoryRoot = Join-Path $memoryRoot 'memory\tdai'
   if (-not (Test-Path (Join-Path $runtimeRoot 'dist\install-cli.js'))) {
     throw 'Verified Runtime artifact is missing dist\install-cli.js.'
+  }
+  if (-not (Test-Path (Join-Path $memoryRoot 'dist\gateway\server.js'))) {
+    throw 'Verified Memory engine artifact is missing dist\gateway\server.js.'
   }
 
   $command = if (Test-Path (Join-Path $InstallRoot 'app\current')) { 'update' } else { 'install' }
   $env:METAWORK_INSTALL_ROOT = $InstallRoot
   $env:METAWORK_SECRET_STORE = 'file'
   & node (Join-Path $runtimeRoot 'dist\install-cli.js') $command $metadata.releaseId `
-    '--source-root' $runtimeRoot '--planner-root' $plannerRoot
+    '--source-root' $runtimeRoot '--planner-root' $plannerRoot '--memory-root' $memoryRoot
   if ($LASTEXITCODE -ne 0) { throw "MetaWork installer failed with exit code $LASTEXITCODE." }
 } finally {
   Remove-Item -Recurse -Force $staging -ErrorAction SilentlyContinue

@@ -45,8 +45,8 @@ import {
   createLegacyProductionSecretStore,
   resolvePlannerRuntimeEnvironment,
   importLocalAgentCredentials,
-  importLocalAgentCredentialsForRefs,
   importLegacyProviderCredentials,
+  cleanupProviderCredentials,
 } from '../configuration/index.js';
 import { prepareProductionSecretStore } from '../configuration/production-secret-store.js';
 import {
@@ -254,28 +254,12 @@ function toMutationResult(result: ActivateDraftResult): ConfigurationMutationRes
   return { ok: false, code: result.code, activeRevisionId: result.activeRevisionId };
 }
 
-const LOCAL_AGENT_PROVIDER_REFS = ['code-cli', 'kimi', 'deepseek'] as const;
-
 function localAgentCredentialSources() {
   return {
     codexHomes: [join(homedir(), '.config', 'anyfusion', 'codex')],
     piHomes: [join(homedir(), '.config', 'anyfusion', 'pi-home', '.pi')],
     plannerHomes: [join(homedir(), '.config', 'anyfusion', 'planner')],
   };
-}
-
-async function preheatLocalAgentCredentials(secretStore: SecretStore): Promise<void> {
-  const providers: Record<string, SecretReference> = Object.fromEntries(
-    LOCAL_AGENT_PROVIDER_REFS.map(providerRef => [
-      providerRef,
-      `file-secret:anyfusion/providers/${providerRef}` as SecretReference,
-    ]),
-  );
-  await importLocalAgentCredentialsForRefs({
-    ...localAgentCredentialSources(),
-    providers,
-    secretStore,
-  });
 }
 
 /**
@@ -585,7 +569,6 @@ export async function main(cliCommand = parseCliArgs(process.argv.slice(2))) {
       providers: activeSnapshot.config.providers,
       legacyStore: legacySecretStore,
     });
-    await preheatLocalAgentCredentials(secretStore);
     await importLocalAgentCredentials({
       ...localAgentCredentialSources(),
       providers: activeSnapshot.config.providers,
@@ -606,7 +589,28 @@ export async function main(cliCommand = parseCliArgs(process.argv.slice(2))) {
       ),
       listRevisions: () => configurationRepository.listRevisions(),
       getSnapshot: revisionId => configurationService.getSnapshot(revisionId),
-      activate: async config => activateConfiguration(configurationService, config, activeSnapshot.revisionId),
+      activate: async config => {
+        const result = await activateConfiguration(
+          configurationService,
+          config,
+          activeSnapshot.revisionId,
+        );
+        if (result.ok) {
+          // Credential cleanup follows a committed activation; it must never
+          // turn a successful activation into a failed command.
+          try {
+            await cleanupProviderCredentials({
+              secretStore,
+              previous: activeSnapshot.config,
+              next: config,
+              logger: message => console.warn(`[config] ${message}`),
+            });
+          } catch (error) {
+            console.warn(`[config] credential cleanup failed: ${(error as Error).message}`);
+          }
+        }
+        return result;
+      },
     });
     process.stdout.write(`${lines.join('\n')}\n`);
     return;
@@ -681,7 +685,6 @@ export async function main(cliCommand = parseCliArgs(process.argv.slice(2))) {
     providers: migratedSnapshot.config.providers,
     legacyStore: legacySecretStore,
   });
-  await preheatLocalAgentCredentials(secretStore);
   await importLocalAgentCredentials({
     ...localAgentCredentialSources(),
     providers: migratedSnapshot.config.providers,
@@ -785,7 +788,14 @@ export async function main(cliCommand = parseCliArgs(process.argv.slice(2))) {
   // no index. The extraction credential is read from the SecretStore and
   // injected into the sidecar environment only; it never enters the Server's
   // own process.env, which the Planner process tree inherits.
-  const sidecarResolution = resolveMemorySidecarCommand({ installRoot: paths.root });
+  // The managed memory engine is part of the active application release.
+  // `paths.root` is the persistent data/install root (for example
+  // `~/.metawork`), while installers place release artifacts under
+  // `paths.appCurrent`. Resolving from the former makes a packaged Server
+  // report the engine as missing even when `app/current/memory/tdai` exists.
+  // Keep the explicit `METAWORK_MEMORY_SIDECAR_DIR` override supported by the
+  // resolver, and use the active release as the managed default.
+  const sidecarResolution = resolveMemorySidecarCommand({ installRoot: applicationRoot });
   const memoryRuntimeController = await MemoryRuntimeController.create({
     configuration: migratedSnapshot.config,
     options: {
@@ -937,7 +947,7 @@ export async function main(cliCommand = parseCliArgs(process.argv.slice(2))) {
     plannerRuntimeRoot: accountPaths.plannerRuntime,
     databasePath: accountPaths.database,
     configurationRoot: accountPaths.config,
-    schemaPath: resolve(applicationRoot, 'dist', 'planning-agent-plan-v9.schema.json'),
+    schemaPath: resolvePlannerSchemaPath(applicationRoot),
     sessionDir: accountPaths.plannerSessions,
     runtimeEnvironment: plannerRuntimeEnvironment,
     expectedModel: stagedConfiguration.plannerBinding && plannerModel ? {
@@ -1034,7 +1044,11 @@ export async function main(cliCommand = parseCliArgs(process.argv.slice(2))) {
     },
     isPublishedServiceSpecification: async (taskId, root) => taskArtifactRepo.publicFiles.list(LOCAL_DEFAULT_ACCOUNT_ID, taskId)
       .some(item => item.status === 'published' && item.relativePath === LOCAL_SERVICE_SPECIFICATION_FILENAME
-        && item.publishedPath === join(root, LOCAL_SERVICE_SPECIFICATION_FILENAME)),
+        && item.publishedPath === join(root, LOCAL_SERVICE_SPECIFICATION_FILENAME))
+      // In-place Tasks write directly into the bound Conversation Workspace.
+      // They do not create a public task directory, and delivery_policy=none
+      // intentionally suppresses publication rows.
+      || taskEngine.getTaskRepo().findById(taskId)?.executionMode === 'in_place',
     resolveWorkspaceId: async taskId => {
       const row = db.prepare('SELECT workspace_id FROM tasks WHERE id = ?').get(taskId) as
         { workspace_id: string | null } | undefined;
@@ -1046,10 +1060,12 @@ export async function main(cliCommand = parseCliArgs(process.argv.slice(2))) {
       const workspace = await resolveTaskWorkspacePath(taskId);
       if (!workspace) return null;
       const canonicalWorkspace = await realpath(workspace);
-      // In-place delivery writes into the Conversation Workspace itself and
-      // records live references. Launch authority is the authorized service
-      // revision, so an unrelated user edit must not masquerade as "not
-      // published".
+      // The Workspace itself is the authorized service directory for in-place
+      // execution. There is no public task directory in this mode.
+      if (task.executionMode === 'in_place') return canonicalWorkspace;
+      // Worktree/public delivery requires the service manifest to have been
+      // recorded as a published file for this Task. In-place returned above
+      // and deliberately does not use this publication table.
       const serviceSpec = taskArtifactRepo.publicFiles.list(LOCAL_DEFAULT_ACCOUNT_ID, taskId)
         .some(item => item.status === 'published'
           && item.relativePath === LOCAL_SERVICE_SPECIFICATION_FILENAME
@@ -2110,7 +2126,6 @@ export async function main(cliCommand = parseCliArgs(process.argv.slice(2))) {
       const publicArtifacts = taskArtifactRepo.listByTask(taskId).filter(item => item.accountId === accountId && item.status === 'published');
       const publications = new WorkspacePublicationRepo(db);
       const publicDelivery = projectPublicDelivery({ task, workspace: publicWorkspace?.canonicalPath ?? null,
-        pendingDecision: lifecycleProjection.state.pendingActions.length > 0,
         artifacts: [...taskArtifactRepo.publicFiles.list(accountId, taskId), ...publicArtifacts],
         publications: publications.listByTask(taskId).filter(item => item.generationId === activeGraph?.generationId
           && new SubtaskRepo(db).findById(item.subtaskId)?.graphRevision === activeGraph?.revision),
@@ -2474,7 +2489,6 @@ export async function main(cliCommand = parseCliArgs(process.argv.slice(2))) {
         const publications = new WorkspacePublicationRepo(db);
         const graph = new WorkGraphRevisionRepo(db).findActive(taskId);
         return projectPublicDelivery({ task, workspace: await resolveTaskWorkspacePath(taskId),
-          pendingDecision: Boolean(new SqliteTaskActivityFacts(db).read(task, null).pendingDecision),
           artifacts: [...taskArtifactRepo.publicFiles.list(LOCAL_DEFAULT_ACCOUNT_ID, taskId),
             ...taskArtifactRepo.listByTask(taskId).filter(item => item.accountId === LOCAL_DEFAULT_ACCOUNT_ID)], publications: publications.listByTask(taskId).filter(item => item.generationId === graph?.generationId
             && new SubtaskRepo(db).findById(item.subtaskId)?.graphRevision === graph?.revision),
@@ -2938,6 +2952,7 @@ export async function main(cliCommand = parseCliArgs(process.argv.slice(2))) {
           };
         },
         activate: async (baseRevisionId, nextConfig, secrets, spanApiKey) => {
+          const previousConfiguration = configurationRuntimeCoordinator.getSnapshot().config;
           const result = await configurationRuntimeCoordinator.activate({
             expectedRevisionId: baseRevisionId,
             config: nextConfig,
@@ -2945,6 +2960,18 @@ export async function main(cliCommand = parseCliArgs(process.argv.slice(2))) {
             ...(spanApiKey !== undefined ? { spanApiKey } : {}),
           });
           if (result.ok) {
+            // The activation committed, so credentials of Providers this
+            // revision removed are no longer reachable from any active path.
+            try {
+              await cleanupProviderCredentials({
+                secretStore,
+                previous: previousConfiguration,
+                next: result.snapshot.config,
+                logger: message => console.warn(`[config] ${message}`),
+              });
+            } catch (error) {
+              console.warn(`[config] credential cleanup failed: ${(error as Error).message}`);
+            }
             return {
               ok: true,
               revisionId: result.snapshot.revisionId,
@@ -3119,6 +3146,27 @@ export async function main(cliCommand = parseCliArgs(process.argv.slice(2))) {
     await new Promise(() => undefined);
     return;
 }
+
+}
+
+/**
+ * Resolve the Planner schema from the running build before trusting a stale
+ * install pointer. Source-tree Server runs may intentionally reuse an
+ * install root for data and credentials, while the active code and generated
+ * schema live in the repository's dist directory.
+ */
+function resolvePlannerSchemaPath(applicationRoot: string): string {
+  const configured = process.env.METACLAW_PLANNER_SCHEMA_PATH?.trim()
+    || process.env.ANYFUSION_PLANNER_SCHEMA_PATH?.trim();
+  const bundled = resolve(dirname(fileURLToPath(import.meta.url)), 'planning-agent-plan-v9.schema.json');
+  const sourceBuild = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..', 'dist', 'planning-agent-plan-v9.schema.json');
+  const candidates = [
+    configured,
+    resolve(applicationRoot, 'dist', 'planning-agent-plan-v9.schema.json'),
+    bundled,
+    sourceBuild,
+  ].filter((value): value is string => Boolean(value));
+  return candidates.find(candidate => existsSync(candidate)) ?? candidates[0]!;
 }
 
 function asPayloadRecord(value: unknown): Record<string, unknown> {

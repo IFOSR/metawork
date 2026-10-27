@@ -1,12 +1,18 @@
 /**
  * Resolution of the memory engine sidecar command.
  *
- * The engine version is pinned independently of MetaWork (design §12 / R7), so
- * the launcher is discovered at runtime instead of being a hard dependency:
+ * The engine is shipped inside every release as its own tree, so the launcher
+ * only has to find it:
  *
  *   1. `METAWORK_MEMORY_SIDECAR_DIR` — explicit installation directory;
- *   2. `<install root>/memory/tdai` — the default managed installation;
- *   3. nothing — the engine is expected to be running already.
+ *   2. `<install root>/memory/tdai` — the managed installation every installer
+ *      and updater writes (see `stageSourceRelease`).
+ *
+ * Two entry points are supported because the release ships a compiled gateway
+ * while a development checkout only has TypeScript sources:
+ *
+ *   - `dist/gateway/server.js` — preferred, plain Node, no build tooling;
+ *   - `src/gateway/server.ts`  — development, run through `tsx`.
  *
  * Pure module: no process spawning.
  */
@@ -19,6 +25,8 @@ export interface MemorySidecarResolution {
   command: MemorySidecarCommand | null;
   /** Why no command was resolved, for the runtime log. */
   reason?: string;
+  /** Root the engine was found under, for diagnostics. */
+  root?: string;
 }
 
 export function resolveMemorySidecarCommand(input: {
@@ -32,15 +40,8 @@ export function resolveMemorySidecarCommand(input: {
   if (input.installRoot) candidates.push(join(input.installRoot, 'memory', 'tdai'));
 
   for (const candidate of candidates) {
-    const entry = join(candidate, 'src', 'gateway', 'server.ts');
-    if (!existsSync(entry)) continue;
-    return {
-      command: {
-        command: process.execPath,
-        args: ['--import', 'tsx', entry],
-        cwd: candidate,
-      },
-    };
+    const command = resolveMemorySidecarEntry(candidate);
+    if (command) return { command, root: candidate };
   }
   return {
     command: null,
@@ -48,4 +49,17 @@ export function resolveMemorySidecarCommand(input: {
       ? `memory sidecar installation not found (${candidates.join(', ')})`
       : 'memory sidecar installation not configured',
   };
+}
+
+/** Resolve the engine entry point of one installation root. */
+export function resolveMemorySidecarEntry(root: string): MemorySidecarCommand | null {
+  const compiled = join(root, 'dist', 'gateway', 'server.js');
+  if (existsSync(compiled)) {
+    return { command: process.execPath, args: [compiled], cwd: root };
+  }
+  const source = join(root, 'src', 'gateway', 'server.ts');
+  if (existsSync(source)) {
+    return { command: process.execPath, args: ['--import', 'tsx', source], cwd: root };
+  }
+  return null;
 }

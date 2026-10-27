@@ -179,6 +179,25 @@ describe('Conversation turn failure passthrough', () => {
     expect(html).toContain('系统会自动重试一次');
   });
 
+  it('shows a durable service failure when no Executor failure trace exists', () => {
+    const turn = {
+      ...blockedTurn(),
+      status: 'failed' as const,
+      traceEvents: [],
+      executionTimeline: {
+        taskId: 'task_1', title: '启动网页服务', status: 'failed' as const,
+        statusLabel: '失败', stateVersion: 4, reasonCode: 'service_start_failed',
+        reasonMessage: '代码已写入 Workspace，但服务端口 8811 已被其他进程占用。',
+        explanation: '代码已写入 Workspace，但服务端口 8811 已被其他进程占用。', stages: [],
+      },
+    };
+    const html = renderToStaticMarkup(createElement(ConversationTurnView, { turn }));
+    expect(html).toContain('服务启动失败');
+    expect(html).toContain('代码已写入 Workspace，但服务端口 8811 已被其他进程占用。');
+    expect(html).toContain('重试未完成部分');
+    expect(html).toContain('只会重试失败的交付或服务启动');
+  });
+
   it('infers the same diagnosis for a historical receipt without new failure fields', () => {
     const turn = {
       ...blockedTurn(),

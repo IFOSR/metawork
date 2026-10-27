@@ -3,7 +3,7 @@ import type Database from 'better-sqlite3';
 import { BILLING_SCHEMA_VERSION, createBillingSchema } from './billing-schema.js';
 import { installObservationSchema } from './observation-schema.js';
 
-export const CURRENT_SCHEMA_VERSION = 59;
+export const CURRENT_SCHEMA_VERSION = 60;
 
 /**
  * Local memory index (design §4.2).
@@ -1663,6 +1663,11 @@ export function runMigrations(
   migrationContext?: Schema30MigrationContext,
 ): void {
   runBaseMigrations(db, migrationContext);
+  // Schema 59 databases created by the previous release can be missing this
+  // projection queue because the table was added after their schema snapshot
+  // was stamped. Repair the additive table before any runtime projector reads
+  // it; no existing facts are changed.
+  ensureTaskStateProjectionOutbox(db);
   let version = (db.prepare('SELECT version FROM schema_version').get() as { version: number }).version;
   if (version === 42) {
     db.transaction(() => {
@@ -1867,6 +1872,52 @@ export function runMigrations(
       bumpSchemaVersion(db, 58, 59, '58 to 59');
     })();
     version = 59;
+  }
+  if (version === 59) {
+    // 2026-10-27 realignment: a required operation whose failure the authorized
+    // Executor can still repair is not a Task conclusion. `repair_pending`
+    // joins the normalized operation outcomes so Task facts can express
+    // "waiting for automatic repair" instead of `failed`.
+    db.transaction(() => {
+      const rows = db.prepare('SELECT * FROM task_operation_results').all() as Array<Record<string, unknown>>;
+      db.exec('DROP TABLE IF EXISTS task_operation_results_v60');
+      db.exec(`CREATE TABLE task_operation_results_v60 (
+        task_id TEXT NOT NULL,
+        operation_key TEXT NOT NULL,
+        operation_kind TEXT NOT NULL CHECK (operation_kind IN (
+          'execution', 'integration', 'delivery', 'safety_report', 'service'
+        )),
+        outcome TEXT NOT NULL CHECK (outcome IN ('success', 'definite_failure', 'unknown', 'repair_pending')),
+        reason_code TEXT,
+        message TEXT NOT NULL DEFAULT '',
+        evidence_refs_json TEXT NOT NULL DEFAULT '[]',
+        updated_at TEXT NOT NULL,
+        PRIMARY KEY (task_id, operation_key),
+        FOREIGN KEY (task_id) REFERENCES tasks(id)
+      )`);
+      const insert = db.prepare(`INSERT INTO task_operation_results_v60 (
+        task_id, operation_key, operation_kind, outcome, reason_code, message,
+        evidence_refs_json, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`);
+      for (const row of rows) {
+        insert.run(
+          row.task_id as string,
+          row.operation_key as string,
+          row.operation_kind as string,
+          row.outcome as string,
+          (row.reason_code ?? null) as string | null,
+          (row.message ?? '') as string,
+          (row.evidence_refs_json ?? '[]') as string,
+          row.updated_at as string,
+        );
+      }
+      db.exec('DROP TABLE task_operation_results');
+      db.exec('ALTER TABLE task_operation_results_v60 RENAME TO task_operation_results');
+      db.exec(`CREATE INDEX IF NOT EXISTS task_operation_results_task
+        ON task_operation_results(task_id, updated_at)`);
+      bumpSchemaVersion(db, 59, 60, '59 to 60');
+    })();
+    version = 60;
   }
   // Current-schema databases may have been created before a new projection
   // invalidation trigger was introduced. Reinstalling the idempotent trigger
@@ -2789,7 +2840,17 @@ function runBaseMigrations(
     const versions = db.prepare(
       'SELECT version FROM schema_version ORDER BY version',
     ).all() as Array<{ version: number }>;
-    if (versions.length === 1 && [42, 43, 44, 45, 46, 47, 48, 49, 50, 51, 52, 53, 54, 55, 56, 57, 58, CURRENT_SCHEMA_VERSION].includes(versions[0]!.version)) {
+    if (versions.length === 1 && [42, 43, 44, 45, 46, 47, 48, 49, 50, 51, 52, 53, 54, 55, 56, 57, 58, 59, CURRENT_SCHEMA_VERSION].includes(versions[0]!.version)) {
+      // A short-lived release stamped some pre-six-state databases as the
+      // current version before rebuilding `tasks`. Treat that shape as the
+      // genuine 51 baseline and run the authoritative six-state migration;
+      // otherwise the runtime fails later on missing state_version columns.
+      if (versions[0]!.version === CURRENT_SCHEMA_VERSION
+        && tableExists(db, 'tasks')
+        && !columnsOf(db, 'tasks').includes('state_version')) {
+        db.prepare('UPDATE schema_version SET version = 51 WHERE version = ?').run(CURRENT_SCHEMA_VERSION);
+        migrateSchema51To52(db);
+      }
       return;
     }
     if (versions.length === 1 && versions[0]?.version === 41) {
@@ -2964,6 +3025,17 @@ function runBaseMigrations(
     db.prepare('INSERT INTO schema_version (version) VALUES (?)')
       .run(CURRENT_SCHEMA_VERSION);
   })();
+}
+
+function ensureTaskStateProjectionOutbox(db: Database.Database): void {
+  if (!tableExists(db, 'schema_version')
+    || (tableExists(db, 'task_state_changes')
+      && tableExists(db, 'task_operation_results')
+      && tableExists(db, 'task_state_projection_outbox'))) return;
+  // Install the complete additive Task State DDL. Older schema snapshots can
+  // miss any one of these tables, and the state authority writes them as one
+  // contract.
+  db.exec(TASK_STATE_SCHEMA_SQL);
 }
 
 function migrateSchema34To35(db: Database.Database): void {

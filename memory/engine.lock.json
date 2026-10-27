@@ -1,0 +1,8 @@
+{
+  "source": "https://github.com/TencentCloud/TencentDB-Agent-Memory.git",
+  "revision": "a3c2d8600b5d8ab51d5389e55ce62ca8da16b833",
+  "entry": "dist/gateway/server.js",
+  "installRoot": "memory/tdai",
+  "license": "MIT",
+  "note": "Pinned upstream engine revision. CI clones exactly this commit, builds the compiled gateway and ships it as the memory artifact; this repository never vendors the engine dependency tree."
+}

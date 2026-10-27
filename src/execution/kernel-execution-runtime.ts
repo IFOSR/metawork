@@ -4,6 +4,7 @@ import type { TaskActivityFactsReader } from '../task/task-activity-facts.js';
 import { projectPublicDelivery, type PublicDeliveryView } from '../delivery/public-delivery-view.js';
 import { PUBLISHED_CODE_MISSING_SERVICE_SPECIFICATION } from './managed-local-service.js';
 import type { ManagedLocalServices } from './managed-local-service.js';
+import { LOCAL_SERVICE_SPECIFICATION_FILENAME } from './managed-local-service.js';
 import { localServiceSpecificationRevision, type LocalServiceOperation, type LocalServiceView } from '../task/local-service.js';
 import type { PendingResultIdentity } from '../task/safe-result-identity.js';
 import { ExecutorProbeError } from './work-unit-claim-service.js';
@@ -138,6 +139,57 @@ type LocalServiceApplyOutcome =
   | { readonly type: 'settled'; readonly view: LocalServiceView | null; readonly error: string };
 
 const DEFAULT_EXECUTION_TRACE_HEARTBEAT_MS = 10_000;
+
+/**
+ * Runtime mirror of the Kernel's service repair budget (2026-10-27 realignment
+ * §4.3). The Kernel refuses a round past its own limit; the Runtime uses the
+ * same bound to stop driving its verification loop.
+ */
+const MAX_SERVICE_REPAIR_ROUNDS = 3;
+
+
+function boundRefusal(value: string): string {
+  const normalized = value.replace(/\s+/gu, ' ').trim();
+  return normalized.length <= 400 ? normalized : `${normalized.slice(0, 399)}…`;
+}
+
+/**
+ * Durable count of consumed service repair rounds, per Subtask.
+ *
+ * A cancelled dispatch never ran, so it must not consume the Kernel's bounded
+ * repair budget. In-flight and settled rounds do: reusing their ordinal would
+ * authorize two attempts for the same round.
+ */
+function serviceRepairRoundCounts(
+  items: readonly import('../storage/kernel-dispatch-item-repo.js').KernelDispatchItemRecord[],
+): Record<string, number> {
+  const counts: Record<string, number> = {};
+  for (const item of items) {
+    if (item.attemptPayload?.protocol !== 'metawork:service-repair:v1') continue;
+    if (item.status === 'cancelled') continue;
+    counts[item.subtaskId] = (counts[item.subtaskId] ?? 0) + 1;
+  }
+  return counts;
+}
+
+/**
+ * Resolve a registered service through the composite Workspace identity.
+ *
+ * `findForWorkspace` is the Runtime contract; focused fixtures that only wire
+ * the legacy `find` port keep working through the bare lookup.
+ */
+function resolveRegisteredService(
+  services: {
+    findForWorkspace?(workspaceId: string | null, serviceId: string): import('../task/local-service.js').LocalServiceRecord | null;
+    find(serviceId: string): import('../task/local-service.js').LocalServiceRecord | null;
+  },
+  workspaceId: string | null,
+  serviceId: string,
+): import('../task/local-service.js').LocalServiceRecord | null {
+  return services.findForWorkspace
+    ? services.findForWorkspace(workspaceId, serviceId)
+    : services.find(serviceId);
+}
 
 function defaultResourceGrant(taskId: string, generationId: string, subtaskId: string) {
   return buildDefaultResourceClaims({
@@ -517,7 +569,7 @@ export interface KernelExecutionRuntimeDeps {
   /** Normalized operation results (service start, delivery, integration). */
   taskOperationResults: Pick<
     import('../storage/task-operation-result-repo.js').TaskOperationResultRepo,
-    'record'
+    'record' | 'listByTask'
   >;
   /** Resolves a task's conversation workspace path when the queued request
    *  does not carry one (timer/recovery requests historically omitted it,
@@ -564,6 +616,8 @@ export interface KernelExecutionRuntimeDeps {
   maxConcurrentAttemptsPerTask?: number;
   conversationTaskSchedulerRepo?: ConversationTaskSchedulerRepo;
   onTaskTerminal?(taskId: string): void | Promise<void>;
+  /** Wake the account scheduler after a durable continuation is queued. */
+  onTaskQueued?(taskId: string): void | Promise<void>;
   executionTraceHeartbeatMs?: number;
   publicationWorker: WorkspacePublicationWorker;
   publicationRepo: WorkspacePublicationRepo;
@@ -792,12 +846,26 @@ export class KernelExecutionRuntime {
       generationId: graph.generationId, graphRevision: graph.revision,
       publicationIds: publications.filter(item => this.deps.publicationRepo.delivery(item.id)?.status === 'failed')
         .map(item => item.id),
+      // Service operations are keyed per source Attempt and repair round, so the
+      // remaining work reads the latest service outcome instead of one key.
       startService: source.startServiceAfterPublish === true
-        && !facts?.operationResults.some(item => item.operationKey === 'service:start' && item.outcome === 'success'),
+        && this.latestServiceOutcome(taskId) !== 'success',
     } : null;
     // Never infer reusable output from a done label. Every node must have an
     // integrated immutable candidate, and no unsafe external operation may remain.
-    const safeToRetry = nodes.length > 0 && nodes.every(node => publications.some(item => item.subtaskId === node.id))
+    const inPlace = source.executionMode === 'in_place';
+    // In-place execution has no isolated publication row to reuse: the
+    // completed Executor already wrote the authorized files into the bound
+    // Workspace. A failed service-start round therefore retries only the
+    // service requirement after proving every execution node settled.
+    const executionReceipts = facts?.receipts.filter(receipt => nodes.some(node => node.id === receipt.subtaskId)) ?? [];
+    const executionSettledInPlace = inPlace && nodes.length > 0
+      && nodes.every(node => node.status === 'done')
+      && executionReceipts.length >= nodes.length
+      && nodes.every(node => executionReceipts.some(receipt => receipt.subtaskId === node.id
+        && (receipt.terminalState === 'completed' || receipt.accepted === true)));
+    const safeToRetry = (inPlace ? executionSettledInPlace
+      : nodes.length > 0 && nodes.every(node => publications.some(item => item.subtaskId === node.id)))
       && !facts?.externalOutcomeUnknown
       && this.deps.cancellationCoordinator.completionBlockedReasons(taskId, null).length === 0;
     let rejected: string | null = null;
@@ -918,7 +986,11 @@ export class KernelExecutionRuntime {
         const source = this.deps.taskRuntimeService.findTask(remaining.sourceTaskId)!;
         const files = this.deps.userArtifactPublication?.taskArtifactRepo.publicFiles
           .list(source.accountId ?? 'local-default', source.id) ?? [];
-        await manager.verifyPublishedFiles(source.id, files);
+        // Worktree retries verify immutable published bytes. In-place retries
+        // launch from the bound Workspace and have no public-file manifest.
+        if (source.executionMode !== 'in_place') {
+          await manager.verifyPublishedFiles(source.id, files);
+        }
         assertCurrent();
         await this.startRequestedPublishedService(taskId);
       }
@@ -938,6 +1010,21 @@ export class KernelExecutionRuntime {
         if (settled.status === 'succeeded') this.deps.workGraphRevisionRepo.complete(taskId, 1, new Date().toISOString(), 'full');
         if (this.deps.onTaskTerminal) await this.deps.onTaskTerminal(taskId);
         else this.deps.cancellationCoordinator.releaseAdmission(taskId);
+      } else if (this.latestServiceOutcome(taskId) === 'repair_pending') {
+        // This path has no execution workflow, so the durable repair request it
+        // just recorded needs one drive to be dispatched. The repair loop then
+        // runs inside that drive (2026-10-27 realignment §4.3).
+        await this.execute(this.prepareExecution({
+          taskId,
+          request: {
+            userPrompt: task.goal,
+            contextTaskId: task.id,
+            executionMode: 'follow-up',
+            origin: 'system',
+            schedulingReason: 'service repair continuation',
+          },
+          recoveryOnly: true,
+        }));
       }
     }
     return true;
@@ -1006,7 +1093,7 @@ export class KernelExecutionRuntime {
         ? null
         : (task.conversationId ? await this.deps.resolveUserWorkspaceRoot?.(task.conversationId) : null)
           ?? this.deps.userArtifactPublication?.userWorkspaceRoot ?? null);
-    return projectPublicDelivery({ task, workspace, pendingDecision: this.pendingTaskResult(taskId) !== null,
+    return projectPublicDelivery({ task, workspace,
       artifacts: [...(this.deps.userArtifactPublication?.taskArtifactRepo.publicFiles.list(task.accountId ?? 'local-default', taskId) ?? []),
         ...(this.deps.userArtifactPublication?.taskArtifactRepo.listByTask(taskId).filter(item => item.accountId === (task.accountId ?? 'local-default')) ?? [])],
       publications: this.deps.publicationRepo.listByTask(taskId).filter(item => item.generationId === graph?.generationId
@@ -1042,7 +1129,7 @@ export class KernelExecutionRuntime {
     const workspaceId = await services.resolveServiceWorkspaceId(resourceTaskId);
     const specificationRevision = specification
       ? localServiceSpecificationRevision(specification)
-      : services.find(id)?.specificationRevision ?? '';
+      : resolveRegisteredService(services, workspaceId, id)?.specificationRevision ?? '';
     const event: Extract<KernelEvent, { type: 'managed_service_requested' }> = {
       schemaVersion: 5, configurationRevision: this.configurationRevisionForTask(taskId),
       type: 'managed_service_requested', id: resourceTaskId !== taskId
@@ -1077,7 +1164,13 @@ export class KernelExecutionRuntime {
       buildSnapshot: event => {
         const task = this.deps.taskRuntimeService.findTask(taskId);
         const id = event.type === 'managed_service_requested' ? event.serviceId : '';
-        const registered = services.find(id);
+        // Service identity is the composite (account, workspace, service); an
+        // identically named service in another Workspace is not this record.
+        const registered = resolveRegisteredService(
+          services,
+          event.type === 'managed_service_requested' ? event.workspaceId ?? null : null,
+          id,
+        );
         return { schemaVersion: 5, type: 'service_control', task: task ? { id: task.id, status: task.status } : null,
           serviceHandedOver: (this.deps.taskRuntimeService.listTasks?.() ?? []).some(candidate =>
             candidate.retryOfTaskId === taskId && candidate.status === 'succeeded'
@@ -1661,6 +1754,16 @@ export class KernelExecutionRuntime {
     if (slot.state === 'free') {
       // The existing account scheduler owns promotion when installed. A local
       // single-Task Session uses the same durable queue and reservation path.
+      if (this.deps.onTaskQueued) {
+        // Account runtimes normally wake from terminal-task callbacks or the
+        // periodic recovery pass. An accepted result is neither terminal nor
+        // an ordinary new submission, so it used to sit in `queued` until that
+        // periodic pass. Ask the account scheduler to promote it immediately;
+        // the callback starts the promoted Task asynchronously and the current
+        // continuation drain remains the idempotent fallback.
+        void this.deps.onTaskQueued?.(taskId);
+        return false;
+      }
       if (this.deps.onTaskTerminal) return false;
       if (scheduler.listSlots().some(item => item.activeTaskId !== null)) return false;
       scheduler.promoteNextQueued(task.conversationId, new Date().toISOString());
@@ -1962,6 +2065,9 @@ export class KernelExecutionRuntime {
       ),
       resourceConflictSubtaskIds: [],
       capacityProbeBindingFingerprints,
+      // Durable repair budget facts: the Kernel authorizes the next service
+      // repair round only when this count matches the requested ordinal.
+      serviceRepairAttemptsBySubtask: serviceRepairRoundCounts(dispatchItems),
       executorStatuses: revisionStableFacts.executorStatuses,
       correctionSupportedAgentClasses: revisionStableFacts.correctionSupportedAgentClasses,
       nativeContinuationAgentClasses: revisionStableFacts.nativeContinuationAgentClasses,
@@ -3351,6 +3457,31 @@ export class KernelExecutionRuntime {
         '原结果的完成认证已修复，任务继续收敛。',
       );
     }
+    if (
+      item.attemptKind !== 'contract_correction'
+      && outcome.outcome === 'completed'
+      && outcome.resultId
+      && this.shouldDeliverCompletedResultInline(item, subtask)
+    ) {
+      // Report results and zero-change in-place edits do not create a
+      // Workspace publication. Without this handoff the Task can become
+      // `succeeded` while the Conversation only receives the generic
+      // "completed" summary and loses the Executor's actual stdout/result.
+      this.deps.callbacks.recordResultDelivery({
+        resultId: outcome.resultId,
+        content: outcome.output,
+        completeness: 'complete',
+        certification: 'certified',
+      });
+      this.deps.callbacks.appendOutput(
+        this.deps.presentation.formatExecutorFinalResult({
+          executorName: outcome.executorName,
+          taskId: item.taskId,
+          subtaskId: item.subtaskId,
+          output: outcome.output,
+        }),
+      );
+    }
     if (outcome.outcome === 'contract_failed') {
       if (outcome.output) {
         if (outcome.resultId && outcome.deliverability === 'deliverable') {
@@ -3418,6 +3549,22 @@ export class KernelExecutionRuntime {
       attemptId: item.attemptId,
       ...event,
     } as KernelEvent;
+  }
+
+  private shouldDeliverCompletedResultInline(
+    item: KernelDispatchItemRecord,
+    subtask: Subtask,
+  ): boolean {
+    if (subtask.deliveryKind === 'report') return true;
+    // In-place edit attempts have no publication worker. A zero-delta edit is
+    // therefore a result-only operation (for example, run an already updated
+    // script and show stdout) and must use the inline result channel.
+    if (item.attemptKind === 'merge_repair') return false;
+    const runtime = this.deps.attemptRuntimeRepo?.find(item.attemptId);
+    const changed = runtime?.workspaceDelta && typeof runtime.workspaceDelta === 'object'
+      ? (runtime.workspaceDelta as { changed?: unknown }).changed
+      : undefined;
+    return !Array.isArray(changed) || changed.length === 0;
   }
 
   private ownerEnvelopeForTask(taskId: string | null): Pick<
@@ -3764,7 +3911,7 @@ export class KernelExecutionRuntime {
         activeRevision.generationId,
       );
       if (outcomes.length === 0) {
-        await this.startRequestedPublishedService(input.taskId);
+        await this.startRequestedPublishedService(input.taskId, input.workflow);
         return;
       }
       let integrated = false;
@@ -3804,6 +3951,9 @@ export class KernelExecutionRuntime {
             operationKey: `publication_delivery:${outcome.publicationId}`,
             reason: 'publication delivery failed',
           });
+          // Delivered code plus failed file delivery is exactly the remaining
+          // work protocol; retrying it is internal, not a user command.
+          await this.attemptAutomaticRemainingWork(outcome.taskId);
           continue;
         }
         integrated = true;
@@ -3821,7 +3971,7 @@ export class KernelExecutionRuntime {
           });
         }
         this.projectIntegratedPublication(outcome);
-        await this.startRequestedPublishedService(outcome.taskId);
+        await this.startRequestedPublishedService(outcome.taskId, input.workflow);
         // Integrated publication and successful delivery are durable facts; the
         // authority recomputes the conclusion from them.
         this.reconcileTaskState(outcome.taskId, {
@@ -3870,10 +4020,16 @@ export class KernelExecutionRuntime {
     }
   }
 
-  private async startRequestedPublishedService(taskId: string): Promise<void> {
+  private async startRequestedPublishedService(
+    taskId: string,
+    workflow?: KernelWorkflow,
+  ): Promise<void> {
     const task = this.deps.taskRuntimeService.findTask(taskId);
     const manager = this.deps.managedLocalServices;
     if (!task?.startServiceAfterPublish) return;
+    // A terminal Task keeps its conclusion. The repair loop below never lets a
+    // Task reach that state while an authorized repair round remains, so this
+    // fence only stops historical or cancelled work.
     if (task.status === 'succeeded' || task.status === 'failed' || task.status === 'cancelled') return;
     const resourceTaskId = task.retryOfTaskId ?? taskId;
     const inPlaceWorkspace = task.executionMode === 'in_place';
@@ -3904,68 +4060,648 @@ export class KernelExecutionRuntime {
       return;
     }
     try {
-      const spec = await manager.readSpecification(resourceTaskId);
-      // A failed or stopped service is never implicitly repeated. The explicit
-      // restart operation is the only owner of a second launch.
-      const previous = manager.find(spec.serviceId);
-      const view = previous && !task.retryOfTaskId ? await manager.status(spec.serviceId)
-        : await this.manageLocalService(taskId, previous ? 'restart' : 'start', previous?.specification.serviceId, false);
-      this.deps.callbacks.appendOutput(`服务 ${view.serviceId}：${view.state}；${view.message ?? ''}；${view.url}`);
-      this.recordOperationResult({
+      // The current specification owns this round. A historical record from an
+      // earlier Task is diagnosis input, never a reason to observe instead of
+      // start (2026-10-27 realignment §4.2).
+      let verification = await this.verifyRequestedService(taskId, resourceTaskId);
+      for (let round = 0; round < MAX_SERVICE_REPAIR_ROUNDS; round += 1) {
+        const { view, spec, workspaceId } = verification;
+        this.deps.callbacks.appendOutput(
+          `服务 ${view.serviceId}：${view.state}；${view.message ?? ''}；${view.url}`,
+        );
+        if (view.state === 'healthy') {
+          this.recordServiceStarted(taskId, spec, workspaceId);
+          return;
+        }
+        // A service that did not reach health is feedback for the next
+        // authorized continuation, not an immediate Task verdict.
+        const dispatched = await this.requestServiceRepair({
+          taskId,
+          spec,
+          workspaceId,
+          view,
+          workflow,
+        });
+        if (!dispatched) return;
+        // The repair Attempt settled inside the supervisor drain. Re-verify the
+        // same specification: the agent may have fixed the code, the command or
+        // the health path.
+        verification = await this.verifyRequestedService(taskId, resourceTaskId);
+      }
+      await this.handleServiceVerificationFailure({
         taskId,
-        operationKey: 'service:start',
-        operationKind: 'service',
-        outcome: view.state === 'healthy' ? 'success'
-          : view.state === 'failed' ? 'definite_failure' : 'unknown',
-        reasonCode: view.state === 'healthy' ? null
-          : view.state === 'failed'
-            ? (/health/u.test(view.message ?? '') ? 'service_health_timeout' : 'service_start_failed')
-            : 'external_outcome_unknown',
-        message: view.message ?? view.state,
-        evidenceRefs: [`service:${view.serviceId}`],
-      });
-      this.reconcileTaskState(taskId, {
-        decisionId: `service_start:${taskId}:${spec.serviceId}:${view.state}`,
-        operationKey: `service_start:${taskId}:${spec.serviceId}:${view.state}`,
-        reason: `local service ${spec.serviceId} is ${view.state}`,
+        spec: verification.spec,
+        workspaceId: verification.workspaceId,
+        view: verification.view,
+        budgetExhausted: true,
       });
     } catch (error) {
+      this.reportServiceVerificationError(taskId, error);
+    }
+  }
+
+  /**
+   * Read the current specification and drive the authorized start/reconcile.
+   *
+   * A repair round may legitimately change the launch contract (port, command,
+   * health path). The Kernel still owns that authorization: the new revision is
+   * bound through the explicit `update` service operation before the launch.
+   */
+  private async verifyRequestedService(
+    taskId: string,
+    resourceTaskId: string,
+  ): Promise<{
+    view: LocalServiceView;
+    spec: import('../task/local-service.js').LocalServiceSpecification;
+    workspaceId: string;
+  }> {
+    const manager = this.deps.managedLocalServices!;
+    let spec: import('../task/local-service.js').LocalServiceSpecification;
+    let revisionDrifted = false;
+    try {
+      spec = await manager.readSpecification(resourceTaskId);
+    } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
-      const normalized = normalizeExecutorFailure(message);
-      const code = /EADDRINUSE|port_in_use/iu.test(message) ? 'port_in_use'
-        : /ENOENT/iu.test(message) ? 'command_not_found'
-        : /环境引用不可用|credential|authentication/iu.test(message) ? 'input_required'
-        : normalized.code;
-      if (message === PUBLISHED_CODE_MISSING_SERVICE_SPECIFICATION) {
-        this.deps.callbacks.appendOutput(`${message}；服务尚未就绪。`);
-      } else {
-        this.deps.callbacks.appendOutput('代码已交付，但服务启动失败。请查看 /service status 或显式重试启动。');
+      if (!message.includes('需要显式的服务更新授权')) throw error;
+      spec = await manager.readSpecification(resourceTaskId, { allowRevisionChange: true });
+      revisionDrifted = true;
+    }
+    const workspaceId = await manager.resolveServiceWorkspaceId(resourceTaskId);
+    if (revisionDrifted) {
+      if (await this.serviceProcessAlive(spec.serviceId, workspaceId)) {
+        await this.manageLocalService(taskId, 'stop', spec.serviceId, false);
       }
-      // A definite start failure (including a port conflict) ends the required
-      // work as `failed`; the delivered code is preserved.
-      this.recordOperationResult({
-        taskId,
-        operationKey: 'service:start',
-        operationKind: 'service',
-        outcome: code === 'unknown' || code === 'input_required' ? 'unknown' : 'definite_failure',
-        reasonCode: code === 'port_in_use' || code === 'command_not_found' || code === 'input_required'
-          ? code : code === 'unknown' ? 'external_outcome_unknown' : 'service_start_failed',
-        message,
-        evidenceRefs: [`task:${taskId}`],
+      await this.manageLocalService(taskId, 'update', spec.serviceId, false);
+    }
+    const view = await this.manageLocalService(taskId, 'start', spec.serviceId, false);
+    return { view, spec, workspaceId };
+  }
+
+  private recordServiceStarted(
+    taskId: string,
+    spec: import('../task/local-service.js').LocalServiceSpecification,
+    workspaceId: string,
+  ): void {
+    const revision = localServiceSpecificationRevision(spec);
+    const target = this.serviceRepairTarget(taskId);
+    const ordinal = this.serviceRepairAttempts(taskId, target?.subtaskId ?? '');
+    this.recordOperationResult({
+      taskId,
+      operationKey: this.serviceOperationKey(spec.serviceId, revision, target?.attemptId ?? null, ordinal),
+      operationKind: 'service',
+      outcome: 'success',
+      reasonCode: null,
+      message: `服务 ${spec.serviceId} 已通过健康检查。`,
+      evidenceRefs: [`service:${spec.serviceId}`, `workspace:${workspaceId}`, `revision:${revision}`],
+    });
+    this.reconcileTaskState(taskId, {
+      decisionId: `service_start:${taskId}:${spec.serviceId}:${revision}:${ordinal}:healthy`,
+      operationKey: `service_start:${taskId}:${spec.serviceId}:${revision}:${ordinal}:healthy`,
+      reason: `local service ${spec.serviceId} is healthy`,
+    });
+  }
+
+  /**
+   * Turn a failed service verification into one Kernel-authorized repair round.
+   *
+   * Returns `true` when a continuation Attempt was dispatched and settled, so the
+   * caller can re-verify. Returns `false` when the failure is a conclusion: no
+   * repair target, no budget left, or no driver to dispatch it.
+   */
+  private async requestServiceRepair(input: {
+    taskId: string;
+    spec: import('../task/local-service.js').LocalServiceSpecification;
+    workspaceId: string;
+    view: LocalServiceView;
+    workflow?: KernelWorkflow;
+  }): Promise<boolean> {
+    const target = this.serviceRepairTarget(input.taskId);
+    const ordinal = this.serviceRepairAttempts(input.taskId, target?.subtaskId ?? '');
+    if (!target) {
+      // Nothing to hand the feedback to: record the real diagnosis as the
+      // conclusion instead of inventing an internal restart command.
+      await this.handleServiceVerificationFailure({ ...input, budgetExhausted: false });
+      return false;
+    }
+    if (ordinal >= MAX_SERVICE_REPAIR_ROUNDS) {
+      await this.handleServiceVerificationFailure({
+        ...input,
+        target,
+        budgetExhausted: true,
       });
-      this.reconcileTaskState(taskId, {
-        decisionId: `service_start_failed:${taskId}:${code}`,
-        operationKey: `service_start:${taskId}:failed`,
-        reason: `local service start failed: ${code}`,
+      return false;
+    }
+    const failure = await this.handleServiceVerificationFailure({
+      ...input,
+      target,
+      budgetExhausted: false,
+      pendingRepair: true,
+    });
+    if (!input.workflow) {
+      // No execution workflow is available in this drive. The durable
+      // `repair_pending` fact keeps the Task running and the Subtask stays
+      // `done`, so the next drive can still find the repair target and
+      // authorize it (2026-10-27 review fix).
+      return false;
+    }
+    const event = this.serviceRepairEvent({
+      taskId: input.taskId,
+      target,
+      spec: input.spec,
+      workspaceId: input.workspaceId,
+      failure,
+      ordinal,
+    });
+    // The Kernel's recovery branch authorizes a continuation for an
+    // `awaiting_decision` node, so the node is reopened for exactly the
+    // submission. Every outcome that does not authorize a dispatch rolls it
+    // back: a refused, stale or failed submission must never leave a node that
+    // no repair path can reach.
+    this.reopenSubtaskForServiceRepair(target.subtaskId, failure.summary);
+    let decisions;
+    try {
+      ({ decisions } = await input.workflow.submit(event));
+    } catch (error) {
+      this.rollbackRefusedServiceRepair(target.subtaskId);
+      await this.handleServiceVerificationFailure({
+        ...input,
+        target,
+        budgetExhausted: true,
+        refusal: error instanceof Error ? error.message : String(error),
+      });
+      return false;
+    }
+    const decision = decisions.find(candidate => candidate.eventId === event.id);
+    const authorized = decision?.action.type === 'dispatch_batch'
+      && decision.action.items.some(item => item.subtaskId === target.subtaskId);
+    if (!authorized) {
+      // The Kernel refused the round (identity, budget or ordering). Report its
+      // own reason instead of pretending a repair is running.
+      this.rollbackRefusedServiceRepair(target.subtaskId);
+      await this.handleServiceVerificationFailure({
+        ...input,
+        target,
+        budgetExhausted: true,
+        refusal: decision?.reason ?? 'Kernel did not authorize a service repair continuation',
+      });
+      return false;
+    }
+    await this.attemptSupervisor.drain(input.taskId);
+    return true;
+  }
+
+  private serviceOperationKey(
+    serviceId: string,
+    specificationRevision: string,
+    sourceAttemptId: string | null,
+    ordinal: number,
+  ): string {
+    // Idempotency is per source Attempt, per launch contract and per repair
+    // round: two failures of different rounds must not overwrite each other.
+    return `service:start:${serviceId}:${specificationRevision}:${sourceAttemptId ?? 'none'}:${ordinal}`;
+  }
+
+  /**
+   * The Subtask whose work produced the requested service, plus the certified
+   * Attempt to hand the feedback to.
+   *
+   * Feedback must never reach an unrelated Executor, so a candidate needs
+   * positive evidence that it produced the service: it declared
+   * `.metawork-service.json` as an output, or its observed Workspace delta
+   * wrote that manifest. Only when the Generation has exactly one completed
+   * Subtask is the single candidate accepted without that evidence.
+   */
+  private serviceRepairTarget(taskId: string): {
+    subtaskId: string;
+    attemptId: string;
+    authorizedBinding: AuthorizedExecutorBinding;
+    bindingFingerprint: string;
+  } | null {
+    const activeRevision = this.deps.workGraphRevisionRepo.findActive(taskId);
+    const generationId = activeRevision?.generationId ?? `generation_${taskId}_1`;
+    // `listByTask` is newest-first, so the first matching receipt is the Attempt
+    // that produced the current code (or the latest repair round).
+    const receipts = this.deps.attemptReceiptRepo.listByTask(taskId)
+      .filter(receipt => receipt.generationId === generationId
+        && receipt.terminalState !== 'contract_blocked');
+    const candidates: Array<{
+      subtaskId: string;
+      attemptId: string;
+      authorizedBinding: AuthorizedExecutorBinding;
+      bindingFingerprint: string;
+      producedService: boolean;
+    }> = [];
+    for (const receipt of receipts) {
+      // A repair round hands feedback to the Executor that produced certified
+      // work. An uncertified result has no agreed completion contract to repair.
+      if (receipt.terminalState !== 'completed') continue;
+      const subtask = this.deps.subtaskRepo.findById(receipt.subtaskId);
+      if (!subtask || subtask.status !== 'done') continue;
+      candidates.push({
+        subtaskId: subtask.id,
+        attemptId: receipt.attemptId,
+        authorizedBinding: receipt.authorizedBinding,
+        bindingFingerprint: receipt.bindingFingerprint,
+        producedService: this.attemptProducedService(subtask.id, subtask.fileOutputs ?? [], receipt.attemptId),
       });
     }
+    const evidence = candidates.find(candidate => candidate.producedService);
+    if (evidence) {
+      return {
+        subtaskId: evidence.subtaskId,
+        attemptId: evidence.attemptId,
+        authorizedBinding: evidence.authorizedBinding,
+        bindingFingerprint: evidence.bindingFingerprint,
+      };
+    }
+    const distinctSubtasks = new Set(candidates.map(candidate => candidate.subtaskId));
+    if (distinctSubtasks.size !== 1) {
+      // Several completed Subtasks and no evidence which one owns the service:
+      // refusing the feedback is safer than routing it to an unrelated Executor.
+      return null;
+    }
+    const only = candidates[0]!;
+    return {
+      subtaskId: only.subtaskId,
+      attemptId: only.attemptId,
+      authorizedBinding: only.authorizedBinding,
+      bindingFingerprint: only.bindingFingerprint,
+    };
+  }
+
+  /** Whether this Attempt authored the service manifest Runtime launches. */
+  private attemptProducedService(
+    subtaskId: string,
+    fileOutputs: readonly string[],
+    attemptId: string,
+  ): boolean {
+    const manifest = LOCAL_SERVICE_SPECIFICATION_FILENAME;
+    if (fileOutputs.some(output => output.replace(/^\.\//u, '') === manifest
+      || output.endsWith(`/${manifest}`))) {
+      return true;
+    }
+    const runtime = this.deps.attemptRuntimeRepo?.find(attemptId);
+    const changed = runtime?.workspaceDelta && typeof runtime.workspaceDelta === 'object'
+      ? (runtime.workspaceDelta as { changed?: unknown }).changed
+      : null;
+    if (!Array.isArray(changed)) return false;
+    return changed.some(entry => {
+      const path = entry && typeof entry === 'object'
+        ? String((entry as { path?: unknown }).path ?? '')
+        : '';
+      return path === manifest || path.endsWith(`/${manifest}`);
+    });
+  }
+
+  private latestServiceOutcome(
+    taskId: string,
+  ): 'success' | 'definite_failure' | 'unknown' | 'repair_pending' | null {
+    const results = this.deps.taskOperationResults.listByTask?.(taskId) ?? [];
+    return [...results].filter(result => result.operationKind === 'service').at(-1)?.outcome ?? null;
+  }
+
+  private serviceRepairAttempts(taskId: string, subtaskId: string): number {
+    if (!subtaskId) return 0;
+    // A cancelled dispatch never ran, so it must not consume the budget. This
+    // is the same rule the Kernel applies through its snapshot fact.
+    return serviceRepairRoundCounts(
+      this.deps.dispatchItemRepo.listByTask(taskId)
+        .filter(item => item.subtaskId === subtaskId),
+    )[subtaskId] ?? 0;
+  }
+
+  private serviceRepairEvent(input: {
+    taskId: string;
+    target: {
+      subtaskId: string;
+      attemptId: string;
+      authorizedBinding: AuthorizedExecutorBinding;
+      bindingFingerprint: string;
+    };
+    spec: import('../task/local-service.js').LocalServiceSpecification;
+    workspaceId: string;
+    failure: { summary: string; reasonCode: import('../task/task-state.js').TaskReasonCode; logTail: string; exitObserved: boolean; healthStatus: number | null; specificationRevision: string };
+    ordinal: number;
+  }): KernelEvent {
+    const configurationRevision = this.configurationRevisionForTask(input.taskId);
+    const activeRevision = this.deps.workGraphRevisionRepo.findActive(input.taskId);
+    const generationId = activeRevision?.generationId ?? `generation_${input.taskId}_1`;
+    const nativeContinuation = this.buildDispatchStableFacts(configurationRevision)
+      .nativeContinuationAgentClasses
+      .includes(input.target.authorizedBinding.agentClassRef);
+    return {
+      schemaVersion: 5,
+      configurationRevision,
+      type: 'dispatch_requested',
+      // Deterministic per (Subtask, source Attempt, revision, round): a replay
+      // can never authorize the same repair round twice.
+      id: `service_repair_${input.taskId}_${input.target.subtaskId}_${input.target.attemptId}`
+        + `_${input.failure.specificationRevision}_${input.ordinal}`,
+      correlationId: input.taskId,
+      causationId: input.target.attemptId,
+      occurredAt: new Date().toISOString(),
+      ...this.ownerEnvelopeForTask(input.taskId),
+      taskId: input.taskId,
+      subtaskId: input.target.subtaskId,
+      reason: `service ${input.spec.serviceId} did not become healthy; repair round ${input.ordinal + 1}`,
+      recovery: {
+        authorizedBinding: input.target.authorizedBinding,
+        bindingFingerprint: input.target.bindingFingerprint,
+        attemptKind: 'continuation',
+        sourceAttemptId: input.target.attemptId,
+        recoveryMode: nativeContinuation ? 'native_session' : 'recovery_packet',
+        defaultResourceGrant: defaultResourceGrant(
+          input.taskId,
+          generationId,
+          input.target.subtaskId,
+        ),
+        attemptPayload: {
+          protocol: 'metawork:service-repair:v1',
+          serviceId: input.spec.serviceId,
+          workspaceId: input.workspaceId || null,
+          specificationRevision: input.failure.specificationRevision,
+          repairOrdinal: input.ordinal,
+          failure: {
+            kind: 'service',
+            code: input.failure.reasonCode,
+            summary: input.failure.summary,
+          },
+          service: {
+            command: input.spec.command,
+            args: [...input.spec.args],
+            healthUrl: `http://${input.spec.host === '::1' ? '[::1]' : input.spec.host}:${input.spec.port}${input.spec.healthPath}`,
+            state: 'failed',
+            exitObserved: input.failure.exitObserved,
+            healthStatus: input.failure.healthStatus,
+            logTail: input.failure.logTail.slice(-8_000),
+          },
+          knownProgress: [
+            '代码已经写入授权 Workspace',
+            '服务未通过健康检查',
+          ],
+          unknownItems: [
+            '当前代码是否已修复服务未就绪的真实原因',
+            '修复后的服务是否能在同一 Workspace 内通过健康检查',
+          ],
+        },
+      },
+    } as KernelEvent;
+  }
+
+  private reopenSubtaskForServiceRepair(subtaskId: string, reason: string): void {
+    const subtask = this.deps.subtaskRepo.findById(subtaskId);
+    if (!subtask || subtask.status !== 'done') return;
+    this.lifecycle.transitionSubtask({
+      subtaskId,
+      to: 'awaiting_decision',
+      actor: 'kernel-execution-runtime',
+      reason: `service repair submission: ${reason}`,
+      changes: { error: `服务未就绪：${reason}` },
+    });
+  }
+
+  /**
+   * Restore the node when the Kernel did not authorize the repair round. The
+   * completed work stays completed; only the pending repair placeholder is
+   * withdrawn (`awaiting_completion → completed`).
+   */
+  private rollbackRefusedServiceRepair(subtaskId: string): void {
+    const subtask = this.deps.subtaskRepo.findById(subtaskId);
+    if (!subtask || subtask.status !== 'awaiting_decision') return;
+    this.lifecycle.transitionSubtask({
+      subtaskId,
+      to: 'done',
+      actor: 'kernel-execution-runtime',
+      reason: 'service repair round was not authorized; the completed work stays completed',
+      changes: { error: null },
+    });
+  }
+
+  private reportServiceVerificationError(taskId: string, error: unknown): void {
+    const message = error instanceof Error ? error.message : String(error);
+    const normalized = normalizeExecutorFailure(message);
+    const code = /EADDRINUSE|port_in_use/iu.test(message) ? 'port_in_use'
+      : /ENOENT/iu.test(message) ? 'command_not_found'
+      : /环境引用不可用|credential|authentication/iu.test(message) ? 'input_required'
+      : normalized.code;
+    if (message === PUBLISHED_CODE_MISSING_SERVICE_SPECIFICATION) {
+      this.deps.callbacks.appendOutput(`${message}；服务尚未就绪。`);
+    } else if (code === 'port_in_use') {
+      // A real conflict names the port owner instead of asking the user to
+      // discover it through an internal status command.
+      this.deps.callbacks.appendOutput(
+        `代码已交付，但服务端口被占用：${message}。停止占用该端口的进程或修改服务规格后重新运行。`,
+      );
+    } else if (message.includes('需要显式的服务更新授权') || message.includes('服务标识已绑定其他启动规格')) {
+      this.deps.callbacks.appendOutput(
+        `代码已交付，但服务规格与已授权规格不同：${message}。这需要一次显式的服务更新授权。`,
+      );
+    } else {
+      this.deps.callbacks.appendOutput(`代码已交付，但服务启动失败：${message}`);
+    }
+    this.recordOperationResult({
+      taskId,
+      operationKey: `service:start:error:${code}`,
+      operationKind: 'service',
+      outcome: code === 'unknown' || code === 'input_required' ? 'unknown' : 'definite_failure',
+      reasonCode: code === 'port_in_use' || code === 'command_not_found' || code === 'input_required'
+        ? code : code === 'unknown' ? 'external_outcome_unknown' : 'service_start_failed',
+      message,
+      evidenceRefs: [`task:${taskId}`],
+    });
+    this.reconcileTaskState(taskId, {
+      decisionId: `service_start_failed:${taskId}:${code}`,
+      operationKey: `service_start:${taskId}:failed:${code}`,
+      reason: `local service start failed: ${code}`,
+    });
+  }
+
+  /**
+   * Automatically re-do the remaining delivery/service work of a failed Task.
+   *
+   * `retry_remaining_work` is an internal recovery protocol: the user asked for a
+   * running service or a delivered file, so the Runtime retries only that
+   * remaining work instead of asking them to run a retry command
+   * (2026-10-27 realignment §5.3). It is bounded to one round: a Task that is
+   * itself a remaining-work retry never spawns another one, and an existing
+   * successor is reused instead of duplicated.
+   */
+  private async attemptAutomaticRemainingWork(taskId: string): Promise<boolean> {
+    const task = this.deps.taskRuntimeService.findTask(taskId);
+    if (!task || task.status !== 'failed') return false;
+    if (task.retryOfTaskId) return false;
+    const successor = this.deps.taskRuntimeService.listTasks()
+      .find(candidate => candidate.retryOfTaskId === taskId);
+    if (successor) return false;
+    try {
+      const receipt = await this.retryRemainingWork(taskId);
+      this.deps.callbacks.appendOutput(
+        `已完成的工作保留；系统已自动创建续做任务 #${receipt.taskId}，只补做剩余的交付或服务启动。`,
+      );
+      this.reconcileTaskState(taskId, {
+        decisionId: `remaining_work_auto:${taskId}:${task.stateVersion}`,
+        operationKey: `remaining_work_auto:${taskId}:${task.stateVersion}`,
+        reason: 'remaining delivery or service work is retried automatically',
+      });
+      return true;
+    } catch {
+      // The Kernel refused (unsafe reuse, unknown external effect or an expired
+      // version). Recording the real failure stays the conclusion.
+      return false;
+    }
+  }
+
+  /** Whether the current specification already owns a live process. */
+  private async serviceProcessAlive(serviceId: string, workspaceId: string): Promise<boolean> {
+    const manager = this.deps.managedLocalServices;
+    if (!manager) return false;
+    const observation = await manager.observe?.(serviceId, workspaceId).catch(() => null) ?? null;
+    return observation !== null
+      && ['starting', 'healthy', 'unhealthy'].includes(observation.view.state);
+  }
+
+  /**
+   * Single收口 for a service that did not reach health.
+   *
+   * The 2026-10-27 realignment (§4.3/§4.4) makes this failure a bounded fact:
+   * the current Attempt already ended, so the Runtime records the real diagnosis
+   * (exit fact, health status, redacted log tail, revision) and only then decides
+   * whether an authorized repair round follows. Nothing here rewrites the
+   * Harness context, calls a model or replays a process start.
+   */
+  private async handleServiceVerificationFailure(input: {
+    taskId: string;
+    spec: import('../task/local-service.js').LocalServiceSpecification;
+    workspaceId: string;
+    view: LocalServiceView;
+    target?: {
+      subtaskId: string;
+      attemptId: string;
+    };
+    budgetExhausted: boolean;
+    pendingRepair?: boolean;
+    /** The Kernel's own reason when it refused the authorized repair round. */
+    refusal?: string;
+  }): Promise<{
+    summary: string;
+    reasonCode: import('../task/task-state.js').TaskReasonCode;
+    logTail: string;
+    exitObserved: boolean;
+    healthStatus: number | null;
+    specificationRevision: string;
+  }> {
+    const serviceId = input.view.serviceId;
+    const manager = this.deps.managedLocalServices;
+    const observation = manager
+      ? await manager.observe?.(serviceId, input.workspaceId).catch(() => null) ?? null
+      : null;
+    const healthTimeout = /health|unhealthy/iu.test(input.view.message ?? '');
+    const reasonCode: import('../task/task-state.js').TaskReasonCode = healthTimeout
+      ? 'service_health_timeout'
+      : 'service_start_failed';
+    const logTail = observation?.diagnostics.logTail?.trim() ?? '';
+    const summary = [
+      input.view.message ?? input.view.state,
+      `serviceId=${serviceId}`,
+      `state=${input.view.state}`,
+      observation?.diagnostics.exitObserved ? '进程已退出' : null,
+      observation?.diagnostics.healthStatus !== null && observation?.diagnostics.healthStatus !== undefined
+        ? `健康检查=${observation.diagnostics.healthStatus}`
+        : null,
+    ].filter(Boolean).join('，');
+    const specificationRevision = observation?.diagnostics.specificationRevision
+      ?? localServiceSpecificationRevision(input.spec);
+    const refusal = input.refusal?.trim() ? boundRefusal(input.refusal) : null;
+    const target = input.target ?? this.serviceRepairTarget(input.taskId) ?? null;
+    const ordinal = this.serviceRepairAttempts(input.taskId, target?.subtaskId ?? '');
+    this.deps.callbacks.appendOutput(
+      refusal
+        ? `服务 ${serviceId} 未能就绪：${summary}。Kernel 未授权自动修复：${refusal}`
+        : input.budgetExhausted
+          ? `服务 ${serviceId} 未能就绪：${summary}。已尝试 ${ordinal} 轮自动修复仍未通过，代码保留在 Workspace 中。`
+          : `服务 ${serviceId} 未能就绪：${summary}。`,
+      '',
+      logTail ? `服务日志尾部：\n${logTail}` : '服务没有可用的日志输出。',
+    );
+    this.appendExecutionTrace({
+      phase: 'verification',
+      actor: 'kernel',
+      kind: 'service_verification_failed',
+      status: input.budgetExhausted ? 'failed' : 'blocked',
+      title: 'Local service did not become healthy',
+      summary,
+      details: {
+        // Bounded, secret-free repair input for the authorized Attempt.
+        service: {
+          serviceId,
+          workspaceId: input.workspaceId,
+          specificationRevision,
+          command: input.spec.command,
+          args: [...input.spec.args],
+          healthUrl: `${input.view.url}${input.spec.healthPath}`,
+          state: input.view.state,
+          exitObserved: observation?.diagnostics.exitObserved ?? false,
+          healthStatus: observation?.diagnostics.healthStatus ?? null,
+          retryable: observation?.diagnostics.retryable ?? healthTimeout,
+          logTail: logTail.slice(-8_000),
+          repairOrdinal: ordinal,
+          budgetExhausted: input.budgetExhausted,
+          ...(refusal ? { refusal } : {}),
+        },
+        ...(target ? { sourceAttemptId: target.attemptId, subtaskId: target.subtaskId } : {}),
+      },
+      eventKey: `service_verification_failed:${input.taskId}:${serviceId}:${specificationRevision}:${target?.attemptId ?? 'none'}:${ordinal}`,
+      taskId: input.taskId,
+      traceStatus: input.budgetExhausted ? 'failed' : 'blocked',
+    });
+    this.recordOperationResult({
+      taskId: input.taskId,
+      operationKey: this.serviceOperationKey(
+        serviceId,
+        specificationRevision,
+        target?.attemptId ?? null,
+        ordinal,
+      ),
+      operationKind: 'service',
+      outcome: input.pendingRepair ? 'repair_pending' : 'definite_failure',
+      reasonCode,
+      // A refusal is part of the diagnosis: the TaskView reason must name both
+      // the real service failure and why no repair round ran.
+      message: refusal ? `${summary}（Kernel 未授权自动修复：${refusal}）` : summary,
+      evidenceRefs: [
+        `service:${serviceId}`,
+        `revision:${specificationRevision}`,
+        ...(target ? [`attempt:${target.attemptId}`, `subtask:${target.subtaskId}`] : []),
+      ],
+    });
+    this.reconcileTaskState(input.taskId, {
+      decisionId: `service_start:${input.taskId}:${serviceId}:${specificationRevision}:${ordinal}:${input.view.state}`,
+      operationKey: `service_start:${input.taskId}:${serviceId}:${specificationRevision}:${ordinal}:${input.view.state}`,
+      reason: input.pendingRepair
+        ? `local service ${serviceId} failed; repair round ${ordinal + 1} queued`
+        : `local service ${serviceId} is ${input.view.state}${refusal ? `; repair refused: ${refusal}` : ''}`,
+    });
+    if (!input.pendingRepair) {
+      // The repair budget (or the Kernel) ended this line of work. If the code
+      // is already delivered, retry the remaining work instead of making the
+      // user run a retry command.
+      await this.attemptAutomaticRemainingWork(input.taskId);
+    }
+    return {
+      summary,
+      reasonCode,
+      logTail,
+      exitObserved: observation?.diagnostics.exitObserved ?? false,
+      healthStatus: observation?.diagnostics.healthStatus ?? null,
+      specificationRevision,
+    };
   }
 
   private recordOperationResult(input: {
     taskId: string;
     operationKey: string;
     operationKind: 'execution' | 'integration' | 'delivery' | 'safety_report' | 'service';
-    outcome: 'success' | 'definite_failure' | 'unknown';
+    outcome: 'success' | 'definite_failure' | 'unknown' | 'repair_pending';
     reasonCode: import('../task/task-state.js').TaskReasonCode | null;
     message: string;
     evidenceRefs: readonly string[];

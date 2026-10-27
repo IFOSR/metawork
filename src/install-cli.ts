@@ -34,6 +34,8 @@ export interface NativeInstallArgs {
   releaseId: string;
   sourceRoot?: string;
   plannerRoot?: string;
+  /** Memory engine tree shipped with the release. */
+  memoryRoot?: string;
 }
 
 export function parseNativeInstallArgs(argv: string[]): NativeInstallArgs {
@@ -46,12 +48,13 @@ export function parseNativeInstallArgs(argv: string[]): NativeInstallArgs {
   for (let index = 0; index < options.length; index += 1) {
     const option = options[index];
     const value = options[index + 1];
-    if (option === '--source-root' || option === '--planner-root') {
+    if (option === '--source-root' || option === '--planner-root' || option === '--memory-root') {
       if (!value || value.startsWith('--')) {
         throw new Error(`${option} requires a value`);
       }
       if (option === '--source-root') parsed.sourceRoot = value;
-      else parsed.plannerRoot = value;
+      else if (option === '--planner-root') parsed.plannerRoot = value;
+      else parsed.memoryRoot = value;
       index += 1;
       continue;
     }
@@ -133,6 +136,7 @@ export async function runNativeInstallCli(
         releaseId: args.releaseId,
         sourceRoot: args.sourceRoot!,
         plannerRoot: args.plannerRoot!,
+        ...(args.memoryRoot ? { memoryRoot: args.memoryRoot } : {}),
         ...(provider ? { provider: {
           baseUrl: provider.baseUrl,
           apiKey: provider.apiKey,
@@ -165,6 +169,7 @@ export async function runNativeInstallCli(
           releaseId: args.releaseId,
           sourceRoot: args.sourceRoot!,
           plannerRoot: args.plannerRoot!,
+          ...(args.memoryRoot ? { memoryRoot: args.memoryRoot } : {}),
         }),
       });
       await rootMigration?.commit();

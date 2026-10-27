@@ -121,15 +121,28 @@ export function isSettledDispatchStatus(status: KernelDispatchItemStatus): boole
  * Subtask node transitions. Owned by Work Graph/Task Domain. A node may not go
  * back to `pending` once it produced an attempt receipt; that requires a new
  * graph revision instead.
+ *
+ * `completed` has exactly one outgoing transition: the Kernel-authorized repair
+ * continuation (2026-10-27 realignment P0). A Subtask may have produced correct
+ * code that does not run, and the code cannot be declared finished while the
+ * required service is still broken. The reopen is intentionally narrow — it goes
+ * back to `awaiting_completion`, never to `pending`, so the node keeps its
+ * receipts, attempts and history and can only be re-executed through a new
+ * authorized Attempt.
  */
 const SUBTASK_TRANSITIONS: Record<SubtaskLifecycleState, readonly SubtaskLifecycleState[]> = {
   pending: ['executing', 'awaiting_completion', 'blocked', 'cancelled'],
   executing: ['pending', 'awaiting_completion', 'blocked', 'completed', 'cancelled'],
   awaiting_completion: ['pending', 'executing', 'completed', 'blocked', 'cancelled'],
-  completed: [],
+  completed: ['awaiting_completion'],
   blocked: ['pending', 'executing', 'awaiting_completion', 'completed', 'cancelled'],
   cancelled: [],
 };
+
+/** True only for the Kernel-authorized repair reopen of a completed node. */
+export function isSubtaskReopen(from: SubtaskLifecycleState, to: SubtaskLifecycleState): boolean {
+  return from === 'completed' && to === 'awaiting_completion';
+}
 
 export function isSubtaskTransitionAllowed(
   from: SubtaskLifecycleState,

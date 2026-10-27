@@ -175,3 +175,27 @@ Planner and Executor adherence separately from deterministic runtime fixtures.
   complexity.
 - Existing strict completion tests and contract-blocked behavior must be
   replaced with v4 assessment and result-first tests.
+
+### 2026-10-27 amendment: Executor boundary and Mentor feedback
+
+The selected Executor/Harness owns its internal model turns, tool calls, command
+and test failures, code repair, Provider retry and validation loop. Runtime does
+not convert the first recoverable tool error into `executor_failed`, and clients
+do not ask the user to approve ordinary retries. `executor_failed` is a terminal
+Attempt fact only after the Harness has exhausted its own recoverable loop or
+reached a non-recoverable boundary.
+
+Runtime verification is an external postcondition boundary. When a service,
+Workspace, test or acceptance check fails after an otherwise successful Attempt,
+Runtime must classify the observation as a hard boundary, a bounded repair
+feedback, or an unresolved fact. Bounded repair feedback is sent through the
+existing Kernel continuation/recovery path as a recovery packet for the same
+Executor class. The Executor receives the diagnostic and continues repairing;
+Runtime then verifies the new result. MetaWork must not add a second Agent Loop
+or expose this internal feedback as an acceptance/restart action.
+
+Hard boundaries remain authorization, credential, Workspace containment,
+resource ownership and uncertain external side effects. User decisions are
+reserved for those boundaries, missing user input and exhausted automatic repair
+budget. This amendment clarifies ownership and does not weaken the existing
+security and delivery checks.

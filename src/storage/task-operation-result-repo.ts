@@ -5,11 +5,17 @@ import type { TaskReasonCode, TaskRequiredWorkKind } from '../task/task-state.js
  * Normalized operation result (2026-10-22 Task state simplification §5.1).
  *
  * Execution, publication, delivery and service start each report one durable
- * result: success, definite failure, or unknown. The records stay in their own
- * tables; this table is the shared normalized fact the Task summary reads, so a
- * Runtime branch no longer decides a Task status from a caught error string.
+ * result. The records stay in their own tables; this table is the shared
+ * normalized fact the Task summary reads, so a Runtime branch no longer decides
+ * a Task status from a caught error string.
+ *
+ * `repair_pending` is the fourth outcome (2026-10-27 realignment §4.3/§5.2): a
+ * required operation failed in a way the authorized Executor can still repair
+ * inside the same Workspace, and a Kernel-authorized continuation is on its way.
+ * Without it the Task summary could only express `failed`/`waiting_for_user` for
+ * a failure that is not a conclusion yet.
  */
-export type TaskOperationOutcome = 'success' | 'definite_failure' | 'unknown';
+export type TaskOperationOutcome = 'success' | 'definite_failure' | 'unknown' | 'repair_pending';
 
 export interface TaskOperationResultRecord {
   readonly taskId: string;

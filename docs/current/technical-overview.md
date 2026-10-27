@@ -100,7 +100,7 @@ It is built for teams who need agents to do more than answer the current turn. M
 
 > Current implementation baseline (2026-10-25): PlanningAgentPlan v9, Work
 > Graph v7, Kernel event/snapshot/decision contract v5, Completion Protocol v4,
-> and SQLite schema v58 with transactional 31→32→33→34→35→36→37→38→39→40→41→42→43→44→45→46→47→48→49→50→51→52→53→54→55→56→57→58 upgrade support.
+> and SQLite schema v60 with transactional 31→32→33→34→35→36→37→38→39→40→41→42→43→44→45→46→47→48→49→50→51→52→53→54→55→56→57→58→59→60 upgrade support.
 > Schema v39/v40 adds the Query usage/billing facts (Query attribution contexts,
 > metering spans/observations, immutable price versions, cost entries, per-Query
 > bills and lines, the consumption outbox/receipts and bill adjustments) that
@@ -178,6 +178,100 @@ a live HTTP 503 is needs_action. Runtime owns detached process groups, durable
 service/operation facts and replay-safe start/stop/restart. Server recovery
 reobserves the owned process rather than blindly launching it again. Bounded
 follow-up controls do not replan an existing graph:
+
+#### Service identity and the current specification (ADR-0051, 2026-10-27)
+
+Service identity is `(accountId, workspaceId, serviceId)`;
+`specificationRevision` hashes the launch contract only (never `taskId`). The
+task id stored on a record is provenance and moves to the current Task when that
+Task re-launches the same contract. Consequently:
+
+- Every Runtime start/reconcile path resolves the record by composite identity
+  (`ManagedLocalServices.findForWorkspace`), and a bare `find(serviceId)` keeps
+  refusing an id registered in more than one Workspace.
+- A historical `failed`/`stopped` record is diagnosis input. `startRequestedPublishedService`
+  always drives the current specification through Kernel authorization instead
+  of degrading to `status()`; a live process is observed, a dead one is started.
+- A manifest an earlier Task left in an In-place Workspace is accepted only when
+  this Workspace already registered the identical launch contract; otherwise it
+  remains foreign and is rejected.
+- A record from another Workspace is a different service; a different revision
+  still needs an explicit Kernel service update authorization.
+- `ManagedLocalServices.observe()` returns Runtime-only diagnostics (workspace,
+  revision, process identity, exit fact, bounded redacted log tail, last health
+  status, agent-repairable flag). They never enter the public `LocalServiceView`.
+- When a requested service does not reach health the failure is not the Task
+  conclusion. `handleServiceVerificationFailure` records a `repair_pending`
+  service operation (real diagnosis + bounded log tail + revision + source
+  Attempt) and the producing Subtask is reopened through its only allowed
+  outgoing transition (`completed → awaiting_completion`). The Runtime then
+  submits a Kernel `dispatch_requested` carrying `attemptKind: 'continuation'`
+  and a `metawork:service-repair:v1` payload to the same Executor category. The
+  Kernel authorizes at most three rounds (`serviceRepairAttemptsBySubtask` +
+  `repairOrdinal`), requiring the reopened `awaiting_decision` node and the
+  original binding fingerprint; the runner turns the payload into a recovery
+  packet (`failure.kind = 'service'`, command/args/health URL/exit fact/health
+  status/log tail) that the model receives in its prompt. Operation keys, trace
+  keys and dispatch event ids include the service, revision, source Attempt and
+  repair round, so two rounds cannot overwrite each other. After each round the
+  Runtime re-verifies the service and binds a repaired launch contract through the
+  explicit Kernel `update` authorization. Schema 60 adds `repair_pending` to the
+  normalized operation outcomes; Task facts keep such a Task `running` with phase
+  `retrying` and the real error visible.
+
+#### Execution boundary and Mentor feedback (2026-10-27)
+
+The execution contract is deliberately one-directional:
+
+```text
+Planner → Work Graph → Kernel authorization → Executor/Harness
+→ final Attempt result → MetaWork verification and assembly → user delivery
+```
+
+The Executor/Harness owns its internal model turns, tool calls, command/test
+failures, code repair, Provider retry and validation. MetaWork observes progress
+and receives the final Attempt fact; it does not approve individual tool calls,
+interrupt the Harness loop or turn the first recoverable error into a Task
+failure. `executor_failed` is emitted only after the Harness has ended its own
+recoverable loop or reached a non-recoverable boundary.
+
+Runtime verification is a supervisory boundary. If a service, test, Workspace
+or acceptance postcondition fails after an otherwise successful Attempt, the
+default action is to produce bounded Mentor feedback and let Kernel authorize a
+continuation/recovery packet for the same Executor class. The Executor then
+reads the diagnostic, repairs and validates again. Workspace containment,
+authorization, credentials, resource ownership, uncertain external side effects
+and missing user input remain hard boundaries. User interaction is reserved for
+those cases and for exhausted automatic repair budget; ordinary Workspace work
+does not require an acceptance or restart action.
+
+`retry_remaining_work` is internal: after a spent repair budget, a refused repair round
+or a failed file delivery, the Runtime retries only the remaining delivery/service work
+in a successor Task when reuse is safe (one round per failure line, existing successor
+reused, refusal keeps the real conclusion), so no user-facing retry command is
+required. Service observation facts belong to a specification revision and keep the last
+real HTTP answer of that contract, so a 503 survives into the repair round instead of
+being cleared by a later observation of the stopped process.
+
+A terminal Task is historical and never blocks the next request: the
+Conversation slot is reconciled before planning, the new explicit request
+supersedes the old Task, and its conclusion is left untouched. A follow-up round
+gets the real diagnosis deterministically — the Planner's `get_task_context`
+projection returns the Task conclusion reason, up to four non-success
+normalized operation results and the last failed Attempt's code/summary, and
+`SubtaskExecutionContext.previousRound` carries the most recent failed Task of
+the same Conversation and Workspace into the Executor prompt ("do not repeat the
+same failing command"). In-place delivery state reports file facts only
+(`published`/`not_published`); a pending result decision is a Task-level action,
+not a delivery gate, and `/task retry` is an explicit secondary recovery.
+
+Each authorized Attempt also records one **Run Contract projection**
+(`src/execution/run-contract.ts`) in its diagnostics: Workspace, working
+directory, target paths, access mode, objective, acceptance, `fileOutputs`,
+service intent, configuration revision and binding fingerprint. It is a bounded
+input/diagnostics view of already-authorized facts; it is not a scheduling
+authority and it carries no turn, retry or repair loop.
+
 
 See the [current slash-command reference](commands.md) for result controls, managed-service commands, and shared Desktop/Web completion.
 
@@ -1295,7 +1389,12 @@ credential references, the Provider model catalog, and Planner/Executor routing
 policies are hot-activatable while the activation gate is idle. The settings
 surface is Provider-first: catalog models form the candidate source, Planner is
 fixed-only, Codex Auto is limited to GPT-family models across enabled Providers,
-and Pi Auto may use all enabled Provider models. The gate
+and Pi Auto may use all enabled Provider models. Provider membership is the
+activated revision's alone: one settings card per `providers` entry, and the
+completion service, public preset catalog and local Agent discovery may only
+describe a card, never create one. Installer and settings Providers follow the
+same edit/delete rules, no connection is undeletable, and a committed delete also
+removes the Provider credential once nothing references it. The gate
 rechecks Planner turns, running Tasks, blocking Dispatch/Attempt facts, child
 processes, leases, publication/merge work, recovery, and concurrent activation
 inside the backend transaction; connected idle clients do not block it, but
@@ -1705,7 +1804,7 @@ direct-dependency authorization and closes when the attempt ends.
 
 MetaWork can represent complex requests as a work graph instead of a single undifferentiated prompt. The graph has no explicit single/multi execution mode. `AnyFusionPlanningAgent` keeps work that one canonical AgentClass can deliver as one node and creates another node only at a controlled Routing Capability handoff. The shared pure rules reject malformed DAGs and mergeable same-AgentClass single chains, while reentrant adapters may now own multiple independent nodes in one frontier.
 
-In the active session path, proposed nodes become persisted Work Graph v7 `Subtask` records only after a durable `authorize_task_plan` application. The source uses SQLite schema v58 and supports transactional 31→32→33→34→35→36→37→38→39→40→41→42→43→44→45→46→47→48→49→50→51→52→53→54→55→56→57 upgrades; schema 52 is main-owned and must carry the six-state Task base, while schema 58 pins the single In-place Workspace binding and retires implicit legacy Worktree copying; unsupported older schemas are refused. Schema v38 keeps one Planner Turn's attachment facts in `planner_turn_inputs` so a host-bridge submission stays admissible across a Server restart. Schema v39/v40 stores the ADR-0042 Query usage and billing facts: `query_usage_contexts` with one request-scoped idempotency key, `query_task_links`, `execution_usage_contexts`, `metering_spans`, `usage_observations` with one `(source_id, source_event_key, metric)` row per measurement, `usage_normalization_issues`, `billing_price_versions`, `cost_entries`, `query_bills`/`query_bill_lines`, `consumption_outbox`/`consumption_receipts`, `bill_adjustments` and the stable `billing_source_instance` identity. Schema v41 adds resolved routing identity columns to usage observations. Schema v42 adds the fenced `generation_replan_requests.planner_claim_token`. Schema v43 adds the navigation projections, indexed history and Gateway segment/Turn-observation indexes; v44 adds indexed Gateway command admissions and atomic legacy import markers; v45 adds durable Retry Wake continuation facts for timeout recovery; v46 adds the indexed latest Task-creation timestamp used to order Conversation history; v47 adds body-separated Conversation entities, projection checkpoints/tail/staging rebuild, activity invalidation and witness indexes, trace/content-search indexes, client navigation, durable approval acceptance/application and notification routes/outbox. Amounts are constrained decimal text; aggregation happens in exact money code, not SQLite floats. The schema includes the durable planning, Kernel, resource, workspace, permission, execution-backend, dispatch, publication, cancellation and recovery facts plus immutable Result Objects, direct-edge ResultReferences, revision-pinned `artifact` ContextRefs and Planner proposal configuration-revision pins for safe replay. Schema v37 also permits image preview kinds in `task_artifacts`. The physical names `attempt_sandboxes`, `sandbox_container_id` and `sandbox_lost` remain durable compatibility names and are not the current abstraction names. `dependencies` is the only topology and typed handoff source. Downstream work becomes runnable only after direct dependencies are published, receives authorized references and full Git ancestry, and never absorbs sibling or integration-branch state implicitly.
+In the active session path, proposed nodes become persisted Work Graph v7 `Subtask` records only after a durable `authorize_task_plan` application. The source uses SQLite schema v60 and supports transactional 31→32→33→34→35→36→37→38→39→40→41→42→43→44→45→46→47→48→49→50→51→52→53→54→55→56→57→58→59→60 upgrades; schema 52 is main-owned and must carry the six-state Task base, while schema 58 pins the single In-place Workspace binding and retires implicit legacy Worktree copying; unsupported older schemas are refused. Schema v38 keeps one Planner Turn's attachment facts in `planner_turn_inputs` so a host-bridge submission stays admissible across a Server restart. Schema v39/v40 stores the ADR-0042 Query usage and billing facts: `query_usage_contexts` with one request-scoped idempotency key, `query_task_links`, `execution_usage_contexts`, `metering_spans`, `usage_observations` with one `(source_id, source_event_key, metric)` row per measurement, `usage_normalization_issues`, `billing_price_versions`, `cost_entries`, `query_bills`/`query_bill_lines`, `consumption_outbox`/`consumption_receipts`, `bill_adjustments` and the stable `billing_source_instance` identity. Schema v41 adds resolved routing identity columns to usage observations. Schema v42 adds the fenced `generation_replan_requests.planner_claim_token`. Schema v43 adds the navigation projections, indexed history and Gateway segment/Turn-observation indexes; v44 adds indexed Gateway command admissions and atomic legacy import markers; v45 adds durable Retry Wake continuation facts for timeout recovery; v46 adds the indexed latest Task-creation timestamp used to order Conversation history; v47 adds body-separated Conversation entities, projection checkpoints/tail/staging rebuild, activity invalidation and witness indexes, trace/content-search indexes, client navigation, durable approval acceptance/application and notification routes/outbox. Amounts are constrained decimal text; aggregation happens in exact money code, not SQLite floats. The schema includes the durable planning, Kernel, resource, workspace, permission, execution-backend, dispatch, publication, cancellation and recovery facts plus immutable Result Objects, direct-edge ResultReferences, revision-pinned `artifact` ContextRefs and Planner proposal configuration-revision pins for safe replay. Schema v37 also permits image preview kinds in `task_artifacts`. The physical names `attempt_sandboxes`, `sandbox_container_id` and `sandbox_lost` remain durable compatibility names and are not the current abstraction names. `dependencies` is the only topology and typed handoff source. Downstream work becomes runnable only after direct dependencies are published, receives authorized references and full Git ancestry, and never absorbs sibling or integration-branch state implicitly.
 
 `SubtaskExecutionContext` is the only production Executor input. Task title/goal are background, the current Subtask goal is the sole operational instruction, siblings expose only titles as out of scope, and Planner-selected evidence has deterministic per-reference and total preview budgets. Historical Artifact refs are validated against Account/Conversation/Workspace ownership, publication status, regular-file safety and content hash, then copied to attempt-local `inputs/` with stable `input-XX-*` names. Runtime keeps Task/Subtask/attempt/WorkUnit identities and acceptance/handoff keys outside the model-facing prompt and report. Ordinary assistant/Executor history never enters the context. Codex and Pi may access eligible Task evidence through the same attempt-bound read-only authorization; image-capable adapters consume only the materialized input directory.
 
@@ -1770,6 +1869,20 @@ memory engine (TencentDB Agent Memory MemoryCore) runs as a local sidecar and is
 the only extraction and retrieval implementation. MetaWork owns the seam around
 it: the **Memory Port** (`src/memory/memory-port.ts`) is the single place where
 memory crosses a process boundary, and no module talks to the engine directly.
+
+The engine ships with every release instead of being a prerequisite the user
+installs. `memory/engine.lock.json` pins the upstream MIT revision; CI builds it
+and packages it as the signed `memory` artifact, and `install.sh`,
+`bootstrap-install.sh`, `install.ps1`, the native installer/updater and the
+Desktop payload all extract it to `<releaseRoot>/memory/tdai`.
+`resolveMemorySidecarCommand` prefers the compiled
+`<root>/dist/gateway/server.js` and falls back to the development
+`<root>/src/gateway/server.ts`. A release build starts that packaged engine and
+fails unless `/health` reports `stores.ftsAvailable === true`, so the blocking
+FTS5 gate is verified before shipping. The management view separates "engine not
+installed", "engine unreachable", "engine unhealthy" and "FTS5 unavailable";
+only the last is a BM25 problem, and `memory.enabled=false` still starts no
+process, sends no request and costs nothing.
 
 One MetaWork installation is one local Server for one local customer. The
 `MemoryRuntimeController` is therefore Server-owned: the Server composition

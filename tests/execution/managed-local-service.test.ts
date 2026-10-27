@@ -250,3 +250,201 @@ import http from 'node:http';http.createServer((req,res)=>res.end('ok')).listen(
     expect(logs).toContain('[内部路径]');
   });
 });
+
+describe('service identity and current-specification precedence', () => {
+  it('starts the current specification again after an earlier round recorded failure', async () => {
+    const { manager, spec, published } = await fixture();
+    // The first round's code exits immediately: the record becomes `failed`.
+    await writeFile(join(published, 'server.mjs'), 'process.exit(1);');
+    const failed = await manager.start(spec);
+    expect(failed.state).toBe('failed');
+    expect(manager.find(spec.serviceId)!.state).toBe('failed');
+    // The same Workspace/service specification is now startable: a historical
+    // `failed` fact is diagnosis input, never a blocker for the current round.
+    await writeFile(join(published, 'server.mjs'), `import http from 'node:http';
+http.createServer((req,res)=>{res.statusCode=req.url==='/health'?200:503;res.end('ready');}).listen(process.env.PORT,process.env.HOST);`);
+    const restarted = await manager.start(spec);
+    expect(restarted.state).toBe('healthy');
+    expect((await fetch(restarted.url + '/health')).status).toBe(200);
+    await manager.stop(spec.serviceId);
+  }, 15000);
+
+  it('keeps the same service id separate per Workspace', async () => {
+    const { manager, spec, deps, root } = await fixture();
+    const secondPublished = join(root, 'second-workspace', 'backend');
+    await mkdir(secondPublished, { recursive: true });
+    const secondPort = await new Promise<number>(accept => {
+      const probe = createServer(); probe.listen(0, '127.0.0.1', () => {
+        const address = probe.address(); const value = typeof address === 'object' && address ? address.port : 0;
+        probe.close(() => accept(value));
+      });
+    });
+    const secondSpec: LocalServiceSpecification = {
+      ...spec, taskId: 'task-2', port: secondPort, args: ['second.mjs'],
+    };
+    await writeFile(join(secondPublished, 'second.mjs'), `import http from 'node:http';
+http.createServer((req,res)=>{res.statusCode=req.url==='/health'?200:503;res.end('ready');}).listen(process.env.PORT,process.env.HOST);`);
+    await writeFile(join(secondPublished, '.metawork-service.json'), JSON.stringify(secondSpec));
+    const db = new Database(join(root, 'state.db'));
+    db.prepare("INSERT INTO tasks (id,title,goal,status,created_at,updated_at) VALUES ('task-2', 'Service', 'Service', 'succeeded', 'now', 'now')").run();
+    db.close();
+    const secondWorkspaceManager = new ManagedLocalServices({
+      ...deps,
+      workspaceId: 'workspace-second',
+      resolvePublishedDirectory: async taskId => taskId === 'task-2' ? secondPublished : null,
+    });
+    const firstWorkspaceManager = new ManagedLocalServices({ ...deps, workspaceId: 'workspace-first' });
+
+    const first = await firstWorkspaceManager.start(spec);
+    const second = await secondWorkspaceManager.start(secondSpec);
+    expect(first.state).toBe('healthy');
+    expect(second.state).toBe('healthy');
+    expect(first.url).not.toBe(second.url);
+    // Both Workspace identities are readable from the same shared store, and
+    // each resolves to its own specification and process.
+    expect(firstWorkspaceManager.findForWorkspace('workspace-first', 'backend')?.specification.port).toBe(spec.port);
+    expect(secondWorkspaceManager.findForWorkspace('workspace-second', 'backend')?.specification.port)
+      .toBe(secondPort);
+    await firstWorkspaceManager.stop('backend');
+    await secondWorkspaceManager.stop('backend');
+  }, 20000);
+
+  it('reports bounded diagnostics for the current specification without exposing them publicly', async () => {
+    const { manager, spec, published } = await fixture();
+    await writeFile(join(published, 'server.mjs'), `import http from 'node:http';
+http.createServer((req,res)=>{res.statusCode=req.url==='/health'?200:503;res.end('ready');}).listen(process.env.PORT,process.env.HOST);
+console.log('boot diagnostics line');
+setTimeout(() => process.exit(3), 1500);`);
+    const started = await manager.start(spec);
+    expect(started.state).toBe('healthy');
+    await expect.poll(async () => (await manager.observe(spec.serviceId)).view.state, { timeout: 6000 })
+      .toBe('failed');
+    const observation = await manager.observe(spec.serviceId);
+    expect(observation.diagnostics.exitObserved).toBe(true);
+    expect(observation.diagnostics.retryable).toBe(true);
+    // The last real answer of this contract (200) stays visible; the exit fact
+    // is what makes the service failed.
+    expect(observation.diagnostics.healthStatus).toBe(200);
+    expect(observation.diagnostics.logTail).toContain('boot diagnostics line');
+    expect(observation.diagnostics.specificationRevision)
+      .toBe(localServiceSpecificationRevision(spec));
+    // The public view keeps its contract: no process identity leaks out.
+    expect(JSON.stringify(observation.view)).not.toContain(String(observation.diagnostics.processId));
+    expect(Object.keys(observation.view).sort()).toEqual(
+      ['message', 'serviceId', 'state', 'taskId', 'url'],
+    );
+  }, 15000);
+});
+
+describe('service specification handover across Tasks', () => {
+  it('lets a later Task in the same Workspace take over the manifest an earlier Task wrote', async () => {
+    const { manager, spec, root } = await fixture();
+    // The current Task must exist: service ownership is a real Task handover.
+    const db = new Database(join(root, 'state.db'));
+    db.prepare("INSERT INTO tasks (id,title,goal,status,created_at,updated_at) VALUES ('task-later', 'Later', 'Later', 'running', 'now', 'now')").run();
+    db.close();
+    // Task `task` authored the manifest and registered the contract.
+    await manager.start(spec);
+    await manager.stop(spec.serviceId);
+    expect(manager.find(spec.serviceId)?.specification.taskId).toBe('task');
+
+    // A later Task in the same in-place Workspace reads the same manifest and
+    // asks for the same service. Authoring provenance moves to the current
+    // Task instead of blocking the launch.
+    const later = { ...spec, taskId: 'task-later' };
+    await expect(manager.readSpecification('task-later')).resolves.toEqual(later);
+    const started = await manager.start(later);
+    expect(started.state).toBe('healthy');
+    expect(manager.find(spec.serviceId)?.specification.taskId).toBe('task-later');
+    expect(manager.find(spec.serviceId)?.specificationRevision)
+      .toBe(localServiceSpecificationRevision(later));
+    await manager.stop(spec.serviceId);
+  }, 15000);
+
+  it('hands a live process over to the current Task without relaunching it', async () => {
+    const { manager, spec, root } = await fixture();
+    const running = await manager.start(spec);
+    const processId = manager.find(spec.serviceId)?.processId;
+    const db = new Database(join(root, 'state.db'));
+    db.prepare("INSERT INTO tasks (id,title,goal,status,created_at,updated_at) VALUES ('task-live', 'Live', 'Live', 'running', 'now', 'now')").run();
+    db.close();
+    const later = { ...spec, taskId: 'task-live' };
+    const observed = await manager.start(later);
+    expect(observed.state).toBe('healthy');
+    // Same process, new owner: the launch contract did not change.
+    expect(manager.find(spec.serviceId)?.processId).toBe(processId);
+    expect(manager.find(spec.serviceId)?.specification.taskId).toBe('task-live');
+    expect((await fetch(running.url + '/health')).status).toBe(200);
+    await manager.stop(spec.serviceId);
+  }, 15000);
+
+  it('still rejects a manifest whose contract this Workspace never registered', async () => {
+    const { manager, spec, published } = await fixture();
+    await writeFile(join(published, 'other.mjs'), 'process.exit(0);');
+    const foreign = { ...spec, taskId: 'task-foreign', args: ['other.mjs'], port: spec.port + 1 };
+    await writeFile(join(published, '.metawork-service.json'), JSON.stringify(foreign));
+    await expect(manager.readSpecification('task')).rejects.toThrow('服务规格不属于当前任务');
+  });
+});
+
+describe('service acceptance matrix (§9.2)', () => {
+  it('starts a stopped service again on an explicit start', async () => {
+    const { manager, spec } = await fixture();
+    expect((await manager.start(spec)).state).toBe('healthy');
+    expect((await manager.stop(spec.serviceId)).state).toBe('stopped');
+    // A `stopped` record is a fact, not a refusal: the current specification
+    // starts again on an explicit request.
+    const restarted = await manager.start(spec);
+    expect(restarted.state).toBe('healthy');
+    expect((await fetch(restarted.url + '/health')).status).toBe(200);
+    await manager.stop(spec.serviceId);
+  }, 15000);
+
+  it('binds a changed specification only through the authorized update', async () => {
+    const { manager, spec, deps, published, root } = await fixture();
+    await manager.start(spec);
+    await manager.stop(spec.serviceId);
+    const secondPort = await new Promise<number>(accept => {
+      const probe = createServer(); probe.listen(0, '127.0.0.1', () => {
+        const address = probe.address(); const value = typeof address === 'object' && address ? address.port : 0;
+        probe.close(() => accept(value));
+      });
+    });
+    const changed: LocalServiceSpecification = { ...spec, port: secondPort };
+    await writeFile(join(published, '.metawork-service.json'), JSON.stringify(changed));
+    // Without the update authorization the changed launch contract is refused.
+    await expect(manager.readSpecification(spec.taskId)).rejects.toThrow('需要显式的服务更新授权');
+    // The Kernel-authorized update binds the new revision, then the start uses it.
+    const updated = await manager.applyAuthorizedOperation({
+      decisionId: 'authorized-update',
+      operation: 'update',
+      serviceId: spec.serviceId,
+      specification: await manager.readSpecification(spec.taskId, { allowRevisionChange: true }),
+      workspaceId: '',
+    });
+    expect(updated.error).toBeNull();
+    const started = await manager.start(changed);
+    expect(started.state).toBe('healthy');
+    expect(started.url).toContain(`:${secondPort}`);
+    expect((await fetch(started.url + '/health')).status).toBe(200);
+    expect(manager.find(spec.serviceId)?.specificationRevision)
+      .toBe(localServiceSpecificationRevision(changed));
+    expect(root).toBeTruthy();
+    expect(deps.accountId).toBe('local-default');
+    await manager.stop(spec.serviceId);
+  }, 20000);
+
+  it('never reports a failing health check as success and keeps the real status', async () => {
+    const { manager, spec, published } = await fixture();
+    await writeFile(join(published, 'server.mjs'), `import http from 'node:http';
+http.createServer((req,res)=>{res.statusCode=503;res.end('not ready');}).listen(process.env.PORT,process.env.HOST);`);
+    const started = await manager.start(spec);
+    // A 503 never becomes `healthy`; the start window ends as a definite failure.
+    expect(started.state).toBe('failed');
+    expect(started.message).toBe('service_health_timeout');
+    const observation = await manager.observe(spec.serviceId);
+    // The real HTTP answer survives for the repair round instead of being lost.
+    expect(observation.diagnostics.healthStatus).toBe(503);
+    expect(observation.diagnostics.retryable).toBe(true);
+  }, 15000);
+});

@@ -3,6 +3,34 @@ import { ConfigurationCompletionService } from '../../src/configuration/configur
 import { MODEL_CAPABILITY_CATALOG } from '../../src/configuration/model-capability-catalog.js';
 
 describe('ConfigurationCompletionService', () => {
+  it('never creates a Provider entry from presets, the catalog or local discovery', () => {
+    const result = new ConfigurationCompletionService({
+      presets: [{
+        providerRef: 'deepseek',
+        displayName: 'DeepSeek',
+        baseUrl: 'https://api.deepseek.com/v1',
+        modelIds: ['deepseek-chat'],
+      }],
+      providerCatalog: [{
+        providerRef: 'code-cli',
+        baseUrl: 'https://www.code-cli.cn/v1',
+        credentialAvailable: true,
+        modelIds: ['gpt-6.1-sol'],
+      }],
+      localProviders: [{
+        providerRef: 'kimi',
+        baseUrl: 'https://api.kimi.com/coding/v1',
+        credentialAvailable: true,
+        modelIds: ['k3'],
+      }],
+    }).complete({ providers: {}, models: {}, agentClasses: {} });
+
+    expect(result.providers).toEqual({});
+    expect(result.requiredFields).toEqual([]);
+    // Presets stay available as add-form suggestions, never as Provider cards.
+    expect(result.providerPresets.map(preset => preset.providerRef)).toEqual(['deepseek']);
+  });
+
   it('prefers the configured Provider display name over a public preset label', () => {
     const result = new ConfigurationCompletionService({
       presets: [{
@@ -38,7 +66,9 @@ describe('ConfigurationCompletionService', () => {
         modelIds: ['k3'],
       }],
     }).complete({
-      providers: {},
+      // Only a configured Provider is completed; presets and local discovery
+      // may describe it but never add it.
+      providers: { kimi: {} },
       models: {},
       agentClasses: {
         planner: {

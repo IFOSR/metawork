@@ -8,6 +8,15 @@
 - 交付验证：`npm run lint`、`npm run build`、`npm run build:web`、In-place Workspace 聚焦测试和 `tests/storage/migrations.test.ts` 通过。
 - Closing commit：待提交。
 
+## 2026-10-26 完成认证闭环修订
+
+实测发现普通非 Git Workspace 的代码创建会因没有 Git before/after 状态而生成空 delta，
+随后被错误引导到“接受并交付”。本次修订增加了基于 Kernel 授权 `targetPaths` 的有界文件
+系统快照，并在 Git 不可用、重试和失败收尾路径保持同一观测来源；目录超过上限、不可读或
+符号链接不跟随时降级为不确定结果。完成协议以 Runtime 观测 delta 为权威，有真实变化时
+忽略模型遗留的 `noChangeReason`，只有真实零变化仍要求解释。新增了非 Git 修改、新建、删除、
+大目录截断以及 Hello World 创建的回归测试。
+
 ## 1. 决策摘要
 
 MetaWork 的新任务只保留一种 Workspace 执行方式：Executor 直接在目标 Workspace 中工作。

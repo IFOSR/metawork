@@ -136,6 +136,18 @@ describe('PiCliDriver', () => {
     expect(JSON.stringify(launch)).not.toContain('~/.pi');
   });
 
+  it('grants execute-only Workspace access to read and bash without edit tools', () => {
+    const driver = new PiCliDriver({ probeCommand: vi.fn(), piCommand: { command: 'pi', args: [] } });
+    const launch = driver.buildLaunch({
+      prompt: 'run hello.py', cwd: '/workspace', runtimeHomePath: '/attempt/home',
+      workspaceAccess: 'execute',
+    });
+    expect(launch.args).toContain('--tools');
+    expect(launch.args).toContain('read,bash');
+    expect(launch.args).not.toContain('edit');
+    expect(launch.args).not.toContain('write');
+  });
+
   it('keeps image capabilities out of the standard Pi CLI launch', () => {
     const driver = new PiCliDriver({
       probeCommand: vi.fn(),

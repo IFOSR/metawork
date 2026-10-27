@@ -19,6 +19,8 @@ This directory contains both current technical documentation and historical plan
 
 ## Current Docs
 
+- [Agent 执行架构重构方案](plans/2026-10-27-agent-execution-architecture-realignment-plan.md) 与 [技术实施方案](plans/2026-10-27-agent-execution-architecture-realignment-implementation-plan.md)：收敛 Planner → Work Graph → Kernel → Executor 链路，让 Runtime 不再干预 Harness 内部循环。已固化“Executor 内部失败由 Harness 消化、MetaWork 验收失败默认反馈 continuation、只有硬边界或预算耗尽才交给用户”的原则。P0/P1/P2 已实施：Run Contract 投影、服务身份与失败修复 continuation（ADR-0051）、失败诊断进入 Planner 与 Executor、终态 Task 自然取代、In-place 交付语义收敛；实施记录与未完成项见文档末尾。
+
 - [Executor Pi 打包入口修复](plans/2026-10-23-executor-pi-packaging-fix.md)：修正本地 DMG 将 Executor 指向定制 Planner 的错误，增加打包与安装参数校验，修复包已完成本地自动验收。
 
 - [单一 In-place Workspace 技术实施方案](plans/2026-10-25-in-place-only-workspace-execution-implementation-plan.md)：已于 2026-10-25 实施。新任务直接在 Conversation 绑定 Workspace 执行；只读任务使用受控 scratch，不申请写租约，不创建 publication；旧 Worktree 事实只停放并拒绝恢复（ADR-0050）。
@@ -29,6 +31,7 @@ This directory contains both current technical documentation and historical plan
 - [记忆系统接入 TencentDB Agent Memory 设计方案](plans/2026-10-22-memory-system-tdai-integration-design.md)：记忆体系现状审计（采集/晋级/送达三处断链）、以 TDAI 为唯一记忆引擎的目标架构、记忆沉淀契约、证据投递 pull 语义、开关与 Provider 配置、凭证纪律及 ADR 影响；已实施，见 [ADR-0049](../adr/0049-long-term-memory-ownership-deposition-and-delivery.md) 与文档末尾的实施记录。
 
 - [Server 级 Memory 合并前修复方案](plans/2026-10-26-server-scoped-memory-pre-merge-remediation.md)：保持 Server-owned `MemoryRuntimeController`，把 memory 增量接到 schema 59，退役旧 preferences/learning/reflection 链路，并修复 disabled/degraded 召回、degraded 管理面与两小时沉淀兜底。
+- [Provider 归属与内置记忆引擎](plans/2026-10-26-provider-ownership-and-bundled-memory-engine.md)：Provider 卡片只来自激活配置，completion/本机发现/公开目录不再生成卡片，删除 Provider 在激活成功后清理凭据；TDAI 记忆引擎作为 `memory` artifact 随发布包分发到 `<releaseRoot>/memory/tdai`，打包前断言 FTS5，UI 区分「引擎缺失」与「FTS5 不可用」。
 
 - [任务状态简化设计](plans/2026-10-22-task-state-simple-design.md)：统一六个状态、转换规则、队列规则及跨模块一致性的产品目标；[技术落地方案](plans/2026-10-22-task-state-implementation-plan.md)细化源码入口、唯一事务提交、操作收尾、恢复迁移与跨端联动验收。源码实施与评审修复已验证，安装/发布门槛尚未关闭；详见[修复验收记录](plans/2026-10-22-task-state-review-fixes.md)。
 

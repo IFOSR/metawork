@@ -1,3 +1,4 @@
+import { existsSync } from 'node:fs';
 import { mkdir, readFile } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 import { SourceNativeInstaller } from '../../../src/installation/source-native-installer.js';
@@ -38,6 +39,13 @@ const developmentProvider = {
   systemManaged: true,
 };
 if (!developmentProvider.apiKey) throw new Error('Development internal LLM credential is missing');
+// Development payloads may not carry the memory engine; releases always do.
+const memoryRoot = process.env.METAWORK_MEMORY_ENGINE_ROOT
+  ? resolve(process.env.METAWORK_MEMORY_ENGINE_ROOT)
+  : join(resolve(source), 'memory', 'tdai');
+const memory = existsSync(join(memoryRoot, 'dist', 'gateway', 'server.js'))
+  ? { memoryRoot }
+  : {};
 if (mode === 'update') {
   const previous = JSON.parse(await readFile(join(root, 'app/current/release-identity.json'), 'utf8'));
   const running = () => isInstanceRunning(join(root, 'data/runtime.lock'));
@@ -51,7 +59,7 @@ if (mode === 'update') {
   await new SourceNativeUpdater({ paths, installLaunchers: false,
     secretStore: createProductionSecretStore({ credentialsFile: paths.credentials }),
     isServerRunning: running, detectCommand: commandExistsOnPath,
-  }).update({ releaseId, sourceRoot: resolve(source), plannerRoot: join(resolve(source), 'planner/AnyFusion-Pi') });
+  }).update({ releaseId, sourceRoot: resolve(source), plannerRoot: join(resolve(source), 'planner/AnyFusion-Pi'), ...memory });
   const accountPaths = resolveAccountPaths(LOCAL_DEFAULT_ACCOUNT_ID, paths.root);
   const repository = new FileConfigurationRepository(accountPaths.config);
   const secretStore = createProductionSecretStore({ credentialsFile: paths.credentials });
@@ -93,6 +101,7 @@ try {
   await new SourceNativeInstaller({ paths, installLaunchers: false,
     secretStore: createProductionSecretStore({ credentialsFile: paths.credentials }), detectCommand: async () => false,
   }).install({ releaseId, sourceRoot: resolve(source), plannerRoot: join(resolve(source), 'planner/AnyFusion-Pi'),
+    ...memory,
     provider: developmentProvider,
   });
 } finally { await lock.release(); }

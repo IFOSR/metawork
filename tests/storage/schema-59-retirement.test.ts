@@ -68,7 +68,7 @@ describe('schema 59 retires the pre-TDAI memory chain', () => {
     expect(db.prepare('SELECT version FROM schema_version').get()).toEqual({
       version: CURRENT_SCHEMA_VERSION,
     });
-    expect(CURRENT_SCHEMA_VERSION).toBe(59);
+    expect(CURRENT_SCHEMA_VERSION).toBeGreaterThanOrEqual(59);
     expect(tableNames(db, LEGACY_TABLES)).toEqual([]);
     expect(tableNames(db, [
       'memory_bindings', 'memory_recall_candidates', 'memory_flush_state',
@@ -153,7 +153,7 @@ describe('schema 59 retires the pre-TDAI memory chain', () => {
 
     runMigrations(db);
 
-    expect(db.prepare('SELECT version FROM schema_version').get()).toEqual({ version: 59 });
+    expect(db.prepare('SELECT version FROM schema_version').get()).toEqual({ version: CURRENT_SCHEMA_VERSION });
     expect(tableNames(db, LEGACY_TABLES)).toEqual([]);
     expect((db.prepare('PRAGMA table_info(tasks)').all() as Array<{ name: string }>)
       .map(column => column.name)).not.toContain('injected_prefs_json');

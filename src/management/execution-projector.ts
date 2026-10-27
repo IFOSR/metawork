@@ -84,6 +84,8 @@ export interface ExecutionTimeline {
   statusLabel: string;
   stateVersion: number;
   reasonCode: string;
+  /** Exact durable reason message, including service/port diagnostics. */
+  reasonMessage?: string;
   explanation: string;
   stages: TimelineStage[];
 }
@@ -169,6 +171,7 @@ export class ExecutionProjector {
       statusLabel: view.statusLabel,
       stateVersion: view.state.stateVersion,
       reasonCode: view.state.reason.code,
+      reasonMessage: view.state.reason.message,
       explanation: view.explanation,
       stages: [
         this.projectPlanning(subtasks),

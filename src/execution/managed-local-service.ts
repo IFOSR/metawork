@@ -51,6 +51,17 @@ export function validateLocalServiceSpecification(value: unknown): LocalServiceS
 /** Runtime owns processes; Storage owns durable facts; Kernel authorizes calls. */
 export class ManagedLocalServices {
   private readonly operations = new Map<string, Promise<unknown>>();
+  /** Last observed exit/health facts, keyed by service id. Runtime-only. */
+  private readonly lastDiagnostics = new Map<
+    string,
+    {
+      /** Revision the observation belongs to; a new contract starts clean. */
+      specificationRevision: string;
+      exitObserved: boolean;
+      healthStatus: number | null;
+      retryable: boolean;
+    }
+  >();
   constructor(private readonly deps: {
     accountId: string;
     /** Workspace identity of the owning service set, when the host knows it. */
@@ -67,6 +78,19 @@ export class ManagedLocalServices {
   find(serviceId: string): LocalServiceRecord | null { return this.deps.store.find(serviceId); }
 
   /**
+   * Workspace-scoped service identity: `(accountId, workspaceId, serviceId)`.
+   * Every Runtime start/reconcile path resolves the service this way so a record
+   * that belongs to another Workspace can never block, bless or be mutated by
+   * the current Task (2026-10-27 realignment §4.1).
+   */
+  findForWorkspace(workspaceId: string | null, serviceId: string): LocalServiceRecord | null {
+    if (workspaceId !== null) return this.lookup(serviceId, workspaceId);
+    return this.deps.workspaceId
+      ? this.lookup(serviceId, this.deps.workspaceId)
+      : this.deps.store.find(serviceId);
+  }
+
+  /**
    * Workspace the service belongs to; service identity includes it. Tasks that
    * predate Workspace bindings use the empty segment, which the Kernel treats as
    * "unscoped" rather than as a different Workspace.
@@ -77,6 +101,23 @@ export class ManagedLocalServices {
 
   forTask(taskId: string): LocalServiceRecord[] {
     return this.deps.store.list().filter(record => record.accountId === this.deps.accountId && record.specification.taskId === taskId);
+  }
+
+  /**
+   * True when this Workspace already registered the identical launch contract
+   * for `spec.serviceId` under the Task that authored the manifest.
+   */
+  private async inheritedSpecification(
+    taskId: string,
+    spec: LocalServiceSpecification,
+  ): Promise<boolean> {
+    const workspaceId = await this.resolveServiceWorkspaceId(taskId);
+    const registered = this.lookup(spec.serviceId, workspaceId);
+    return Boolean(
+      registered
+      && registered.specification.taskId === spec.taskId
+      && registered.specificationRevision === localServiceSpecificationRevision(spec),
+    );
   }
 
   async readSpecification(
@@ -108,7 +149,16 @@ export class ManagedLocalServices {
     const bound = manifest && typeof manifest === 'object' && !Array.isArray(manifest)
       ? { taskId, ...manifest } : manifest;
     const spec = validateLocalServiceSpecification(bound);
-    if (spec.taskId !== taskId) throw new Error('服务规格不属于当前任务');
+    if (spec.taskId !== taskId) {
+      // An in-place Workspace keeps the manifest a previous Task wrote. That
+      // file is not foreign code when this Workspace already registered the
+      // very same launch contract for this service id: the current Task then
+      // takes the service over (2026-10-27 realignment §4.2/§8). A manifest
+      // whose contract was never registered here still belongs to its author.
+      const inherited = await this.inheritedSpecification(taskId, spec);
+      if (!inherited) throw new Error('服务规格不属于当前任务');
+      return { ...spec, taskId };
+    }
     // A spec that was already authorized keeps its revision. A rewritten
     // manifest is not a new authorization, so it must not be picked up by a
     // later round that merely re-reads the file.
@@ -156,6 +206,11 @@ export class ManagedLocalServices {
   }): Promise<LocalServiceEffect> {
     return this.serialize(input.serviceId, async () => {
       const store = this.deps.store;
+      // A start/stop decision names one Workspace. Reading it back through the
+      // composite identity keeps an identically named service in another
+      // Workspace out of this operation entirely.
+      const workspaceSegment = input.workspaceId ?? this.deps.workspaceId ?? '';
+      const scoped = (serviceId: string) => this.lookup(serviceId, workspaceSegment);
       let effect = store.findOperation(input.decisionId);
       if (effect && (effect.serviceId !== input.serviceId || effect.operation !== input.operation)) {
         throw new Error('服务操作身份不匹配');
@@ -164,7 +219,7 @@ export class ManagedLocalServices {
       if (!effect) {
         effect = { decisionId: input.decisionId, serviceId: input.serviceId, operation: input.operation,
           phase: input.operation === 'start' ? 'starting' : 'stopping',
-          initialToken: store.find(input.serviceId)?.processToken ?? null, result: null, error: null };
+          initialToken: scoped(input.serviceId)?.processToken ?? null, result: null, error: null };
         store.saveOperation(effect);
       }
       try {
@@ -172,7 +227,7 @@ export class ManagedLocalServices {
           // Explicit authorization to bind a different specification revision.
           // Only a stopped service may be re-authorized; the process token is
           // cleared so the next start cannot reuse the previous launch.
-          const current = store.find(input.serviceId);
+          const current = scoped(input.serviceId);
           if (!current) throw new Error('服务不存在，无法更新授权规格');
           if (await this.ownedProcess(current)) throw new Error('请先停止服务再更新授权规格');
           const nextRevision = input.specification
@@ -190,7 +245,7 @@ export class ManagedLocalServices {
             healthMessage: null,
             updatedAt: new Date().toISOString(),
           }, { allowSpecificationChange: true });
-          effect.result = this.view(store.find(input.serviceId)!);
+          effect.result = this.view(scoped(input.serviceId)!);
           effect.phase = 'completed';
           store.saveOperation(effect);
           return effect;
@@ -202,12 +257,13 @@ export class ManagedLocalServices {
           store.saveOperation(effect);
         }
         if (effect.phase === 'starting') {
-          const record = store.find(input.serviceId);
+          const record = scoped(input.serviceId);
           // A new token proves this decision already attempted a launch. A
           // process that subsequently exited is observed, never repeated.
           effect.result = record?.processToken && record.processToken !== effect.initialToken
             ? await this.check(record)
-            : await this.startNow(input.specification ?? this.require(input.serviceId).specification);
+            : await this.startNow(input.specification
+              ?? this.requireScoped(input.serviceId, workspaceSegment).specification);
           effect.phase = 'completed';
         }
       } catch (error) {
@@ -224,6 +280,16 @@ export class ManagedLocalServices {
     return this.serialize(spec.serviceId, () => this.startNow(spec));
   }
 
+  private lookup(serviceId: string, workspaceId: string): LocalServiceRecord | null {
+    const scoped = this.deps.store.findInWorkspace;
+    if (!scoped) return this.deps.store.find(serviceId);
+    const inWorkspace = scoped.call(this.deps.store, workspaceId, serviceId);
+    if (inWorkspace) return inWorkspace;
+    // Rows written before Workspace bindings live in the empty segment, which
+    // this codebase spells as "unscoped" rather than "another Workspace".
+    return workspaceId === '' ? null : scoped.call(this.deps.store, '', serviceId);
+  }
+
   private async startNow(spec: LocalServiceSpecification): Promise<LocalServiceView> {
       // Even direct Runtime calls must prove that the task directory contains
       // a valid service manifest. The authorized operation still supplies the
@@ -235,13 +301,30 @@ export class ManagedLocalServices {
       // already rejects a manifest that drifted from the authorized revision, so
       // a rewritten `.metawork-service.json` cannot become the new launch spec
       // without an explicit update decision.
-      const previous = this.deps.store.find(spec.serviceId);
+      const workspaceId = await this.resolveServiceWorkspaceId(spec.taskId);
+      // The current specification decides whether a launch is needed. A record
+      // left `failed`/`stopped` by an earlier round is a historical fact: it is
+      // observed and diagnosed, never a reason to skip this round's start.
+      const previous = this.lookup(spec.serviceId, workspaceId);
       if (previous && previous.accountId !== this.deps.accountId) throw new Error('服务不存在');
       if (previous && previous.specificationRevision !== requestedRevision) {
         throw new Error('服务标识已绑定其他启动规格');
       }
-      if (previous && JSON.stringify(previous.specification) !== JSON.stringify(spec)) throw new Error('服务标识已绑定其他启动规格');
-      if (previous && await this.ownedProcess(previous)) return this.check(previous);
+      // Same launch contract: a process that is still running is observed, and
+      // one that already exited is started again for the current Task.
+      if (previous && await this.ownedProcess(previous)) {
+        const observed = await this.check(previous);
+        if (previous.specification.taskId !== spec.taskId) {
+          // The live process now belongs to this Task's service specification;
+          // ownership follows the current Task instead of the historical one.
+          this.deps.store.save({
+            ...previous,
+            specification: spec,
+            specificationRevision: requestedRevision,
+          });
+        }
+        return observed;
+      }
       await new Promise<void>((accept, reject) => {
         const probe = createServer();
         probe.once('error', reject);
@@ -269,8 +352,7 @@ export class ManagedLocalServices {
       const token = `metawork-service-${randomUUID()}`;
       const record: LocalServiceRecord = {
         accountId: this.deps.accountId,
-        workspaceId: this.deps.workspaceId
-          ?? (await this.deps.resolveWorkspaceId?.(spec.taskId) ?? null),
+        workspaceId: workspaceId || null,
         specificationRevision: requestedRevision,
         specification: spec,
         state: 'starting',
@@ -290,6 +372,10 @@ export class ManagedLocalServices {
         this.deps.store.save(record);
       } catch {
         record.state = 'failed'; record.healthMessage = '启动进程失败'; this.deps.store.save(record);
+        this.lastDiagnostics.set(record.specification.serviceId, {
+          specificationRevision: record.specificationRevision,
+          exitObserved: true, healthStatus: null, retryable: true,
+        });
         return this.view(record);
       } finally { await log.close(); }
       const deadline = Date.now() + spec.startupTimeoutMs;
@@ -302,11 +388,22 @@ export class ManagedLocalServices {
       // failure: stop the process this task started and record the reason
       // instead of keeping "waiting for health" as a completion blocker.
       await this.stopNow(spec.serviceId);
-      const timedOut = this.require(spec.serviceId);
+      const timedOut = this.requireScoped(spec.serviceId, workspaceId);
       timedOut.state = 'failed';
       timedOut.healthMessage = 'service_health_timeout';
       timedOut.updatedAt = new Date().toISOString();
       this.deps.store.save(timedOut);
+      // Keep the last real HTTP answer: a 503 (or any non-2xx) is exactly the
+      // repair input the next round needs. Only the timeout verdict is new.
+      const lastTimeoutAnswer = this.lastDiagnostics.get(timedOut.specification.serviceId);
+      this.lastDiagnostics.set(timedOut.specification.serviceId, {
+        specificationRevision: timedOut.specificationRevision,
+        exitObserved: false,
+        healthStatus: lastTimeoutAnswer?.specificationRevision === timedOut.specificationRevision
+          ? lastTimeoutAnswer.healthStatus
+          : null,
+        retryable: true,
+      });
       return this.view(timedOut);
   }
 
@@ -348,13 +445,22 @@ export class ManagedLocalServices {
   }
 
   async logs(serviceId: string): Promise<string> {
-    const record = this.require(serviceId);
-    const secrets = await Promise.all(Object.values(record.specification.environmentReferences).map(ref => this.deps.resolveEnvironment(ref)));
-    const file = await open(join(this.deps.logRoot, `${serviceId}.log`), 'r').catch(() => null);
-    if (!file) return '暂无服务日志';
+    return (await this.readLogTail(this.require(serviceId), 64 * 1024)) ?? '暂无服务日志';
+  }
+
+  /**
+   * Redacted tail of the service log. Reads happen for diagnostics only; the
+   * text is bounded so it can be handed to a recovery packet.
+   */
+  private async readLogTail(record: LocalServiceRecord, maxBytes: number): Promise<string | null> {
+    const secrets = await Promise.all(Object.values(record.specification.environmentReferences)
+      .map(ref => this.deps.resolveEnvironment(ref)));
+    const file = await open(join(this.deps.logRoot, `${record.specification.serviceId}.log`), 'r').catch(() => null);
+    if (!file) return null;
     try {
       const size = (await file.stat()).size;
-      const bytes = Buffer.alloc(Math.min(size, 64 * 1024));
+      if (size === 0) return '';
+      const bytes = Buffer.alloc(Math.min(size, maxBytes));
       await file.read(bytes, 0, bytes.length, Math.max(0, size - bytes.length));
       let output = bytes.toString('utf8');
       for (const secret of secrets) if (secret) output = output.replaceAll(secret, '[REDACTED]');
@@ -363,18 +469,82 @@ export class ManagedLocalServices {
   }
 
   private async check(record: LocalServiceRecord): Promise<LocalServiceView> {
+    let healthStatus: number | null = null;
+    let exitObserved = false;
     if (!await this.ownedProcess(record)) {
-      record.state = 'failed'; record.healthMessage = '服务进程已退出，需显式重启';
+      exitObserved = true;
+      record.state = 'failed';
+      // The public view never carries process identity; `observe()` reports it
+      // to the Runtime only (see `LocalServiceObservation`).
+      record.healthMessage = '服务进程已退出，需显式重启';
     } else {
       try {
         const response = await fetch(`${this.url(record)}${record.specification.healthPath}`, { signal: AbortSignal.timeout(1000), redirect: 'error' });
+        healthStatus = response.status;
         record.state = response.ok ? 'healthy' : 'unhealthy';
         record.healthMessage = response.ok ? '健康检查通过' : `服务已启动，健康检查返回 ${response.status}`;
         await response.body?.cancel();
       } catch { record.state = 'unhealthy'; record.healthMessage = '服务已启动，但尚未通过健康检查'; }
     }
     record.updatedAt = new Date().toISOString(); this.deps.store.save(record);
+    const previous = this.lastDiagnostics.get(record.specification.serviceId);
+    const sameContract = previous?.specificationRevision === record.specificationRevision;
+    this.lastDiagnostics.set(record.specification.serviceId, {
+      specificationRevision: record.specificationRevision,
+      exitObserved,
+      // A later observation of a stopped process has no HTTP answer; the last
+      // real answer of this contract (for example a 503) stays the diagnosis.
+      healthStatus: healthStatus ?? (sameContract ? previous!.healthStatus : null),
+      retryable: record.state === 'failed' || record.state === 'unhealthy',
+    });
     return this.view(record);
+  }
+
+  /**
+   * Observe the current specification and return its bounded diagnostics.
+   * Reading is side-effect free apart from recording the observed state; it
+   * never launches a process and never resurrects a historical failure.
+   */
+  async observe(serviceId: string, workspaceId?: string | null): Promise<import('../task/local-service.js').LocalServiceObservation> {
+    return this.serialize(serviceId, async () => {
+      const record = workspaceId !== undefined && workspaceId !== null
+        ? this.requireScoped(serviceId, workspaceId)
+        : this.require(serviceId);
+      const view = record.state === 'stopped' ? this.view(record) : await this.check(record);
+      const known = this.lastDiagnostics.get(serviceId);
+      const facts = known && known.specificationRevision === record.specificationRevision
+        ? known
+        : {
+            specificationRevision: record.specificationRevision,
+            exitObserved: record.state === 'failed',
+            healthStatus: null,
+            retryable: record.state === 'failed' || record.state === 'unhealthy',
+          };
+      return { view, diagnostics: await this.diagnostics(record, facts) };
+    });
+  }
+
+  /**
+   * Runtime observation of the current specification. Historical records are
+   * diagnosis input: `exitObserved`/`logTail` describe this revision, and
+   * `retryable` only says an agent could plausibly repair it in place.
+   */
+  private async diagnostics(
+    record: LocalServiceRecord,
+    facts: { exitObserved: boolean; healthStatus: number | null; retryable: boolean },
+  ): Promise<import('../task/local-service.js').LocalServiceDiagnostics> {
+    const logTail = (record.state === 'healthy')
+      ? null
+      : await this.readLogTail(record, 8 * 1024).catch(() => null);
+    return {
+      workspaceId: record.workspaceId,
+      specificationRevision: record.specificationRevision,
+      processId: record.processId,
+      exitObserved: facts.exitObserved,
+      logTail,
+      healthStatus: facts.healthStatus,
+      retryable: facts.retryable,
+    };
   }
 
   private async ownedProcess(record: LocalServiceRecord): Promise<boolean> {
@@ -391,7 +561,15 @@ export class ManagedLocalServices {
     } catch { return false; }
   }
   private require(id: string): LocalServiceRecord {
-    const record = this.deps.store.find(id);
+    // A workspace-bound manager resolves the composite identity first; without
+    // a Workspace (legacy CLI/gateway callers) the bare lookup still refuses an
+    // ambiguous id instead of guessing which Workspace owns it.
+    return this.requireScoped(id, this.deps.workspaceId ?? null);
+  }
+  private requireScoped(id: string, workspaceId: string | null): LocalServiceRecord {
+    const record = workspaceId !== null
+      ? this.lookup(id, workspaceId)
+      : this.deps.store.find(id);
     if (!record || record.accountId !== this.deps.accountId) throw new Error('服务不存在');
     return record;
   }

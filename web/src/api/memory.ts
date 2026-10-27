@@ -25,10 +25,23 @@ export interface MemoryAssetListView {
   degradedReason?: string;
 }
 
+/**
+ * Why memory cannot serve the user. "Engine not installed" and "engine without
+ * FTS5" are different failures and must not share one message.
+ */
+export type MemoryEngineProblem =
+  | 'extraction_model_required'
+  | 'extraction_credential_missing'
+  | 'engine_missing'
+  | 'engine_unreachable'
+  | 'engine_unhealthy'
+  | 'fts5_unavailable';
+
 export interface MemoryStatusView {
   enabled: boolean;
   mode: 'disabled' | 'needs-model' | 'enabled' | 'degraded';
   detail?: string;
+  engineProblem?: MemoryEngineProblem;
   providerRef: string | null;
   modelRef: string | null;
   engineReady: boolean;

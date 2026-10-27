@@ -149,3 +149,43 @@ describe('TaskView v2 projection', () => {
     expect(view.nextAuthorizedAction).toBe('await_user_input');
   });
 });
+
+describe('ordinary in-place completion is not a user decision', () => {
+  it('projects a certified in-place edit as a finished task without an accept action', () => {
+    const view = projectTaskView(facts({
+      task: {
+        id: 'task_1',
+        status: 'succeeded',
+        stateVersion: 9,
+        stateDetail: stateDetail({
+          reason: createTaskReason('none', '用户要求的必需工作已全部完成。'),
+          requiredWork: [
+            { key: 'execution:node', kind: 'execution', label: '修改文件', state: 'completed', reason: null },
+          ],
+        }),
+        updatedAt: NOW,
+      },
+      subtasks: [{ id: 'task_1_execute', status: 'done' }],
+      dispatches: [{
+        attemptId: 'attempt_1',
+        subtaskId: 'task_1_execute',
+        status: 'terminal',
+        attemptKind: 'primary',
+        createdAt: NOW,
+        updatedAt: NOW,
+      }],
+      receipts: [{
+        attemptId: 'attempt_1',
+        subtaskId: 'task_1_execute',
+        terminalState: 'completed',
+        accepted: true,
+        failureCode: null,
+      }] as never,
+    }));
+    expect(view.status).toBe('succeeded');
+    // The re-request/acceptance pair belongs only to an uncertified or partial
+    // result; a certified In-place edit is delivered as-is (2026-10-27 §6).
+    expect(view.nextAuthorizedAction).toBe('none');
+    expect(view.state.pendingActions).toEqual([]);
+  });
+});

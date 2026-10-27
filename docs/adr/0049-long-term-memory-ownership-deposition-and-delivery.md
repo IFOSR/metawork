@@ -254,3 +254,33 @@ since the last successful deposition; failures never move that clock.
 
 See
 [`docs/plans/2026-10-26-server-scoped-memory-pre-merge-remediation.md`](../plans/2026-10-26-server-scoped-memory-pre-merge-remediation.md).
+
+## Amendment 2026-10-26 — the engine ships with the release
+
+The original decision kept the engine version independently pinned but did not
+say who installs it. In practice that left a `memory.enabled` switch in the
+product whose engine the user had to fetch, build and run themselves; the
+installer never created `<releaseRoot>/memory/tdai`, so every real installation
+ran with `engine_missing`.
+
+The engine is now a required part of every release:
+
+- `memory/engine.lock.json` pins the upstream MIT revision; CI fetches exactly
+  that commit, builds the compiled gateway and packages it as the `memory`
+  artifact (source, revision, size, SHA-256 and dependency-lock SHA-256).
+- The release manifest requires the `memory` artifact; `install.sh`,
+  `bootstrap-install.sh`, `install.ps1`, the native installer/updater and the
+  Desktop payload all extract it to `<releaseRoot>/memory/tdai` and verify the
+  archive before use.
+- `resolveMemorySidecarCommand` accepts the compiled
+  `dist/gateway/server.js` (releases) and the development
+  `src/gateway/server.ts`, so development and production use one path.
+- The build fails unless the packaged engine starts and reports
+  `stores.ftsAvailable === true`; the FTS5 gate is verified before shipping
+  rather than discovered by a user.
+- "Engine not installed", "engine unreachable", "engine unhealthy" and "FTS5
+  unavailable" are distinct management states; the settings page no longer
+  reports every failure as an FTS5 problem.
+
+Nothing else about the capability changes: `memory.enabled=false` still starts
+no process, sends no request and costs nothing.

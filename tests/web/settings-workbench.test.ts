@@ -2,6 +2,7 @@ import { readFile } from 'node:fs/promises';
 import { describe, expect, it } from 'vitest';
 import { PUBLIC_PROVIDER_PRESETS } from '../../src/configuration/public-provider-catalog.js';
 import {
+  buildProviderCards,
   buildProviderModelOptions,
   dedupeModelEntries,
   evaluateModelCompatibility,
@@ -48,6 +49,52 @@ describe('Settings workbench model semantics', () => {
         'deepseek-v4-flash',
         'deepseek-v4-flash-vision-exp',
       ]));
+  });
+
+  it('projects Provider cards from the active configuration only', () => {
+    const cards = buildProviderCards({
+      configured: {
+        provider: {
+          protocol: 'openai-responses',
+          baseUrl: 'https://api.deepseek.com/v1',
+          displayName: 'DeepSeek',
+          enabled: true,
+        },
+      },
+      completionProviders: {
+        provider: {
+          displayName: 'DeepSeek',
+          baseUrl: 'https://api.deepseek.com/v1',
+          credentialState: '已自动发现',
+          modelIds: ['deepseek-flash'],
+        },
+        // A preset/local-discovery entry without a configuration row must not
+        // become a card, otherwise a deleted Provider reappears on reload.
+        deepseek: {
+          displayName: 'DeepSeek',
+          baseUrl: 'https://api.deepseek.com/v1',
+          credentialState: '已自动发现',
+          modelIds: ['deepseek-chat'],
+        },
+      },
+      providerPresets: [{
+        providerRef: 'deepseek',
+        displayName: 'DeepSeek',
+        baseUrl: 'https://api.deepseek.com/v1',
+        modelIds: ['deepseek-chat'],
+      }],
+    });
+
+    expect(Object.keys(cards)).toEqual(['provider']);
+    expect(cards.provider).toMatchObject({
+      displayName: 'DeepSeek',
+      protocol: 'openai-responses',
+      credentialState: '已自动发现',
+    });
+    // Model IDs are add-model suggestions for this card, never model entries.
+    expect(cards.provider!.modelIds).toEqual(
+      expect.arrayContaining(['deepseek-flash', 'deepseek-chat']),
+    );
   });
 
   const providers: SettingsProviderEntry[] = [
@@ -423,7 +470,10 @@ describe('Settings workbench model semantics', () => {
 
     expect(panel).not.toContain('高级诊断');
     expect(panel).not.toContain('../preset-providers');
-    expect(panel).toContain('providerPresets.find');
+    // Provider cards come from the active configuration only; the completion
+    // catalog may describe an existing card but never create one.
+    expect(panel).toContain('buildProviderCards');
+    expect(panel).not.toContain('for (const [providerRef, completed] of Object.entries(completionProviders))');
     expect(panel).toContain('draftValidationIssues.length > 0');
     expect(routing).toContain('当前没有可用模型，请重新选择');
     expect(routing).toContain('职责');

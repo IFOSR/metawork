@@ -1,12 +1,15 @@
 import { createHash } from 'node:crypto';
-import { existsSync, readFileSync, statSync } from 'node:fs';
-import { resolve } from 'node:path';
+import { existsSync, lstatSync, readFileSync, readdirSync, readlinkSync, statSync } from 'node:fs';
+import { isAbsolute, relative, resolve, sep } from 'node:path';
 import { spawnSync } from 'node:child_process';
+import { isWorkspaceRelativePath } from '../workspace/workspace-path.js';
 
 export interface WorkspaceState {
   kind: 'git_status_v1';
   paths: Record<string, string | null>;
   truncated: boolean;
+  /** Observation source. Omitted on historical Git-only snapshots. */
+  source?: 'git' | 'filesystem';
   /**
    * Line counts for the same dirty paths, used to report added/deleted lines
    * without storing file contents. Absent in states captured before this field
@@ -61,6 +64,103 @@ export function captureWorkspaceState(workspaceRoot: string): WorkspaceState {
     paths,
     truncated: entries.length > MAX_TRACKED_PATHS,
     lineCounts,
+    source: 'git',
+  };
+}
+
+/**
+ * Captures the authorized target paths without requiring a Git repository.
+ *
+ * A Workspace may be an ordinary directory. In that case Git cannot tell us
+ * what changed, but the Kernel has already pinned the relative target paths.
+ * Hashing only those paths gives the completion contract a bounded, durable
+ * observation channel for both declared outputs and ordinary code edits.
+ */
+export function captureWorkspaceStateAtPaths(
+  workspaceRoot: string,
+  targetPaths: readonly string[],
+): WorkspaceState {
+  const paths: Record<string, string | null> = {};
+  const lineCounts: Record<string, number | null> = {};
+  let visited = 0;
+  let truncated = false;
+  const root = resolve(workspaceRoot);
+
+  const visit = (relativePath: string): void => {
+    if (truncated) return;
+    if (visited >= MAX_TRACKED_PATHS) {
+      truncated = true;
+      return;
+    }
+    const absolutePath = resolve(root, relativePath);
+    const fromRoot = relative(root, absolutePath);
+    if (fromRoot !== '' && (isAbsolute(fromRoot) || fromRoot === '..' || fromRoot.startsWith(`..${sep}`))) return;
+    let entry;
+    try {
+      entry = lstatSync(absolutePath);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') truncated = true;
+      // A missing target is intentionally absent. If it appears after the
+      // baseline, the after snapshot will record it as a new file.
+      return;
+    }
+    if (entry.isDirectory()) {
+      let children: string[];
+      try {
+        children = readdirSync(absolutePath).sort();
+      } catch {
+        truncated = true;
+        return;
+      }
+      for (const child of children) {
+        const childPath = relativePath ? `${relativePath}/${child}` : child;
+        visit(childPath);
+        if (truncated) return;
+      }
+      return;
+    }
+    visited += 1;
+    const normalized = fromRoot.split(sep).join('/');
+    if (!normalized || normalized.split('/').some(segment => segment === '.' || segment === '..')) return;
+    if (entry.isSymbolicLink()) {
+      // Do not follow links: their target may leave the authorized Workspace.
+      // Recording the link identity is useful for diagnostics, but the scope
+      // is incomplete until a safe regular-file path is selected.
+      truncated = true;
+      let target: string;
+      try {
+        target = readlinkSync(absolutePath);
+      } catch {
+        target = '<unreadable>';
+      }
+      paths[normalized] = `symlink:${createHash('sha256').update(target).digest('hex')}`;
+      lineCounts[normalized] = null;
+      return;
+    }
+    const sample = inspectPath(absolutePath);
+    if (sample.hash === null) truncated = true;
+    paths[normalized] = sample.hash;
+    lineCounts[normalized] = sample.lines;
+  };
+
+  const normalizedTargets = [...new Set(targetPaths.map(targetPath =>
+    targetPath.replace(/^\.\//u, '').replace(/\/+/gu, '/'),
+  ))]
+    .filter(path => path && isWorkspaceRelativePath(path))
+    .sort((left, right) => left.length - right.length);
+  const coveredTargets: string[] = [];
+  for (const normalized of normalizedTargets) {
+    if (coveredTargets.some(parent => normalized === parent || normalized.startsWith(`${parent}/`))) continue;
+    coveredTargets.push(normalized);
+    visit(normalized);
+    if (truncated) break;
+  }
+  return {
+    kind: 'git_status_v1',
+    paths,
+    truncated,
+    lineCounts,
+    source: 'filesystem',
   };
 }
 
@@ -107,6 +207,7 @@ export function parseWorkspaceState(value: unknown): WorkspaceState | null {
     paths,
     truncated: record.truncated,
     lineCounts,
+    source: record.source === 'filesystem' ? 'filesystem' : 'git',
   };
 }
 

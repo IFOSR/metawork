@@ -383,7 +383,11 @@ export interface WorkspaceContext {
   workspaceId?: string;
   executionMode?: 'worktree' | 'in_place';
   /** Workspace access granted for this Attempt. Read admissions never receive a write mount. */
-  accessMode?: 'read' | 'write';
+  /**
+   * `read` only inspects files, `execute` may run commands in the canonical
+   * Workspace while keeping its files read-only, and `write` may mutate it.
+   */
+  accessMode?: 'read' | 'execute' | 'write';
   /** Trusted Conversation Workspace root exposed read-only to a read Attempt. */
   readOnlySourcePath?: string;
   /** Canonical Workspace root; live file references resolve against this. */

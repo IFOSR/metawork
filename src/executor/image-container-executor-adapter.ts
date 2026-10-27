@@ -97,7 +97,7 @@ export class ImageContainerExecutorAdapter implements ExecutorAdapter {
         environment: {
           METACLAW_IMAGE_OPERATION: operation,
           METACLAW_IMAGE_WORKSPACE_PATH: '/workspace',
-          ...(input.context.workspaceContext?.accessMode === 'read' && input.context.workspaceContext.readOnlySourcePath
+          ...(input.context.workspaceContext?.accessMode !== 'write' && input.context.workspaceContext?.readOnlySourcePath
             ? { METACLAW_READ_ONLY_WORKSPACE: '/source' }
             : {}),
           METACLAW_INPUTS_PATH: '/inputs',
@@ -110,7 +110,7 @@ export class ImageContainerExecutorAdapter implements ExecutorAdapter {
         },
         mounts: [
           { source: binding.workspacePath, target: '/workspace', mode: 'rw' },
-          ...(input.context.workspaceContext?.accessMode === 'read' && input.context.workspaceContext.readOnlySourcePath
+          ...(input.context.workspaceContext?.accessMode !== 'write' && input.context.workspaceContext.readOnlySourcePath
             ? [{ source: input.context.workspaceContext.readOnlySourcePath, target: '/source', mode: 'ro' as const }]
             : []),
           { source: binding.inputsPath, target: '/inputs', mode: 'ro' },

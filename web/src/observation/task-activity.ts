@@ -30,7 +30,7 @@ export function turnHasOngoingWork(
 export function taskNeedsAttention(
   task: Pick<ConversationTaskSummary, 'status' | 'pendingActions'>,
 ): boolean {
-  return task.status === 'needs_action' || task.pendingActions.length > 0;
+  return task.status === 'needs_action' || task.status === 'failed' || task.pendingActions.length > 0;
 }
 
 /** One user-facing explanation, taken from the committed Task state. */

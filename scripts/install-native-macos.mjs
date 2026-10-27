@@ -7,6 +7,11 @@ const runtimeRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const plannerRoot = resolve(
   process.env.ANYFUSION_PI_SOURCE_ROOT ?? join(runtimeRoot, 'planner', 'AnyFusion-Pi'),
 );
+// The memory engine ships with every release. A source checkout points at it
+// with METAWORK_MEMORY_ENGINE_ROOT (CI prebuilds it into memory/tdai).
+const memoryRoot = resolve(
+  process.env.METAWORK_MEMORY_ENGINE_ROOT ?? join(runtimeRoot, 'memory', 'tdai'),
+);
 
 function run(command, args, cwd) {
   const result = spawnSync(command, args, {
@@ -82,7 +87,7 @@ function main() {
     return result.status === 0 ? result.stdout.trim() : 'source';
   })();
   const releaseId = `${packageVersion}-build-${revision || 'source'}-${Date.now()}`;
-  run('node', [
+  const args = [
     join(runtimeRoot, 'dist', 'install-cli.js'),
     installCommand,
     releaseId,
@@ -90,7 +95,15 @@ function main() {
     runtimeRoot,
     '--planner-root',
     plannerRoot,
-  ], runtimeRoot);
+  ];
+  if (existsSync(join(memoryRoot, 'dist', 'gateway', 'server.js'))) {
+    args.push('--memory-root', memoryRoot);
+  } else {
+    process.stderr.write(
+      'Warning: memory engine is not built; install without long-term memory support.\n',
+    );
+  }
+  run('node', args, runtimeRoot);
 }
 
 try {

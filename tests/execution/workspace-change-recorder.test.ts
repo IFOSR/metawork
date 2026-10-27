@@ -85,6 +85,35 @@ describe('workspace change recorder', () => {
     expect(record.files).toEqual([{ path: 'report.md', added: 0, deleted: 0 }]);
   });
 
+  it('marks target-scoped filesystem observation as partial coverage', () => {
+    const before: WorkspaceState = {
+      kind: 'git_status_v1',
+      paths: { 'src/app.ts': 'before' },
+      truncated: false,
+      source: 'filesystem',
+      lineCounts: { 'src/app.ts': 1 },
+    };
+    const after: WorkspaceState = {
+      kind: 'git_status_v1',
+      paths: { 'src/app.ts': 'after' },
+      truncated: false,
+      source: 'filesystem',
+      lineCounts: { 'src/app.ts': 1 },
+    };
+    const record = buildWorkspaceChangeRecord({
+      ...base,
+      before,
+      after,
+      delta: deriveWorkspaceDelta(before, after),
+      declaredOutputs: [],
+      gitChannelFailure: 'not_repository',
+    });
+
+    expect(record.coverage).toBe('partial');
+    expect(record.missingReasons).toEqual(['filesystem_scope_limited']);
+    expect(record.files.map(file => file.path)).toEqual(['src/app.ts']);
+  });
+
   it('reports unavailable when the observation command itself failed', () => {
     const record = buildWorkspaceChangeRecord({
       ...base,

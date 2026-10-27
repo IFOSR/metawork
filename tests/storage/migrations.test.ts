@@ -42,6 +42,19 @@ describe('current SQLite baseline', () => {
       db.close();
     }
   });
+  it('repairs Task State tables missing from an already stamped current schema', () => {
+    const db = new Database(':memory:');
+    try {
+      runMigrations(db);
+      db.exec('DROP TABLE task_state_projection_outbox; DROP TABLE task_operation_results; DROP TABLE task_state_changes;');
+      runMigrations(db);
+      for (const table of ['task_state_changes', 'task_operation_results', 'task_state_projection_outbox']) {
+        expect(db.prepare(`PRAGMA table_info(${table})`).all(), table).not.toEqual([]);
+      }
+    } finally {
+      db.close();
+    }
+  });
   it('creates the current schema with durable Conversation slots and image artifacts', () => {
     const db = new Database(':memory:');
 
@@ -989,3 +1002,49 @@ function readJson(
   const row = db.prepare(sql).get(id) as Record<string, string>;
   return JSON.parse(Object.values(row)[0]!) as unknown;
 }
+
+describe('schema 59 to 60 operation outcomes', () => {
+  it('accepts a repairable service failure without losing existing results', () => {
+    const db = new Database(':memory:');
+    try {
+      runMigrations(db);
+      db.prepare("INSERT INTO tasks (id,title,goal,status,created_at,updated_at) VALUES ('task','T','G','running','now','now')").run();
+      db.prepare(`INSERT INTO task_operation_results (
+        task_id, operation_key, operation_kind, outcome, reason_code, message, evidence_refs_json, updated_at
+      ) VALUES ('task','service:start','service','definite_failure','service_start_failed','old','[]','now')`).run();
+      // Rebuild the historical table shape and replay the 59 → 60 step.
+      db.exec('DROP TABLE task_operation_results');
+      db.exec(`CREATE TABLE task_operation_results (
+        task_id TEXT NOT NULL,
+        operation_key TEXT NOT NULL,
+        operation_kind TEXT NOT NULL CHECK (operation_kind IN (
+          'execution', 'integration', 'delivery', 'safety_report', 'service'
+        )),
+        outcome TEXT NOT NULL CHECK (outcome IN ('success', 'definite_failure', 'unknown')),
+        reason_code TEXT,
+        message TEXT NOT NULL DEFAULT '',
+        evidence_refs_json TEXT NOT NULL DEFAULT '[]',
+        updated_at TEXT NOT NULL,
+        PRIMARY KEY (task_id, operation_key),
+        FOREIGN KEY (task_id) REFERENCES tasks(id)
+      )`);
+      db.prepare(`INSERT INTO task_operation_results VALUES
+        ('task','service:start','service','definite_failure','service_start_failed','kept','[]','now')`).run();
+      db.prepare('UPDATE schema_version SET version = 59').run();
+
+      runMigrations(db);
+
+      expect(db.prepare('SELECT version FROM schema_version').get()).toEqual({ version: CURRENT_SCHEMA_VERSION });
+      expect(db.prepare('SELECT message FROM task_operation_results WHERE operation_key = ?')
+        .get('service:start')).toEqual({ message: 'kept' });
+      // The new outcome is durable; the historical one still validates.
+      db.prepare(`INSERT INTO task_operation_results VALUES
+        ('task','service:start:backend:r1:attempt:0','service','repair_pending','service_start_failed','queued','[]','now2')`).run();
+      expect(db.prepare('SELECT COUNT(*) AS count FROM task_operation_results').get()).toEqual({ count: 2 });
+      expect(() => db.prepare(`INSERT INTO task_operation_results VALUES
+        ('task','other','service','not_an_outcome',null,'','[]','now3')`).run()).toThrow(/CHECK/u);
+    } finally {
+      db.close();
+    }
+  });
+});

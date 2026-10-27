@@ -148,6 +148,32 @@ export class AccountStartupRecoveryService {
   }
 
   /**
+   * Immediately wake queued work created by an explicit result decision.
+   *
+   * Result acceptance moves the owning Task back to `queued` while its
+   * publication continuation is durably staged. That transition does not
+   * pass through the terminal-task admission callback, so waiting for the
+   * periodic recovery sweep makes the user see a stale queue and can block a
+   * follow-up request in the same Conversation. Promotion still goes through
+   * the account-wide capacity and fairness checks.
+   */
+  async onTaskQueued(taskId: string): Promise<void> {
+    const task = this.deps.taskServices.taskRuntimeService.findTask(taskId);
+    if (!task?.conversationId) return;
+    const entry = this.deps.repositories.conversationTaskSchedulerRepo.getQueuedPayload(taskId);
+    if (!entry) return;
+    const scheduler = this.deps.repositories.conversationTaskSchedulerRepo;
+    const maxConcurrentTasks = this.deps.kernelConfiguration.runtimePolicy.maxConcurrentTasks ?? 2;
+    const promotions = scheduler.promoteAvailable(maxConcurrentTasks, new Date().toISOString());
+    for (const promotion of promotions) {
+      // Do not await the execution from the caller that is currently draining
+      // the same continuation; the promoted execution owns its own idempotent
+      // recovery path.
+      void this.promoteConversationTask(promotion.taskId, promotion.conversationId);
+    }
+  }
+
+  /**
    * The one residue contract for slot release (2026-09-25 plan §3.4, review
    * fix 4). Completion, cancellation, startup recovery, periodic recovery and
    * TaskView must all ask the same reader; a Task-local re-derivation would

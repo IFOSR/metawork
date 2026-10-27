@@ -178,6 +178,7 @@ trap 'rm -rf "$STAGING_DIR"' EXIT
 MANIFEST_PATH="$STAGING_DIR/manifest.json"
 RUNTIME_ARCHIVE="$STAGING_DIR/release.tar.gz"
 PLANNER_ARCHIVE="$STAGING_DIR/planner.tar.gz"
+MEMORY_ARCHIVE="$STAGING_DIR/memory.tar.gz"
 
 # NOTE: keep the manifest verification block in sync with scripts/bootstrap-install.sh.
 verify_manifest() {
@@ -212,6 +213,7 @@ const required = [
   'minimumNodeVersion',
   'metawork',
   'planner',
+  'memory',
   'compatibility',
   'previousCompatibleRelease',
   'signature',
@@ -231,6 +233,7 @@ if (manifest.signature.keyId !== trustedKeyId) throw new Error('unknown release 
 for (const [name, artifact] of Object.entries({
   metawork: manifest.metawork,
   planner: manifest.planner,
+  memory: manifest.memory,
 })) {
   if (
     !artifact
@@ -328,20 +331,31 @@ RELEASE_ID="$(verify_manifest "$MANIFEST_PATH")"
 
 RUNTIME_URL="$(resolve_artifact_url metawork.url)"
 PLANNER_URL="$(resolve_artifact_url planner.url)"
+MEMORY_URL="$(resolve_artifact_url memory.url)"
 echo "Downloading and verifying prebuilt artifacts..."
 echo "  - Runtime (~14MB): $RUNTIME_URL"
 curl -fSL --progress-bar --retry 2 -o "$RUNTIME_ARCHIVE" "$RUNTIME_URL"
 echo "  - Planner (~122MB): $PLANNER_URL"
 curl -fSL --progress-bar --retry 2 -o "$PLANNER_ARCHIVE" "$PLANNER_URL"
+echo "  - Memory engine: $MEMORY_URL"
+curl -fSL --progress-bar --retry 2 -o "$MEMORY_ARCHIVE" "$MEMORY_URL"
 verify_artifact "$MANIFEST_PATH" metawork "$RUNTIME_ARCHIVE"
 verify_artifact "$MANIFEST_PATH" planner "$PLANNER_ARCHIVE"
+verify_artifact "$MANIFEST_PATH" memory "$MEMORY_ARCHIVE"
 
 mkdir -p "$STAGING_DIR/runtime" "$STAGING_DIR/planner"
 tar -xzf "$RUNTIME_ARCHIVE" --strip-components=1 -C "$STAGING_DIR/runtime"
 tar -xzf "$PLANNER_ARCHIVE" --strip-components=1 -C "$STAGING_DIR/planner"
+# The memory engine archive carries a single `memory/` prefix, so extraction
+# lands on $STAGING_DIR/memory/tdai exactly as the release root expects.
+tar -xzf "$MEMORY_ARCHIVE" -C "$STAGING_DIR"
 
 test -f "$STAGING_DIR/runtime/dist/install-cli.js" || {
   echo "verified Runtime artifact is missing dist/install-cli.js" >&2
+  exit 1
+}
+test -f "$STAGING_DIR/memory/tdai/dist/gateway/server.js" || {
+  echo "verified Memory engine artifact is missing dist/gateway/server.js" >&2
   exit 1
 }
 
@@ -385,9 +399,11 @@ has_controlling_terminal() {
 if [ "$INSTALL_COMMAND" = "install" ] && [ ! -t 0 ] && has_controlling_terminal; then
   exec node "$STAGING_DIR/runtime/dist/install-cli.js" "$INSTALL_COMMAND" "$RELEASE_ID" \
     --source-root "$STAGING_DIR/runtime" \
-    --planner-root "$STAGING_DIR/planner" < /dev/tty
+    --planner-root "$STAGING_DIR/planner" \
+    --memory-root "$STAGING_DIR/memory/tdai" < /dev/tty
 fi
 
 exec node "$STAGING_DIR/runtime/dist/install-cli.js" "$INSTALL_COMMAND" "$RELEASE_ID" \
   --source-root "$STAGING_DIR/runtime" \
-  --planner-root "$STAGING_DIR/planner"
+  --planner-root "$STAGING_DIR/planner" \
+  --memory-root "$STAGING_DIR/memory/tdai"

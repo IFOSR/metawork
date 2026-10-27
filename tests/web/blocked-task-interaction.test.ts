@@ -62,6 +62,24 @@ describe('blocked task interaction', () => {
     expect(html).toContain('查看 Dashboard');
     expect(html).toContain('查看任务详情');
   });
+
+  it('offers a precise remaining-work retry for a failed task', () => {
+    const failed = { ...task('failed'), status: 'failed' as const,
+      explanation: '服务启动失败：端口已被占用。',
+      reason: { code: 'port_in_use' as const, message: '服务启动失败：端口已被占用。', evidenceRefs: [] } };
+    const html = renderToStaticMarkup(createElement(ObservedActivity, {
+      conversationId: 'conv', view: { tasks: [failed], nextCursor: null, pendingInteractions: [] },
+      showTasks: false, ws: {} as never, http: {} as never,
+    }));
+    expect(html).toContain('服务启动失败：端口已被占用。');
+    expect(html).toContain('重试未完成部分');
+    expect(html).not.toContain('继续未完成部分');
+    // The natural-language round is the ordinary path; the internal retry is a
+    // secondary explicit recovery, so it is never the highlighted primary.
+    expect(html).toContain('直接用下方说明');
+    expect(html).toContain('无需先清理');
+    expect(html).not.toContain('class="primary">重试未完成部分');
+  });
   it('states that a settling executor is still cleaning up', () => {
     expect(taskActivityMessage({ explanation: '等待执行器退出和清理' })).toContain('等待执行器退出和清理');
   });
