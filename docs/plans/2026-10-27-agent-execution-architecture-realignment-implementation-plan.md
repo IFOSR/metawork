@@ -2,7 +2,7 @@
 
 - 日期：2026-10-27
 - 状态：**已实施（§4–§7 全部落地，含 14 项评审缺陷修复）；P3 为方案明确的可选后续事项，未进入**
-- 完成日期：2026-10-27（代码与聚焦测试）；引擎/Web 构建通过，真实环境用户验收与 native Server 单实例检查仍待执行
+- 完成日期：2026-10-27（代码与聚焦测试）；收尾提交 `f68235e7`；引擎/Web 构建通过，真实环境用户验收与 native Server 单实例检查仍待执行
 - 依据：[Agent 执行架构重构方案](2026-10-27-agent-execution-architecture-realignment-plan.md)
 - 实施目标：在不改变 `Planner → Work Graph → Kernel → Executor/Harness → MetaWork 汇总/验证/输出` 主架构的前提下，消除 Runtime 对 Harness 内部执行的重复控制，让失败反馈、服务恢复和普通 Workspace 操作回到用户目标闭环。
 - 适用范围：Pi/Codex 当前 Executor 路径、Planner Work Graph 授权、Kernel dispatch、Attempt runner、Managed Local Service、结果验证和用户交付。

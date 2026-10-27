@@ -2,7 +2,7 @@
 
 - 日期：2026-10-27
 - 状态：**已实施（P0/P1/P2 全部落地，含评审修复与收尾）；P3 为方案明确的可选后续事项，未进入**
-- 完成日期：2026-10-27（代码与聚焦测试）；发布前用户验收门槛见文末实施记录
+- 完成日期：2026-10-27（代码与聚焦测试）；收尾提交 `f68235e7`；发布前用户验收门槛见文末实施记录
 - 目标：让 MetaWork 以用户目标完成为第一优先级，充分复用 Pi Agent 与 DeepSeek Harness 的执行闭环，收敛当前 Planner、Kernel、Runtime、Executor、服务监督和交付之间的重复状态机。
 - 关联：`planner/AnyFusion-Pi/packages/agent/src/agent-loop.ts`、`planner/AnyFusion-Pi/packages/agent/src/harness/agent-harness.ts`、`src/executor/pi-cli-driver.ts`、`src/execution/kernel-execution-runtime.ts`、`src/execution/managed-local-service.ts`、ADR-0020、ADR-0021、ADR-0022、ADR-0023、ADR-0024、ADR-0032、ADR-0050。
 
