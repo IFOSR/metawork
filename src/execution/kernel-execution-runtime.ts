@@ -1101,17 +1101,30 @@ export class KernelExecutionRuntime {
       delivery: id => this.deps.publicationRepo.delivery(id) });
   }
 
-  async localServiceTaskId(serviceId: string): Promise<string | null> {
-    return this.deps.managedLocalServices?.find(serviceId)?.specification.taskId ?? null;
+  async localServiceTaskId(serviceId: string, conversationId?: string): Promise<string | null> {
+    const services = this.deps.managedLocalServices;
+    if (!services) return null;
+    const records = services.listForService?.(serviceId)
+      ?? [services.find(serviceId)].filter((record): record is NonNullable<typeof record> => record !== null);
+    const tasks = this.deps.taskRuntimeService.listTasks?.() ?? [];
+    const matches = records.filter(record => {
+      const task = tasks.find(candidate => candidate.id === record.specification.taskId);
+      if (!task || (conversationId && task.conversationId !== conversationId)) return false;
+      return (task.workspaceId ?? '') === (record.workspaceId ?? '');
+    });
+    if (matches.length > 1) throw new Error('当前会话中存在多个同名服务，请指定服务所属任务');
+    return matches[0]?.specification.taskId ?? null;
   }
 
-  async readLocalService(serviceId: string, logs = false): Promise<LocalServiceView | string> {
+  async readLocalService(serviceId: string, logs = false, taskId?: string): Promise<LocalServiceView | string> {
     const services = this.deps.managedLocalServices;
     if (!services) throw new Error('当前 Runtime 未配置受管服务');
-    return logs ? services.logs(serviceId) : services.status(serviceId);
+    const workspaceId = taskId ? await services.resolveServiceWorkspaceId(taskId) : undefined;
+    return logs ? services.logs(serviceId, workspaceId) : services.status(serviceId, workspaceId);
   }
 
-  async manageLocalService(taskId: string, operation: LocalServiceOperation, serviceId?: string, settleTask = true): Promise<LocalServiceView> {
+  async manageLocalService(taskId: string, operation: LocalServiceOperation, serviceId?: string,
+    turnId?: string | null, settleTask = true): Promise<LocalServiceView> {
     const services = this.deps.managedLocalServices;
     if (!services) throw new KernelApplicationRejectionError('当前 Runtime 未配置受管服务', 'service_runtime_unavailable');
     const resourceTaskId = this.deps.taskRuntimeService.findTask(taskId)?.retryOfTaskId ?? taskId;
@@ -1140,10 +1153,10 @@ export class KernelExecutionRuntime {
       : resolveRegisteredService(services, workspaceId, id)?.specificationRevision ?? '';
     const event: Extract<KernelEvent, { type: 'managed_service_requested' }> = {
       schemaVersion: 5, configurationRevision: this.configurationRevisionForTask(taskId),
-      type: 'managed_service_requested', id: resourceTaskId !== taskId
-        ? `service_retry:${taskId}` : `service_${generateInteractionId()}`, correlationId: taskId,
+      type: 'managed_service_requested', id: `service_${generateInteractionId()}`, correlationId: taskId,
       causationId: null, occurredAt: new Date().toISOString(), sessionId: this.sessionId,
       taskId, operation, serviceId: id, specification, workspaceId, specificationRevision,
+      ...(turnId ? { turnId } : {}),
     };
     const published = await services.isPublished(resourceTaskId);
     const observed: { outcome: LocalServiceApplyOutcome | null } = { outcome: null };
@@ -1211,7 +1224,9 @@ export class KernelExecutionRuntime {
       this.deps.kernelWorkflowStore.resolveUncertainApplication?.(application.decisionId, 'retry', new Date().toISOString());
     }
     await this.localServiceWorkflow(taskId, await services.isPublished(taskId)).recover();
-    for (const record of services.forTask(taskId)) await services.status(record.specification.serviceId);
+    for (const record of services.forTask(taskId)) {
+      await services.status(record.specification.serviceId, record.workspaceId);
+    }
   }
 
   /** Persist the Workspace facts that authorize a Generation before dispatch. */
@@ -4166,11 +4181,11 @@ export class KernelExecutionRuntime {
     const workspaceId = await manager.resolveServiceWorkspaceId(resourceTaskId);
     if (revisionDrifted) {
       if (await this.serviceProcessAlive(spec.serviceId, workspaceId)) {
-        await this.manageLocalService(taskId, 'stop', spec.serviceId, false);
+        await this.manageLocalService(taskId, 'stop', spec.serviceId, undefined, false);
       }
-      await this.manageLocalService(taskId, 'update', spec.serviceId, false);
+      await this.manageLocalService(taskId, 'update', spec.serviceId, undefined, false);
     }
-    const view = await this.manageLocalService(taskId, 'start', spec.serviceId, false);
+    const view = await this.manageLocalService(taskId, 'start', spec.serviceId, undefined, false);
     return { view, spec, workspaceId };
   }
 

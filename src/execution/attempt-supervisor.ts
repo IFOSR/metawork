@@ -166,10 +166,12 @@ export class AttemptSupervisor {
       // partition/capacity yield records `not_started` with no receipt, no
       // runtime and no measured duration, so surfaces cannot label it as
       // completed (2026-10-28 transparent execution §P2.1).
-      if (isNonExecutionYield(event)) {
+      if (isNonExecutionYield(event) || isNeverStartedOutcome(event)) {
         this.repository.markNotStarted(
           item.attemptId,
-          `attempt yielded without execution: ${event.type}`,
+          isNeverStartedOutcome(event)
+            ? event.failure?.summary ?? 'attempt failed before execution started'
+            : `attempt yielded without execution: ${event.type}`,
           new Date().toISOString(),
         );
       } else {
@@ -179,9 +181,8 @@ export class AttemptSupervisor {
     } catch (error) {
       const summary = error instanceof Error ? error.message : String(error);
       const event = await context.onLaunchError(item, error);
-      if (event.type === 'execution_outcome' && event.failure?.attemptStarted === false
-        && event.failure.externalSideEffect === false) {
-        this.repository.markTerminal(item.attemptId, summary, new Date().toISOString());
+      if (isNeverStartedOutcome(event)) {
+        this.repository.markNotStarted(item.attemptId, summary, new Date().toISOString());
       } else {
         this.repository.markUncertain(item.attemptId, summary, new Date().toISOString());
       }
@@ -198,4 +199,11 @@ export class AttemptSupervisor {
 function isNonExecutionYield(event: KernelEvent): boolean {
   return event.type === 'partition_conflict_observed'
     || event.type === 'capacity_signal';
+}
+
+/** A pre-launch failure has no execution duration or external effect. */
+function isNeverStartedOutcome(event: KernelEvent): event is Extract<KernelEvent, { type: 'execution_outcome' }> {
+  return event.type === 'execution_outcome'
+    && event.failure?.attemptStarted === false
+    && event.failure.externalSideEffect === false;
 }

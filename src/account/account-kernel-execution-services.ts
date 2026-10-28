@@ -204,7 +204,7 @@ export function buildAccountKernelExecutionServices(deps: {
 
   const sessionKernelRuntime = new SessionKernelRuntime({
     resolveUserWorkspaceRoot: deps.resolveUserWorkspaceRoot,
-    manageLocalService: (taskId, operation, serviceId) => kernelExecutionRuntime.manageLocalService(taskId, operation, serviceId),
+    manageLocalService: (taskId, operation, serviceId, turnId) => kernelExecutionRuntime.manageLocalService(taskId, operation, serviceId, turnId),
     sessionId: deps.sessionId,
     legacyCompatibility: deps.legacyCompatibility,
     accountId: deps.accountId,

@@ -325,6 +325,9 @@ http.createServer((req,res)=>{res.statusCode=req.url==='/health'?200:503;res.end
     expect(firstWorkspaceManager.findForWorkspace('workspace-first', 'backend')?.specification.port).toBe(spec.port);
     expect(secondWorkspaceManager.findForWorkspace('workspace-second', 'backend')?.specification.port)
       .toBe(secondPort);
+    // Startup recovery must visit each composite service identity rather than
+    // issue an ambiguous bare service-id lookup.
+    await firstWorkspaceManager.recover();
     await firstWorkspaceManager.stop('backend');
     await secondWorkspaceManager.stop('backend');
   }, 20000);

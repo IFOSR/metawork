@@ -186,7 +186,7 @@ export interface RemainingTaskWork {
 
 export type KernelEvent =
   | (KernelEventEnvelope & { type: 'task_remaining_work_retry_requested'; expectedVersion: number })
-  | (KernelEventEnvelope & { type: 'managed_service_requested'; operation: LocalServiceOperation; serviceId: string; specification?: LocalServiceSpecification; workspaceId?: string; specificationRevision?: string })
+  | (KernelEventEnvelope & { type: 'managed_service_requested'; operation: LocalServiceOperation; serviceId: string; specification?: LocalServiceSpecification; workspaceId?: string; specificationRevision?: string; turnId?: string })
   | (KernelEventEnvelope & {
       type: 'plan_proposed';
       proposal: KernelPlanProposal;
@@ -661,7 +661,7 @@ export type KernelDecisionAction =
       /** §5.4 abandon-and-create: the exact old Task to abandon before admission. */
       conflictResolution?: { oldTaskId: string };
     }
-  | { type: 'control_managed_service'; taskId: string; serviceId: string; operation: LocalServiceOperation; specification?: LocalServiceSpecification; workspaceId?: string; specificationRevision?: string }
+  | { type: 'control_managed_service'; taskId: string; serviceId: string; operation: LocalServiceOperation; specification?: LocalServiceSpecification; workspaceId?: string; specificationRevision?: string; turnId?: string }
   | { type: 'authorize_task_control'; task: KernelPlanProposal['task'] }
   | {
       type: 'dispatch_batch';
@@ -1034,6 +1034,7 @@ export class ControlKernel {
         if (event.operation !== 'start' && !facts.serviceTaskId) return decision(event, { type: 'reject_request' }, '服务不存在');
         return decision(event, { type: 'control_managed_service', taskId: event.taskId, serviceId: event.serviceId,
           operation: event.operation, specification: event.specification,
+          ...(event.turnId ? { turnId: event.turnId } : {}),
           ...(event.workspaceId ? { workspaceId: event.workspaceId } : {}),
           ...(event.specificationRevision ? { specificationRevision: event.specificationRevision } : {}),
         }, 'explicit managed service action authorized');

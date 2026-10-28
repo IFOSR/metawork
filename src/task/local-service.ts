@@ -148,6 +148,8 @@ export type LocalServiceOperation = 'start' | 'stop' | 'restart' | 'update';
 /** Runtime effect checkpoint, subordinate to an already-authorized Kernel decision. */
 export interface LocalServiceEffect {
   decisionId: string;
+  /** Conversation Turn that requested this operation, when user initiated. */
+  turnId?: string | null;
   serviceId: string;
   operation: LocalServiceOperation;
   phase: 'stopping' | 'starting' | 'completed';

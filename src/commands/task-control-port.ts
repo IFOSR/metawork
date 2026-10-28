@@ -10,9 +10,9 @@ export interface TaskControlPort {
   taskView?(taskId: string): import('../task/task-view.js').TaskView | null;
   publicTaskDelivery?(taskId: string): Promise<import('../delivery/public-delivery-view.js').PublicDeliveryView | null>;
   pendingTaskResult?(taskId: string): PendingResultIdentity | null;
-  localServiceTaskId?(serviceId: string): Promise<string | null>;
-  readLocalService?(serviceId: string, logs?: boolean): Promise<LocalServiceView | string>;
-  manageLocalService?(taskId: string, operation: LocalServiceOperation, serviceId?: string): Promise<LocalServiceView>;
+  localServiceTaskId?(serviceId: string, conversationId?: string): Promise<string | null>;
+  readLocalService?(serviceId: string, logs?: boolean, taskId?: string): Promise<LocalServiceView | string>;
+  manageLocalService?(taskId: string, operation: LocalServiceOperation, serviceId?: string, turnId?: string | null): Promise<LocalServiceView>;
   cancelTask(taskId: string, reason?: string): Promise<TaskControlReceipt>;
   /**
    * Marks the Task as needing user action. It records the durable blocker and

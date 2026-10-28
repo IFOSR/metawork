@@ -6,13 +6,13 @@ export async function serviceCommand(args: ResolvedCommandArgs, context: Command
   try {
     const target = stringArg(args, 'target');
     const port = context.taskControl;
-    const taskId = operation === 'start' ? target : await port.localServiceTaskId?.(target);
+    const taskId = operation === 'start' ? target : await port.localServiceTaskId?.(target, context.conversationId);
     const task = taskId ? context.taskEngine.getTaskRepo().findById(taskId) : null;
     if (!task || (context.conversationId && task.conversationId !== context.conversationId)) {
       throw new Error('当前会话中没有该服务任务');
     }
     const result = operation === 'status' || operation === 'logs'
-      ? await port.readLocalService?.(target, operation === 'logs')
+      ? await port.readLocalService?.(target, operation === 'logs', task.id)
       : await port.manageLocalService?.(task.id, operation, operation === 'start' ? undefined : target);
     if (result === undefined) throw new Error('当前 Runtime 未配置受管服务');
     if (typeof result === 'string') return { type: 'text', content: result };

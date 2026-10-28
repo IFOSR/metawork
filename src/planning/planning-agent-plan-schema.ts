@@ -37,7 +37,7 @@ const ResponseSchema = z.object({
 
 const TaskSchema = z.object({
   publicProjectDirectory: z.string().min(1).max(500).nullable().optional().describe('Only for an explicitly user-selected existing project: a Workspace-relative directory, never absolute or traversing. Immutable after Task creation.'),
-  startServiceAfterPublish: z.boolean().nullable().optional().describe('Set true only when the user explicitly requests implementing AND starting a local service. Executor must produce .metawork-service.json and Runtime starts it after public delivery.'),
+  startServiceAfterPublish: z.boolean().nullable().optional().describe('Set true only when the user explicitly requests implementing AND starting a local service. .metawork-service.json is optional: Executor may provide it for a custom launch contract; otherwise Runtime discovers a supported project launch entry after delivery.'),
   binding: z.enum(TASK_BINDING_VALUES),
   taskId: z.string().nullable(),
   control: z.enum(TASK_CONTROL_VALUES),

@@ -45,7 +45,7 @@ export interface SessionKernelRuntimeDeps {
   conversationTaskSchedulerRepo?: ConversationTaskSchedulerRepo;
   presentation: SessionPresentationService;
   resolveUserWorkspaceRoot?: (conversationId: string) => Promise<string | null> | string | null;
-  manageLocalService?: (taskId: string, operation: 'start' | 'stop' | 'restart', serviceId?: string) => Promise<unknown>;
+  manageLocalService?: (taskId: string, operation: 'start' | 'stop' | 'restart', serviceId?: string, turnId?: string | null) => Promise<unknown>;
   callbacks: {
     appendOutput(...lines: string[]): void;
     onDecisionApplying?(decision: KernelDecision): void;
@@ -296,7 +296,7 @@ export class SessionKernelRuntime {
       }
       const operation = taskCommand.control.slice('service_'.length) as 'start' | 'stop' | 'restart';
       try {
-        const result = await this.deps.manageLocalService(task.id, operation, taskCommand.scope ?? undefined);
+        const result = await this.deps.manageLocalService(task.id, operation, taskCommand.scope ?? undefined, queryId);
         this.deps.callbacks.appendOutput(JSON.stringify(result));
       } catch (error) {
         // The Kernel refuses with the real reason; a settled operation reports

@@ -1,4 +1,4 @@
-import { ManagedLocalServices, LOCAL_SERVICE_SPECIFICATION_FILENAME } from '../execution/managed-local-service.js';
+import { ManagedLocalServices } from '../execution/managed-local-service.js';
 import { ManagedLocalServiceRepo } from '../storage/managed-local-service-repo.js';
 import { resolveHostToolPath } from '../utils/host-tool-path.js';
 import { resolveExecutorTool } from '../utils/executor-tool-path.js';
@@ -1042,13 +1042,21 @@ export async function main(cliCommand = parseCliArgs(process.argv.slice(2))) {
     resolveEnvironment: async reference => {
       try { assertSecretReference(reference); return await secretStore.get(reference); } catch { return null; }
     },
-    isPublishedServiceSpecification: async (taskId, root) => taskArtifactRepo.publicFiles.list(LOCAL_DEFAULT_ACCOUNT_ID, taskId)
-      .some(item => item.status === 'published' && item.relativePath === LOCAL_SERVICE_SPECIFICATION_FILENAME
-        && item.publishedPath === join(root, LOCAL_SERVICE_SPECIFICATION_FILENAME))
-      // In-place Tasks write directly into the bound Conversation Workspace.
-      // They do not create a public task directory, and delivery_policy=none
-      // intentionally suppresses publication rows.
-      || taskEngine.getTaskRepo().findById(taskId)?.executionMode === 'in_place',
+    isPublishedServiceSpecification: async (taskId, root, relativePath) => {
+      const published = taskArtifactRepo.publicFiles.list(LOCAL_DEFAULT_ACCOUNT_ID, taskId)
+        .some(item => item.status === 'published' && item.relativePath === relativePath
+          && item.publishedPath === join(root, relativePath));
+      if (published) return true;
+      // In-place Tasks do not have publication rows. Their declared write
+      // targets are the provenance boundary: a Workspace-root manifest that
+      // was not part of this Task's target cannot be silently adopted.
+      const task = taskEngine.getTaskRepo().findById(taskId);
+      if (task?.executionMode !== 'in_place') return false;
+      return (task.workspaceTargetPaths ?? []).some(target => {
+        const normalized = target.replaceAll('\\', '/').replace(/^\.\//u, '').replace(/\/$/u, '');
+        return normalized === '' || relativePath === normalized || relativePath.startsWith(`${normalized}/`);
+      });
+    },
     resolveWorkspaceId: async taskId => {
       const row = db.prepare('SELECT workspace_id FROM tasks WHERE id = ?').get(taskId) as
         { workspace_id: string | null } | undefined;
@@ -1061,6 +1069,7 @@ export async function main(cliCommand = parseCliArgs(process.argv.slice(2))) {
       .list(LOCAL_DEFAULT_ACCOUNT_ID, taskId)
       .filter(item => item.status === 'published')
       .map(item => item.relativePath),
+    listTaskTargetPaths: async taskId => taskEngine.getTaskRepo().findById(taskId)?.workspaceTargetPaths ?? [],
     resolvePublishedDirectory: async taskId => {
       const task = taskEngine.getTaskRepo().findById(taskId);
       if (!task || task.accountId !== LOCAL_DEFAULT_ACCOUNT_ID) return null;
@@ -1070,14 +1079,13 @@ export async function main(cliCommand = parseCliArgs(process.argv.slice(2))) {
       // The Workspace itself is the authorized service directory for in-place
       // execution. There is no public task directory in this mode.
       if (task.executionMode === 'in_place') return canonicalWorkspace;
-      // Worktree/public delivery requires the service manifest to have been
-      // recorded as a published file for this Task. In-place returned above
-      // and deliberately does not use this publication table.
-      const serviceSpec = taskArtifactRepo.publicFiles.list(LOCAL_DEFAULT_ACCOUNT_ID, taskId)
-        .some(item => item.status === 'published'
-          && item.relativePath === LOCAL_SERVICE_SPECIFICATION_FILENAME
-          && item.publishedPath === join(canonicalWorkspace, LOCAL_SERVICE_SPECIFICATION_FILENAME));
-      return serviceSpec ? canonicalWorkspace : null;
+      // A published project is runnable without a service manifest. The file
+      // registry proves that this Task delivered something into the Workspace;
+      // target resolution then selects the project's own path and optionally
+      // discovers its launch command.
+      const publishedFiles = taskArtifactRepo.publicFiles.list(LOCAL_DEFAULT_ACCOUNT_ID, taskId)
+        .filter(item => item.status === 'published');
+      return publishedFiles.length > 0 ? canonicalWorkspace : null;
     },
   });
   await managedLocalServices.recover();

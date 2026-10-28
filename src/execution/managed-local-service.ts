@@ -2,7 +2,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import { spawn, execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { mkdir, open, realpath, lstat, readFile, rm, writeFile } from 'node:fs/promises';
-import { join, resolve, relative, isAbsolute, sep } from 'node:path';
+import { join, resolve, relative, dirname, isAbsolute, sep } from 'node:path';
 
 import { localServiceSpecificationRevision } from '../task/local-service.js';
 import { discoverLaunchSpecification } from './local-service-discovery.js';
@@ -110,6 +110,13 @@ export class ManagedLocalServices {
   private diagnosticsKey(serviceId: string, workspaceId: string | null | undefined): string {
     return `${workspaceId ?? ''}\u0000${serviceId}`;
   }
+
+  private storageToken(serviceId: string, workspaceId: string | null | undefined): string {
+    return createHash('sha256')
+      .update(`${this.deps.accountId}\u0000${workspaceId ?? ''}\u0000${serviceId}`)
+      .digest('hex')
+      .slice(0, 32);
+  }
   constructor(private readonly deps: {
     accountId: string;
     /** Workspace identity of the owning service set, when the host knows it. */
@@ -119,18 +126,27 @@ export class ManagedLocalServices {
     resolvePublishedDirectory(taskId: string): Promise<string | null>;
     /** Workspace identity the service belongs to, for (account, workspace, service) keys. */
     resolveWorkspaceId?(taskId: string): Promise<string | null> | string | null;
-    isPublishedServiceSpecification?(taskId: string, root: string): Promise<boolean>;
+    isPublishedServiceSpecification?(taskId: string, root: string, relativePath: string): Promise<boolean>;
     resolveEnvironment(reference: string): Promise<string | null>;
     /**
      * Workspace-relative paths this Task delivered. They are the durable facts
      * that identify the target project of a follow-up run.
      */
     listTaskArtifactPaths?(taskId: string): Promise<string[]>;
+    /** Workspace-relative paths authorized for this Task's writes. */
+    listTaskTargetPaths?(taskId: string): Promise<string[]>;
     /** Allocate the loopback port a discovered contract hands to the process. */
     selectFreePort?(host: '127.0.0.1' | '::1'): Promise<number | null>;
   }) {}
 
   find(serviceId: string): LocalServiceRecord | null { return this.deps.store.find(serviceId); }
+
+  listForService(serviceId: string): LocalServiceRecord[] {
+    return this.deps.store.list().filter(record => (
+      record.accountId === this.deps.accountId
+      && record.specification.serviceId === serviceId
+    ));
+  }
 
   /**
    * Workspace-scoped service identity: `(accountId, workspaceId, serviceId)`.
@@ -214,9 +230,28 @@ export class ManagedLocalServices {
     const rootManifest = join(canonicalRoot, LOCAL_SERVICE_SPECIFICATION_FILENAME);
     const rootManifestInfo = await lstat(rootManifest).catch(() => null);
     if (rootManifestInfo?.isFile()) observedManifests.push(LOCAL_SERVICE_SPECIFICATION_FILENAME);
+    const taskTargetPaths = await this.deps.listTaskTargetPaths?.(input.taskId) ?? [];
+    const targetDirectories = await this.resolveTaskTargetDirectories(canonicalRoot, taskTargetPaths);
+    for (const targetDirectory of targetDirectories) {
+      const candidateManifest = join(canonicalRoot, targetDirectory, LOCAL_SERVICE_SPECIFICATION_FILENAME);
+      if ((await lstat(candidateManifest).catch(() => null))?.isFile()) {
+        observedManifests.push(join(targetDirectory, LOCAL_SERVICE_SPECIFICATION_FILENAME));
+      }
+    }
+    const hasNonRootTaskTarget = targetDirectories.some(path => path !== '');
+    const selectionManifests = hasNonRootTaskTarget
+      ? observedManifests.filter(path => path !== LOCAL_SERVICE_SPECIFICATION_FILENAME)
+      : observedManifests;
     const targetPath = input.targetPath !== undefined
       ? normalizeTargetPath(input.targetPath)
-      : this.selectRunTarget(artifactPaths, observedManifests, evidence);
+      : await this.selectRunTarget({
+          root: canonicalRoot,
+          artifactPaths,
+          manifestPaths: selectionManifests,
+          taskTargetPaths: targetDirectories,
+          serviceIdHint: input.serviceId,
+          evidence,
+        });
     if (targetPath !== '') {
       const candidateManifest = join(canonicalRoot, targetPath, LOCAL_SERVICE_SPECIFICATION_FILENAME);
       const info = await lstat(candidateManifest).catch(() => null);
@@ -228,13 +263,25 @@ export class ManagedLocalServices {
         const specification = await this.readManifestAt(input.taskId, canonicalRoot, manifestPath, {
           allowRevisionChange: input.allowRevisionChange,
         });
-        return { specification, source: 'manifest', targetPath, evidence };
+        return {
+          // A project-local manifest without `directory` runs from the project
+          // directory that contained it. Keeping it undefined would make the
+          // later launch validation re-read the unrelated Workspace-root file
+          // and would start the command from the wrong cwd.
+          specification: specification.directory === undefined && targetPath !== ''
+            ? { ...specification, directory: targetPath }
+            : specification,
+          source: 'manifest', targetPath, evidence,
+        };
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
         // A malformed or stale manifest is diagnosis, not a dead end: report it
         // and keep resolving the target project from its recorded contract or
         // its own files. Ownership and revision refusals stay refusals.
-        if (!message.startsWith('服务规格文件无效') && !message.startsWith('服务规格无效')) throw error;
+        if (!message.startsWith('服务规格文件无效')
+          && !message.startsWith('服务规格无效')
+          && message !== PUBLISHED_CODE_MISSING_SERVICE_SPECIFICATION
+          && message !== '服务规格不属于当前任务') throw error;
         evidence.push(`目标项目的服务规格不可用，已改为检查项目本身：${message}`);
       }
     }
@@ -258,7 +305,10 @@ export class ManagedLocalServices {
     if (registered) {
       evidence.push(`复用已记录的目标项目服务契约：${registered.specification.serviceId}`);
       return {
-        specification: registered.specification,
+        // The launch contract revision excludes task provenance. Rebind that
+        // provenance to the current follow-up so Kernel validates the request
+        // against the requesting Task and the service record hands over on use.
+        specification: { ...registered.specification, taskId: input.taskId },
         source: 'registered',
         targetPath,
         evidence,
@@ -282,7 +332,7 @@ export class ManagedLocalServices {
       taskId: input.taskId,
       command: discovered.launch.command,
       args: discovered.launch.args,
-      ...(discovered.launch.directory ? { directory: discovered.launch.directory } : {}),
+      directory: discovered.launch.directory,
       environmentReferences: {},
       host: this.discoveredHost(),
       port,
@@ -305,19 +355,75 @@ export class ManagedLocalServices {
     return root;
   }
 
-  private selectRunTarget(
-    artifactPaths: readonly string[],
-    observedManifests: readonly string[],
-    evidence: string[],
-  ): string {
-    const candidates = resolveRunTargetCandidates({ artifactPaths, manifestPaths: observedManifests });
+  private async selectRunTarget(input: {
+    root: string;
+    artifactPaths: readonly string[];
+    manifestPaths: readonly string[];
+    taskTargetPaths: readonly string[];
+    serviceIdHint?: string;
+    evidence: string[];
+  }): Promise<string> {
+    const candidates = resolveRunTargetCandidates({
+      artifactPaths: input.artifactPaths,
+      manifestPaths: input.manifestPaths,
+    });
+    if (candidates.length === 0 && input.taskTargetPaths.length > 0) {
+      // In-place edits may have no downloadable artifact rows. The authorized
+      // target paths are still durable evidence of which Workspace project the
+      // Task changed; inspect those paths before considering a root-level legacy
+      // manifest. This prevents an unrelated old service from becoming the
+      // fallback target.
+      const discoveredTargets = new Set<string>();
+      const normalizedTargets = [...new Set(input.taskTargetPaths)];
+      for (const targetPath of normalizedTargets) {
+        const manifest = join(input.root, targetPath, LOCAL_SERVICE_SPECIFICATION_FILENAME);
+        if ((await lstat(manifest).catch(() => null))?.isFile()) {
+          discoveredTargets.add(targetPath);
+          continue;
+        }
+        const result = await discoverLaunchSpecification({
+          root: input.root,
+          targetPath,
+          serviceIdHint: input.serviceIdHint,
+        });
+        if (result.launch) discoveredTargets.add(targetPath);
+      }
+      if (discoveredTargets.size > 0) {
+        const listed = [...discoveredTargets].sort();
+        if (listed.length > 1) {
+          input.evidence.push(`运行目标不唯一：${listed.join('、')}`);
+          throw new Error(`运行目标不唯一，需要明确指定项目：${listed.join('、')}`);
+        }
+        return listed[0]!;
+      }
+      // A single authorized target is more informative than the Workspace
+      // root, even if discovery will later report that it is not runnable.
+      if (normalizedTargets.length === 1) return normalizedTargets[0]!;
+      if (normalizedTargets.length > 1) {
+        input.evidence.push(`无法从多个目标路径确定唯一服务项目：${normalizedTargets.join('、')}`);
+        throw new Error(`运行目标不唯一，需要明确指定项目：${normalizedTargets.join('、')}`);
+      }
+    }
     if (candidates.length === 0) return '';
     if (candidates.length > 1) {
       const listed = candidates.map(candidate => candidate.targetPath || 'Workspace 根目录');
-      evidence.push(`运行目标不唯一：${listed.join('、')}`);
+      input.evidence.push(`运行目标不唯一：${listed.join('、')}`);
       throw new Error(`运行目标不唯一，需要明确指定项目：${listed.join('、')}`);
     }
     return candidates[0]!.targetPath;
+  }
+
+  /** Resolve declared target files to their containing project directories. */
+  private async resolveTaskTargetDirectories(root: string, paths: readonly string[]): Promise<string[]> {
+    const directories = new Set<string>();
+    for (const path of paths) {
+      const normalized = normalizeTargetPath(path);
+      if (!normalized) { directories.add(''); continue; }
+      const info = await lstat(join(root, normalized)).catch(() => null);
+      const directory = info?.isDirectory() ? normalized : dirname(normalized).split(sep).join('/');
+      directories.add(directory === '.' ? '' : directory);
+    }
+    return [...directories].sort();
   }
 
   private async readManifestAt(
@@ -335,7 +441,9 @@ export class ManagedLocalServices {
       }
       throw new Error('服务规格文件无效');
     }
-    if (this.deps.isPublishedServiceSpecification && !await this.deps.isPublishedServiceSpecification(taskId, root)) {
+    const relativePath = relative(root, path).split(sep).join('/');
+    if (this.deps.isPublishedServiceSpecification
+      && !await this.deps.isPublishedServiceSpecification(taskId, root, relativePath)) {
       throw new Error(PUBLISHED_CODE_MISSING_SERVICE_SPECIFICATION);
     }
     if (!info.isFile() || info.isSymbolicLink() || info.size > 64 * 1024) throw new Error('服务规格文件无效');
@@ -391,7 +499,9 @@ export class ManagedLocalServices {
 
 
   async recover(): Promise<void> {
-    for (const record of this.deps.store.list()) await this.status(record.specification.serviceId);
+    for (const record of this.deps.store.list()) {
+      await this.status(record.specification.serviceId, record.workspaceId);
+    }
   }
 
   applyAuthorizedOperation(input: {
@@ -402,13 +512,14 @@ export class ManagedLocalServices {
     /** Workspace and revision the Kernel authorized for this operation. */
     workspaceId?: string;
     specificationRevision?: string;
+    turnId?: string;
   }): Promise<LocalServiceEffect> {
-    return this.serialize(input.serviceId, async () => {
+    const workspaceSegment = input.workspaceId ?? this.deps.workspaceId ?? '';
+    return this.serialize(input.serviceId, workspaceSegment, async () => {
       const store = this.deps.store;
       // A start/stop decision names one Workspace. Reading it back through the
       // composite identity keeps an identically named service in another
       // Workspace out of this operation entirely.
-      const workspaceSegment = input.workspaceId ?? this.deps.workspaceId ?? '';
       const scoped = (serviceId: string) => this.lookup(serviceId, workspaceSegment);
       let effect = store.findOperation(input.decisionId);
       if (effect && (effect.serviceId !== input.serviceId || effect.operation !== input.operation)) {
@@ -417,6 +528,7 @@ export class ManagedLocalServices {
       if (effect?.phase === 'completed') return effect;
       if (!effect) {
         effect = { decisionId: input.decisionId, serviceId: input.serviceId, operation: input.operation,
+          turnId: input.turnId ?? null,
           phase: input.operation === 'start' ? 'starting' : 'stopping',
           initialToken: scoped(input.serviceId)?.processToken ?? null, result: null, error: null };
         store.saveOperation(effect);
@@ -450,7 +562,7 @@ export class ManagedLocalServices {
           return effect;
         }
         if (effect.phase === 'stopping') {
-          effect.result = await this.stopNow(input.serviceId);
+          effect.result = await this.stopNow(input.serviceId, workspaceSegment);
           effect.phase = input.operation === 'stop' ? 'completed' : 'starting';
           effect.initialToken = null;
           store.saveOperation(effect);
@@ -474,9 +586,10 @@ export class ManagedLocalServices {
     });
   }
 
-  start(specification: LocalServiceSpecification): Promise<LocalServiceView> {
+  async start(specification: LocalServiceSpecification): Promise<LocalServiceView> {
     const spec = validateLocalServiceSpecification(specification);
-    return this.serialize(spec.serviceId, () => this.startNow(spec));
+    const workspaceId = await this.resolveServiceWorkspaceId(spec.taskId);
+    return this.serialize(spec.serviceId, workspaceId, () => this.startNow(spec));
   }
 
   private lookup(serviceId: string, workspaceId: string): LocalServiceRecord | null {
@@ -497,7 +610,10 @@ export class ManagedLocalServices {
       // evidence was the project itself, which `resolveServiceSpecification`
       // already resolved under Workspace containment.
       if ((spec.origin ?? 'manifest') === 'manifest') {
-        await this.readSpecification(spec.taskId);
+        const root = await this.resolveReadableRoot(spec.taskId);
+        const canonicalRoot = await realpath(root);
+        const manifestPath = join(canonicalRoot, spec.directory ?? '', LOCAL_SERVICE_SPECIFICATION_FILENAME);
+        await this.readManifestAt(spec.taskId, canonicalRoot, manifestPath);
       }
       const requestedRevision = localServiceSpecificationRevision(spec);
       // The launch is authorized for exactly this revision. `readSpecification`
@@ -560,6 +676,7 @@ export class ManagedLocalServices {
         env[key] = value;
       }
       await mkdir(this.deps.logRoot, { recursive: true, mode: 0o700 });
+      const storageToken = this.storageToken(spec.serviceId, workspaceId);
       const token = `metawork-service-${randomUUID()}`;
       const record: LocalServiceRecord = {
         accountId: this.deps.accountId,
@@ -573,7 +690,7 @@ export class ManagedLocalServices {
         updatedAt: new Date().toISOString(),
       };
       this.deps.store.save(record);
-      const log = await open(join(this.deps.logRoot, `${spec.serviceId}.log`), 'a', 0o600);
+      const log = await open(join(this.deps.logRoot, `${storageToken}.log`), 'a', 0o600);
       try {
         const child = spawn(process.execPath, ['--input-type=module', '-e', SERVICE_HOST, token, spec.command, JSON.stringify(spec.args)],
           { cwd, env, detached: true, stdio: ['ignore', log.fd, log.fd] });
@@ -611,7 +728,7 @@ export class ManagedLocalServices {
       // A bounded startup deadline that is still unhealthy is a definite
       // failure: stop the process this task started and record the reason
       // instead of keeping "waiting for health" as a completion blocker.
-      await this.stopNow(spec.serviceId);
+      await this.stopNow(spec.serviceId, workspaceId);
       const timedOut = this.requireScoped(spec.serviceId, workspaceId);
       timedOut.state = 'failed';
       timedOut.healthMessage = 'service_health_timeout';
@@ -633,20 +750,22 @@ export class ManagedLocalServices {
       return this.view(timedOut);
   }
 
-  async status(serviceId: string): Promise<LocalServiceView> {
-    return this.serialize(serviceId, async () => {
-      const record = this.require(serviceId);
+  async status(serviceId: string, workspaceId?: string | null): Promise<LocalServiceView> {
+    const scope = this.operationWorkspace(serviceId, workspaceId);
+    return this.serialize(serviceId, scope, async () => {
+      const record = this.requireScoped(serviceId, scope);
       if (record.state === 'stopped') return this.view(record);
       return this.check(record);
     });
   }
 
-  stop(serviceId: string): Promise<LocalServiceView> {
-    return this.serialize(serviceId, () => this.stopNow(serviceId));
+  async stop(serviceId: string, workspaceId?: string | null): Promise<LocalServiceView> {
+    const scope = this.operationWorkspace(serviceId, workspaceId);
+    return this.serialize(serviceId, scope, () => this.stopNow(serviceId, scope));
   }
 
-  private async stopNow(serviceId: string): Promise<LocalServiceView> {
-      const record = this.require(serviceId);
+  private async stopNow(serviceId: string, workspaceId: string): Promise<LocalServiceView> {
+      const record = this.requireScoped(serviceId, workspaceId);
       if (await this.ownedProcess(record)) {
         const group = -record.processId!;
         process.kill(group, 'SIGTERM');
@@ -662,16 +781,18 @@ export class ManagedLocalServices {
       return this.view(record);
   }
 
-  async restart(serviceId: string): Promise<LocalServiceView> {
-    return this.serialize(serviceId, async () => {
-      const spec = this.require(serviceId).specification;
-      await this.stopNow(serviceId);
+  async restart(serviceId: string, workspaceId?: string | null): Promise<LocalServiceView> {
+    const scope = this.operationWorkspace(serviceId, workspaceId);
+    return this.serialize(serviceId, scope, async () => {
+      const spec = this.requireScoped(serviceId, scope).specification;
+      await this.stopNow(serviceId, scope);
       return this.startNow(spec);
     });
   }
 
-  async logs(serviceId: string): Promise<string> {
-    return (await this.readLogTail(this.require(serviceId), 64 * 1024)) ?? '暂无服务日志';
+  async logs(serviceId: string, workspaceId?: string | null): Promise<string> {
+    const scope = this.operationWorkspace(serviceId, workspaceId);
+    return (await this.readLogTail(this.requireScoped(serviceId, scope), 64 * 1024)) ?? '暂无服务日志';
   }
 
   /**
@@ -681,7 +802,8 @@ export class ManagedLocalServices {
   private async readLogTail(record: LocalServiceRecord, maxBytes: number): Promise<string | null> {
     const secrets = await Promise.all(Object.values(record.specification.environmentReferences)
       .map(ref => this.deps.resolveEnvironment(ref)));
-    const file = await open(join(this.deps.logRoot, `${record.specification.serviceId}.log`), 'r').catch(() => null);
+    const token = this.storageToken(record.specification.serviceId, record.workspaceId);
+    const file = await open(join(this.deps.logRoot, `${token}.log`), 'r').catch(() => null);
     if (!file) return null;
     try {
       const size = (await file.stat()).size;
@@ -737,10 +859,9 @@ export class ManagedLocalServices {
    * never launches a process and never resurrects a historical failure.
    */
   async observe(serviceId: string, workspaceId?: string | null): Promise<import('../task/local-service.js').LocalServiceObservation> {
-    return this.serialize(serviceId, async () => {
-      const record = workspaceId !== undefined && workspaceId !== null
-        ? this.requireScoped(serviceId, workspaceId)
-        : this.require(serviceId);
+    const scope = this.operationWorkspace(serviceId, workspaceId);
+    return this.serialize(serviceId, scope, async () => {
+      const record = this.requireScoped(serviceId, scope);
       const view = record.state === 'stopped' ? this.view(record) : await this.check(record);
       const known = this.lastDiagnostics.get(this.diagnosticsKey(serviceId, record.workspaceId));
       const facts = known && known.specificationRevision === record.specificationRevision
@@ -791,22 +912,24 @@ export class ManagedLocalServices {
       return stdout.includes(record.processToken);
     } catch { return false; }
   }
-  private require(id: string): LocalServiceRecord {
-    // A workspace-bound manager resolves the composite identity first; without
-    // a Workspace (legacy CLI/gateway callers) the bare lookup still refuses an
-    // ambiguous id instead of guessing which Workspace owns it.
-    return this.requireScoped(id, this.deps.workspaceId ?? null);
+  private operationWorkspace(serviceId: string, workspaceId?: string | null): string {
+    if (workspaceId !== undefined) return workspaceId ?? '';
+    if (this.deps.workspaceId !== undefined) return this.deps.workspaceId;
+    const record = this.deps.store.find(serviceId);
+    if (!record || record.accountId !== this.deps.accountId) throw new Error('服务不存在');
+    return record.workspaceId ?? '';
   }
-  private requireScoped(id: string, workspaceId: string | null): LocalServiceRecord {
-    const record = workspaceId !== null
-      ? this.lookup(id, workspaceId)
-      : this.deps.store.find(id);
+  private requireScoped(id: string, workspaceId: string): LocalServiceRecord {
+    const record = this.lookup(id, workspaceId);
     if (!record || record.accountId !== this.deps.accountId) throw new Error('服务不存在');
     return record;
   }
   private url(record: LocalServiceRecord): string {
     const spec = record.specification;
-    if (spec.port === null) return '';
+    // A discovered contract may ignore the injected PORT and bind its own
+    // default. Without an explicit address/health contract, report process
+    // liveness but do not present a guessed URL as an accessible endpoint.
+    if (spec.port === null || (spec.origin ?? 'manifest') === 'discovered') return '';
     return `http://${spec.host === '::1' ? '[::1]' : spec.host}:${spec.port}`;
   }
   private view(record: LocalServiceRecord): LocalServiceView {
@@ -817,12 +940,13 @@ export class ManagedLocalServices {
         source: record.specification.origin ?? 'manifest',
       } };
   }
-  private async serialize<T>(id: string, run: () => Promise<T>): Promise<T> {
+  private async serialize<T>(id: string, workspaceId: string, run: () => Promise<T>): Promise<T> {
     if (!/^[a-zA-Z0-9_-]{1,100}$/u.test(id)) throw new Error('服务标识无效');
-    const previous = this.operations.get(id) ?? Promise.resolve();
+    const token = this.storageToken(id, workspaceId);
+    const previous = this.operations.get(token) ?? Promise.resolve();
     const current = previous.catch(() => undefined).then(async () => {
       await mkdir(this.deps.logRoot, { recursive: true, mode: 0o700 });
-      const lock = join(this.deps.logRoot, `${id}.lock`);
+      const lock = join(this.deps.logRoot, `${token}.lock`);
       const deadline = Date.now() + 65_000;
       while (true) {
         try {
@@ -843,7 +967,7 @@ export class ManagedLocalServices {
       }
       try { return await run(); } finally { await rm(lock, { recursive: true, force: true }); }
     });
-    this.operations.set(id, current);
-    try { return await current; } finally { if (this.operations.get(id) === current) this.operations.delete(id); }
+    this.operations.set(token, current);
+    try { return await current; } finally { if (this.operations.get(token) === current) this.operations.delete(token); }
   }
 }

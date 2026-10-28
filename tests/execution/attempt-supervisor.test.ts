@@ -192,6 +192,21 @@ function yieldEvent(item: KernelDispatchItemRecord): KernelEvent {
   };
 }
 
+function neverStartedEvent(item: KernelDispatchItemRecord): KernelEvent {
+  return {
+    ...outcomeEvent(item),
+    terminalKind: 'failed',
+    failure: {
+      kind: 'configuration',
+      scope: 'agent_class',
+      code: 'executor_probe_failed',
+      summary: 'Executable missing',
+      attemptStarted: false,
+      externalSideEffect: false,
+    },
+  };
+}
+
 describe('AttemptSupervisor', () => {
   it('records a yielded Attempt as not started instead of as an execution', async () => {
     // 2026-10-28 transparent execution §P2.1: `wait_for_partition` is a
@@ -217,6 +232,29 @@ describe('AttemptSupervisor', () => {
     expect(submitted).toHaveLength(1);
     // A parked item is no longer pending, so a drain cannot loop on it.
     expect(repository.listPending('task-1')).toEqual([]);
+  });
+
+  it('records a pre-launch execution outcome as not started on both return and launch-error paths', async () => {
+    for (const mode of ['returned', 'thrown'] as const) {
+      const repository = new MemoryDispatchItems();
+      const supervisor = new AttemptSupervisor(repository, 1, 1);
+      const decision = {
+        ...batchDecision(),
+        action: { ...batchDecision().action, items: [batchDecision().action.items[0]!] },
+      };
+      supervisor.enqueue(decision, bindingContext(decision, 'generation-1'), {
+        run: async item => {
+          if (mode === 'thrown') throw new Error('Executable missing');
+          return neverStartedEvent(item);
+        },
+        submit: async () => undefined,
+        onLaunchError: async item => neverStartedEvent(item),
+      }, new Date().toISOString());
+      await supervisor.drain('task-1');
+      expect(repository.records.get('attempt-a')?.status).toBe('terminal');
+      expect(repository.records.get('attempt-a')?.terminalDisposition).toBe('not_started');
+      expect(repository.records.get('attempt-a')?.errorSummary).toContain('Executable missing');
+    }
   });
 
   it('finishes an active attempt but defers queued launch after authorization closes, including recovery', async () => {
