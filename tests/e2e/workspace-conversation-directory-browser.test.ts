@@ -544,6 +544,7 @@ async function launchBrowser(port: number, prefix: string): Promise<{
   const profile = await mkdtemp(join(tmpdir(), `${prefix}-`));
   const chrome = spawn(chromePath, [
     '--headless=new',
+    '--use-mock-keychain',
     '--disable-gpu',
     '--no-first-run',
     '--no-default-browser-check',

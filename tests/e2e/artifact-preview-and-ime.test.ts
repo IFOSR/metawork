@@ -77,6 +77,7 @@ e2e('Artifact preview drawer and IME-aware Enter browser flow', () => {
     try {
       chrome = spawn(chromePath, [
         '--headless=new',
+      '--use-mock-keychain',
         '--disable-gpu',
         '--no-first-run',
         '--no-default-browser-check',

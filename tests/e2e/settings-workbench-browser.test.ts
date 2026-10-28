@@ -19,7 +19,8 @@ e2e('Settings workbench browser flow', () => {
     const root = resolve(fileURLToPath(new URL('../../', import.meta.url)));
     const server = await startMockServer(join(root, 'web', 'dist'));
     const profile = await mkdtemp(join(tmpdir(), 'settings-protocol-'));
-    const chrome = spawn(chromePath, ['--headless=new', '--disable-gpu', '--no-first-run',
+    const chrome = spawn(chromePath, ['--headless=new',
+      '--use-mock-keychain', '--disable-gpu', '--no-first-run',
       '--no-default-browser-check', '--remote-debugging-port=0', `--user-data-dir=${profile}`,
       `http://127.0.0.1:${server.port}/`], { stdio: 'ignore' });
     try {
@@ -61,7 +62,8 @@ e2e('Settings workbench browser flow', () => {
     const root = resolve(fileURLToPath(new URL('../../', import.meta.url)));
     const server = await startMockServer(join(root, 'web', 'dist'));
     const profile = await mkdtemp(join(tmpdir(), 'settings-local-save-'));
-    const chrome = spawn(chromePath, ['--headless=new', '--disable-gpu', '--no-first-run',
+    const chrome = spawn(chromePath, ['--headless=new',
+      '--use-mock-keychain', '--disable-gpu', '--no-first-run',
       '--no-default-browser-check', '--remote-debugging-port=0', `--user-data-dir=${profile}`,
       `http://127.0.0.1:${server.port}/`], { stdio: 'ignore' });
     try {
@@ -96,7 +98,8 @@ e2e('Settings workbench browser flow', () => {
     const root = resolve(fileURLToPath(new URL('../../', import.meta.url)));
     const server = await startMockServer(join(root, 'web', 'dist'));
     const profile = await mkdtemp(join(tmpdir(), 'settings-model-evidence-'));
-    const chrome = spawn(chromePath, ['--headless=new', '--disable-gpu', '--no-first-run',
+    const chrome = spawn(chromePath, ['--headless=new',
+      '--use-mock-keychain', '--disable-gpu', '--no-first-run',
       '--no-default-browser-check', '--remote-debugging-port=0', `--user-data-dir=${profile}`,
       `http://127.0.0.1:${server.port}/`], { stdio: 'ignore' });
     try {
@@ -159,7 +162,8 @@ e2e('Settings workbench browser flow', () => {
     const root = resolve(fileURLToPath(new URL('../../', import.meta.url)));
     const server = await startMockServer(join(root, 'web', 'dist'));
     const profile = await mkdtemp(join(tmpdir(), 'settings-ai-feedback-'));
-    const chrome = spawn(chromePath, ['--headless=new', '--disable-gpu', '--no-first-run',
+    const chrome = spawn(chromePath, ['--headless=new',
+      '--use-mock-keychain', '--disable-gpu', '--no-first-run',
       '--no-default-browser-check', '--remote-debugging-port=0', `--user-data-dir=${profile}`,
       `http://127.0.0.1:${server.port}/`], { stdio: 'ignore' });
     try {
@@ -247,7 +251,8 @@ e2e('Settings workbench browser flow', () => {
     const root = resolve(fileURLToPath(new URL('../../', import.meta.url)));
     const server = await startMockServer(join(root, 'web', 'dist'));
     const profile = await mkdtemp(join(tmpdir(), 'span-settings-chrome-'));
-    const chrome = spawn(chromePath, ['--headless=new', '--disable-gpu', '--no-first-run',
+    const chrome = spawn(chromePath, ['--headless=new',
+      '--use-mock-keychain', '--disable-gpu', '--no-first-run',
       '--no-default-browser-check', '--remote-debugging-port=0', `--user-data-dir=${profile}`,
       `http://127.0.0.1:${server.port}/`], { stdio: 'ignore' });
     try {
@@ -302,7 +307,8 @@ e2e('Settings workbench browser flow', () => {
     let chrome: ChildProcess | null = null;
     try {
       chrome = spawn(chromePath, [
-        '--headless=new', '--disable-gpu', '--no-first-run', '--no-default-browser-check',
+        '--headless=new',
+      '--use-mock-keychain', '--disable-gpu', '--no-first-run', '--no-default-browser-check',
         '--window-size=1440,1000', '--remote-debugging-port=0', `--user-data-dir=${profile}`,
         `http://127.0.0.1:${server.port}/`,
       ], { stdio: 'ignore' });
@@ -441,6 +447,7 @@ e2e('Settings workbench browser flow', () => {
     try {
       chrome = spawn(chromePath, [
         '--headless=new',
+      '--use-mock-keychain',
         '--disable-gpu',
         '--no-first-run',
         '--no-default-browser-check',
@@ -665,6 +672,7 @@ e2e('Settings workbench browser flow', () => {
     try {
       chrome = spawn(chromePath, [
         '--headless=new',
+      '--use-mock-keychain',
         '--disable-gpu',
         '--no-first-run',
         '--no-default-browser-check',

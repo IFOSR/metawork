@@ -39,7 +39,7 @@ browser('inline DAG in Chrome (real component, isolated fixture)', () => {
     const address = server.address();
     if (!address || typeof address === 'string') throw new Error('missing test port');
     const chrome = spawn('/Applications/Google Chrome.app/Contents/MacOS/Google Chrome', [
-      '--headless=new', '--disable-gpu', '--no-first-run', '--no-default-browser-check',
+      '--headless=new', '--use-mock-keychain', '--disable-gpu', '--no-first-run', '--no-default-browser-check',
       '--window-size=1440,1000', '--remote-debugging-port=0',
       `--user-data-dir=${profile}`, `http://127.0.0.1:${address.port}/`,
     ], { stdio: ['ignore', 'ignore', 'pipe'] });

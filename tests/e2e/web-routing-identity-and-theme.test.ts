@@ -34,6 +34,7 @@ e2e('Web routing identity, canonical execution cards, and theme presentation', (
     try {
       chrome = spawn(chromePath, [
         '--headless=new',
+        '--use-mock-keychain',
         '--disable-gpu',
         '--no-first-run',
         '--no-default-browser-check',
