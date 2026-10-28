@@ -109,6 +109,7 @@ function turnFailureFacts(turn: ConversationTurnProjection): TurnFailureFacts | 
 export function ConversationTurnView({
   turn,
   liveExecutionPanel,
+  blockedActions,
   onOpenArtifact,
   onOpenAttachment,
   onOpenTrajectory,
@@ -117,6 +118,9 @@ export function ConversationTurnView({
 }: {
   turn: ConversationTurnProjection;
   liveExecutionPanel?: ReactNode;
+  /** Inline controls for a blocked Task. Kept beside the explanation so the
+   * next-step copy always points at a visible, actionable control. */
+  blockedActions?: ReactNode;
   onOpenArtifact?: (artifact: ArtifactProjection) => void;
   onOpenAttachment?: (conversationId: string, attachment: import('../api/session-types').ConversationAttachment) => void;
   onOpenTrajectory?: (turnId: string) => void;
@@ -206,6 +210,7 @@ export function ConversationTurnView({
       {showNotice && (
         <ExecutionNotice turn={turn} failure={failure} receipts={output.receipts} />
       )}
+      {blockedActions}
       {isSystemCommand && turn.finalAnswer && (() => {
         // The presentation service emits one ASCII box for Feishu/CLI parity.
         // The Web client renders that box as a card and keeps the prose around

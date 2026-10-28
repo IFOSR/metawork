@@ -3492,7 +3492,11 @@ select {
 .workspace-canvas {
   min-height: 0;
   overflow-y: auto;
-  scroll-behavior: smooth;
+  /* User wheel/touch input must take effect immediately. Animated scrolling
+   * is requested explicitly by controls such as “回到最新”; applying it to
+   * the live canvas turns a pending layout correction into a second scroll
+   * gesture and can make upward navigation appear stuck. */
+  scroll-behavior: auto;
 }
 
 .conversation-view,

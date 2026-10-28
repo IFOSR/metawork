@@ -44,6 +44,19 @@ describe('inline blocked actions', () => {
     expect(html).toContain('查看恢复项');
   });
 
+  it('keeps a resume button visible while the TaskView query is unavailable', () => {
+    const html = renderToStaticMarkup(createElement(BlockedActions, {
+      ws,
+      http: {} as never,
+      conversationId: 'conv_1',
+      taskId: 'task_1',
+      fallbackStatus: 'blocked',
+      lifecycle: undefined,
+      permission: null,
+    }));
+    expect(html).toContain('继续未完成部分');
+  });
+
   it('renders nothing when the Turn needs no decision', () => {
     const html = renderToStaticMarkup(createElement(BlockedActions, {
       ws, conversationId: 'conv_1', taskId: 'task_1',

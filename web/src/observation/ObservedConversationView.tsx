@@ -53,6 +53,16 @@ export const ObservedConversationView = memo(function ObservedConversationView({
   const programmaticScroll = useRef(true);
   const programmaticScrollUntil = useRef(Number.POSITIVE_INFINITY);
   const programmaticReleaseTimer = useRef<ReturnType<typeof setTimeout> | undefined>();
+  // Once a user leaves the tail, preserve the row they are reading. A row's
+  // own streamed body may grow freely; only movement of a preceding row needs
+  // a compensating scrollTop adjustment.
+  const reading = useRef(false);
+  const readingRowTop = useRef<number | null>(null);
+  const readingListTop = useRef<number | null>(null);
+  const readingGesturePending = useRef(false);
+  const pendingUserScrollDirection = useRef<'up' | 'down' | null>(null);
+  const lastObservedScrollTop = useRef<number | null>(null);
+  const lastTouchY = useRef<number | null>(null);
   const positions = useMemo(() => {
     let y = 0;
     return window.ids.map(id => {
@@ -120,20 +130,51 @@ export const ObservedConversationView = memo(function ObservedConversationView({
       followLatest.current = value;
       setFollowingLatest(value);
     };
+    const detachFromLatest = (direction: 'up' | 'down') => {
+      // Detach synchronously from the input gesture. Waiting for the browser's
+      // following `scroll` event leaves a race with a streamed React render:
+      // the layout effect can otherwise write the tail position back before
+      // the user scroll event is processed.
+      programmaticScroll.current = false;
+      programmaticScrollUntil.current = 0;
+      if (programmaticReleaseTimer.current) {
+        clearTimeout(programmaticReleaseTimer.current);
+        programmaticReleaseTimer.current = undefined;
+      }
+      reading.current = true;
+      readingGesturePending.current = true;
+      readingRowTop.current = null;
+      readingListTop.current = null;
+      pendingUserScrollDirection.current = direction;
+      setFollowLatest(false);
+    };
     const update = () => {
       frame = 0;
       if (programmaticScroll.current) {
         if (Date.now() < programmaticScrollUntil.current) return;
         programmaticScroll.current = false;
       }
+      readingGesturePending.current = false;
+      const scrollDelta = lastObservedScrollTop.current === null
+        ? 0 : canvas.scrollTop - lastObservedScrollTop.current;
+      const direction = pendingUserScrollDirection.current
+        ?? (scrollDelta < -1 ? 'up' : scrollDelta > 1 ? 'down' : null);
+      pendingUserScrollDirection.current = null;
+      lastObservedScrollTop.current = canvas.scrollTop;
       const relativeTop = Math.max(0, canvas.scrollTop - listTop());
       const distanceFromBottom = Math.max(0, canvas.scrollHeight - canvas.scrollTop - canvas.clientHeight);
-      setFollowLatest(distanceFromBottom <= FOLLOW_LATEST_THRESHOLD);
+      const shouldFollowLatest = direction === 'up' ? false
+        : direction === 'down' ? distanceFromBottom <= FOLLOW_LATEST_THRESHOLD
+          : followLatest.current && distanceFromBottom <= FOLLOW_LATEST_THRESHOLD;
+      setFollowLatest(shouldFollowLatest);
       setViewport({ top: relativeTop, height: canvas.clientHeight });
       const row = positionsRef.current.find(item => item.top + item.height >= relativeTop);
       if (row) {
+        reading.current = !shouldFollowLatest;
+        readingRowTop.current = shouldFollowLatest ? null : row.top;
+        readingListTop.current = shouldFollowLatest ? null : listTop();
         anchor.current = { turnId: row.id, offset: relativeTop - row.top,
-          bottom: followLatest.current };
+          bottom: shouldFollowLatest };
         memory.anchors.delete(conversationId); memory.anchors.set(conversationId, anchor.current);
         while (memory.anchors.size > 64) memory.anchors.delete(memory.anchors.keys().next().value!);
         if (desktopBridge()) {
@@ -146,29 +187,44 @@ export const ObservedConversationView = memo(function ObservedConversationView({
     };
     const onScroll = () => { if (!frame) frame = requestAnimationFrame(update); };
     const userScroll = (event: Event) => {
-      // A user gesture always wins over a pending smooth/programmatic scroll.
-      programmaticScroll.current = false;
-      programmaticScrollUntil.current = 0;
-      if (programmaticReleaseTimer.current) clearTimeout(programmaticReleaseTimer.current);
-      // Wheel/keyboard intent arrives before the browser emits the resulting
-      // scroll event. Detach immediately so a concurrent stream update cannot
-      // win the race and pull the viewport back to the tail.
+      // Wheel, touch and keyboard intent arrives before the browser emits its
+      // resulting scroll event. Detach immediately so a concurrent stream
+      // update cannot win the race and pull the viewport back to the tail.
       const key = event instanceof KeyboardEvent ? event.key : '';
-      const wheelUp = event instanceof WheelEvent && event.deltaY < 0;
-      const keyUp = key === 'ArrowUp' || key === 'PageUp' || key === 'Home';
-      if (wheelUp || keyUp) {
-        followLatest.current = false;
-        setFollowingLatest(false);
+      const wheelDirection = event instanceof WheelEvent && event.deltaY !== 0
+        ? event.deltaY < 0 ? 'up' : 'down' : null;
+      const keyDirection = event instanceof KeyboardEvent
+        ? ['ArrowUp', 'PageUp', 'Home'].includes(key) ? 'up'
+          : ['ArrowDown', 'PageDown', 'End'].includes(key) ? 'down' : null
+        : null;
+      if (event.type === 'touchstart' && event instanceof TouchEvent) {
+        lastTouchY.current = event.touches[0]?.clientY ?? null;
+      }
+      let touchDirection: 'up' | 'down' | null = null;
+      if (event.type === 'touchmove' && event instanceof TouchEvent) {
+        const currentY = event.touches[0]?.clientY;
+        if (currentY !== undefined && lastTouchY.current !== null && currentY !== lastTouchY.current) {
+          touchDirection = currentY > lastTouchY.current ? 'up' : 'down';
+        }
+        if (currentY !== undefined) lastTouchY.current = currentY;
+      }
+      const direction = wheelDirection ?? keyDirection ?? touchDirection;
+      if (direction !== null && (direction === 'up' || reading.current)) {
+        detachFromLatest(direction);
       }
     };
     canvas.addEventListener('scroll', onScroll, { passive: true });
-    for (const type of ['wheel', 'touchstart', 'touchmove', 'pointerdown', 'keydown']) canvas.addEventListener(type, userScroll, { passive: true });
+    for (const type of ['wheel', 'touchstart', 'touchmove', 'keydown']) {
+      canvas.addEventListener(type, userScroll, { passive: true, capture: true });
+    }
     const observer = new ResizeObserver(onScroll); observer.observe(canvas);
     return () => {
       if (saveTimer) clearTimeout(saveTimer);
       if (programmaticReleaseTimer.current) clearTimeout(programmaticReleaseTimer.current);
       canvas.removeEventListener('scroll', onScroll);
-      for (const type of ['wheel', 'touchstart', 'touchmove', 'pointerdown', 'keydown']) canvas.removeEventListener(type, userScroll);
+      for (const type of ['wheel', 'touchstart', 'touchmove', 'keydown']) {
+        canvas.removeEventListener(type, userScroll, { capture: true });
+      }
       observer.disconnect(); cancelAnimationFrame(frame);
       canvas.style.overflowAnchor = previousOverflowAnchor;
     };
@@ -179,6 +235,36 @@ export const ObservedConversationView = memo(function ObservedConversationView({
     if (!canvas || !positions.length) return;
     const saved = anchor.current;
     const row = saved && positions.find(item => item.id === saved.turnId);
+    if (!followLatest.current && reading.current) {
+      // Wait for the scroll event to commit a pending wheel/touch/key gesture;
+      // the previous reading anchor belongs to a different viewport position.
+      if (readingGesturePending.current || !row || readingRowTop.current === null) return;
+      const precedingShift = row.top - readingRowTop.current;
+      const listTop = list.current
+        ? list.current.getBoundingClientRect().top - canvas.getBoundingClientRect().top + canvas.scrollTop
+        : 0;
+      const listShift = readingListTop.current === null ? 0 : listTop - readingListTop.current;
+      const totalShift = precedingShift + listShift;
+      if (Math.abs(totalShift) <= 1) return;
+      const target = Math.max(0, canvas.scrollTop + totalShift);
+      readingRowTop.current = row.top;
+      readingListTop.current = listTop;
+      if (Math.abs(canvas.scrollTop - target) > 1) {
+        programmaticScroll.current = true;
+        programmaticScrollUntil.current = Date.now() + 250;
+        const previousScrollBehavior = canvas.style.scrollBehavior;
+        canvas.style.scrollBehavior = 'auto';
+        canvas.scrollTop = target;
+        lastObservedScrollTop.current = canvas.scrollTop;
+        canvas.style.scrollBehavior = previousScrollBehavior;
+        if (programmaticReleaseTimer.current) clearTimeout(programmaticReleaseTimer.current);
+        programmaticReleaseTimer.current = setTimeout(() => {
+          programmaticScroll.current = false;
+          programmaticScrollUntil.current = 0;
+        }, 250);
+      }
+      return;
+    }
     const requestedTop = followLatest.current
       ? Math.max(0, total - canvas.clientHeight)
       : row ? Math.max(0, row.top + saved.offset) : Math.max(0, viewport.top);
@@ -199,12 +285,12 @@ export const ObservedConversationView = memo(function ObservedConversationView({
     if (Math.abs(canvas.scrollTop - targetScrollTop) > 1) {
       programmaticScroll.current = true;
       programmaticScrollUntil.current = Date.now() + 250;
-      // The canvas has a global smooth scroll style for user-facing jumps.
       // Internal layout corrections must be immediate; animating every row
       // measurement makes the virtual list chase a moving target.
       const previousScrollBehavior = canvas.style.scrollBehavior;
       canvas.style.scrollBehavior = 'auto';
       canvas.scrollTop = targetScrollTop;
+      lastObservedScrollTop.current = targetScrollTop;
       canvas.style.scrollBehavior = previousScrollBehavior;
       if (programmaticReleaseTimer.current) clearTimeout(programmaticReleaseTimer.current);
       programmaticReleaseTimer.current = setTimeout(() => {
@@ -223,6 +309,11 @@ export const ObservedConversationView = memo(function ObservedConversationView({
 
   const returnToLatest = useCallback(() => {
     followLatest.current = true;
+    reading.current = false;
+    readingRowTop.current = null;
+    readingListTop.current = null;
+    readingGesturePending.current = false;
+    pendingUserScrollDirection.current = null;
     setFollowingLatest(true);
     const latestId = window.ids.at(-1);
     if (latestId) {
@@ -239,6 +330,7 @@ export const ObservedConversationView = memo(function ObservedConversationView({
     }
     const canvas = root.current?.closest<HTMLElement>('.workspace-canvas');
     if (!canvas) return;
+    lastObservedScrollTop.current = canvas.scrollTop;
     programmaticScroll.current = true;
     programmaticScrollUntil.current = Date.now() + 700;
     if (programmaticReleaseTimer.current) clearTimeout(programmaticReleaseTimer.current);
@@ -352,9 +444,10 @@ const ObservedTurn = memo(function ObservedTurn({ store, conversationId, id, htt
       onOpenArtifact={onOpenArtifact} onOpenAttachment={onOpenAttachment}
       liveExecutionPanel={showExecution ? (plannerActivity(projection)
         ? <LivePlanningPanel turn={projection} />
-        : <LiveExecutionPanel turn={projection} onSelectSubtask={(subtaskId, title) => onOpenSubtaskDetail(projection, subtaskId, title)} />) : undefined} />
-    <BlockedActions ws={ws} http={http} conversationId={conversationId} taskId={turn.taskId ?? null}
-      lifecycle={details.taskLifecycle} permission={details.pendingPermission} refresh={details.refresh} />
+        : <LiveExecutionPanel turn={projection} onSelectSubtask={(subtaskId, title) => onOpenSubtaskDetail(projection, subtaskId, title)} />) : undefined}
+      blockedActions={<BlockedActions ws={ws} http={http} conversationId={conversationId} taskId={turn.taskId ?? null}
+        fallbackStatus={projection.status === 'blocked' || projection.status === 'failed' ? projection.status : null}
+        lifecycle={details.taskLifecycle} permission={details.pendingPermission} refresh={details.refresh} />} />
     <TaskResultActions delivery={details.publicDelivery} workspaceChanges={details.workspaceChanges} />
     {details.workspaceChanges && (
       <WorkspaceChangesCard changes={details.workspaceChanges} delivered={details.publicDelivery?.files ?? []} />

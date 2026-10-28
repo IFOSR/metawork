@@ -45,7 +45,10 @@ acceptance('conversation stream scroll behavior', () => {
           query: async (conversationId, command) => command.kind === 'get_query_bill_for_turn'
             ? { turnId: command.turnId, turnBill: null } : null,
         };
-        window.growStream = () => { streamPass++; revision++; store.baseline('scroll', page()); };
+        window.growStream = () => {
+          streamPass++; revision++;
+          store.baseline('scroll', { head: { epoch: 'epoch', revision }, turns: [turn(0)], nextCursor: null });
+        };
         createRoot(document.getElementById('root')).render(
           <main className="workspace-canvas" style={{ height: 620, overflow: 'auto', padding: 24 }}>
             <ObservedConversationView conversationId="scroll" ws={ws} http={http}
@@ -76,22 +79,61 @@ acceptance('conversation stream scroll behavior', () => {
       })()`);
       await waitForExpression(browser.cdp, `(() => {
         const c = document.querySelector('.workspace-canvas');
-        return c.scrollTop > 500 && !document.querySelector('.back-to-latest');
+        return c.scrollTop > 500 && c.scrollHeight - c.clientHeight - c.scrollTop <= 1
+          && !document.querySelector('.back-to-latest');
       })()`, 2_000);
-      const detached = await browser.cdp.evaluate(`(() => {
+      // Let measurements settle before sampling the wheel's actual movement.
+      await new Promise(resolve => setTimeout(resolve, 300));
+      const beforeUp = Number(await browser.cdp.evaluate(`document.querySelector('.workspace-canvas').scrollTop`));
+      const gesture = await browser.cdp.evaluate(`(() => {
         const c = document.querySelector('.workspace-canvas');
-        c.dispatchEvent(new WheelEvent('wheel', { deltaY: -400, bubbles: true }));
-        c.scrollTop = Math.max(0, c.scrollTop - 260);
-        return c.scrollTop;
-      })()`);
+        const r = c.getBoundingClientRect();
+        return { x: r.left + r.width / 2, y: r.top + r.height / 2 };
+      })()`) as { x: number; y: number };
+      await browser.cdp.send('Input.dispatchMouseEvent', {
+        // Keep this smaller than the follow threshold: explicit upward
+        // intent must still detach from the stream even near the tail.
+        type: 'mouseWheel', x: gesture.x, y: gesture.y, deltaX: 0, deltaY: -40,
+      });
+      await new Promise(resolve => setTimeout(resolve, 100));
+      const detached = await browser.cdp.evaluate(`document.querySelector('.workspace-canvas').scrollTop`);
+      expect(beforeUp - Number(detached)).toBeGreaterThan(20);
+      expect(beforeUp - Number(detached)).toBeLessThan(64);
       await waitForExpression(browser.cdp, `document.querySelector('.back-to-latest') !== null`);
-      await browser.cdp.evaluate(`window.growStream()`);
-      await new Promise(resolve => setTimeout(resolve, 250));
+      // Keep the stream growing after the user leaves the tail. Every update
+      // must preserve the reading position; one update is insufficient to
+      // catch a layout/scroll-event race.
+      for (let index = 0; index < 5; index += 1) {
+        await browser.cdp.evaluate(`window.growStream()`);
+        await new Promise(resolve => setTimeout(resolve, 80));
+      }
       const afterGrowth = await browser.cdp.evaluate(`document.querySelector('.workspace-canvas').scrollTop`);
-      expect(Math.abs(Number(afterGrowth) - Number(detached))).toBeLessThanOrEqual(64);
+      expect(Math.abs(Number(afterGrowth) - Number(detached))).toBeLessThanOrEqual(2);
+
+      // Scrolling down while detached remains a user navigation gesture; it
+      // must not be mistaken for native anchoring and snapped back.
+      const beforeDown = Number(afterGrowth);
+      await browser.cdp.send('Input.dispatchMouseEvent', {
+        type: 'mouseWheel', x: gesture.x, y: gesture.y, deltaX: 0, deltaY: 120,
+      });
+      await new Promise(resolve => setTimeout(resolve, 100));
+      const afterDown = Number(await browser.cdp.evaluate(`document.querySelector('.workspace-canvas').scrollTop`));
+      expect(afterDown).toBeGreaterThan(beforeDown + 20);
+
+      // Scrollbar/accessibility scrolling emits scroll events without a wheel
+      // gesture. Accept successive position changes instead of snapping back.
+      await browser.cdp.evaluate(`document.querySelector('.workspace-canvas').scrollTop -= 180`);
+      await new Promise(resolve => setTimeout(resolve, 100));
+      const afterDrag = Number(await browser.cdp.evaluate(`document.querySelector('.workspace-canvas').scrollTop`));
+      expect(Math.abs(afterDrag - (afterDown - 180))).toBeLessThanOrEqual(2);
 
       await browser.cdp.evaluate(`document.querySelector('.back-to-latest').click()`);
       await waitForExpression(browser.cdp, `document.querySelector('.back-to-latest') === null`);
+      const atTail = `(() => { const c = document.querySelector('.workspace-canvas');
+        return Math.abs(c.scrollHeight - c.clientHeight - c.scrollTop) <= 2; })()`;
+      await waitForExpression(browser.cdp, atTail);
+      await browser.cdp.evaluate(`window.growStream()`);
+      await waitForExpression(browser.cdp, atTail);
     } finally {
       await browser?.close();
       await new Promise<void>(done => server.close(() => done()));

@@ -6,6 +6,15 @@ import type { WsClient } from '../api/ws';
 import type { ConversationTurnProjection, TurnBillUserView } from '../api/session-types';
 import { turnStatusFromTimeline } from '../conversation-live-turn';
 
+function turnStatusFromTaskStatus(status: unknown): ConversationTurnProjection['status'] | null {
+  if (status === 'queued' || status === 'running') return 'running';
+  if (status === 'needs_action') return 'blocked';
+  if (status === 'succeeded') return 'completed';
+  if (status === 'failed') return 'failed';
+  if (status === 'cancelled') return 'cancelled';
+  return null;
+}
+
 type Presentation = Pick<ConversationTurnProjection, 'traceEvents' | 'executionTimeline' | 'artifacts' | 'turnBilling'>
   & Partial<Pick<ConversationTurnProjection, 'status' | 'completedAt'>>
   & {
@@ -100,7 +109,11 @@ export function useTurnPresentation(ws: WsClient, http: HttpClient, conversation
             }
             return;
           }
-          const projectedStatus = task.timeline ? turnStatusFromTimeline(task.timeline) : null;
+          // TaskView is the committed lifecycle owner. Prefer its status over
+          // a stale trace/timeline so a late terminal Task state cannot leave a
+          // blocked notice visible after the bill and result have settled.
+          const projectedStatus = turnStatusFromTaskStatus(task.lifecycle.status)
+            ?? (task.timeline ? turnStatusFromTimeline(task.timeline) : null);
           commit({
             taskLifecycle: task.lifecycle,
             publicDelivery: task.publicDelivery,

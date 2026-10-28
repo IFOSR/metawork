@@ -14,11 +14,14 @@ type Permission = GatewayTaskViewSnapshot['pendingPermission'];
  * Priority: an authorization request first (it is the actual blocker), then the
  * result decision, then a recovery entry point.
  */
-export function BlockedActions({ ws, http, conversationId, taskId, lifecycle, permission, refresh }: {
+export function BlockedActions({ ws, http, conversationId, taskId, fallbackStatus, lifecycle, permission, refresh }: {
   ws: WsClient;
   http: HttpClient;
   conversationId: string;
   taskId: string | null;
+  /** Turn status lets the inline control remain usable while the read-only
+   * TaskView query is still loading or temporarily unavailable. */
+  fallbackStatus?: 'blocked' | 'failed' | null;
   lifecycle?: GatewayTaskViewSnapshot['lifecycle'];
   permission?: Permission;
   refresh?: () => void;
@@ -41,8 +44,10 @@ export function BlockedActions({ ws, http, conversationId, taskId, lifecycle, pe
     } | null;
   } | undefined);
   const reason = lifecycle?.reason?.message?.trim() ?? legacy?.userStateReason?.trim() ?? '';
-  const needsAction = lifecycle?.status === 'needs_action' || legacy?.userState === 'needs_action';
-  const failed = lifecycle?.status === 'failed';
+  const needsAction = lifecycle?.status === 'needs_action'
+    || legacy?.userState === 'needs_action'
+    || (!lifecycle && fallbackStatus === 'blocked');
+  const failed = lifecycle?.status === 'failed' || (!lifecycle && fallbackStatus === 'failed');
   const pendingActions = lifecycle?.pendingActions ?? (legacy?.pendingDecision?.actions ?? []).map(action => ({
     actionId: `legacy:${action}`,
     kind: action === 'retry_attempt' ? 'retry_attempt' : 'accept_result',
