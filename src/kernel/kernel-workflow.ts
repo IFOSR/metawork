@@ -77,6 +77,8 @@ export interface KernelWorkflowStore {
     readonly accepted: boolean; readonly event: PermissionResolutionEvent;
   };
   findPermissionResolution(requestId: string): PermissionResolutionEvent | null;
+  /** Marks a directly handled Executor capability fact as consumed. */
+  markPermissionEventApplied?(eventId: string, now: string): void;
   claimNext(now: string, eventTypes?: KernelEvent['type'][], taskId?: string, correlationId?: string): KernelEvent | null;
   issue(eventId: string, record: KernelDecisionLedgerRecord): KernelDecisionApplicationRecord;
   listRecoverableApplications(actions?: KernelDecisionAction['type'][], taskId?: string, correlationId?: string): KernelDecisionApplicationRecord[];

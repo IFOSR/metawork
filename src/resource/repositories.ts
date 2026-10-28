@@ -105,6 +105,12 @@ export interface UserAuthorizationRecord {
 }
 
 export interface PermissionRepositoryPort {
+  /**
+   * Persist a capability-decision fact anchor when the selected storage schema
+   * still requires permission grants to reference kernel_decisions. This is a
+   * storage compatibility hook; it never invokes ControlKernel.
+   */
+  ensureDecisionAnchor?(decisionId: string, configurationRevision: string, request: NormalizedCapabilityRequest): void;
   createRequest(request: NormalizedCapabilityRequest, createdAt: string): PermissionRequestRecord;
   findRequest(requestId: string): PermissionRequestRecord | null;
   findPendingForTask(taskId: string): PermissionRequestRecord | null;

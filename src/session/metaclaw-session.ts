@@ -2556,6 +2556,7 @@ export class MetaclawSession {
         attemptId: record.request.attemptId,
         agentClassName: record.request.agentClassName,
         configurationRevision: dispatchItem.configurationRevision,
+        authorizedDecisionId: dispatchItem.decisionId,
         permissionProfileId: record.request.permissionProfileId,
         containerId: attemptExecution?.containerId ?? '',
         workspaceId,
@@ -2565,7 +2566,6 @@ export class MetaclawSession {
       resolver: new RegisteredCapabilityResourceResolver(resourceRegistrations),
       executionBackend: this.attemptExecutionBackend,
       workflowStore: this.kernelWorkflowRepo,
-      kernel: this.controlKernel,
       rules: buildPermissionRules({
         permissionProfileId: record.request.permissionProfileId,
         additionalReadPartitions: resourceRegistrations.values(),

@@ -968,6 +968,9 @@ export class SubtaskAttemptRunner {
           targetPaths: executorTargetPaths,
           ...(workspaceId ? { workspaceId } : {}),
           executionMode: inPlaceExecution || nonWritingExecution ? 'in_place' : 'worktree',
+          // This is a Runtime filesystem/prompt boundary. Executor/Harness
+          // chooses its tool registry independently; in particular, `read`
+          // does not mean that a normal Attempt loses its shell tool.
           accessMode: readOnlyExecution ? 'read' : commandOnlyExecution ? 'execute' : 'write',
           ...(nonWritingExecution
             ? { readOnlySourcePath: executionContext.canonicalWorkspacePath }
@@ -1025,6 +1028,7 @@ export class SubtaskAttemptRunner {
         attemptId,
         agentClassName,
         configurationRevision: dispatch.configurationRevision,
+        authorizedDecisionId: dispatch.decisionId,
         permissionProfileId: this.deps.executionRuntime.resolvePermissionProfile(
           dispatch.authorizedBinding,
         ),

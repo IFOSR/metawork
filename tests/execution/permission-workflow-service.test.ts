@@ -5,6 +5,44 @@ import { PermissionWorkflowService } from '../../src/execution/permission-workfl
 import type { NormalizedCapabilityRequest, PermissionRequestRecord } from '../../src/resource/index.js';
 
 describe('PermissionWorkflowService', () => {
+  it('evaluates Executor capability policy without invoking ControlKernel', async () => {
+    let normalized: NormalizedCapabilityRequest | null = null;
+    let status: PermissionRequestRecord['status'] = 'pending';
+    const repository = {
+      countDistinctForAttempt: vi.fn().mockReturnValue(0),
+      createRequest: vi.fn().mockImplementation((request: NormalizedCapabilityRequest, createdAt: string) => {
+        normalized = request;
+        return record(request, status, createdAt);
+      }),
+      findRequest: vi.fn().mockImplementation(() => normalized ? record(normalized, status, '2026-07-23T00:00:00.000Z') : null),
+      listDeniedFingerprints: vi.fn().mockReturnValue([]),
+      listApprovedFingerprints: vi.fn().mockReturnValue([]),
+      listGrants: vi.fn().mockReturnValue([]),
+      ensureDecisionAnchor: vi.fn(),
+      grant: vi.fn().mockImplementation(() => { status = 'granted'; return { id: 'grant_executor' }; }),
+    };
+    const kernel = { decide: vi.fn() };
+    const service = new PermissionWorkflowService({
+      context: context(),
+      repository,
+      resolver: { resolve: vi.fn().mockReturnValue({ kind: 'logical', namespace: 'test', key: 'resource' }) },
+      executionBackend: {
+        pause: vi.fn(), inspect: vi.fn().mockResolvedValue({ status: 'paused' }), resume: vi.fn(),
+      },
+      workflowStore: inMemoryWorkflowStore(),
+      rules: [{ id: 'allow-test', effect: 'allow', capability: 'logical_resource_operation', operation: 'inspect', partition: null, reason: 'test' }],
+      hooks: { checkpoint: vi.fn().mockResolvedValue(null), onEscalation: vi.fn(), onRecoveryAuthorized: vi.fn() },
+      clock: { now: () => '2026-07-23T00:00:00.000Z' },
+    } as never);
+
+    await expect(service.request({
+      capability: 'logical_resource_operation', resource: 'resource', operation: 'inspect',
+      reason: 'Executor needs the registered capability', suggestedScope: 'once',
+    })).resolves.toMatchObject({ status: 'granted', grantId: null });
+    expect(kernel.decide).not.toHaveBeenCalled();
+    expect(repository.ensureDecisionAnchor).toHaveBeenCalled();
+  });
+
   it('pauses the execution backend before checkpointing a permission suspension', async () => {
     const order: string[] = [];
     let normalized: NormalizedCapabilityRequest | null = null;

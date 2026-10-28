@@ -102,6 +102,37 @@ function grantFromRow(row: PermissionGrantRow): CapabilityGrant {
 export class SqlitePermissionRepository implements PermissionRepositoryPort {
   constructor(private readonly db: Database.Database) {}
 
+  ensureDecisionAnchor(
+    decisionId: string,
+    configurationRevision: string,
+    request: NormalizedCapabilityRequest,
+  ): void {
+    // Older released schemas keep a foreign key from permission_grants to
+    // kernel_decisions. Keep that storage invariant without routing capability
+    // policy through ControlKernel: this is a fact anchor emitted by the
+    // Executor/Host capability service.
+    this.db.prepare(`
+      INSERT OR IGNORE INTO kernel_decisions (
+        id, schema_version, event_id, event_type, correlation_id, causation_id,
+        session_id, task_id, subtask_id, attempt_id, event_json, snapshot_json,
+        decision_json, action, reason, configuration_revision,
+        authorized_bindings_json, binding_fingerprints_json, created_at
+      ) VALUES (?, 5, ?, 'executor_capability', ?, NULL, 'executor-capability', ?, ?, ?, ?, '{}', ?,
+        'executor_capability', 'Executor capability policy fact', ?, '[]', '[]', ?)
+    `).run(
+      decisionId,
+      `executor_capability_event_${decisionId}`,
+      request.id,
+      request.taskId,
+      request.subtaskId,
+      request.attemptId,
+      JSON.stringify({ type: 'executor_capability', requestId: request.id }),
+      JSON.stringify({ requestId: request.id }),
+      configurationRevision,
+      new Date().toISOString(),
+    );
+  }
+
   createRequest(request: NormalizedCapabilityRequest, createdAt: string): PermissionRequestRecord {
     this.db.prepare(`
       INSERT INTO permission_requests (
@@ -175,10 +206,9 @@ export class SqlitePermissionRepository implements PermissionRepositoryPort {
 
   listEscalatedForSession(sessionId: string, afterId: string, limit: number, createdAfter: string): PermissionRequestRecord[] {
     return (this.db.prepare(`SELECT request.* FROM permission_requests request
-      JOIN kernel_decisions decision ON decision.id = request.decision_id
-      JOIN kernel_decision_applications application ON application.decision_id = decision.id
-      WHERE decision.session_id = ? AND decision.action = 'escalate_capability'
-        AND application.status = 'applied' AND request.status = 'escalated'
+      JOIN kernel_events requested ON requested.correlation_id = request.id
+        AND requested.event_type = 'permission_requested'
+      WHERE requested.session_id = ? AND request.status = 'escalated'
         AND request.id > ? AND request.created_at >= ?
         AND NOT EXISTS (SELECT 1 FROM kernel_events accepted
           WHERE accepted.event_type = 'permission_resolution_received' AND accepted.correlation_id = request.id)

@@ -11,13 +11,13 @@ import {
   type PermissionRepositoryPort,
   type PermissionRule,
 } from '../resource/index.js';
+import type { ControlKernel, KernelDecision, KernelEvent, KernelSnapshot } from '../kernel/control-kernel.js';
 import {
-  ControlKernel,
-  type KernelDecision,
-  type KernelEvent,
-  type KernelSnapshot,
-} from '../kernel/control-kernel.js';
-import { DurableKernelWorkflow, type KernelWorkflowStore, type PermissionResolutionEvent } from '../kernel/kernel-workflow.js';
+  DurableKernelWorkflow,
+  type KernelWorkflowStore,
+  type PermissionResolutionEvent,
+} from '../kernel/kernel-workflow.js';
+import { evaluateCapabilityRequest } from '../resource/permission-policy.js';
 
 export interface PermissionAttemptContext {
   sessionId: string;
@@ -27,6 +27,8 @@ export interface PermissionAttemptContext {
   attemptId: string;
   agentClassName: string;
   configurationRevision: string;
+  /** Existing durable dispatch authorization used as the FK anchor for facts. */
+  authorizedDecisionId?: string;
   permissionProfileId: NormalizedCapabilityRequest['permissionProfileId'];
   containerId: string;
   workspaceId: string;
@@ -36,10 +38,14 @@ export interface PermissionAttemptContext {
 export interface PermissionWorkflowHooks {
   checkpoint(reason: 'permission_suspended'): Promise<string | null>;
   onEscalation(request: NormalizedCapabilityRequest, reason: string): Promise<void>;
-  onRecoveryAuthorized(input: { request: NormalizedCapabilityRequest | null; workspaceId: string; checkpointId: string | null; decision: KernelDecision }): Promise<KernelEvent | void>;
+  onRecoveryAuthorized(input: { request: NormalizedCapabilityRequest | null; workspaceId: string; checkpointId: string | null; decision?: KernelDecision }): Promise<KernelEvent | void>;
 }
 
 export const PERMISSION_REQUEST_MAX_AGE_MS = 24 * 60 * 60 * 1000;
+
+function capabilityDecisionId(requestId: string, outcome: 'grant' | 'deny' | 'escalate'): string {
+  return `executor_capability_${outcome}_${requestId}`;
+}
 
 export function permissionRequestExpiresAt(createdAt: string): string | null {
   const createdAtMs = Date.parse(createdAt);
@@ -62,11 +68,19 @@ export class PermissionWorkflowService {
     resolver: CapabilityResourceResolverPort;
     executionBackend: AttemptExecutionBackend;
     workflowStore: KernelWorkflowStore;
-    kernel?: ControlKernel;
+    /**
+     * Legacy test/integration seam. Production must omit this field: capability
+     * policy belongs to the Executor/Host path, not ControlKernel.
+     */
+    kernel?: Pick<ControlKernel, 'decide'>;
     rules: PermissionRule[];
     hooks: PermissionWorkflowHooks;
     clock?: { now(): string };
   }) {}
+
+  private decisionId(outcome: 'grant' | 'deny' | 'escalate', requestId: string): string {
+    return this.deps.context.authorizedDecisionId ?? capabilityDecisionId(requestId, outcome);
+  }
 
   async request(input: CapabilityRequestInput): Promise<{
     requestId: string;
@@ -114,15 +128,25 @@ export class PermissionWorkflowService {
       attemptId: record.request.attemptId,
       request: record.request,
     };
-    const result = await this.workflow(record.request.id).submit(event);
+    if (this.deps.kernel) {
+      // Compatibility path for old embedded integrations. The production
+      // composition no longer supplies `kernel`.
+      const result = await this.legacyWorkflow(record.request.id).submit(event);
+      const latest = this.deps.repository.findRequest(record.request.id);
+      if (latest) return this.requestResult(latest);
+      return {
+        requestId: record.request.id,
+        grantId: null,
+        status: result.pendingRecovery > 0 ? 'uncertain' : 'pending',
+        reason: null,
+      };
+    }
+    this.deps.workflowStore.enqueue(event, now);
+    this.deps.workflowStore.markPermissionEventApplied?.(event.id, now);
+    await this.applyCapabilityPolicy(record.request, null);
     const latest = this.deps.repository.findRequest(record.request.id);
     if (latest) return this.requestResult(latest);
-    return {
-      requestId: record.request.id,
-      grantId: null,
-      status: result.pendingRecovery > 0 ? 'uncertain' : 'pending',
-      reason: null,
-    };
+    return this.requestResult(record);
   }
 
   use(input: CapabilityUseInput): CapabilityUseResult {
@@ -198,7 +222,21 @@ export class PermissionWorkflowService {
       return { status: admission.event.resolution === input.resolution ? 'replayed' : 'conflict',
         resolution: admission.event.resolution };
     }
-    await this.workflow(input.requestId).submit(admission.event);
+    if (this.deps.kernel) {
+      await this.legacyWorkflow(input.requestId).submit(admission.event);
+    } else {
+      const recordAfterAdmission = this.deps.repository.findRequest(input.requestId);
+      if (!recordAfterAdmission) throw new Error('permission request disappeared during resolution');
+      this.deps.repository.recordAuthorization(recordAfterAdmission.request, {
+        receivedEventId: admission.event.id,
+        resolution: admission.event.resolution,
+        source: admission.event.source,
+        plannerPlanId: admission.event.plannerPlanId,
+      }, this.now());
+      const continuation = await this.applyCapabilityPolicy(recordAfterAdmission.request, admission.event);
+      if (continuation) this.deps.workflowStore.enqueue(continuation, continuation.occurredAt);
+      this.deps.workflowStore.markPermissionEventApplied?.(admission.event.id, this.now());
+    }
     return { status: 'accepted', resolution: input.resolution };
   }
 
@@ -206,12 +244,33 @@ export class PermissionWorkflowService {
     if ((event.type !== 'permission_requested' && event.type !== 'permission_resolution_received')
       || event.sessionId !== this.deps.context.sessionId || event.taskId !== this.deps.context.taskId
       || event.attemptId !== this.deps.context.attemptId) throw new Error('permission_recovery_scope_mismatch');
-    await this.workflow(event.correlationId).submit(event);
+    if (this.deps.kernel) {
+      await this.legacyWorkflow(event.correlationId).submit(event);
+      return;
+    }
+    const record = this.deps.repository.findRequest(event.correlationId);
+    if (!record) throw new Error('permission request disappeared during recovery');
+    if (event.type === 'permission_resolution_received') {
+      this.deps.repository.recordAuthorization(record.request, {
+        receivedEventId: event.id,
+        resolution: event.resolution,
+        source: event.source,
+        plannerPlanId: event.plannerPlanId,
+      }, this.now());
+    }
+    const continuation = await this.applyCapabilityPolicy(record.request,
+      event.type === 'permission_resolution_received' ? event : null);
+    if (continuation) this.deps.workflowStore.enqueue(continuation, continuation.occurredAt);
+    if (event.type === 'permission_resolution_received') {
+      this.deps.workflowStore.markPermissionEventApplied?.(event.id, this.now());
+    }
   }
 
-  private workflow(requestId: string): DurableKernelWorkflow {
+  private legacyWorkflow(requestId: string): DurableKernelWorkflow {
+    // Kept only for old callers while they migrate off the Kernel permission
+    // seam. No production composition should enter this method.
     return new DurableKernelWorkflow({
-      kernel: this.deps.kernel ?? new ControlKernel(),
+      kernel: this.deps.kernel!,
       buildSnapshot: event => this.buildSnapshot(event),
       store: this.deps.workflowStore,
       clock: { now: () => this.now() },
@@ -221,6 +280,86 @@ export class PermissionWorkflowService {
       taskId: this.deps.context.taskId,
       correlationId: requestId,
     });
+  }
+
+  private async applyCapabilityPolicy(
+    request: NormalizedCapabilityRequest,
+    resolution: PermissionResolutionEvent | null,
+  ): Promise<KernelEvent | void> {
+    const authorization = resolution ? {
+      receivedEventId: resolution.id,
+      resolution: resolution.resolution,
+      source: resolution.source,
+      plannerPlanId: resolution.plannerPlanId,
+    } : undefined;
+    if (resolution?.resolution === 'approve' && !this.deps.context.workspaceId) {
+      this.deps.repository.deny({
+        decisionId: this.decisionId('deny', request.id),
+        request,
+        reason: 'approved request has no recoverable workspace',
+        deniedAt: this.now(),
+        authorization,
+      });
+      await this.resumeIfPresent();
+      return;
+    }
+    if (resolution?.resolution === 'approve') {
+      // A new attempt will re-evaluate this exact fingerprint with the
+      // persisted authorization. The current paused attempt must not receive
+      // a grant that its old process cannot safely consume.
+      return this.deps.hooks.onRecoveryAuthorized({
+        request,
+        workspaceId: this.deps.context.workspaceId,
+        checkpointId: this.deps.context.checkpointId,
+      });
+    }
+    const result = evaluateCapabilityRequest({
+      request,
+      rules: this.deps.rules,
+      now: this.now(),
+      previouslyDeniedFingerprints: this.deps.repository.listDeniedFingerprints(request.attemptId),
+      userAuthorizationFingerprints: this.deps.repository.listApprovedFingerprints(request.taskId),
+    });
+    if (resolution?.resolution === 'deny') {
+      this.deps.repository.deny({
+        decisionId: this.decisionId('deny', request.id),
+        request,
+        reason: 'user denied the exact capability request',
+        deniedAt: this.now(),
+        authorization,
+      });
+      await this.resumeIfPresent();
+      return;
+    }
+    if (result.type === 'grant_capability') {
+      const decisionId = this.decisionId('grant', request.id);
+      this.deps.repository.ensureDecisionAnchor?.(
+        decisionId,
+        this.deps.context.configurationRevision,
+        request,
+      );
+      this.deps.repository.grant({
+        decisionId,
+        request,
+        limits: result.limits,
+        grantedAt: this.now(),
+        authorization,
+      });
+      await this.resumeIfPresent();
+      return;
+    }
+    if (result.type === 'escalate_capability') {
+      this.deps.repository.escalate(request.id, this.decisionId('escalate', request.id), result.reason, this.now());
+      await this.deps.hooks.onEscalation(request, result.reason);
+      return;
+    }
+    this.deps.repository.deny({
+      decisionId: this.decisionId('deny', request.id),
+      request,
+      reason: result.reason,
+      deniedAt: this.now(),
+    });
+    await this.resumeIfPresent();
   }
 
   private buildSnapshot(event: KernelEvent): KernelSnapshot {

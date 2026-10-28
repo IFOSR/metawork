@@ -44,6 +44,13 @@ export class KernelWorkflowRepo implements KernelWorkflowStore {
     return event?.type === 'permission_resolution_received' ? event : null;
   }
 
+  markPermissionEventApplied(eventId: string, now: string): void {
+    this.db.prepare(`
+      UPDATE kernel_events SET status = 'processed', processed_at = ?, updated_at = ?
+      WHERE id = ? AND event_type IN ('permission_requested', 'permission_resolution_received')
+    `).run(now, now, eventId);
+  }
+
   admitPermissionResolution(event: PermissionResolutionEvent) {
     return this.db.transaction(() => {
       const previous = this.findPermissionResolution(event.requestId);

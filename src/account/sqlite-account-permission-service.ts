@@ -44,6 +44,7 @@ export function createSqliteAccountPermissionService(deps: {
         attemptId: record.request.attemptId,
         agentClassName: record.request.agentClassName,
         configurationRevision: dispatchItem.configurationRevision,
+        authorizedDecisionId: dispatchItem.decisionId,
         permissionProfileId: record.request.permissionProfileId,
         containerId: attemptExecution?.containerId ?? '',
         workspaceId: attemptExecution?.workspaceId
@@ -54,7 +55,6 @@ export function createSqliteAccountPermissionService(deps: {
       resolver: new RegisteredCapabilityResourceResolver(resourceRegistrations),
       executionBackend: deps.taskServices.attemptExecutionBackend,
       workflowStore: deps.kernelServices.kernelWorkflowRepo,
-      kernel: deps.kernelServices.controlKernel,
       rules: buildPermissionRules({
         permissionProfileId: record.request.permissionProfileId,
         additionalReadPartitions: resourceRegistrations.values(),
@@ -62,7 +62,7 @@ export function createSqliteAccountPermissionService(deps: {
       hooks: {
         checkpoint: async () => null,
         onEscalation: async () => undefined,
-        onRecoveryAuthorized: async ({ request, decision }) => {
+        onRecoveryAuthorized: async ({ request }) => {
           if (!request) throw new Error('permission recovery request unavailable');
           const current = deps.taskServices.taskRuntimeService.findTask(request.taskId);
           const generation = deps.repositories.workGraphRevisionRepo.findActive(request.taskId);
@@ -73,10 +73,10 @@ export function createSqliteAccountPermissionService(deps: {
           return {
             schemaVersion: 5,
             type: 'task_resume_requested',
-            configurationRevision: decision.configurationRevision,
+            configurationRevision: dispatchItem.configurationRevision,
             id: `permission_resume_${request.id}`,
             correlationId: request.id,
-            causationId: decision.id,
+            causationId: dispatchItem.decisionId ?? `dispatch_${request.attemptId}`,
             occurredAt: new Date().toISOString(),
             sessionId,
             taskId: request.taskId,
@@ -108,7 +108,13 @@ export function createSqliteAccountPermissionService(deps: {
         const event = store.findEvent(item.eventId);
         if (!event) continue;
         resolving.add(item.requestId);
-        try { await workflowFor(item.sessionId, record).recover(event); }
+        try {
+          await workflowFor(item.sessionId, record).recover(event);
+        } catch {
+          // A direct Executor capability continuation may be interrupted while
+          // its durable inbox event is being inserted. Leave the resolution
+          // pending so the next startup drain retries the same fact.
+        }
         finally { resolving.delete(item.requestId); }
       }
       return work.length;
@@ -145,11 +151,19 @@ export function createSqliteAccountPermissionService(deps: {
         });
     },
     async resolve(input) {
-      const decisions = deps.kernelServices.kernelDecisionRepo.listByCorrelation(input.requestId);
-      const escalation = decisions.find(record => record.sessionId === input.sessionId
-        && record.action === 'escalate_capability'
-        && deps.kernelServices.kernelWorkflowRepo.isDecisionApplied(record.id));
-      if (!escalation) {
+      const visibleRequest = deps.workspaceServices.permissionRepository
+        .listEscalatedForSession(
+          input.sessionId,
+          '',
+          128,
+          new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString(),
+        )
+        .some(record => record.request.id === input.requestId);
+      const legacyEscalation = deps.kernelServices.kernelDecisionRepo.listByCorrelation(input.requestId)
+        .some(record => record.sessionId === input.sessionId
+          && record.action === 'escalate_capability'
+          && deps.kernelServices.kernelWorkflowRepo.isDecisionApplied(record.id));
+      if (!visibleRequest && !legacyEscalation) {
         return conflict('Permission request does not belong to this Conversation.');
       }
       const currentRequest = deps.workspaceServices.permissionRepository.findRequest(input.requestId);
@@ -165,22 +179,6 @@ export function createSqliteAccountPermissionService(deps: {
           message: 'Permission decision was already accepted; application may still be pending.',
           recoveryTaskId: null,
         };
-      }
-      const appliedResolution = decisions.find(
-        record => record.event.type === 'permission_resolution_received'
-          && deps.kernelServices.kernelWorkflowRepo.isDecisionApplied(record.id),
-      );
-      if (appliedResolution?.event.type === 'permission_resolution_received') {
-        if (appliedResolution.sessionId === input.sessionId
-          && appliedResolution.event.resolution === input.resolution) {
-          return {
-            status: 'replayed',
-            resolution: input.resolution,
-            message: 'Permission resolution was already recorded.',
-            recoveryTaskId: null,
-          };
-        }
-        return conflict('Permission request was already resolved.');
       }
       const record = deps.workspaceServices.permissionRepository.findRequest(input.requestId);
       if (!record || record.status !== 'escalated') {

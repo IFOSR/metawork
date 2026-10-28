@@ -7,9 +7,9 @@ describe('Account permission crash continuation', () => {
     try {
       store.admitPermissionResolution(event);
       await createService().recoverPending(true);
-      expect(store.isDecisionApplied(`decision_${event.id}`)).toBe(true);
+      expect(store.isDecisionApplied(`decision_${event.id}`)).toBe(false);
       expect(store.findEvent('permission_resume_request')).toMatchObject({
-        type: 'task_resume_requested', taskId: 'task', sessionId: 'session', causationId: `decision_${event.id}`,
+        type: 'task_resume_requested', taskId: 'task', sessionId: 'session', causationId: 'dispatch_attempt',
       });
       expect(store.listPendingTaskIds('task_resume_requested')).toEqual(['task']);
       await createService().recoverPending(true);
@@ -30,7 +30,7 @@ describe('Account permission crash continuation', () => {
       expect(store.findEvent('permission_resume_request')).toBeNull();
       db.exec('DROP TRIGGER interrupt_resume');
       await createService().recoverPending(true);
-      expect(store.isDecisionApplied(`decision_${event.id}`)).toBe(true);
+      expect(store.isDecisionApplied(`decision_${event.id}`)).toBe(false);
       expect(store.findEvent('permission_resume_request')).not.toBeNull();
       expect(db.prepare('SELECT COUNT(*) AS n FROM user_authorizations').get()).toEqual({ n: 1 });
     } finally { db.close(); }
