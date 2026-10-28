@@ -298,7 +298,30 @@ export function collectExecutionCards(
     };
     bySubtask.set(subtaskId, next);
   }
-  return [...bySubtask.values()];
+  return [...bySubtask.values()].map(settleTerminalStep);
+}
+
+/**
+ * A settled card must not narrate work in progress.
+ *
+ * The verification handoff event (`executor_result_observed`) carries
+ * `stepLabel: "正在校验 … 的执行结果"` because at that moment verification is
+ * indeed pending. It stays the newest labelled event, so a card whose Subtask
+ * and receipt already settled would otherwise read "已完成" and "正在校验" at the
+ * same time. Terminal state wins: the label becomes a completed fact.
+ */
+function settleTerminalStep(card: ExecutionCard): ExecutionCard {
+  if (card.state !== 'completed' && card.state !== 'failed') return card;
+  const label = card.stepLabel.trim();
+  const inFlight = /^(正在|等待|尚未|已启动|执行器已启动)/u.test(label);
+  if (card.state === 'failed') {
+    return inFlight ? { ...card, stepKey: 'executor_settled', stepLabel: '执行失败，详情见执行详情' } : card;
+  }
+  if (card.stepKey === 'executor_verifying') {
+    const executor = card.executorDisplayName ? `${card.executorDisplayName} 的` : '';
+    return { ...card, stepKey: 'executor_settled', stepLabel: `已完成校验${executor}执行结果` };
+  }
+  return inFlight ? { ...card, stepKey: 'executor_settled', stepLabel: '执行完成' } : card;
 }
 
 function operationLastActivity(value: unknown): string | null {

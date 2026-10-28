@@ -406,4 +406,87 @@ describe('Turn Task presentation', () => {
     expect(html).not.toContain('已完成');
     expect(html).not.toContain('0s');
   });
+
+  it('does not read "verifying" on a card whose Subtask already settled', () => {
+    // Live facts: Subtask done, receipt completed, and the newest labelled
+    // event is the verification handoff `executor_result_observed`.
+    const timeline: ExecutionTimeline = {
+      taskId: 'task_1',
+      title: 'ai-radar-site',
+      status: 'succeeded',
+      statusLabel: '已完成',
+      stateVersion: 5,
+      reasonCode: 'none',
+      explanation: '',
+      stages: [{
+        phase: 'execution',
+        status: 'done',
+        subtasks: [{
+          id: 'st-service-manifest',
+          title: '为 ai-radar-site 补齐服务启动契约并验证',
+          status: 'done',
+          executor: '架构师',
+          attempts: [{
+            attemptId: 'attempt_1',
+            attemptKind: 'primary',
+            attemptOrdinal: 1,
+            attemptLabel: '主执行',
+            displayStatus: '已完成',
+            result: 'success',
+            executionStartedAt: '2026-10-28T13:20:32.314Z',
+            executionCompletedAt: '2026-10-28T13:21:26.838Z',
+          }],
+        }],
+      }],
+    } as unknown as ExecutionTimeline;
+    const cards = collectExecutionCards([{
+      id: 'result_observed',
+      sequence: 9,
+      occurredAt: '2026-10-28T13:21:26.872Z',
+      phase: 'verification',
+      actor: 'executor',
+      kind: 'executor_result_observed',
+      status: 'completed',
+      title: 'Executor result observed',
+      summary: 'Executor completed the authorized attempt; Runtime is verifying the result.',
+      taskId: 'task_1',
+      subtaskId: 'st-service-manifest',
+      details: {
+        stepKey: 'executor_verifying',
+        stepLabel: '正在校验 架构师 的执行结果',
+        executorDisplayName: '架构师',
+      },
+    } as unknown as Parameters<typeof collectExecutionCards>[0][number]], timeline);
+
+    expect(cards[0].state).toBe('completed');
+    expect(cards[0].stepLabel).not.toContain('正在');
+    expect(cards[0].stepLabel).toContain('已完成校验');
+    expect(cards[0].stepKey).toBe('executor_settled');
+  });
+
+  it('keeps the in-progress verification step while the Subtask is still running', () => {
+    const cards = collectExecutionCards([{
+      id: 'result_observed_running',
+      sequence: 1,
+      occurredAt: '2026-10-28T13:21:26.872Z',
+      phase: 'verification',
+      actor: 'executor',
+      kind: 'executor_result_observed',
+      status: 'completed',
+      title: 'Executor result observed',
+      summary: '',
+      taskId: 'task_1',
+      subtaskId: 'st-service-manifest',
+      details: { stepKey: 'executor_verifying', stepLabel: '正在校验 架构师 的执行结果', executorDisplayName: '架构师' },
+    } as unknown as Parameters<typeof collectExecutionCards>[0][number]], {
+      taskId: 'task_1',
+      title: 'ai-radar-site',
+      status: 'running',
+      stages: [{ phase: 'execution', status: 'running', subtasks: [
+        { id: 'st-service-manifest', title: '补齐契约', status: 'running', attempts: [] },
+      ] }],
+    } as unknown as ExecutionTimeline);
+    expect(cards[0].state).toBe('running');
+    expect(cards[0].stepLabel).toBe('正在校验 架构师 的执行结果');
+  });
 });
