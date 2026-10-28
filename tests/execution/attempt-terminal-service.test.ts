@@ -148,6 +148,53 @@ function setup(workflowMode: 'capturing' | 'real' = 'capturing') {
   };
 }
 
+describe('AttemptTerminalService direct completion and edge handoffs', () => {
+  it('refuses to land a direct completion that owes an edge when no handoff writer is configured', () => {
+    const setupResult = setup();
+    // Fail closed: a completion that owes an outgoing edge must not be recorded
+    // as `done` when the boundary cannot write the handoff (ADR-0021 contract).
+    expect(() => setupResult.service.land({
+      receipt: {
+        attemptId: 'attempt-terminal',
+        executionId: 'execution-terminal',
+        taskId: 'task-terminal',
+        subtaskId: 'subtask-terminal',
+        workUnitId: 'work-unit-terminal',
+        agentClassName: 'codex-cli',
+        startedAt: setupResult.now,
+        completedAt: setupResult.now,
+        terminalState: 'completed',
+        rawResponse: 'body',
+        completionSchemaVersion: 4,
+        parsing: {},
+        verification: { warnings: [], violations: [] },
+        errorCode: null,
+        errorDetail: null,
+        failure: null,
+      },
+      expectedSubtaskStatus: 'running',
+      nextSubtaskStatus: 'awaiting_integration',
+      subtaskError: null,
+      directCompletion: true,
+      edgeHandoffs: {
+        generationId: 'generation-terminal',
+        completionSchemaVersion: 4,
+        declaredHandoffs: [],
+        safeProjection: { resultId: 'result_safe', byteLength: 4 },
+      },
+      event: {
+        ...outcomeEvent(setupResult.now),
+        terminalKind: 'completed',
+        failure: undefined,
+      },
+      now: setupResult.now,
+    })).toThrow(/edge handoff writer/);
+    expect(new SubtaskRepo(setupResult.db).findById('subtask-terminal')?.status).toBe('running');
+    expect(setupResult.db.prepare('SELECT COUNT(*) AS count FROM executor_attempt_receipts').get())
+      .toEqual({ count: 0 });
+  });
+});
+
 function outcomeEvent(now: string): KernelEvent {
   return {
     schemaVersion: 5,

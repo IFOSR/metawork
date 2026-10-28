@@ -139,6 +139,36 @@ describe('task state review regressions', () => {
       expect(outbox.listPending()).toHaveLength(0);
     } finally { db.close(); }
   });
+  it('projects a structural kernel blocker as a system anomaly, never as a user input request', () => {
+    const db = new Database(':memory:'); runMigrations(db);
+    try {
+      const repo = new TaskRepo(db);
+      const task = new TaskEngine(repo, '/tmp/review-state').create({ title: 'Edges', goal: 'Deliver' });
+      const authority = createTaskStateAuthority({ db, workUnitClaimService: { hasClaimedByTask: () => false } });
+      authority.reconcile({
+        taskId: task.id,
+        decisionId: 'structure',
+        operationKey: 'structure',
+        actor: 'kernel-execution-runtime',
+        reason: '上游结果未能交接给下游节点（系统问题）',
+        facts: () => {
+          repo.update(task.id, { dependencies: [{
+            taskId: task.id,
+            type: 'kernel_anomaly',
+            description: '上游结果未能交接给下游节点（系统问题）',
+            status: 'waiting',
+            createdAt: '2026-10-28T00:00:00.000Z',
+          }] });
+          return [];
+        },
+      });
+      const projected = repo.findById(task.id)!;
+      expect(projected.status).toBe('needs_action');
+      expect(projected.stateDetail.reason.code).toBe('system_anomaly');
+      expect(projected.stateDetail.pendingActions).toEqual([]);
+    } finally { db.close(); }
+  });
+
   it('schedules remaining service work even when every Executor slot is busy', () => {
     expect(selectTaskDispatches({ account: { maxConcurrentTasks: 2, activeTaskCount: 1,
       maxConcurrentAttempts: 1, activeAttemptCount: 1, maxConcurrentAttemptsPerTask: 1 },

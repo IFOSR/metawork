@@ -1113,6 +1113,63 @@ describe('ControlKernel', () => {
     expect(result.reason).toContain('dependency publication');
   });
 
+  it('spends the one automatic replan on a dependency edge that can never materialize', () => {
+    const snapshot = structuralDependencyFailure();
+    const result = new ControlKernel().decide(
+      runtimeEvent({
+        type: 'dispatch_requested',
+        subtaskId: undefined,
+        reason: 'continue after upstream attempt',
+      }),
+      snapshot,
+    );
+
+    expect(result.action).toMatchObject({
+      type: 'queue_generation_replan',
+      taskId: 'task_1',
+      generationId: 'generation_task_1_1',
+      sourceRevision: 1,
+    });
+    expect(result.reason).toContain('dependency materialization failed');
+  });
+
+  it('blocks a structural dependency failure as a system blocker once the replan budget is spent', () => {
+    const snapshot = structuralDependencyFailure();
+    snapshot.automaticReplansUsed = 1;
+    const result = new ControlKernel().decide(
+      runtimeEvent({
+        type: 'dispatch_requested',
+        subtaskId: undefined,
+        reason: 'continue after upstream attempt',
+      }),
+      snapshot,
+    );
+
+    expect(result.action).toEqual({
+      type: 'block_work',
+      taskId: 'task_1',
+      subtaskId: 'downstream',
+      blockerKind: 'system',
+    });
+    expect(result.reason).toContain('系统问题');
+  });
+
+  it('does not re-block or re-queue a structural dependency failure while the repair replan runs', () => {
+    const snapshot = structuralDependencyFailure();
+    snapshot.generationReplanRequest = { id: 'replan_1', status: 'planning' };
+    const result = new ControlKernel().decide(
+      runtimeEvent({
+        type: 'dispatch_requested',
+        subtaskId: undefined,
+        reason: 'continue after upstream attempt',
+      }),
+      snapshot,
+    );
+
+    expect(result.action).toEqual({ type: 'no_op' });
+    expect(result.reason).toContain('dependency repair replan is in progress');
+  });
+
   it('authorizes explicit resume only for a recoverable blocked Task and restores runnable Subtasks through Runtime', () => {
     const snapshot = dispatchSnapshot();
     snapshot.task = { id: 'task_1', status: 'blocked' };
@@ -2045,6 +2102,23 @@ function dispatchSnapshot(
     generationReplanRequest: null,
     generationQuiescent: true,
   };
+}
+
+function structuralDependencyFailure(): Extract<KernelSnapshot, { type: 'dispatch' }> {
+  const snapshot = dispatchSnapshot();
+  snapshot.frontier = [];
+  snapshot.subtasks = [
+    { id: 'upstream', taskId: 'task_1', status: 'done', executorBindings: [codexBinding] },
+    { id: 'downstream', taskId: 'task_1', status: 'ready', executorBindings: [codexBinding] },
+  ];
+  snapshot.dependencyReadiness = [{
+    sourceSubtaskId: 'upstream',
+    targetSubtaskId: 'downstream',
+    code: 'missing_handoff',
+    terminal: true,
+    detail: 'source is done but the edge-scoped handoff is missing',
+  }];
+  return snapshot;
 }
 
 function cancellationSubtask(

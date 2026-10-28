@@ -1,5 +1,17 @@
 # MetaWork Planning Agent And Work Unit Context
 
+Edge handoff completion invariant (2026-10-28): a Subtask may enter `done` only
+when every outgoing Work Graph edge already has its handoff row, written in the
+same transaction by the completion boundary. In-place execution no longer
+produces a publication, so the publication worker is not the owner of that fact;
+`materializeOutgoingHandoffs()` is the single idempotent writer, and a completion
+without a safe body fails closed instead of landing `done`. A dependency edge
+that can never be materialized is a structural defect: the Kernel spends its one
+automatic replan, then blocks with `blockerKind: 'system'` (`needs_action` +
+`system_anomaly`, never a user-input request). Pre-fix rows are repaired from the
+upstream attempt's certified safe projection. See ADR-0021's 2026-10-28
+amendment.
+
 Upstream-input recovery (2026-10-17): explicit Resume may continue a settled
 `missing_upstream_input` failure only after current binding/evidence support,
 published direct inputs, retained workspace and residue checks. Kernel can

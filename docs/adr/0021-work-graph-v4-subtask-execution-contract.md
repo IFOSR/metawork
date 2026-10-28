@@ -128,3 +128,45 @@ correction resolves the body via `reportPath`, Runtime persists fresh
 business/safe result objects so downstream references never resolve to an
 empty result. The contract forbids splitting body and marker across messages;
 the final response must be self-contained.
+
+### Completion-boundary edge handoff amendment (2026-10-28)
+
+The 2026-09-05 amendment above put default edge-handoff materialization at
+publication integration. That was correct while every completion produced a
+publication. In-place execution (`AttemptTerminalService.land` with
+`directCompletion`) now finishes a Subtask without a publication row, so the
+materializer never ran: a Subtask could reach `done` while its outgoing edge had
+no handoff, and the dependent node was then refused by dispatch admission with
+`missing_handoff` forever — a Task stuck in `needs_action` for which no user
+input exists.
+
+The invariant is therefore stated on the completion boundary, which is the only
+place that turns an attempt into `done`:
+
+> A Subtask may enter `done` only when every outgoing edge already has a durable
+> handoff row, written in the same transaction.
+
+Consequences:
+
+- `materializeOutgoingHandoffs()` (`src/execution/subtask-handoff-materializer.ts`)
+  is the single writer, called by `AttemptTerminalService.land` for direct
+  completions and by the publication worker (idempotent, see below). Declared
+  envelope handoffs are used per target; otherwise the declared graph
+  requirement keys are synthesized as `result_reference` items over the
+  attempt's safe projection.
+- The write is idempotent: `subtask_handoffs` is keyed by
+  `(task_id, from_subtask_id, to_subtask_id)`, is insert-only, and the result
+  reference id is deterministic, so a replayed completion or the legacy
+  publication path converges to one row.
+- A completion that owes an outgoing edge but has no safe projection fails
+  closed (`contract_blocked`, rollback) instead of landing `done`. Silent
+  skipping is prohibited.
+- A structural dependency failure (an edge that can never be materialized) is
+  no longer treated as a user-input request. The Kernel spends its one
+  automatic replan first, then blocks with `blockerKind: 'system'`. The Task
+  stays `needs_action` — a human still decides — but the reason is
+  `system_anomaly` and no `provide_input` action is projected.
+- Existing rows written before this amendment are repaired by
+  `backfillOutgoingHandoffs()`, which rebuilds missing rows from the upstream
+  attempt's certified safe projection and reports (never guesses) the ones it
+  cannot rebuild.

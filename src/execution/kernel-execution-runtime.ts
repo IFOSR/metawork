@@ -2740,7 +2740,12 @@ export class KernelExecutionRuntime {
       // A local blocker must not freeze sibling attempts or their completion.
       // The next Kernel dispatch evaluates the remaining independent frontier.
       if (!action.subtaskId) {
-        await this.blockTaskInternal(action.taskId, decision.reason, input.finishExecution);
+        await this.blockTaskInternal(
+          action.taskId,
+          decision.reason,
+          input.finishExecution,
+          action.blockerKind === 'system' ? 'kernel_anomaly' : 'manual',
+        );
       }
       this.appendExecutionTrace({
         phase: 'verification',

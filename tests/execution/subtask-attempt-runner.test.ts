@@ -620,7 +620,7 @@ describe('SubtaskAttemptRunner', () => {
     expect(setupResult.artifactPublicationStub.publishIntegratedArtifacts).not.toHaveBeenCalled();
   });
 
-  it('atomically records a candidate receipt without publishing handoffs before integration', async () => {
+  it('atomically records a candidate receipt and materializes the outgoing edge handoff', async () => {
     const setupResult = setup(validResponse());
     const outcome = await setupResult.runner.run({
       attemptId: 'attempt_1',
@@ -643,8 +643,11 @@ describe('SubtaskAttemptRunner', () => {
       { kind: 'raw_attempt_output', completeness: 'complete' },
       { kind: 'safe_projection', completeness: 'complete' },
     ]);
-    expect(setupResult.db.prepare('SELECT COUNT(*) AS count FROM subtask_handoffs').get())
-      .toEqual({ count: 0 });
+    // A completion that owes an outgoing edge hands its result to the
+    // dependent Subtask in the same transaction (ADR-0021 contract).
+    expect(setupResult.db.prepare(`
+      SELECT from_subtask_id, to_subtask_id FROM subtask_handoffs
+    `).all()).toEqual([{ from_subtask_id: 'task_phase2_a', to_subtask_id: 'task_phase2_b' }]);
     expect(setupResult.db.prepare(`
       SELECT COUNT(*) AS count FROM workspace_publications
     `).get()).toEqual({ count: 0 });
@@ -964,7 +967,12 @@ describe('SubtaskAttemptRunner', () => {
       outcome: 'completed',
       output: 'A completed.',
     });
-    expect(setupResult.db.prepare('SELECT COUNT(*) AS count FROM subtask_handoffs').get()).toEqual({ count: 1 });
+    expect(setupResult.db.prepare(`
+      SELECT from_subtask_id, to_subtask_id FROM subtask_handoffs ORDER BY from_subtask_id
+    `).all()).toEqual([
+      { from_subtask_id: 'task_phase2_a', to_subtask_id: 'task_phase2_b' },
+      { from_subtask_id: 'task_phase2_c', to_subtask_id: 'task_phase2_b' },
+    ]);
     expect(setupResult.db.prepare(`
       SELECT COUNT(*) AS count FROM workspace_publications WHERE source_attempt_id = 'attempt_1'
     `).get()).toEqual({ count: 0 });

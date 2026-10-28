@@ -231,7 +231,12 @@ export interface WorktreeLease {
 // ─── 阻塞依赖 ───
 export interface Dependency {
   taskId: string;
-  type: 'manual' | 'kernel_capacity' | 'kernel_retry' | 'kernel_availability';
+  /**
+   * `kernel_anomaly` records a Kernel-observed structural failure: it blocks the
+   * Task but no user input can resolve it, so it must never be projected as a
+   * "provide input" pending action.
+   */
+  type: 'manual' | 'kernel_capacity' | 'kernel_retry' | 'kernel_availability' | 'kernel_anomaly';
   description: string;
   status: 'waiting' | 'resolved';
   createdAt: string;

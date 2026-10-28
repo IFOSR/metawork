@@ -11,6 +11,13 @@ import { KernelWorkflowRepo } from '../storage/kernel-workflow-repo.js';
 import { WorkspacePublicationRepo } from '../storage/workspace-publication-repo.js';
 import { ExecutorAttemptRuntimeRepo } from '../storage/executor-attempt-runtime-repo.js';
 import { SqliteResourceLeaseRepository } from '../storage/resource-lease-repo.js';
+import type { CompletionHandoffV4 } from './completion-protocol.js';
+import {
+  EdgeHandoffMaterializationError,
+  materializeOutgoingHandoffs,
+  type EdgeHandoffMaterializerDeps,
+  type EdgeHandoffSafeProjection,
+} from './subtask-handoff-materializer.js';
 
 type AttemptTerminalEvent =
   | (Omit<
@@ -57,6 +64,17 @@ export interface AttemptTerminalLanding {
   subtaskVerification?: Subtask['verification'];
   /** In-place execution lands the result directly; no publication row is created. */
   directCompletion?: boolean;
+  /**
+   * Outgoing edge handoffs this completion owes its dependent Subtasks. A Task
+   * that becomes `done` must hand its result to every outgoing edge inside the
+   * same transaction; otherwise the downstream node can never be dispatched.
+   */
+  edgeHandoffs?: {
+    generationId: string;
+    completionSchemaVersion: number;
+    declaredHandoffs: readonly CompletionHandoffV4[];
+    safeProjection: EdgeHandoffSafeProjection | null;
+  };
   now: string;
 }
 
@@ -75,7 +93,11 @@ export class AttemptTerminalService {
   private readonly workflow: KernelWorkflowRepo;
   private readonly publications: WorkspacePublicationRepo;
 
-  constructor(private readonly db: Database.Database) {
+  constructor(
+    private readonly db: Database.Database,
+    /** Absent only in recovery/test compositions that never land a completion. */
+    private readonly handoffMaterializer?: EdgeHandoffMaterializerDeps,
+  ) {
     this.receipts = new ExecutorAttemptReceiptRepo(db);
     this.dispatchItems = new KernelDispatchItemRepo(db);
     this.workflow = new KernelWorkflowRepo(db);
@@ -204,6 +226,25 @@ export class AttemptTerminalService {
         ).changes;
         if (changed !== 1) {
           throw new Error(`attempt terminal fence changed: ${input.receipt.attemptId}`);
+        }
+        if (input.directCompletion && input.edgeHandoffs) {
+          if (!this.handoffMaterializer) {
+            throw new EdgeHandoffMaterializationError(
+              input.receipt.taskId,
+              input.receipt.subtaskId,
+              'the completion boundary has no edge handoff writer configured',
+            );
+          }
+          // Same transaction as the `done` transition: a completion that cannot
+          // hand its result downstream must not be recorded as done.
+          materializeOutgoingHandoffs(this.handoffMaterializer, {
+            taskId: input.receipt.taskId,
+            subtaskId: input.receipt.subtaskId,
+            generationId: input.edgeHandoffs.generationId,
+            attemptId: input.receipt.attemptId,
+            completionSchemaVersion: input.edgeHandoffs.completionSchemaVersion,
+            declaredHandoffs: input.edgeHandoffs.declaredHandoffs,
+          }, input.edgeHandoffs.safeProjection, input.now);
         }
         if (input.publication && !input.directCompletion) {
           this.publications.insertCandidate(input.publication);

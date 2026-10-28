@@ -10,6 +10,7 @@ import type Database from 'better-sqlite3';
 import type { KernelEvent } from '../kernel/control-kernel.js';
 import type { SubtaskRepo } from '../storage/subtask-repo.js';
 import { SubtaskHandoffRepo } from '../storage/subtask-handoff-repo.js';
+import { materializeOutgoingHandoffs } from './subtask-handoff-materializer.js';
 import type { ExecutorAttemptReceiptRepo } from '../storage/executor-attempt-receipt-repo.js';
 import type { KernelDispatchItemRepo } from '../storage/kernel-dispatch-item-repo.js';
 import { workspacePathClaim, workspaceRootClaim } from '../resource/workspace-claim.js';
@@ -935,33 +936,22 @@ export class WorkspacePublicationWorker {
     const now = new Date().toISOString();
     this.deps.db.transaction(() => {
       if (cancelled()) return;
-        for (const handoff of publication.originalCompletion.handoffs) {
-          if (!safeProjection) {
-            throw new Error(
-              `safe projection is required for handoff publication: ${publication.sourceAttemptId}`,
-            );
-          }
-          this.insertEdgeHandoff(
-            publication,
-            handoff.toSubtaskId,
-            handoff.items.map(item => item.key),
-            handoff.items.map(item => (
-              item.type === 'text'
-                ? { key: item.key, type: 'text' as const, summary: `Authorized upstream result for ${item.key}` }
-                : { key: item.key, type: item.type, paths: item.paths }
-            )),
-            handoff.items.map(item => (
-              item.type === 'text'
-                ? null
-                : { key: item.key, type: 'artifact' as const, paths: [...item.paths] }
-            )),
-            safeProjection,
-            now,
-          );
-        }
-        // Text edges can reference the safe body. Declared artifacts must
-        // retain their verified paths and cannot be replaced by prose.
-        this.materializeEdgeHandoffs(publication, safeProjection, now);
+        // The completion boundary usually writes these already. Re-materializing
+        // here keeps the retired publication path idempotent: declared artifacts
+        // keep their verified paths, text edges point at the safe body.
+        materializeOutgoingHandoffs({
+          ...(this.deps.accountId === undefined ? {} : { accountId: this.deps.accountId }),
+          subtaskRepo: this.deps.subtaskRepo,
+          handoffRepo: this.handoffs,
+          results: this.results,
+        }, {
+          taskId: publication.taskId,
+          subtaskId: publication.subtaskId,
+          generationId: publication.generationId,
+          attemptId: publication.sourceAttemptId,
+          completionSchemaVersion: publication.originalCompletion.completionSchemaVersion,
+          declaredHandoffs: publication.originalCompletion.handoffs,
+        }, safeProjection, now);
         this.lifecycle.transitionSubtask({
           subtaskId: publication.subtaskId,
           to: 'done',
@@ -991,104 +981,6 @@ export class WorkspacePublicationWorker {
       integrationCommit: publication.integrationCommit!, resultId: safeProjection?.resultId ?? null,
       output: publication.originalCompletion.body, warnings: publication.originalCompletion.warnings,
       userArtifacts: delivery.projections };
-  }
-
-  /**
-   * Materialize handoff rows for every outgoing Work Graph edge that has
-   * none. Only text requirements can be satisfied by the safe body;
-   * artifact requirements are checked before delivery settlement.
-   */
-  private materializeEdgeHandoffs(
-    publication: WorkspacePublicationRecord,
-    safeProjection: { resultId: string; byteLength: number } | null,
-    now: string,
-  ): void {
-    if (!safeProjection) return;
-    const outgoing = this.deps.subtaskRepo.listByTask(publication.taskId)
-      .flatMap(subtask => subtask.dependencies
-        .filter(dependency => dependency.fromSubtaskId === publication.subtaskId)
-        .map(dependency => ({ toSubtaskId: subtask.id, requiredItems: dependency.requiredItems })));
-    if (outgoing.length === 0) return;
-    const existing = new Set(
-      this.handoffs.listByTask(publication.taskId)
-        .filter(handoff => handoff.fromSubtaskId === publication.subtaskId)
-        .map(handoff => handoff.toSubtaskId),
-    );
-    for (const edge of outgoing) {
-      if (existing.has(edge.toSubtaskId)) continue;
-      const keys = edge.requiredItems.length > 0
-        ? edge.requiredItems.map(item => item.key)
-        : ['result'];
-      this.insertEdgeHandoff(
-        publication,
-        edge.toSubtaskId,
-        keys,
-        keys.map(key => ({ key, type: 'text' as const, summary: `Authorized upstream result for ${key}` })),
-        keys.map(() => null),
-        safeProjection,
-        now,
-      );
-    }
-  }
-
-  private insertEdgeHandoff(
-    publication: WorkspacePublicationRecord,
-    toSubtaskId: string,
-    requiredKeys: string[],
-    summaryItems: Array<{ key: string; type: string; summary?: string; paths?: string[] }>,
-    artifactItems: Array<{ key: string; type: 'artifact'; paths: string[] } | null>,
-    safeProjection: { resultId: string; byteLength: number },
-    now: string,
-  ): void {
-    const summaryHash = `sha256:${createHash('sha256')
-      .update(JSON.stringify(summaryItems))
-      .digest('hex')}`;
-    const referenceId = resultReferenceId({
-      accountId: this.deps.accountId ?? 'local-default',
-      taskId: publication.taskId,
-      generationId: publication.generationId,
-      sourceSubtaskId: publication.subtaskId,
-      targetSubtaskId: toSubtaskId,
-      attemptId: publication.sourceAttemptId,
-      resultId: safeProjection.resultId,
-    });
-    const reference = this.results.createReference({
-      referenceId,
-      resultId: safeProjection.resultId,
-      accountId: this.deps.accountId ?? 'local-default',
-      taskId: publication.taskId,
-      generationId: publication.generationId,
-      sourceSubtaskId: publication.subtaskId,
-      targetSubtaskId: toSubtaskId,
-      edgeKey: `${publication.subtaskId}->${toSubtaskId}`,
-      requiredItems: requiredKeys,
-      readScope: {
-        kind: 'direct_dependency',
-        offset: 0,
-        length: safeProjection.byteLength,
-        summaryHash,
-      },
-      createdAt: now,
-    });
-    const items: PersistedSubtaskHandoffItem[] = summaryItems.map((item, index) => {
-      const artifact = artifactItems[index] ?? null;
-      return artifact ?? {
-        key: item.key,
-        type: 'result_reference' as const,
-        referenceId,
-        summary: item.summary ?? `Authorized upstream result for ${item.key}`,
-      };
-    });
-    this.handoffs.insert({
-      taskId: publication.taskId,
-      fromSubtaskId: publication.subtaskId,
-      toSubtaskId,
-      attemptId: publication.sourceAttemptId,
-      items,
-      resultReference: reference,
-      completionSchemaVersion: publication.originalCompletion.completionSchemaVersion,
-      createdAt: now,
-    });
   }
 
   private artifactSources(
@@ -1164,21 +1056,6 @@ export class WorkspacePublicationWorker {
   }
 }
 
-function resultReferenceId(input: {
-  accountId: string;
-  taskId: string;
-  generationId: string;
-  sourceSubtaskId: string;
-  targetSubtaskId: string;
-  attemptId: string;
-  resultId: string;
-}): string {
-  const hash = createHash('sha256')
-    .update(JSON.stringify(input))
-    .digest('hex')
-    .slice(0, 32);
-  return `result_reference_${hash}`;
-}
 
 function deriveTopologyLayers(
   subtasks: ReturnType<SubtaskRepo['listByTask']>,

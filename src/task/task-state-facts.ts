@@ -347,8 +347,13 @@ export function readTaskEvaluationInput(raw: TaskStateRawFacts): TaskEvaluationI
     : null;
 
   const blockers = raw.task.dependencies.filter(dependency => dependency.status === 'waiting');
+  // A `kernel_anomaly` blocker is a structural failure the Kernel already tried
+  // to repair: it keeps the Task in `needs_action`, but it is never a request for
+  // user input and must not produce a `provide_input` pending action.
+  const systemBlockers = blockers.filter(dependency => dependency.type === 'kernel_anomaly');
   const userBlockers = blockers.filter(dependency => (
     dependency.type !== 'kernel_retry' && dependency.type !== 'kernel_capacity'
+    && dependency.type !== 'kernel_anomaly'
   ));
   for (const dependency of userBlockers) {
     pendingActions.push({ actionId: `dependency:${dependency.type}:${dependency.createdAt}:${dependency.description}`,
@@ -378,7 +383,13 @@ export function readTaskEvaluationInput(raw: TaskStateRawFacts): TaskEvaluationI
         userBlockers[0]!.description,
         userBlockers.map(dependency => `dependency:${dependency.type}`),
       )
-    : deriveAnomaly({
+    : systemBlockers.length > 0
+      ? createTaskReason(
+          'system_anomaly',
+          systemBlockers[0]!.description,
+          systemBlockers.map(dependency => `dependency:${dependency.type}`),
+        )
+      : deriveAnomaly({
         raw,
         requiredWork,
         activeReplan: activeReplan !== null,

@@ -66,6 +66,18 @@ import {
 /** The six-state Task contract. Owned by the Task Domain and re-used by the Kernel. */
 export type KernelTaskStatus = TaskStatus;
 export type KernelSubtaskStatus = 'ready' | 'running' | 'awaiting_integration' | 'awaiting_decision' | 'blocked' | 'done' | 'cancelled';
+
+/**
+ * Replan states in which an automatic replan is already converging. While one
+ * of them holds, the dispatch decision continues independent work instead of
+ * re-queuing the same structural repair.
+ */
+const STRUCTURAL_REPLAN_STATUSES: ReadonlySet<string> = new Set([
+  'pending_quiescence',
+  'planning',
+  'submitted',
+  'waiting_for_availability',
+]);
 export type KernelAttemptKind = 'primary' | 'continuation' | 'fallback' | 'contract_correction' | 'merge_repair';
 export type KernelRecoveryMode = 'native_session' | 'recovery_packet' | 'fresh';
 export type KernelResumeBlockerCategory =
@@ -809,6 +821,12 @@ export type KernelDecisionAction =
       taskId: string;
       subtaskId: string | null;
       preserveSubtaskState?: boolean;
+      /**
+       * `system` marks a blocker no user input can resolve (a structural defect
+       * or an exhausted automatic recovery). It stays `needs_action` — a human
+       * must still decide — but it never becomes a "provide input" request.
+       */
+      blockerKind?: 'user' | 'system';
     }
   /** Safe output exists, but completion evidence is a user decision. */
   | {
@@ -1388,15 +1406,41 @@ export class ControlKernel {
       }
       const terminalDependencyFailure = dependencyReadiness.find(fact => fact.terminal && fact.code !== 'ready'
         && !snapshot.subtasks.some(item => item.id === fact.targetSubtaskId && ['blocked', 'done', 'cancelled'].includes(item.status)));
+      // A dependency that can never be materialized is a structural defect, not a
+      // user-input request: spend the one automatic replan first, then block with
+      // an explicit system blocker so no surface asks the user for information.
+      const structuralReplanActive = snapshot.generationReplanRequest !== undefined
+        && snapshot.generationReplanRequest !== null
+        && STRUCTURAL_REPLAN_STATUSES.has(snapshot.generationReplanRequest.status);
+      if (terminalDependencyFailure && structuralReplanActive) {
+        // The repair is already converging: never re-block the Task on the same
+        // edge while the Planner still owns the graph.
+        return decision(event, { type: 'no_op' }, 'dependency repair replan is in progress');
+      }
       if (terminalDependencyFailure) {
+        const detail = `dependency materialization failed: ${terminalDependencyFailure.sourceSubtaskId} -> ${terminalDependencyFailure.targetSubtaskId}; ${terminalDependencyFailure.detail}`;
+        if ((snapshot.automaticReplansUsed ?? 0) < 1) {
+          return decision(event, {
+            type: 'queue_generation_replan',
+            taskId: event.taskId,
+            generationId: snapshot.generationId,
+            sourceRevision: snapshot.graphRevision,
+            requestId: generationReplanRequestId(
+              event.taskId,
+              snapshot.generationId,
+              snapshot.graphRevision,
+            ),
+          }, detail);
+        }
         return decision(
           event,
           {
             type: 'block_work',
             taskId: event.taskId,
             subtaskId: terminalDependencyFailure.targetSubtaskId,
+            blockerKind: 'system',
           },
-          `dependency materialization failed: ${terminalDependencyFailure.sourceSubtaskId} -> ${terminalDependencyFailure.targetSubtaskId}; ${terminalDependencyFailure.detail}`,
+          `上游结果未能交接给下游节点（系统问题，自动重新规划已用尽）：${terminalDependencyFailure.sourceSubtaskId} -> ${terminalDependencyFailure.targetSubtaskId}；${terminalDependencyFailure.detail}`,
         );
       }
       if (snapshot.generationReplanRequest?.status === 'failed') {
