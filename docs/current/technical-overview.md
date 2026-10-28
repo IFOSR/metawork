@@ -232,7 +232,7 @@ Task re-launches the same contract. Consequently:
   normalized operation outcomes; Task facts keep such a Task `running` with phase
   `retrying` and the real error visible.
 
-#### Follow-up runs, optional manifests and execution facts (2026-10-28)
+#### Follow-up runs, optional managed-service manifests and execution facts (2026-10-28)
 
 A follow-up operation separates its source from its execution identity:
 `sourceTaskId` is the finished Task whose artifacts are referenced, while the
@@ -242,6 +242,9 @@ its delivered Workspace, and Kernel relays the operation instead of refusing it
 for a terminal source Task. Kernel keeps only mechanical checks (Workspace
 ownership, registration identity, revision, published code).
 
+The manifest was never required for ordinary work: only the managed-service path
+(an explicit implement-and-start request, or an explicit service start/update)
+needed it, and that path is now optional too.
 `ManagedLocalServices.resolveServiceSpecification()` resolves the run target:
 
 1. The Task's delivered artifact paths identify the project directory.

@@ -1154,6 +1154,8 @@ Web/TUI 要求 Task View v2 并比较 Task 版本。schema 51→52 按证据分�
 登记身份、revision、代码是否已发布），不再因为来源 Task 已结束而拒绝，也不再判断
 一次性运行与长期服务。
 
+`.metawork-service.json` 从来不是普通任务的前提：只有受管服务路径（显式“实现并启动”
+请求，或显式 `service_start`/`update`）需要它；现在这条路径也不再强制要求。
 `ManagedLocalServices.resolveServiceSpecification()` 从持久事实确定运行目标：
 
 1. Task 已交付的产物路径确定目标项目目录；

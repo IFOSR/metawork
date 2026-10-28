@@ -263,7 +263,12 @@ executionId（复用现有执行标识，不强制新增实体）
 - **目标项目解析**：`src/execution/run-target.ts` 以 Task 已交付产物（入口文件或
   项目内服务规格）确定目标目录；Workspace 根目录的 `.metawork-service.json` 仅在
   Task 没有交付可运行项目时才是候选；多个候选返回真实歧义而不是猜测。
-- **可选服务规格**：`src/execution/local-service-discovery.ts` 从
+- **可选服务规格（范围澄清）**：`.metawork-service.json` 此前并非所有任务的硬门槛，
+  只有受管服务路径（`startServiceAfterPublish`、显式 `service_start`/`update`）要求它
+  ——旧 `readSpecification()` 也只在 `startRequestedPublishedService` 与
+  `manageLocalService()` 中被调用。本次改动的是这条路径：它现在可以在无文件时解析目标
+  项目并发现启动方式；普通任务原本就不需要该文件。
+  `src/execution/local-service-discovery.ts` 从
   `package.json` scripts/main 或入口文件发现启动方式并记录证据。契约来源
   `origin: 'manifest' | 'discovered'` 进入 revision；发现契约不声明端口与健康检查，
   Runtime 分配回环端口、仅在有端口时传 `HOST`/`PORT`，进程状态记为 `running`，

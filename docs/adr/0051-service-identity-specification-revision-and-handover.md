@@ -77,7 +77,7 @@
 
 Schema 60 把 `repair_pending` 加入归一化操作结论。
 
-## 补充决策（2026-10-28，可选服务规格与通用后续操作）
+## 补充决策（2026-10-28，受管服务规格可选与通用后续操作）
 
 [Kernel 兼容性中继与可选服务规格优化方案](../plans/2026-10-28-transparent-execution-and-optional-service-specification.md)
 按 ADR-0053 补齐后续操作边界。本补充不改变服务身份
@@ -92,7 +92,9 @@ Schema 60 把 `repair_pending` 加入归一化操作结论。
    Workspace 根目录的 `.metawork-service.json` 只有在 Task 没有交付可运行项目时才
    是候选，绝不覆盖新交付项目的运行目标。出现多个候选是真实歧义，由 Planner 询问
    用户，Runtime 不猜。
-4. `.metawork-service.json` 变为可选来源。目标项目内的解析优先级是：项目服务规格 →
+4. 澄清文件范围：`.metawork-service.json` 从来不是普通任务的前提，只有受管服务路径
+   （`startServiceAfterPublish` 与显式 `service_start`/`update`）在 2026-10-28 之前
+   要求它。现在这条路径也不再强制要求该文件：目标项目内的解析优先级是项目服务规格 →
    该项目的既有服务记录 → 由项目事实发现的启动方式（`package.json` scripts/main、
    入口文件）。规格 revision 增加 `origin: 'manifest' | 'discovered'`，因此后续采纳
    显式规格是一次真实的 `update` 授权，而不是静默替换。

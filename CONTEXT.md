@@ -925,12 +925,15 @@ Target project resolution is a durable-fact decision, not a guess:
 - More than one candidate is a real ambiguity: the Runtime refuses with the
   candidate list instead of choosing, and the Planner asks the user.
 
-`.metawork-service.json` is optional. Contract precedence inside the resolved
-target is: the target project's manifest, then the recorded contract of that
-same project in this Workspace, then a launch discovered from the project
-(`package.json` scripts/main, entry files). Discovery records its evidence. A
-launch contract carries `origin: 'manifest' | 'discovered'` in its revision, so
-adopting a manifest after a discovered start is an explicit `update` decision.
+`.metawork-service.json` was never a prerequisite for ordinary work: only the
+managed-service path (an explicit implement-and-start request, or an explicit
+`service_start`/`update`) required it. That path is now optional too. Contract
+precedence inside the resolved target is: the target project's manifest, then the
+recorded contract of that same project in this Workspace, then a launch
+discovered from the project (`package.json` scripts/main, entry files).
+Discovery records its evidence. A launch contract carries
+`origin: 'manifest' | 'discovered'` in its revision, so adopting a manifest after
+a discovered start is an explicit `update` decision.
 
 A discovered contract declares no port and no health path: the Runtime allocates
 a loopback port, passes `HOST`/`PORT` only when the contract declares a port, and
