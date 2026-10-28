@@ -76,3 +76,44 @@
    轮次，因此不同轮次的失败事实不会互相覆盖。
 
 Schema 60 把 `repair_pending` 加入归一化操作结论。
+
+## 补充决策（2026-10-28，可选服务规格与通用后续操作）
+
+[Kernel 兼容性中继与可选服务规格优化方案](../plans/2026-10-28-transparent-execution-and-optional-service-specification.md)
+按 ADR-0053 补齐后续操作边界。本补充不改变服务身份
+`(accountId, workspaceId, serviceId)`，只把来源身份与执行身份彻底分开：
+
+1. 来源 Task 只提供来源事实。已完成 Task 的结论不阻断启动、重启、预览、验证或
+   在同一 Workspace 继续修改其产物；后续操作使用自己的 decision/operation 身份。
+2. Kernel 对 `managed_service_requested` 只做机械检查：Workspace 归属、登记身份、
+   revision 一致性与代码是否已发布。它不再因为来源 Task 处于 `succeeded`/`failed`/
+   `cancelled` 而拒绝用户明确的后续操作，也不再判断一次性运行与长期服务。
+3. 目标项目由 Task 已交付的产物路径确定；项目内入口文件或项目内服务规格构成候选。
+   Workspace 根目录的 `.metawork-service.json` 只有在 Task 没有交付可运行项目时才
+   是候选，绝不覆盖新交付项目的运行目标。出现多个候选是真实歧义，由 Planner 询问
+   用户，Runtime 不猜。
+4. `.metawork-service.json` 变为可选来源。目标项目内的解析优先级是：项目服务规格 →
+   该项目的既有服务记录 → 由项目事实发现的启动方式（`package.json` scripts/main、
+   入口文件）。规格 revision 增加 `origin: 'manifest' | 'discovered'`，因此后续采纳
+   显式规格是一次真实的 `update` 授权，而不是静默替换。
+5. 发现的启动契约不声明端口与健康检查：Runtime 分配回环端口，仅在契约声明端口时
+   传入 `HOST`/`PORT`，并把进程状态记录为 `running`（进程存活）。`running` 不等于
+   `healthy`，公开视图的访问地址为空而不是伪造 URL。
+6. `kernel_dispatch_items.terminal` 仅表示该调度项不再占用调度容量。
+   `terminal_disposition` 区分 `executed` 与 `not_started`（让位：资源分区冲突、
+   Executor 不可用）。成功只由 `terminal_state = completed` 的 receipt 证明，投影
+   不得由调度状态推断“已完成”，也不得由调度尝试时长推断执行耗时。
+
+### 影响（2026-10-28）
+
+- `src/execution/run-target.ts`、`src/execution/local-service-discovery.ts`：目标项目
+  与启动方式解析（纯路径分类 / 有界文件检查）。
+- `src/execution/managed-local-service.ts`：`resolveServiceSpecification()`、
+  可选端口与健康检查、`running` 状态、目标项目视图；`startNow()` 只对 manifest 来源
+  重新核对文件。
+- `src/kernel/control-kernel.ts`：移除终态来源 Task 的服务拒绝，保留机械检查。
+- `src/storage/kernel-dispatch-item-repo.ts` + schema 61：新增
+  `terminal_disposition` 与 `markNotStarted()`。
+- `src/execution/attempt-supervisor.ts`：让位事件记录为 `not_started`。
+- `src/management/execution-projector.ts`、`web/src/*`：receipt 驱动的 Attempt 状态、
+  真实执行耗时、Planner-only Turn 标签。

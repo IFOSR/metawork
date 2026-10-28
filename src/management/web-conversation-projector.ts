@@ -270,11 +270,26 @@ function extractExecutorFinalResult(line: string): string | null {
 export function turnStatusFromTimeline(
   timeline: ExecutionTimeline,
 ): ConversationTurnProjection['status'] | null {
-  if (['created', 'ready', 'running', 'waiting_retry'].includes(timeline.status)) {
+  // Durable stage facts report active work before the committed Task status
+  // settles; otherwise the UI labels every card as a completed summary and
+  // stops the fast refresh loop.
+  const execution = timeline.stages.find(stage => stage.phase === 'execution');
+  if (execution?.status === 'running'
+    || execution?.subtasks?.some(subtask => ['running', 'ready'].includes(subtask.status))) {
     return 'running';
   }
-  if (['done', 'archived'].includes(timeline.status)) return 'completed';
-  if (['blocked', 'parked'].includes(timeline.status)) return 'blocked';
+  if (execution?.status === 'blocked'
+    || execution?.subtasks?.some(subtask => ['blocked', 'awaiting_decision'].includes(subtask.status))) {
+    return 'blocked';
+  }
+  if (execution?.status === 'failed'
+    || execution?.subtasks?.some(subtask => ['failed', 'cancelled'].includes(subtask.status))) {
+    return 'failed';
+  }
+  // The timeline status is the committed six-state Task conclusion.
+  if (timeline.status === 'running' || timeline.status === 'queued') return 'running';
+  if (timeline.status === 'succeeded') return 'completed';
+  if (timeline.status === 'needs_action') return 'blocked';
   if (timeline.status === 'cancelled') return 'cancelled';
   if (timeline.status === 'failed') return 'failed';
 

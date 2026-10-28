@@ -209,7 +209,12 @@ When two current ADRs appear to overlap, the more specific topic ADR defines its
   `taskId` is provenance that moves to the current Task when it re-launches the
   same launch contract. `specificationRevision` hashes the launch contract only,
   so a historical `failed`/`stopped` record never blocks the current
-  specification. See the [realignment plan](../plans/2026-10-27-agent-execution-architecture-realignment-plan.md).
+  specification. The 2026-10-28 amendment makes `.metawork-service.json` an
+  optional source: a follow-up operation keeps `sourceTaskId` as provenance and
+  resolves its own target project (project manifest → recorded contract →
+  discovered launch), and a terminal source Task no longer refuses a run. See
+  the [realignment plan](../plans/2026-10-27-agent-execution-architecture-realignment-plan.md)
+  and the [transparent execution specification](../plans/2026-10-28-transparent-execution-and-optional-service-specification.md).
 
 
 ## Status rules

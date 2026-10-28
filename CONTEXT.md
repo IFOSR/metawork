@@ -800,7 +800,7 @@ Turn cancellation invariant: the Client stop control cancels the Turn it is disp
 
 Managed path-naming invariant: durable identities (Task, generation, Subtask, attempt) stay complete in the database, the Kernel ledger and every handle/URI, while the on-disk directory names derived from them are deterministic bounded segments of at most 64 characters carrying a readable prefix/suffix plus an eight-character digest. This keeps a managed workspace at `<account>/workspace-store/workspaces/<segment>/<segment>/<segment>/files`, a managed Git repository and an attempt runtime HOME well inside `NAME_MAX` and inside the budget of tools that flatten a path into one component; a single long plan-event hash must never be repeated across nesting levels. The mapping is pure, so recovery recomputes the same directory without a lookup table. Executor failure facts are passed through the same way: `KernelFailure.summary` carries the upstream text as it happened, `detail` preserves the raw tail, `label` is only an optional localized headline, and `origin`, `stage`, `actor`, `provider` and `step` record where the failure came from. Client surfaces render that text instead of replacing it with a category.
 
-The current product implementation uses SQLite schema version 60. Fresh databases start at v60; supported pre-release databases migrate transactionally through v31→v32→…→v59→v60 on a verified clone while unsupported older schemas are refused. Schema 52 is the main-owned six-state Task base; schema 58 pins the single In-place Workspace binding and parks unfinished legacy Worktree publications instead of replaying an implicit copy. Schema v42 adds `generation_replan_requests.planner_claim_token`, the fencing token that makes one Planner turn land at most once even when two account workers re-claim the same Job after a lease expiry. Schema v41 adds the resolved routing identity columns (`agent_class_ref`, `provider_ref`, `model_id`) on `usage_observations`. Schema v39/v40 adds the ADR-0042 Query usage and billing facts: Query attribution contexts with one request-scoped idempotency key, Query-to-cost-Task links, execution-segment mappings, metering spans, normalized usage observations with one row per `(source_id, source_event_key, metric)`, normalization issues, immutable price versions, cost entries, per-Query bills and stage lines, the consumption outbox and receipts, bill adjustments, and the stable billing source-instance identity. Amounts are constrained decimal text; all aggregation happens in exact money code. Schema v38 adds the durable `planner_turn_inputs` record holding one Planner Turn's attachment facts for the host-bridge submission, so admission stays correct across a Server restart. Schema v37 permits image preview kinds in the durable `task_artifacts` table. The migration converts active/recoverable Planning and Work Graph payloads from v7/v6 to v8/v7, including revision-pinned `executorBindings`, while terminal Kernel ledger history remains immutable. Any ambiguous recoverable payload rolls the cloned migration back and refuses activation; runtime has no earlier-schema read fallback. Schema v32 added immutable Result Objects and edge-scoped ResultReferences; schema v33 adds the Planner proposal configuration-revision pin used by replay and recovery. `awaiting_decision` and `awaiting_integration` remain Subtask-only states; startup recovery reconciles applications, child items, cancellation cleanup, execution-backend records, leases, publications and result delivery before accepting input. The physical names `attempt_sandboxes`, `sandbox_container_id` and `sandbox_lost` are retained only as durable schema/event compatibility names; new TypeScript abstractions use Execution Backend terminology.
+The current product implementation uses SQLite schema version 61. Fresh databases start at v61; supported pre-release databases migrate transactionally through v31→v32→…→v59→v60→v61 on a verified clone while unsupported older schemas are refused. Schema 52 is the main-owned six-state Task base; schema 58 pins the single In-place Workspace binding and parks unfinished legacy Worktree publications instead of replaying an implicit copy. Schema v42 adds `generation_replan_requests.planner_claim_token`, the fencing token that makes one Planner turn land at most once even when two account workers re-claim the same Job after a lease expiry. Schema v41 adds the resolved routing identity columns (`agent_class_ref`, `provider_ref`, `model_id`) on `usage_observations`. Schema v39/v40 adds the ADR-0042 Query usage and billing facts: Query attribution contexts with one request-scoped idempotency key, Query-to-cost-Task links, execution-segment mappings, metering spans, normalized usage observations with one row per `(source_id, source_event_key, metric)`, normalization issues, immutable price versions, cost entries, per-Query bills and stage lines, the consumption outbox and receipts, bill adjustments, and the stable billing source-instance identity. Amounts are constrained decimal text; all aggregation happens in exact money code. Schema v38 adds the durable `planner_turn_inputs` record holding one Planner Turn's attachment facts for the host-bridge submission, so admission stays correct across a Server restart. Schema v37 permits image preview kinds in the durable `task_artifacts` table. Schema v61 adds the additive `kernel_dispatch_items.terminal_disposition` column (`executed` | `not_started`): `terminal` only means a dispatch item stopped being active, and success still requires a `completed` receipt. The migration converts active/recoverable Planning and Work Graph payloads from v7/v6 to v8/v7, including revision-pinned `executorBindings`, while terminal Kernel ledger history remains immutable. Any ambiguous recoverable payload rolls the cloned migration back and refuses activation; runtime has no earlier-schema read fallback. Schema v32 added immutable Result Objects and edge-scoped ResultReferences; schema v33 adds the Planner proposal configuration-revision pin used by replay and recovery. `awaiting_decision` and `awaiting_integration` remain Subtask-only states; startup recovery reconciles applications, child items, cancellation cleanup, execution-backend records, leases, publications and result delivery before accepting input. The physical names `attempt_sandboxes`, `sandbox_container_id` and `sandbox_lost` are retained only as durable schema/event compatibility names; new TypeScript abstractions use Execution Backend terminology.
 
 The legacy routing/intent subsystem, `PolicyKernel`, `TaskAdmissionGate`, `SchedulerEngine`, queue/preemption policy and parked auto-resume have been removed. The target active path is `PlanningAgent/Application Shell → Work Graph → Durable Task Coordinator → idempotent Runtime handlers → Executor/Harness`; the current `KernelWorkflow → ControlKernel` implementation is the migration adapter for that coordinator. Do not reintroduce a parallel strategic interpreter, a Kernel security gate, or allow a workflow framework to own Harness retry policy.
 
@@ -895,6 +895,69 @@ realignment depends on:
   explicit Kernel `update` authorization. When the budget is spent, the Task
   reports the true error and the attempted rounds. A Task therefore never reaches
   a terminal state while an authorized repair round remains.
+
+### Follow-up execution, optional service specifications and execution facts (2026-10-28)
+
+The 2026-10-28 transparent-execution specification completes ADR-0051 and keeps
+ADR-0053's ownership split. A follow-up operation keeps two separate identities:
+
+```text
+sourceTaskId  = the finished Task whose artifacts are referenced (history)
+executionId   = this operation's own decision/attempt/operation identity
+```
+
+The source Task's status therefore never decides whether the artifact may be
+used. Starting, previewing, verifying, restarting or modifying a delivered
+project does not change the historical Task conclusion and does not require it
+to become `running` again. The Kernel relays the operation and keeps only
+mechanical checks (Workspace ownership, registration identity, revision,
+publication presence); it does not refuse because a Task already finished and it
+does not classify one-off runs vs long-lived services.
+
+Target project resolution is a durable-fact decision, not a guess:
+
+- The Task's delivered artifact paths identify the target project directory; an
+  entry file (`package.json`, `server.js`, `main.py`, ...) or a project-local
+  manifest makes that directory a candidate.
+- A Workspace-root `.metawork-service.json` is a candidate only when the Task
+  delivered no runnable project of its own. An old service file at the root can
+  never override the run target of a newly delivered project.
+- More than one candidate is a real ambiguity: the Runtime refuses with the
+  candidate list instead of choosing, and the Planner asks the user.
+
+`.metawork-service.json` is optional. Contract precedence inside the resolved
+target is: the target project's manifest, then the recorded contract of that
+same project in this Workspace, then a launch discovered from the project
+(`package.json` scripts/main, entry files). Discovery records its evidence. A
+launch contract carries `origin: 'manifest' | 'discovered'` in its revision, so
+adopting a manifest after a discovered start is an explicit `update` decision.
+
+A discovered contract declares no port and no health path: the Runtime allocates
+a loopback port, passes `HOST`/`PORT` only when the contract declares a port, and
+records the process as `running` (process alive). `running` is not `healthy`:
+nothing verified an HTTP endpoint, and task completion treats it as ready only
+because that is the strongest fact the contract declares. A port-owning
+operation (health check, URL) exists only when the contract declares one.
+
+Dispatch facts are equally explicit. A `kernel_dispatch_items` row that is no
+longer active is `terminal`, and `terminal` means only "this dispatch item no
+longer owns scheduler capacity". `terminal_disposition` records how it stopped:
+
+- `executed`: the Runtime reported an execution fact for the Attempt.
+- `not_started`: the Attempt yielded before executing (resource-partition
+  conflict, unavailable Executor). No receipt, Attempt runtime, work unit or
+  measured duration exists.
+
+Success is proven only by an immutable receipt with `terminal_state = completed`.
+Projections never label a dispatch item "已完成" from its status alone, and a
+`ready` Subtask keeps its canonical state even when its last Attempt yielded.
+
+Timing obeys the same rule: end-to-end Turn time, queue time and measured
+execution time are separate facts read from the same entity. Execution duration
+uses the Attempt runtime start and the receipt completion only; when either is
+missing the surface reports no duration (or `尚未执行`), and a real sub-second
+execution is `<1s`, never `0s`. A Planner-only Turn is labelled "已完成规划，未启动
+执行" and never as a completed Task.
 
 `retry_remaining_work` is an internal recovery protocol, not a user command: after the
 service repair budget is spent, the Kernel refuses a repair round, or file delivery

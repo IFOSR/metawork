@@ -12,6 +12,7 @@
 import type { SubtaskStatus, Task } from '../core/types.js';
 import type { KernelDispatchItemStatus } from '../kernel/control-kernel.js';
 import type { PendingResultIdentity } from './safe-result-identity.js';
+import { isServiceReadyState } from './local-service.js';
 import {
   createTaskReason,
   type TaskCleanupSummary,
@@ -98,7 +99,7 @@ export interface TaskRawReplanFact {
 
 export interface TaskRawServiceFact {
   readonly serviceId: string;
-  readonly state: 'starting' | 'healthy' | 'unhealthy' | 'stopped' | 'failed';
+  readonly state: 'starting' | 'running' | 'healthy' | 'unhealthy' | 'stopped' | 'failed';
   readonly healthMessage: string | null;
 }
 
@@ -427,7 +428,7 @@ function resolveRequiredWork(input: {
     // round (2026-10-27 realignment §4.3), so the requirement reads the latest
     // service operation fact instead of one fixed key.
     const operation = latestServiceOperation(input.raw);
-    if (operation?.outcome === 'success' || (service?.state === 'healthy'
+    if (operation?.outcome === 'success' || (isServiceReadyState(service?.state)
       && operation?.outcome !== 'definite_failure' && operation?.outcome !== 'repair_pending')) {
       return { fact: { ...base, state: 'completed', reason: null }, failureReason: null };
     }

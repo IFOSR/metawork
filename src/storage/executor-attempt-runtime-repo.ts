@@ -25,7 +25,7 @@ export interface ExecutorAttemptRuntimeRecord {
   updatedAt: string;
 }
 
-export type TimelineRuntimeRecord = Pick<ExecutorAttemptRuntimeRecord, 'attemptId' | 'updatedAt'> & {
+export type TimelineRuntimeRecord = Pick<ExecutorAttemptRuntimeRecord, 'attemptId' | 'createdAt' | 'updatedAt'> & {
   progress: {
     kind?: unknown;
     text?: unknown;
@@ -224,7 +224,7 @@ export class ExecutorAttemptRuntimeRepo {
     if (taskIds.length > 100) throw new Error('timeline_task_limit');
     const placeholders = taskIds.map(() => '?').join(',');
     const rows = this.db.prepare(`
-      SELECT attempt_id, updated_at, json_object(
+      SELECT attempt_id, created_at, updated_at, json_object(
         'kind', json_extract(progress_json, '$.kind'),
         'text', json_extract(progress_json, '$.text'),
         'occurredAt', json_extract(progress_json, '$.occurredAt'),
@@ -235,9 +235,10 @@ export class ExecutorAttemptRuntimeRepo {
         SELECT attempt_id FROM kernel_dispatch_items WHERE task_id IN (${placeholders})
         UNION SELECT attempt_id FROM executor_attempt_receipts WHERE task_id IN (${placeholders})
       )
-    `).all(...taskIds, ...taskIds) as Array<Pick<RuntimeRow, 'attempt_id' | 'updated_at' | 'progress_json'>>;
+    `).all(...taskIds, ...taskIds) as Array<Pick<RuntimeRow, 'attempt_id' | 'created_at' | 'updated_at' | 'progress_json'>>;
     return rows.map(row => ({
       attemptId: row.attempt_id,
+      createdAt: row.created_at,
       updatedAt: row.updated_at,
       progress: JSON.parse(row.progress_json) as TimelineRuntimeRecord['progress'],
     }));

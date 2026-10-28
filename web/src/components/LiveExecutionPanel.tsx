@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react';
+import { formatExecutionDuration } from '../execution-duration';
 import type { ConversationTurnProjection } from '../api/session-types';
 import type { ExecutionTimeline, InteractionTraceEvent, SubtaskCard, WorkGraphPresentationProjection } from '../api/types';
-import { executionElapsedEndMs } from '../execution-duration';
 import {
   executorHealthBadge,
   type ExecutorActivityState,
@@ -20,7 +20,11 @@ interface ExecutionCard {
   stepLabel: string;
   stepKey: string;
   progress: number | null;
+  /** Scheduler attempt time; never presented as execution duration. */
   startedAt: string | null;
+  /** Real execution window from Attempt runtime/receipt facts. */
+  executionStartedAt: string | null;
+  executionCompletedAt: string | null;
   updatedAt: string | null;
   lastProgressAt: string | null;
   lastActivityAt: string | null;
@@ -106,14 +110,13 @@ export function LiveExecutionPanel({
 }
 
 function CardBody({ card, completed, nowMs }: { card: ExecutionCard; completed: boolean; nowMs: number }) {
-  const elapsedText = formatElapsed(
-    card.startedAt,
-    executionElapsedEndMs(
-      !completed && isActiveActivity(card.activityStatus),
-      card.updatedAt,
-      nowMs,
-    ),
-  );
+  const elapsedText = formatExecutionDuration({
+    executionStartedAt: card.executionStartedAt,
+    executionCompletedAt: card.executionCompletedAt,
+    updatedAt: card.updatedAt,
+    running: !completed && isActiveActivity(card.activityStatus),
+    nowMs,
+  });
   const preparation = preparationStatus(card, nowMs, completed);
   const healthBadge = executorHealthBadge({
     updatedAt: card.lastActivityAt ?? card.lastProgressAt,
@@ -147,7 +150,7 @@ function CardBody({ card, completed, nowMs }: { card: ExecutionCard; completed: 
         </p>
       )}
       <footer>
-        <time>{elapsedText}</time>
+        {elapsedText && <time>{elapsedText}</time>}
         {completed
           ? <span className="execution-card-open-hint">查看执行详情 →</span>
           : card.progress !== null && <progress value={Math.min(1, card.progress)} max={1} />}
@@ -208,6 +211,8 @@ export function collectExecutionCards(
       stepKey: latest?.kind || 'executor_waiting',
       progress: null,
       startedAt: attempt?.startedAt ?? null,
+      executionStartedAt: attempt?.executionStartedAt ?? null,
+      executionCompletedAt: attempt?.executionCompletedAt ?? null,
       updatedAt: attempt?.updatedAt ?? null,
       lastProgressAt: latest?.occurredAt ?? attempt?.startedAt ?? null,
       lastActivityAt: null,
@@ -243,6 +248,8 @@ export function collectExecutionCards(
       stepKey: '',
       progress: null as number | null,
       startedAt: null as string | null,
+      executionStartedAt: null as string | null,
+      executionCompletedAt: null as string | null,
       updatedAt: null as string | null,
       lastProgressAt: null as string | null,
       lastActivityAt: null as string | null,
@@ -303,22 +310,18 @@ function executionCardState(
   subtaskStatus: string,
   attempt: SubtaskCard['attempts'][number] | undefined,
 ): ExecutionCardState {
-  // A terminal Subtask is the durable source of truth, even if its last
-  // attempt still has a stale progress message such as "waiting for progress".
-  if (subtaskStatus === 'done' || attempt?.displayStatus === '已完成' || attempt?.result === 'success') {
-    return 'completed';
-  }
-  if (subtaskStatus === 'failed' || subtaskStatus === 'cancelled'
-    || attempt?.displayStatus === '失败' || attempt?.displayStatus === '已取消' || attempt?.result === 'failed') {
-    return 'failed';
-  }
+  // The Subtask is the canonical scheduling fact and decides the card's main
+  // state. An Attempt only refines detail: a dispatch item that yielded (no
+  // receipt) must not dress a `ready` Subtask up as completed.
+  if (subtaskStatus === 'done') return 'completed';
+  if (subtaskStatus === 'failed' || subtaskStatus === 'cancelled') return 'failed';
   if (subtaskStatus === 'blocked' || subtaskStatus === 'awaiting_decision') return 'blocked';
-  if (attempt?.displayStatus === '执行中' || attempt?.status === 'running' || subtaskStatus === 'running') {
-    return 'running';
+  if (subtaskStatus === 'running') {
+    return attempt?.displayStatus === '已完成' ? 'waiting' : 'running';
   }
-  if (attempt?.displayStatus === '等待启动' || ['ready', 'awaiting_integration'].includes(subtaskStatus)) {
-    return 'waiting';
-  }
+  if (subtaskStatus === 'ready' || subtaskStatus === 'awaiting_integration') return 'waiting';
+  if (attempt?.displayStatus === '执行中' || attempt?.status === 'running') return 'running';
+  if (attempt?.displayStatus === '未执行' || attempt?.displayStatus === '等待启动') return 'waiting';
   return 'unknown';
 }
 
@@ -394,10 +397,3 @@ function looksLikeInternalTaskId(value: string): boolean {
   return /^task_[a-z0-9_-]+$/iu.test(value);
 }
 
-function formatElapsed(start: string | null, nowMs: number): string {
-  if (!start) return '';
-  const parsed = Date.parse(start);
-  if (Number.isNaN(parsed)) return '';
-  const seconds = Math.max(0, Math.floor((nowMs - parsed) / 1_000));
-  return seconds < 60 ? `${seconds}s` : `${Math.floor(seconds / 60)}m ${seconds % 60}s`;
-}

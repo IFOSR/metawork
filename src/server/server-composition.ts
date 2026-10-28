@@ -1054,6 +1054,13 @@ export async function main(cliCommand = parseCliArgs(process.argv.slice(2))) {
         { workspace_id: string | null } | undefined;
       return row?.workspace_id ?? null;
     },
+    // The Task's delivered files are the durable facts that identify which
+    // project a follow-up run targets. They keep an old Workspace-root service
+    // specification from becoming the target of a newly delivered project.
+    listTaskArtifactPaths: async taskId => taskArtifactRepo.publicFiles
+      .list(LOCAL_DEFAULT_ACCOUNT_ID, taskId)
+      .filter(item => item.status === 'published')
+      .map(item => item.relativePath),
     resolvePublishedDirectory: async taskId => {
       const task = taskEngine.getTaskRepo().findById(taskId);
       if (!task || task.accountId !== LOCAL_DEFAULT_ACCOUNT_ID) return null;

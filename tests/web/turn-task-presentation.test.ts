@@ -362,4 +362,48 @@ describe('Turn Task presentation', () => {
       executionTimeline: null,
     });
   });
+
+  it('does not report a yielded Attempt as a completed Subtask', () => {
+    // The Workspace write lease made this Subtask wait: its dispatch item is no
+    // longer active (terminal) but no receipt or runtime exists. The card must
+    // keep the canonical Subtask status and show a waiting state, not "已完成".
+    const cards = collectExecutionCards([], { taskId: 't', title: 'Site', status: 'needs_action', stages: [
+      { phase: 'execution', status: 'blocked', subtasks: [{
+        id: 'start-site', title: '启动网站', status: 'ready', attempts: [{
+          attemptId: 'attempt_yielded',
+          attemptKind: 'primary',
+          attemptOrdinal: 1,
+          attemptLabel: '主执行',
+          displayStatus: '状态未知',
+          result: 'unknown',
+          status: 'terminal',
+          startedAt: '2026-10-28T06:00:00.000Z',
+          updatedAt: '2026-10-28T06:00:00.225Z',
+        }],
+      }] },
+    ] });
+    expect(cards[0].state).toBe('waiting');
+    expect(cards[0].executionStartedAt).toBeNull();
+    const html = renderToStaticMarkup(createElement(LiveExecutionPanel, {
+      turn: {
+        id: 'turn_1', sessionId: 'session_1', status: 'blocked', taskId: 't',
+        traceEvents: [], executionTimeline: {
+          taskId: 't', title: 'Site', status: 'needs_action', statusLabel: '需要处理',
+          stateVersion: 1, reasonCode: 'none', explanation: '', stages: [
+            { phase: 'execution', status: 'blocked', subtasks: [{
+              id: 'start-site', title: '启动网站', status: 'ready', attempts: [{
+                attemptId: 'attempt_yielded', attemptKind: 'primary', attemptOrdinal: 1,
+                attemptLabel: '主执行', displayStatus: '状态未知', result: 'unknown',
+                status: 'terminal', startedAt: '2026-10-28T06:00:00.000Z',
+                updatedAt: '2026-10-28T06:00:00.225Z',
+              }],
+            }] },
+          ],
+        },
+      } as unknown as ConversationTurnProjection,
+    }));
+    expect(html).toContain('等待启动');
+    expect(html).not.toContain('已完成');
+    expect(html).not.toContain('0s');
+  });
 });

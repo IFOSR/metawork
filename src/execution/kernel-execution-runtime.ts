@@ -5,7 +5,7 @@ import { projectPublicDelivery, type PublicDeliveryView } from '../delivery/publ
 import { PUBLISHED_CODE_MISSING_SERVICE_SPECIFICATION } from './managed-local-service.js';
 import type { ManagedLocalServices } from './managed-local-service.js';
 import { LOCAL_SERVICE_SPECIFICATION_FILENAME } from './managed-local-service.js';
-import { localServiceSpecificationRevision, type LocalServiceOperation, type LocalServiceView } from '../task/local-service.js';
+import { isServiceReadyState, localServiceSpecificationRevision, type LocalServiceOperation, type LocalServiceView } from '../task/local-service.js';
 import type { PendingResultIdentity } from '../task/safe-result-identity.js';
 import { ExecutorProbeError } from './work-unit-claim-service.js';
 // Execution application service: Session supplies facade callbacks but owns no runtime policy.
@@ -1118,7 +1118,15 @@ export class KernelExecutionRuntime {
     let specification: import('../task/local-service.js').LocalServiceSpecification | undefined;
     if (operation === 'start' || operation === 'update') {
       try {
-        specification = await services.readSpecification(resourceTaskId, { allowRevisionChange: operation === 'update' });
+        // A follow-up run resolves its own target project: the delivered
+        // project's manifest, its recorded contract, or a launch discovered
+        // from the project itself. A missing `.metawork-service.json` is not a
+        // reason to stop (2026-10-28 transparent execution §P0.3).
+        specification = (await services.resolveServiceSpecification({
+          taskId: resourceTaskId,
+          serviceId,
+          allowRevisionChange: operation === 'update',
+        })).specification;
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
         throw new KernelApplicationRejectionError(message, 'service_not_startable', `taskId=${taskId} ${message}`);
@@ -1145,7 +1153,7 @@ export class KernelExecutionRuntime {
     if (observed.outcome?.type === 'settled') throw new KernelApplicationSettledError(observed.outcome.error, 'service_operation_failed', observed.outcome.error);
     const result = observed.outcome?.view ?? null;
     if (!result) throw new Error('服务操作未完成，请查询当前状态');
-    if (settleTask && result.state === 'healthy'
+    if (settleTask && isServiceReadyState(result.state)
       && this.deps.taskRuntimeService.findTask(taskId)?.status === 'running') {
       await this.recoverDue(taskId, 'explicit service operation released health gate');
     }
@@ -2622,7 +2630,8 @@ export class KernelExecutionRuntime {
     if (action.type === 'wait_for_partition') {
       await this.blockTaskInternal(
         action.taskId,
-        `resource partition is waiting for leases: ${action.conflictingLeaseIds.join(', ')}`,
+        // The user sees this reason: name the wait, not an internal lease id.
+        `等待资源：同一 Workspace 的写入租约正被其他子任务占用（${action.conflictingLeaseIds.length} 个租约），释放后继续执行。`,
         input.finishExecution,
         'kernel_capacity',
       );
@@ -4091,9 +4100,10 @@ export class KernelExecutionRuntime {
       for (let round = 0; round < MAX_SERVICE_REPAIR_ROUNDS; round += 1) {
         const { view, spec, workspaceId } = verification;
         this.deps.callbacks.appendOutput(
-          `服务 ${view.serviceId}：${view.state}；${view.message ?? ''}；${view.url}`,
+          `服务 ${view.serviceId}：${view.state}；${view.message ?? ''}`
+          + (view.url ? `；${view.url}` : ''),
         );
-        if (view.state === 'healthy') {
+        if (isServiceReadyState(view.state)) {
           this.recordServiceStarted(taskId, spec, workspaceId);
           return;
         }
@@ -4143,11 +4153,14 @@ export class KernelExecutionRuntime {
     let spec: import('../task/local-service.js').LocalServiceSpecification;
     let revisionDrifted = false;
     try {
-      spec = await manager.readSpecification(resourceTaskId);
+      spec = (await manager.resolveServiceSpecification({ taskId: resourceTaskId })).specification;
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       if (!message.includes('需要显式的服务更新授权')) throw error;
-      spec = await manager.readSpecification(resourceTaskId, { allowRevisionChange: true });
+      spec = (await manager.resolveServiceSpecification({
+        taskId: resourceTaskId,
+        allowRevisionChange: true,
+      })).specification;
       revisionDrifted = true;
     }
     const workspaceId = await manager.resolveServiceWorkspaceId(resourceTaskId);
@@ -4175,7 +4188,9 @@ export class KernelExecutionRuntime {
       operationKind: 'service',
       outcome: 'success',
       reasonCode: null,
-      message: `服务 ${spec.serviceId} 已通过健康检查。`,
+      message: spec.healthPath === null
+        ? `服务 ${spec.serviceId} 已启动（该规格未声明健康检查）。`
+        : `服务 ${spec.serviceId} 已通过健康检查。`,
       evidenceRefs: [`service:${spec.serviceId}`, `workspace:${workspaceId}`, `revision:${revision}`],
     });
     this.reconcileTaskState(taskId, {
@@ -4445,7 +4460,9 @@ export class KernelExecutionRuntime {
           service: {
             command: input.spec.command,
             args: [...input.spec.args],
-            healthUrl: `http://${input.spec.host === '::1' ? '[::1]' : input.spec.host}:${input.spec.port}${input.spec.healthPath}`,
+            healthUrl: input.spec.port === null
+              ? ''
+              : `http://${input.spec.host === '::1' ? '[::1]' : input.spec.host}:${input.spec.port}${input.spec.healthPath ?? ''}`,
             state: 'failed',
             exitObserved: input.failure.exitObserved,
             healthStatus: input.failure.healthStatus,
@@ -4544,7 +4561,7 @@ export class KernelExecutionRuntime {
     if (!manager) return false;
     const observation = await manager.observe?.(serviceId, workspaceId).catch(() => null) ?? null;
     return observation !== null
-      && ['starting', 'healthy', 'unhealthy'].includes(observation.view.state);
+      && ['starting', 'running', 'healthy', 'unhealthy'].includes(observation.view.state);
   }
 
   /**

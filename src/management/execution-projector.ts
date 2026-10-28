@@ -36,10 +36,15 @@ export interface TimelineAttempt {
   attemptKind: KernelAttemptKind;
   attemptOrdinal: number;
   attemptLabel: string;
-  displayStatus: '等待启动' | '执行中' | '已完成' | '失败' | '已取消' | '状态未知';
+  displayStatus: '等待启动' | '执行中' | '已完成' | '失败' | '已取消' | '未执行' | '状态未知';
   result: string;
   status?: string;
+  /** Scheduler time: when this dispatch item started launching. */
   startedAt?: string;
+  /** Real execution start (Attempt runtime fact), not the scheduling attempt. */
+  executionStartedAt?: string;
+  /** Real execution end (receipt fact). Absent means no measured duration. */
+  executionCompletedAt?: string;
   updatedAt?: string;
   exitCode?: number;
   error?: string;
@@ -291,12 +296,19 @@ export class ExecutionProjector {
               attemptKind,
               attemptOrdinal: attemptIndex + 1,
               attemptLabel: attemptLabel(attemptKind),
-              displayStatus: displayAttemptStatus(dispatch?.status, receipt?.terminalState),
-              result: receipt
-                ? receipt.terminalState === 'completed' ? 'success' : 'failed'
-                : dispatch?.status ?? 'running',
+              displayStatus: displayAttemptStatus(
+                dispatch?.status,
+                receipt?.terminalState,
+                dispatch?.terminalDisposition,
+              ),
+              result: attemptResult(dispatch?.status, receipt?.terminalState, dispatch?.terminalDisposition),
               status: dispatch?.status,
+              // `launchStartedAt` is the scheduler attempt, not executor work.
+              // Keeping the two timestamps separate is what lets a surface show
+              // "未执行/暂无耗时" instead of a scheduler-lifetime 0s.
               startedAt: dispatch?.launchStartedAt ?? dispatch?.createdAt,
+              ...(runtime?.createdAt ? { executionStartedAt: runtime.createdAt } : {}),
+              ...(receipt?.completedAt ? { executionCompletedAt: receipt.completedAt } : {}),
               updatedAt: latestTimestamp(
                 receipt?.completedAt,
                 dispatch?.updatedAt,
@@ -393,16 +405,42 @@ function attemptLabel(kind: KernelAttemptKind): string {
 function displayAttemptStatus(
   dispatchStatus: string | undefined,
   terminalState: string | undefined,
+  terminalDisposition?: string | null,
 ): TimelineAttempt['displayStatus'] {
+  // Only an immutable receipt proves what an Attempt did. A dispatch item that
+  // is no longer active (`terminal`) may still have no receipt, runtime or
+  // work unit: that attempt was never executed.
   if (terminalState === 'completed') return '已完成';
   if (terminalState === 'cancelled_or_stale') return '已取消';
   if (terminalState) return '失败';
   if (dispatchStatus === 'pending_launch' || dispatchStatus === 'launching') return '等待启动';
   if (dispatchStatus === 'running' || dispatchStatus === 'cancelling') return '执行中';
-  if (dispatchStatus === 'terminal') return '已完成';
   if (dispatchStatus === 'cancelled') return '已取消';
   if (dispatchStatus === 'uncertain') return '状态未知';
+  if (dispatchStatus === 'terminal') {
+    return terminalDisposition === 'not_started' ? '未执行' : '状态未知';
+  }
   return dispatchStatus ? '状态未知' : '等待启动';
+}
+
+/**
+ * Attempt result is the receipt outcome. Without a receipt the Runtime knows
+ * only that the item yielded, so `result` must never echo a dispatch status
+ * that a surface could read as success.
+ */
+function attemptResult(
+  dispatchStatus: string | undefined,
+  terminalState: string | undefined,
+  terminalDisposition?: string | null,
+): string {
+  if (terminalState === 'completed') return 'success';
+  if (terminalState) return 'failed';
+  if (dispatchStatus === 'cancelled') return 'cancelled';
+  if (dispatchStatus === 'terminal') {
+    return terminalDisposition === 'not_started' ? 'not_started' : 'unknown';
+  }
+  if (dispatchStatus === 'uncertain') return 'unknown';
+  return dispatchStatus ?? 'running';
 }
 
 function progressHistoryFrom(

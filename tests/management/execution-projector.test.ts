@@ -284,6 +284,23 @@ describe('ExecutionProjector', () => {
     const timeline = makeProjector({
       subtaskRepo: { listByTask: () => subtasks },
       dispatchItemRepo: { listByTask: () => dispatches },
+      // Only an immutable receipt proves the Attempt completed; the bounded
+      // projection reads completion from it, never from the dispatch status.
+      receiptRepo: {
+        listByTask: () => [{
+          attemptId: 'attempt_24',
+          taskId: 'task_1',
+          subtaskId: 'sub_1',
+          attemptKind: 'continuation',
+          agentClassName: 'codex-cli',
+          terminalState: 'completed',
+          completedAt: '2026-08-17T08:24:30.000Z',
+          errorCode: null,
+          errorDetail: null,
+          hasViolations: false,
+          authorizedBinding: { agentClassRef: 'codex-cli' },
+        }],
+      },
       attemptRuntimeRepo: {
         find: () => ({
           progress: {
@@ -392,5 +409,99 @@ describe('ExecutionProjector', () => {
     }).project(makeTask({ status: 'succeeded' }));
 
     expect(timeline.stages[4].status).toBe('done');
+  });
+});
+
+describe('attempt execution-fact contract', () => {
+  it('never calls a dispatch item completed without a receipt', () => {
+    const subtasks = [makeSubtask({ id: 'sub_1', title: '启动网站', status: 'ready' })];
+    const timeline = makeProjector({
+      subtaskRepo: { listByTask: () => subtasks },
+      dispatchItemRepo: {
+        listByTask: () => [{
+          attemptId: 'attempt_yielded',
+          subtaskId: 'sub_1',
+          status: 'terminal',
+          attemptKind: 'primary',
+          authorizedBinding: { agentClassRef: 'pi-agent' },
+          launchStartedAt: '2026-10-28T06:00:00.000Z',
+          updatedAt: '2026-10-28T06:00:00.225Z',
+        }],
+      },
+    }).project(makeTask({ status: 'needs_action' }));
+    const attempt = timeline.stages[2].subtasks?.[0]?.attempts[0];
+    expect(attempt).toMatchObject({ displayStatus: '状态未知', result: 'unknown' });
+    // Only scheduler facts exist; no measured execution duration is claimed.
+    expect(attempt).not.toHaveProperty('executionStartedAt');
+    expect(attempt).not.toHaveProperty('executionCompletedAt');
+  });
+
+  it('projects a not-started disposition as not executed', () => {
+    const subtasks = [makeSubtask({ id: 'sub_1', status: 'ready' })];
+    const timeline = makeProjector({
+      subtaskRepo: { listByTask: () => subtasks },
+      dispatchItemRepo: {
+        listByTask: () => [{
+          attemptId: 'attempt_parked',
+          subtaskId: 'sub_1',
+          status: 'terminal',
+          terminalDisposition: 'not_started' as const,
+          attemptKind: 'primary',
+          authorizedBinding: { agentClassRef: 'pi-agent' },
+          createdAt: '2026-10-28T06:00:00.000Z',
+          updatedAt: '2026-10-28T06:00:00.225Z',
+        }],
+      },
+    }).project(makeTask({ status: 'needs_action' }));
+    const attempt = timeline.stages[2].subtasks?.[0]?.attempts[0];
+    expect(attempt).toMatchObject({ displayStatus: '未执行', result: 'not_started' });
+  });
+
+  it('separates the scheduler attempt from the measured execution window', () => {
+    const subtasks = [makeSubtask({ id: 'sub_1', status: 'done' })];
+    const timeline = makeProjector({
+      subtaskRepo: { listByTask: () => subtasks },
+      dispatchItemRepo: {
+        listByTask: () => [{
+          attemptId: 'attempt_done',
+          subtaskId: 'sub_1',
+          status: 'terminal',
+          attemptKind: 'primary',
+          authorizedBinding: { agentClassRef: 'pi-agent' },
+          launchStartedAt: '2026-10-28T06:00:00.000Z',
+          updatedAt: '2026-10-28T06:00:00.225Z',
+        }],
+      },
+      receiptRepo: {
+        listByTask: () => [{
+          attemptId: 'attempt_done',
+          taskId: 'task_1',
+          subtaskId: 'sub_1',
+          attemptKind: 'primary',
+          agentClassName: 'pi-agent',
+          terminalState: 'completed',
+          completedAt: '2026-10-28T06:05:00.000Z',
+          errorCode: null,
+          errorDetail: null,
+          hasViolations: false,
+          authorizedBinding: { agentClassRef: 'pi-agent' },
+        }],
+      },
+      attemptRuntimeRepo: {
+        find: () => ({
+          createdAt: '2026-10-28T06:00:03.000Z',
+          updatedAt: '2026-10-28T06:05:00.000Z',
+          progress: {},
+        }),
+      },
+    }).project(makeTask({ status: 'succeeded' }));
+    const attempt = timeline.stages[2].subtasks?.[0]?.attempts[0];
+    expect(attempt).toMatchObject({
+      displayStatus: '已完成',
+      result: 'success',
+      startedAt: '2026-10-28T06:00:00.000Z',
+      executionStartedAt: '2026-10-28T06:00:03.000Z',
+      executionCompletedAt: '2026-10-28T06:05:00.000Z',
+    });
   });
 });

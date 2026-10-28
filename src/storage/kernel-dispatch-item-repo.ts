@@ -3,6 +3,7 @@ import type { AuthorizedExecutorBinding } from '../core/authorized-executor-bind
 import type {
   KernelDecision,
   KernelDispatchItemStatus,
+  KernelDispatchTerminalDisposition,
   KernelAttemptPayload,
   KernelAttemptKind,
   KernelRecoveryMode,
@@ -30,6 +31,11 @@ export interface KernelDispatchItemRecord {
   attemptPayload: KernelAttemptPayload;
   resourceGrant: ResourceClaim[];
   status: KernelDispatchItemStatus;
+  /**
+   * How a `terminal` item stopped. `not_started` means the Attempt yielded
+   * before executing, so no receipt, runtime or measured duration exists.
+   */
+  terminalDisposition?: KernelDispatchTerminalDisposition | null;
   workUnitId: string | null;
   backendExecutionId: string | null;
   launchStartedAt: string | null;
@@ -44,7 +50,7 @@ export interface KernelDispatchItemRecord {
 
 export type TimelineDispatchItemRecord = Pick<KernelDispatchItemRecord,
   'attemptId' | 'taskId' | 'subtaskId' | 'attemptKind' | 'status'
-  | 'launchStartedAt' | 'createdAt' | 'updatedAt' | 'errorSummary'
+  | 'terminalDisposition' | 'launchStartedAt' | 'createdAt' | 'updatedAt' | 'errorSummary'
 > & { authorizedBinding: Pick<AuthorizedExecutorBinding,
   'agentClassRef' | 'harnessRef' | 'providerRef' | 'modelRef' | 'configurationRevision'
   | 'executorDisplayName' | 'harnessDisplayName' | 'providerDisplayName' | 'modelDisplayName'
@@ -72,6 +78,7 @@ interface DispatchItemRow {
   sandbox_container_id: string | null;
   launch_started_at: string | null;
   terminal_at: string | null;
+  terminal_disposition: KernelDispatchTerminalDisposition | null;
   cancellation_decision_id: string | null;
   cancel_requested_at: string | null;
   cancelled_at: string | null;
@@ -274,7 +281,7 @@ export class KernelDispatchItemRepo {
     if (!taskIds.length) return [];
     if (taskIds.length > 100) throw new Error('timeline_task_limit');
     const rows = this.db.prepare(`
-      SELECT attempt_id, task_id, subtask_id, attempt_kind, status,
+      SELECT attempt_id, task_id, subtask_id, attempt_kind, status, terminal_disposition,
         launch_started_at, created_at, updated_at, error_summary, agent_class_name,
         json_extract(authorized_binding_json, '$.agentClassRef') AS agent_class_ref,
         json_extract(authorized_binding_json, '$.harnessRef') AS harness_ref,
@@ -286,7 +293,7 @@ export class KernelDispatchItemRepo {
       ORDER BY batch_order ASC, created_at ASC, attempt_id ASC
     `).all(...taskIds) as Array<Pick<DispatchItemRow,
       'attempt_id' | 'task_id' | 'subtask_id' | 'attempt_kind' | 'status'
-      | 'launch_started_at' | 'created_at' | 'updated_at' | 'error_summary' | 'agent_class_name'
+      | 'terminal_disposition' | 'launch_started_at' | 'created_at' | 'updated_at' | 'error_summary' | 'agent_class_name'
     > & {
       agent_class_ref: string | null;
       harness_ref: string | null;
@@ -304,6 +311,7 @@ export class KernelDispatchItemRepo {
         subtaskId: row.subtask_id,
         attemptKind: row.attempt_kind,
         status: row.status,
+        terminalDisposition: row.terminal_disposition ?? null,
         launchStartedAt: row.launch_started_at,
         createdAt: row.created_at,
         updatedAt: row.updated_at,
@@ -421,7 +429,8 @@ export class KernelDispatchItemRepo {
       }
       this.db.prepare(`
         UPDATE kernel_dispatch_items
-        SET status = 'terminal', terminal_at = ?, error_summary = ?, updated_at = ?
+        SET status = 'terminal', terminal_at = ?, terminal_disposition = 'executed',
+            error_summary = ?, updated_at = ?
         WHERE attempt_id = ? AND status IN ('launching', 'running', 'uncertain')
       `).run(now, errorSummary, now, attemptId);
     });
@@ -434,6 +443,32 @@ export class KernelDispatchItemRepo {
       SET status = 'uncertain', error_summary = ?, updated_at = ?
       WHERE attempt_id = ? AND status IN ('pending_launch', 'launching', 'running')
     `).run(errorSummary, now, attemptId);
+  }
+
+  /**
+   * The item stopped being active without an Executor execution: a resource
+   * partition yield, an unavailable Executor or another capacity observation.
+   *
+   * The row stays `terminal` — it no longer owns scheduler capacity — but the
+   * disposition records that nothing executed. Success is still proven only by
+   * a receipt, so no surface may read this item as a completed Attempt
+   * (2026-10-28 transparent execution §P2.1 execution-fact contract).
+   */
+  markNotStarted(attemptId: string, reason: string, now: string): void {
+    const finish = this.db.transaction(() => {
+      const current = this.find(attemptId);
+      if (current?.status === 'cancelling') {
+        this.markCancelled(attemptId, now, reason);
+        return;
+      }
+      this.db.prepare(`
+        UPDATE kernel_dispatch_items
+        SET status = 'terminal', terminal_at = ?, terminal_disposition = 'not_started',
+            error_summary = ?, updated_at = ?
+        WHERE attempt_id = ? AND status IN ('launching', 'running', 'uncertain')
+      `).run(now, reason, now, attemptId);
+    });
+    finish.immediate();
   }
 
   requestCancellation(input: {
@@ -616,6 +651,7 @@ function rowToDispatchItem(row: DispatchItemRow): KernelDispatchItemRecord {
     backendExecutionId: row.sandbox_container_id,
     launchStartedAt: row.launch_started_at,
     terminalAt: row.terminal_at,
+    terminalDisposition: row.terminal_disposition ?? null,
     cancellationDecisionId: row.cancellation_decision_id,
     cancelRequestedAt: row.cancel_requested_at,
     cancelledAt: row.cancelled_at,

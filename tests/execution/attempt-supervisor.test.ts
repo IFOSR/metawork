@@ -114,6 +114,14 @@ class MemoryDispatchItems {
     record.errorSummary = errorSummary;
     record.updatedAt = now;
   }
+
+  markNotStarted(attemptId: string, reason: string, now: string): void {
+    const record = this.records.get(attemptId)!;
+    record.status = 'terminal';
+    record.terminalDisposition = 'not_started';
+    record.errorSummary = reason;
+    record.updatedAt = now;
+  }
 }
 
 function batchDecision(): KernelDecision & {
@@ -166,7 +174,51 @@ function outcomeEvent(item: KernelDispatchItemRecord): KernelEvent {
   };
 }
 
+function yieldEvent(item: KernelDispatchItemRecord): KernelEvent {
+  return {
+    schemaVersion: 5,
+    configurationRevision: item.configurationRevision,
+    type: 'partition_conflict_observed',
+    id: `event-yield-${item.attemptId}`,
+    correlationId: 'test',
+    causationId: item.decisionId,
+    occurredAt: new Date().toISOString(),
+    sessionId: 'session',
+    taskId: item.taskId,
+    subtaskId: item.subtaskId,
+    attemptId: item.attemptId,
+    claims: [],
+    conflictingLeaseIds: ['lease-1'],
+  };
+}
+
 describe('AttemptSupervisor', () => {
+  it('records a yielded Attempt as not started instead of as an execution', async () => {
+    // 2026-10-28 transparent execution §P2.1: `wait_for_partition` is a
+    // scheduling yield, not an execution result. The dispatch item must stop
+    // being active without pretending the Attempt completed.
+    const repository = new MemoryDispatchItems();
+    const supervisor = new AttemptSupervisor(repository, 1, 1);
+    const decision = {
+      ...batchDecision(),
+      action: { ...batchDecision().action, items: [batchDecision().action.items[0]!] },
+    };
+    const submitted: KernelEvent[] = [];
+    supervisor.enqueue(decision, bindingContext(decision, 'generation-1'), {
+      run: async item => yieldEvent(item),
+      submit: async event => { submitted.push(event); },
+      onLaunchError: async item => outcomeEvent(item),
+    }, new Date().toISOString());
+    await supervisor.drain('task-1');
+    expect(repository.records.get('attempt-a')?.status).toBe('terminal');
+    expect(repository.records.get('attempt-a')?.terminalDisposition).toBe('not_started');
+    expect(repository.records.get('attempt-a')?.errorSummary)
+      .toContain('partition_conflict_observed');
+    expect(submitted).toHaveLength(1);
+    // A parked item is no longer pending, so a drain cannot loop on it.
+    expect(repository.listPending('task-1')).toEqual([]);
+  });
+
   it('finishes an active attempt but defers queued launch after authorization closes, including recovery', async () => {
     const repository = new MemoryDispatchItems();
     let allowed = true;

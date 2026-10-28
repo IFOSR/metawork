@@ -1145,3 +1145,35 @@ AnyFusion 衍生组件及其他第三方开源组件继续遵守各自的许可�
 Web/TUI 要求 Task View v2 并比较 Task 版本。schema 51→52 按证据分类、写入不可变
 迁移审计，并隔离旧版尚未应用的非取消操作。验证范围见
 [修复记录](../plans/2026-10-22-task-state-review-fixes.md)，源码验证不代表安装包验收。
+
+### 后续执行、可选服务规格与执行事实（2026-10-28）
+
+后续操作把“来源”和“本次执行”分开：`sourceTaskId` 只是被引用的历史 Task，
+操作本身拥有自己的 decision/attempt 身份。已完成 Task 的结论不再阻断启动、重启、
+预览、验证或继续修改它交付的 Workspace；Kernel 只保留机械检查（Workspace 归属、
+登记身份、revision、代码是否已发布），不再因为来源 Task 已结束而拒绝，也不再判断
+一次性运行与长期服务。
+
+`ManagedLocalServices.resolveServiceSpecification()` 从持久事实确定运行目标：
+
+1. Task 已交付的产物路径确定目标项目目录；
+2. 项目内的 `.metawork-service.json` 是启动契约；
+3. 否则复用同一项目已记录的服务契约；
+4. 否则由 `package.json` scripts/main 或入口文件发现启动方式，并记录证据。
+
+Workspace 根目录的服务文件只有在 Task 没有交付可运行项目时才是候选，因此旧项目
+不会接管新项目的运行目标。多个候选是真实歧义：Runtime 返回候选列表，不自行选择。
+契约 revision 包含 `origin: manifest | discovered`，发现之后再采纳显式规格是一次
+真实的 `update` 授权。
+
+发现的启动契约不声明端口与健康检查：Runtime 分配回环端口，只在契约声明端口时传入
+`HOST`/`PORT`，并把进程记录为 `running`（进程存活）。`running` 不等于 `healthy`，
+公开视图不伪造访问地址。
+
+调度事实同样显式：`kernel_dispatch_items.terminal` 只表示该调度项不再占用调度容量，
+schema 61 新增 `terminal_disposition`（`executed` / `not_started`）。资源分区或容量
+让位通过 `AttemptSupervisor → markNotStarted()` 记为 `not_started`，没有 receipt、
+Attempt runtime、Work Unit 或耗时。`ExecutionProjector` 的 Attempt 状态与结果由
+receipt 与 disposition 推导，并区分调度尝试窗口与实际执行窗口；前端使用 Subtask 的
+规范状态作为卡片主状态，缺失时间不显示耗时（或显示“尚未执行”），真实不足一秒显示
+`<1s`，只有 Planner 的 Turn 显示“已完成规划，未启动执行”。

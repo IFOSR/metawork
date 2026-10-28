@@ -5,6 +5,8 @@ import { mkdir, open, realpath, lstat, readFile, rm, writeFile } from 'node:fs/p
 import { join, resolve, relative, isAbsolute, sep } from 'node:path';
 
 import { localServiceSpecificationRevision } from '../task/local-service.js';
+import { discoverLaunchSpecification } from './local-service-discovery.js';
+import { resolveRunTargetCandidates } from './run-target.js';
 import type { LocalServiceSpecification, LocalServiceRecord, LocalServiceStore, LocalServiceView, LocalServiceOperation, LocalServiceEffect } from '../task/local-service.js';
 import { publicText } from '../utils/public-text.js';
 import { createServer } from 'node:net';
@@ -29,23 +31,65 @@ child.on('exit', code => {
 process.on('SIGTERM', () => child.kill('SIGTERM'));
 process.on('SIGINT', () => child.kill('SIGINT'));`;
 
+/**
+ * Allocate a loopback port for a discovered contract. The process receives it as
+ * `PORT`, so the Runtime can report its address without guessing the project's
+ * default. A discovered contract has no health check, so an app that ignores
+ * `PORT` is still reported as `running` — never as healthy.
+ */
+export function allocateLoopbackPort(host: '127.0.0.1' | '::1'): Promise<number | null> {
+  return new Promise(resolvePort => {
+    const probe = createServer();
+    probe.once('error', () => resolvePort(null));
+    probe.listen(0, host, () => {
+      const address = probe.address();
+      const port = address && typeof address === 'object' ? address.port : null;
+      probe.close(() => resolvePort(port));
+    });
+  });
+}
+
+/** Normalize a Workspace-relative project directory; rejects traversal. */
+export function normalizeTargetPath(value: string): string {
+  const unified = value.replaceAll('\\', '/').replace(/^\.\//u, '');
+  const segments = unified.split('/').filter(segment => segment !== '' && segment !== '.');
+  if (unified.startsWith('/') || /^[a-zA-Z]:/u.test(unified) || segments.includes('..')) {
+    throw new Error('目标项目路径必须是 Workspace 内的相对目录');
+  }
+  return segments.join('/');
+}
+
 export function validateLocalServiceSpecification(value: unknown): LocalServiceSpecification {
   if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('服务规格无效');
   const s = value as LocalServiceSpecification;
+  const portValid = s.port === null || s.port === undefined
+    || (Number.isInteger(s.port) && s.port >= 1 && s.port <= 65535);
+  const healthPathValid = s.healthPath === null || s.healthPath === undefined
+    || (typeof s.healthPath === 'string' && s.healthPath.startsWith('/') && !s.healthPath.startsWith('//'));
+  const origin = s.origin ?? 'manifest';
+  // An explicit manifest must declare its contract. Only a discovered launch may
+  // omit port/health, because the project itself is the evidence. A manifest
+  // may still declare them as explicit `null` ("no port/health check").
+  const declaredManifestContract = origin !== 'manifest'
+    || (s.port !== undefined && s.healthPath !== undefined);
   if (typeof s.serviceId !== 'string' || !/^[a-zA-Z0-9_-]{1,100}$/u.test(s.serviceId) || typeof s.taskId !== 'string' || !s.taskId
     || typeof s.command !== 'string' || !s.command || s.command.includes('\0')
     || !Array.isArray(s.args) || s.args.length > 100 || JSON.stringify(s.args).length > 32000 || s.args.some(arg => typeof arg !== 'string' || arg.includes('\0'))
-    || !['127.0.0.1', '::1'].includes(s.host) || !Number.isInteger(s.port) || s.port < 1 || s.port > 65535
-    || typeof s.healthPath !== 'string' || !s.healthPath.startsWith('/') || s.healthPath.startsWith('//')
+    || !['127.0.0.1', '::1'].includes(s.host) || !portValid || !healthPathValid
     || !Number.isInteger(s.startupTimeoutMs) || s.startupTimeoutMs < 100 || s.startupTimeoutMs > 60_000
     || s.restartPolicy !== 'explicit' || !s.environmentReferences || typeof s.environmentReferences !== 'object' || Array.isArray(s.environmentReferences)
+    || !['manifest', 'discovered'].includes(origin)
+    || !declaredManifestContract
     || Object.entries(s.environmentReferences).some(([key, ref]) => !/^[A-Z_][A-Z0-9_]*$/u.test(key)
       || ['HOST', 'PORT'].includes(key) || typeof ref !== 'string' || !ref)
     || (s.directory !== undefined && (typeof s.directory !== 'string' || isAbsolute(s.directory)
       || s.directory.split(/[\\/]/u).includes('..')))) throw new Error('服务规格无效：请检查命令、环境引用、监听地址和健康检查');
   return { serviceId: s.serviceId, taskId: s.taskId, command: s.command, args: [...s.args],
-    directory: s.directory, environmentReferences: { ...s.environmentReferences }, host: s.host, port: s.port,
-    healthPath: s.healthPath, startupTimeoutMs: s.startupTimeoutMs, restartPolicy: 'explicit' };
+    ...(s.directory === undefined ? {} : { directory: s.directory }),
+    environmentReferences: { ...s.environmentReferences }, host: s.host,
+    port: s.port === undefined ? null : s.port,
+    healthPath: s.healthPath === undefined ? null : s.healthPath,
+    startupTimeoutMs: s.startupTimeoutMs, restartPolicy: 'explicit', origin };
 }
 
 /** Runtime owns processes; Storage owns durable facts; Kernel authorizes calls. */
@@ -77,6 +121,13 @@ export class ManagedLocalServices {
     resolveWorkspaceId?(taskId: string): Promise<string | null> | string | null;
     isPublishedServiceSpecification?(taskId: string, root: string): Promise<boolean>;
     resolveEnvironment(reference: string): Promise<string | null>;
+    /**
+     * Workspace-relative paths this Task delivered. They are the durable facts
+     * that identify the target project of a follow-up run.
+     */
+    listTaskArtifactPaths?(taskId: string): Promise<string[]>;
+    /** Allocate the loopback port a discovered contract hands to the process. */
+    selectFreePort?(host: '127.0.0.1' | '::1'): Promise<number | null>;
   }) {}
 
   find(serviceId: string): LocalServiceRecord | null { return this.deps.store.find(serviceId); }
@@ -128,9 +179,153 @@ export class ManagedLocalServices {
     taskId: string,
     options: { allowRevisionChange?: boolean } = {},
   ): Promise<LocalServiceSpecification> {
+    const root = await this.resolveReadableRoot(taskId);
+    return this.readManifestAt(taskId, root, join(root, LOCAL_SERVICE_SPECIFICATION_FILENAME), options);
+  }
+
+  /**
+   * Resolve the launch contract for a follow-up run.
+   *
+   * Priority (2026-10-28 transparent execution §optional service specification):
+   *  1. the target project's own manifest, when one exists;
+   *  2. the recorded contract of the same target project in this Workspace;
+   *  3. a launch discovered from the project itself (package scripts, entry).
+   *
+   * A Workspace-root manifest is only used when the Task delivered no project
+   * artifact of its own. That is what keeps an old service file from becoming
+   * the target of a newly delivered project.
+   */
+  async resolveServiceSpecification(input: {
+    taskId: string;
+    serviceId?: string;
+    targetPath?: string;
+    allowRevisionChange?: boolean;
+  }): Promise<{
+    specification: LocalServiceSpecification;
+    source: 'manifest' | 'registered' | 'discovered';
+    targetPath: string;
+    evidence: string[];
+  }> {
+    const root = await this.resolveReadableRoot(input.taskId);
+    const canonicalRoot = await realpath(root);
+    const evidence: string[] = [];
+    const artifactPaths = await this.deps.listTaskArtifactPaths?.(input.taskId) ?? [];
+    const observedManifests: string[] = [];
+    const rootManifest = join(canonicalRoot, LOCAL_SERVICE_SPECIFICATION_FILENAME);
+    const rootManifestInfo = await lstat(rootManifest).catch(() => null);
+    if (rootManifestInfo?.isFile()) observedManifests.push(LOCAL_SERVICE_SPECIFICATION_FILENAME);
+    const targetPath = input.targetPath !== undefined
+      ? normalizeTargetPath(input.targetPath)
+      : this.selectRunTarget(artifactPaths, observedManifests, evidence);
+    if (targetPath !== '') {
+      const candidateManifest = join(canonicalRoot, targetPath, LOCAL_SERVICE_SPECIFICATION_FILENAME);
+      const info = await lstat(candidateManifest).catch(() => null);
+      if (info?.isFile()) observedManifests.push(join(targetPath, LOCAL_SERVICE_SPECIFICATION_FILENAME));
+    }
+    const manifestPath = join(canonicalRoot, targetPath, LOCAL_SERVICE_SPECIFICATION_FILENAME);
+    if ((await lstat(manifestPath).catch(() => null))?.isFile()) {
+      try {
+        const specification = await this.readManifestAt(input.taskId, canonicalRoot, manifestPath, {
+          allowRevisionChange: input.allowRevisionChange,
+        });
+        return { specification, source: 'manifest', targetPath, evidence };
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        // A malformed or stale manifest is diagnosis, not a dead end: report it
+        // and keep resolving the target project from its recorded contract or
+        // its own files. Ownership and revision refusals stay refusals.
+        if (!message.startsWith('服务规格文件无效') && !message.startsWith('服务规格无效')) throw error;
+        evidence.push(`目标项目的服务规格不可用，已改为检查项目本身：${message}`);
+      }
+    }
+    if (targetPath !== '' && rootManifestInfo?.isFile()) {
+      // The root file belongs to whatever was delivered there. Reading it here
+      // would hand a new project the old project's command and port.
+      evidence.push('已忽略 Workspace 根目录的服务规格：它不是当前目标项目的规格');
+    }
+    // A contract recorded for this exact project is the authoritative launch
+    // description: its command, port and directory are the ones the process was
+    // actually started with, so a stop/restart/健康检查 round keeps the same
+    // revision instead of minting a new one.
+    const workspaceId = await this.resolveServiceWorkspaceId(input.taskId);
+    const registered = this.deps.store.list().filter(record => (
+      record.accountId === this.deps.accountId
+      && (record.workspaceId ?? '') === (workspaceId || '')
+      && record.specification.origin === 'discovered'
+      && (record.specification.directory ?? '') === targetPath
+      && (!input.serviceId || record.specification.serviceId === input.serviceId)
+    ))[0];
+    if (registered) {
+      evidence.push(`复用已记录的目标项目服务契约：${registered.specification.serviceId}`);
+      return {
+        specification: registered.specification,
+        source: 'registered',
+        targetPath,
+        evidence,
+      };
+    }
+    const discovered = await discoverLaunchSpecification({
+      root: canonicalRoot,
+      targetPath,
+      serviceIdHint: input.serviceId,
+    });
+    evidence.push(...discovered.diagnostics);
+    if (!discovered.launch) {
+      throw new Error(
+        `未找到目标项目的服务规格，也无法从项目确定启动方式（${targetPath || 'Workspace 根目录'}）`
+        + (discovered.diagnostics.length > 0 ? `：${discovered.diagnostics.join('；')}` : ''),
+      );
+    }
+    const port = await (this.deps.selectFreePort?.(this.discoveredHost()) ?? allocateLoopbackPort(this.discoveredHost()));
+    const specification = validateLocalServiceSpecification({
+      serviceId: discovered.launch.serviceId,
+      taskId: input.taskId,
+      command: discovered.launch.command,
+      args: discovered.launch.args,
+      ...(discovered.launch.directory ? { directory: discovered.launch.directory } : {}),
+      environmentReferences: {},
+      host: this.discoveredHost(),
+      port,
+      healthPath: null,
+      startupTimeoutMs: 10_000,
+      restartPolicy: 'explicit',
+      origin: 'discovered',
+    });
+    evidence.push(`已从项目发现启动方式：${discovered.launch.evidence}`);
+    return { specification, source: 'discovered', targetPath, evidence };
+  }
+
+  private discoveredHost(): '127.0.0.1' | '::1' {
+    return '127.0.0.1';
+  }
+
+  private async resolveReadableRoot(taskId: string): Promise<string> {
     const root = await this.deps.resolvePublishedDirectory(taskId);
     if (!root) throw new Error('代码尚未发布到用户任务目录');
-    const path = join(root, LOCAL_SERVICE_SPECIFICATION_FILENAME);
+    return root;
+  }
+
+  private selectRunTarget(
+    artifactPaths: readonly string[],
+    observedManifests: readonly string[],
+    evidence: string[],
+  ): string {
+    const candidates = resolveRunTargetCandidates({ artifactPaths, manifestPaths: observedManifests });
+    if (candidates.length === 0) return '';
+    if (candidates.length > 1) {
+      const listed = candidates.map(candidate => candidate.targetPath || 'Workspace 根目录');
+      evidence.push(`运行目标不唯一：${listed.join('、')}`);
+      throw new Error(`运行目标不唯一，需要明确指定项目：${listed.join('、')}`);
+    }
+    return candidates[0]!.targetPath;
+  }
+
+  private async readManifestAt(
+    taskId: string,
+    root: string,
+    path: string,
+    options: { allowRevisionChange?: boolean } = {},
+  ): Promise<LocalServiceSpecification> {
     let info;
     try {
       info = await lstat(path);
@@ -151,7 +346,7 @@ export class ManagedLocalServices {
       throw new Error('服务规格文件无效');
     }
     const bound = manifest && typeof manifest === 'object' && !Array.isArray(manifest)
-      ? { taskId, ...manifest } : manifest;
+      ? { taskId, ...manifest, origin: 'manifest' as const } : manifest;
     const spec = validateLocalServiceSpecification(bound);
     if (spec.taskId !== taskId) {
       // An in-place Workspace keeps the manifest a previous Task wrote. That
@@ -295,11 +490,15 @@ export class ManagedLocalServices {
   }
 
   private async startNow(spec: LocalServiceSpecification): Promise<LocalServiceView> {
-      // Even direct Runtime calls must prove that the task directory contains
-      // a valid service manifest. The authorized operation still supplies the
-      // exact specification it is allowed to execute (and Kernel validates
-      // its task/service identity before reaching this seam).
-      await this.readSpecification(spec.taskId);
+      // A manifest-sourced contract must still match the manifest in the
+      // published directory: the authorized operation supplies the exact
+      // specification it may execute, and a rewritten file is not a new
+      // authorization. A discovered contract has no manifest to re-read; its
+      // evidence was the project itself, which `resolveServiceSpecification`
+      // already resolved under Workspace containment.
+      if ((spec.origin ?? 'manifest') === 'manifest') {
+        await this.readSpecification(spec.taskId);
+      }
       const requestedRevision = localServiceSpecificationRevision(spec);
       // The launch is authorized for exactly this revision. `readSpecification`
       // already rejects a manifest that drifted from the authorized revision, so
@@ -329,11 +528,14 @@ export class ManagedLocalServices {
         }
         return observed;
       }
-      await new Promise<void>((accept, reject) => {
-        const probe = createServer();
-        probe.once('error', reject);
-        probe.listen(spec.port, spec.host, () => probe.close(error => error ? reject(error) : accept()));
-      });
+      if (spec.port !== null) {
+        const port = spec.port;
+        await new Promise<void>((accept, reject) => {
+          const probe = createServer();
+          probe.once('error', reject);
+          probe.listen(port, spec.host, () => probe.close(error => error ? reject(error) : accept()));
+        });
+      }
       const root = await this.deps.resolvePublishedDirectory(spec.taskId);
       if (!root) throw new Error('代码尚未发布到用户任务目录，不能启动服务');
       const canonicalRoot = await realpath(root);
@@ -345,8 +547,13 @@ export class ManagedLocalServices {
         parent = join(parent, segment);
         if ((await lstat(parent)).isSymbolicLink()) throw new Error('服务目录不能包含符号链接');
       }
-      const env: NodeJS.ProcessEnv = { PATH: process.env.PATH, HOME: process.env.HOME, LANG: process.env.LANG,
-        HOST: spec.host, PORT: String(spec.port) };
+      // Only a declared port becomes an environment fact. A contract with no
+      // port must not receive a fabricated PORT the process would trust.
+      const env: NodeJS.ProcessEnv = { PATH: process.env.PATH, HOME: process.env.HOME, LANG: process.env.LANG };
+      if (spec.port !== null) {
+        env.HOST = spec.host;
+        env.PORT = String(spec.port);
+      }
       for (const [key, ref] of Object.entries(spec.environmentReferences)) {
         const value = await this.deps.resolveEnvironment(ref);
         if (value === null) throw new Error(`环境引用不可用：${key}`);
@@ -382,6 +589,19 @@ export class ManagedLocalServices {
         });
         return this.view(record);
       } finally { await log.close(); }
+      if (spec.healthPath === null) {
+        // No health check was declared: the only available fact is whether the
+        // process stayed alive through the bounded startup window. That is
+        // `running`, never a fabricated `healthy`.
+        const deadline = Date.now() + Math.min(spec.startupTimeoutMs, 2_000);
+        do {
+          const view = await this.check(record);
+          if (view.state === 'failed') return view;
+          if (Date.now() + 250 >= deadline) return view;
+          await new Promise(accept => setTimeout(accept, 250));
+        } while (Date.now() < deadline);
+        return this.check(record);
+      }
       const deadline = Date.now() + spec.startupTimeoutMs;
       do {
         const view = await this.check(record);
@@ -483,6 +703,9 @@ export class ManagedLocalServices {
       // The public view never carries process identity; `observe()` reports it
       // to the Runtime only (see `LocalServiceObservation`).
       record.healthMessage = '服务进程已退出，需显式重启';
+    } else if (record.specification.healthPath === null || record.specification.port === null) {
+      record.state = 'running';
+      record.healthMessage = '服务进程正在运行（该规格未声明健康检查）';
     } else {
       try {
         const response = await fetch(`${this.url(record)}${record.specification.healthPath}`, { signal: AbortSignal.timeout(1000), redirect: 'error' });
@@ -583,11 +806,16 @@ export class ManagedLocalServices {
   }
   private url(record: LocalServiceRecord): string {
     const spec = record.specification;
+    if (spec.port === null) return '';
     return `http://${spec.host === '::1' ? '[::1]' : spec.host}:${spec.port}`;
   }
   private view(record: LocalServiceRecord): LocalServiceView {
     return { serviceId: record.specification.serviceId, taskId: record.specification.taskId,
-      state: record.state, url: this.url(record), message: record.healthMessage };
+      state: record.state, url: this.url(record), message: record.healthMessage,
+      target: {
+        targetPath: record.specification.directory ?? '',
+        source: record.specification.origin ?? 'manifest',
+      } };
   }
   private async serialize<T>(id: string, run: () => Promise<T>): Promise<T> {
     if (!/^[a-zA-Z0-9_-]{1,100}$/u.test(id)) throw new Error('服务标识无效');

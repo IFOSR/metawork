@@ -14,6 +14,7 @@ type AttemptSupervisorRepository = Pick<
   | 'claimPending'
   | 'markRunning'
   | 'markTerminal'
+  | 'markNotStarted'
   | 'markUncertain'
 >;
 
@@ -160,7 +161,20 @@ export class AttemptSupervisor {
     }
     try {
       const event = await context.run(item);
-      this.repository.markTerminal(item.attemptId, null, new Date().toISOString());
+      // A dispatch item that stopped being active is not proof of success. An
+      // Attempt only executed when its Runtime reported an execution fact; a
+      // partition/capacity yield records `not_started` with no receipt, no
+      // runtime and no measured duration, so surfaces cannot label it as
+      // completed (2026-10-28 transparent execution §P2.1).
+      if (isNonExecutionYield(event)) {
+        this.repository.markNotStarted(
+          item.attemptId,
+          `attempt yielded without execution: ${event.type}`,
+          new Date().toISOString(),
+        );
+      } else {
+        this.repository.markTerminal(item.attemptId, null, new Date().toISOString());
+      }
       await context.submit(event);
     } catch (error) {
       const summary = error instanceof Error ? error.message : String(error);
@@ -174,4 +188,14 @@ export class AttemptSupervisor {
       await context.submit(event);
     }
   }
+}
+
+/**
+ * Events that mean "this Attempt did not execute": the Runtime yielded before
+ * any Executor turn, receipt, progress or sandbox fact existed. They are Kernel
+ * scheduling facts, never execution outcomes.
+ */
+function isNonExecutionYield(event: KernelEvent): boolean {
+  return event.type === 'partition_conflict_observed'
+    || event.type === 'capacity_signal';
 }

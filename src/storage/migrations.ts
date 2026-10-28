@@ -3,7 +3,7 @@ import type Database from 'better-sqlite3';
 import { BILLING_SCHEMA_VERSION, createBillingSchema } from './billing-schema.js';
 import { installObservationSchema } from './observation-schema.js';
 
-export const CURRENT_SCHEMA_VERSION = 60;
+export const CURRENT_SCHEMA_VERSION = 61;
 
 /**
  * Local memory index (design §4.2).
@@ -1919,6 +1919,13 @@ export function runMigrations(
     })();
     version = 60;
   }
+  if (version === 60) {
+    db.transaction(() => {
+      applyDispatchDispositionDdl(db);
+      bumpSchemaVersion(db, 60, 61, '60 to 61');
+    })();
+    version = 61;
+  }
   // Current-schema databases may have been created before a new projection
   // invalidation trigger was introduced. Reinstalling the idempotent trigger
   // set on every open upgrades those databases without requiring a rebuild.
@@ -2840,7 +2847,7 @@ function runBaseMigrations(
     const versions = db.prepare(
       'SELECT version FROM schema_version ORDER BY version',
     ).all() as Array<{ version: number }>;
-    if (versions.length === 1 && [42, 43, 44, 45, 46, 47, 48, 49, 50, 51, 52, 53, 54, 55, 56, 57, 58, 59, CURRENT_SCHEMA_VERSION].includes(versions[0]!.version)) {
+    if (versions.length === 1 && [42, 43, 44, 45, 46, 47, 48, 49, 50, 51, 52, 53, 54, 55, 56, 57, 58, 59, 60, CURRENT_SCHEMA_VERSION].includes(versions[0]!.version)) {
       // A short-lived release stamped some pre-six-state databases as the
       // current version before rebuilding `tasks`. Treat that shape as the
       // genuine 51 baseline and run the authoritative six-state migration;
@@ -3013,6 +3020,7 @@ function runBaseMigrations(
     // Fresh installs get the same columns the upgrade chain adds, without
     // rewiring the historical base schema.
     applySchema55Ddl(db);
+    applyDispatchDispositionDdl(db);
     db.exec(MANAGED_SERVICES_SQL);
     db.exec(MEMORY_BINDINGS_SQL);
     db.exec(MEMORY_STATE_SQL);
@@ -3025,6 +3033,20 @@ function runBaseMigrations(
     db.prepare('INSERT INTO schema_version (version) VALUES (?)')
       .run(CURRENT_SCHEMA_VERSION);
   })();
+}
+
+/**
+ * Additive dispatch disposition (schema 61).
+ *
+ * `terminal` describes "this dispatch item is no longer active", so it cannot
+ * imply success. The separate column records whether the Attempt actually
+ * executed. ADD COLUMN keeps the historical CREATE statement (and any recorded
+ * schema evidence) unchanged: no table is rebuilt and no fact is rewritten.
+ */
+function applyDispatchDispositionDdl(db: Database.Database): void {
+  if (!tableExists(db, 'kernel_dispatch_items')) return;
+  if (columnsOf(db, 'kernel_dispatch_items').includes('terminal_disposition')) return;
+  db.exec('ALTER TABLE kernel_dispatch_items ADD COLUMN terminal_disposition TEXT');
 }
 
 function ensureTaskStateProjectionOutbox(db: Database.Database): void {

@@ -48,10 +48,14 @@ export interface SubtaskCard {
     attemptKind: 'primary' | 'continuation' | 'fallback' | 'contract_correction' | 'merge_repair';
     attemptOrdinal: number;
     attemptLabel: string;
-    displayStatus: '等待启动' | '执行中' | '已完成' | '失败' | '已取消' | '状态未知';
+    displayStatus: '等待启动' | '执行中' | '已完成' | '失败' | '已取消' | '未执行' | '状态未知';
     result: string;
     status?: string;
     startedAt?: string;
+    /** Real execution start; scheduler attempt time lives in `startedAt`. */
+    executionStartedAt?: string;
+    /** Real execution end; absent means no measured duration exists. */
+    executionCompletedAt?: string;
     updatedAt?: string;
     exitCode?: number;
     error?: string;

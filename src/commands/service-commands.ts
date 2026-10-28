@@ -15,8 +15,14 @@ export async function serviceCommand(args: ResolvedCommandArgs, context: Command
       ? await port.readLocalService?.(target, operation === 'logs')
       : await port.manageLocalService?.(task.id, operation, operation === 'start' ? undefined : target);
     if (result === undefined) throw new Error('当前 Runtime 未配置受管服务');
-    return { type: 'text', content: typeof result === 'string' ? result
-      : `服务 ${result.serviceId}：${result.state}\n${result.message ?? ''}\n访问地址：${result.url}` };
+    if (typeof result === 'string') return { type: 'text', content: result };
+    // A discovered run has no declared port, so an empty address is reported as
+    // absent instead of printing a meaningless URL.
+    const targetLine = result.target
+      ? `\n运行目标：${result.target.targetPath || 'Workspace 根目录'}（${result.target.source}）`
+      : '';
+    return { type: 'text', content: `服务 ${result.serviceId}：${result.state}\n${result.message ?? ''}`
+      + `${targetLine}${result.url ? `\n访问地址：${result.url}` : ''}` };
   } catch (error) {
     return { type: 'text', content: publicText(`服务操作失败：${error instanceof Error ? error.message : '请查询服务状态后重试'}`) };
   }

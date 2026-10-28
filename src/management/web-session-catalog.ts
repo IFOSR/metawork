@@ -542,6 +542,12 @@ function sanitizeTimelineStage(stage: TimelineStage): TimelineStage {
           ...(attempt.startedAt === undefined ? {} : {
             startedAt: sanitizeInteractionTraceText(attempt.startedAt, 80),
           }),
+          ...(attempt.executionStartedAt === undefined ? {} : {
+            executionStartedAt: sanitizeInteractionTraceText(attempt.executionStartedAt, 80),
+          }),
+          ...(attempt.executionCompletedAt === undefined ? {} : {
+            executionCompletedAt: sanitizeInteractionTraceText(attempt.executionCompletedAt, 80),
+          }),
           ...(attempt.updatedAt === undefined ? {} : {
             updatedAt: sanitizeInteractionTraceText(attempt.updatedAt, 80),
           }),
@@ -577,9 +583,12 @@ function legacyDisplayStatus(
   status: string | undefined,
   result: string,
 ): TimelineAttempt['displayStatus'] {
-  if (result === 'success' || status === 'terminal') return '已完成';
+  // Persisted snapshots from before the receipt-driven contract may carry a
+  // dispatch status in `result`. Only a receipt-derived result proves success.
+  if (result === 'success') return '已完成';
   if (result === 'failed') return '失败';
-  if (status === 'cancelled') return '已取消';
+  if (result === 'not_started') return '未执行';
+  if (status === 'cancelled' || result === 'cancelled') return '已取消';
   if (status === 'pending_launch' || status === 'launching') return '等待启动';
   if (status === 'running' || result === 'running') return '执行中';
   return '状态未知';

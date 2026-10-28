@@ -100,7 +100,7 @@ It is built for teams who need agents to do more than answer the current turn. M
 
 > Current implementation baseline (2026-10-25): PlanningAgentPlan v9, Work
 > Graph v7, Kernel event/snapshot/decision contract v5, Completion Protocol v4,
-> and SQLite schema v60 with transactional 31→32→33→34→35→36→37→38→39→40→41→42→43→44→45→46→47→48→49→50→51→52→53→54→55→56→57→58→59→60 upgrade support.
+> and SQLite schema v61 with transactional 31→32→33→34→35→36→37→38→39→40→41→42→43→44→45→46→47→48→49→50→51→52→53→54→55→56→57→58→59→60→61 upgrade support.
 > Schema v39/v40 adds the Query usage/billing facts (Query attribution contexts,
 > metering spans/observations, immutable price versions, cost entries, per-Query
 > bills and lines, the consumption outbox/receipts and bill adjustments) that
@@ -231,6 +231,51 @@ Task re-launches the same contract. Consequently:
   explicit Kernel `update` authorization. Schema 60 adds `repair_pending` to the
   normalized operation outcomes; Task facts keep such a Task `running` with phase
   `retrying` and the real error visible.
+
+#### Follow-up runs, optional manifests and execution facts (2026-10-28)
+
+A follow-up operation separates its source from its execution identity:
+`sourceTaskId` is the finished Task whose artifacts are referenced, while the
+operation/decision/attempt is this round's own identity. A finished Task
+conclusion never blocks starting, restarting, previewing or continuing to modify
+its delivered Workspace, and Kernel relays the operation instead of refusing it
+for a terminal source Task. Kernel keeps only mechanical checks (Workspace
+ownership, registration identity, revision, published code).
+
+`ManagedLocalServices.resolveServiceSpecification()` resolves the run target:
+
+1. The Task's delivered artifact paths identify the project directory.
+2. A project-local `.metawork-service.json` is the launch contract.
+3. Otherwise the recorded contract of that same project is reused.
+4. Otherwise the Runtime discovers a launch from `package.json` scripts/main or
+   an entry file, recording the evidence.
+
+A Workspace-root manifest is a candidate only when the Task delivered no
+runnable project, so an old service file cannot take over a new project's
+target. Multiple project candidates are a real ambiguity and are refused with
+the candidate list. The launch contract's revision includes
+`origin: manifest | discovered`, so adopting a manifest after a discovered start
+is an explicit `update` authorization.
+
+A discovered contract declares no port and no health path. The Runtime allocates
+a loopback port, passes `HOST`/`PORT` only when the contract declares a port,
+and records the process as `running` (alive). `running` is not `healthy` and the
+public address is empty rather than invented. Optional `running` state,
+`isServiceReadyState()` and the target project view are the only way surfaces
+learn that a service has no health check.
+
+Dispatch facts follow the same rule. `kernel_dispatch_items.terminal` now means
+only "this dispatch item no longer owns scheduler capacity"; schema 61 adds
+`terminal_disposition` (`executed` | `not_started`). A partition/capacity yield
+records `not_started` through `AttemptSupervisor` → `markNotStarted()`, leaving
+no receipt, Attempt runtime, work unit or duration. `ExecutionProjector` derives
+an Attempt's display status and result from the receipt (and disposition), never
+from the dispatch status alone, and separates the scheduler attempt window from
+the measured execution window (`executionStartedAt`/`executionCompletedAt`).
+Web surfaces read the same facts: the Subtask's canonical status decides a
+card's main state, a missing timestamp renders no duration (or `尚未执行`), a real
+sub-second execution is `<1s`, and a Planner-only Turn is labelled "已完成规划，
+未启动执行".
 
 #### Execution boundary and Mentor feedback (2026-10-27)
 
@@ -1823,7 +1868,7 @@ direct-dependency authorization and closes when the attempt ends.
 
 MetaWork can represent complex requests as a work graph instead of a single undifferentiated prompt. The graph has no explicit single/multi execution mode. `AnyFusionPlanningAgent` keeps work that one canonical AgentClass can deliver as one node and creates another node only at a controlled Routing Capability handoff. The shared pure rules reject malformed DAGs and mergeable same-AgentClass single chains, while reentrant adapters may now own multiple independent nodes in one frontier.
 
-In the active session path, proposed nodes become persisted Work Graph v7 `Subtask` records only after a durable `authorize_task_plan` application. The source uses SQLite schema v60 and supports transactional 31→32→33→34→35→36→37→38→39→40→41→42→43→44→45→46→47→48→49→50→51→52→53→54→55→56→57→58→59→60 upgrades; schema 52 is main-owned and must carry the six-state Task base, while schema 58 pins the single In-place Workspace binding and retires implicit legacy Worktree copying; unsupported older schemas are refused. Schema v38 keeps one Planner Turn's attachment facts in `planner_turn_inputs` so a host-bridge submission stays admissible across a Server restart. Schema v39/v40 stores the ADR-0042 Query usage and billing facts: `query_usage_contexts` with one request-scoped idempotency key, `query_task_links`, `execution_usage_contexts`, `metering_spans`, `usage_observations` with one `(source_id, source_event_key, metric)` row per measurement, `usage_normalization_issues`, `billing_price_versions`, `cost_entries`, `query_bills`/`query_bill_lines`, `consumption_outbox`/`consumption_receipts`, `bill_adjustments` and the stable `billing_source_instance` identity. Schema v41 adds resolved routing identity columns to usage observations. Schema v42 adds the fenced `generation_replan_requests.planner_claim_token`. Schema v43 adds the navigation projections, indexed history and Gateway segment/Turn-observation indexes; v44 adds indexed Gateway command admissions and atomic legacy import markers; v45 adds durable Retry Wake continuation facts for timeout recovery; v46 adds the indexed latest Task-creation timestamp used to order Conversation history; v47 adds body-separated Conversation entities, projection checkpoints/tail/staging rebuild, activity invalidation and witness indexes, trace/content-search indexes, client navigation, durable approval acceptance/application and notification routes/outbox. Amounts are constrained decimal text; aggregation happens in exact money code, not SQLite floats. The schema includes the durable planning, Kernel, resource, workspace, permission, execution-backend, dispatch, publication, cancellation and recovery facts plus immutable Result Objects, direct-edge ResultReferences, revision-pinned `artifact` ContextRefs and Planner proposal configuration-revision pins for safe replay. Schema v37 also permits image preview kinds in `task_artifacts`. The physical names `attempt_sandboxes`, `sandbox_container_id` and `sandbox_lost` remain durable compatibility names and are not the current abstraction names. `dependencies` is the only topology and typed handoff source. Downstream work becomes runnable only after direct dependencies are published, receives authorized references and full Git ancestry, and never absorbs sibling or integration-branch state implicitly.
+In the active session path, proposed nodes become persisted Work Graph v7 `Subtask` records only after a durable `authorize_task_plan` application. The source uses SQLite schema v61 and supports transactional 31→32→33→34→35→36→37→38→39→40→41→42→43→44→45→46→47→48→49→50→51→52→53→54→55→56→57→58→59→60→61 upgrades; schema v61 adds the additive `kernel_dispatch_items.terminal_disposition` column; schema 52 is main-owned and must carry the six-state Task base, while schema 58 pins the single In-place Workspace binding and retires implicit legacy Worktree copying; unsupported older schemas are refused. Schema v38 keeps one Planner Turn's attachment facts in `planner_turn_inputs` so a host-bridge submission stays admissible across a Server restart. Schema v39/v40 stores the ADR-0042 Query usage and billing facts: `query_usage_contexts` with one request-scoped idempotency key, `query_task_links`, `execution_usage_contexts`, `metering_spans`, `usage_observations` with one `(source_id, source_event_key, metric)` row per measurement, `usage_normalization_issues`, `billing_price_versions`, `cost_entries`, `query_bills`/`query_bill_lines`, `consumption_outbox`/`consumption_receipts`, `bill_adjustments` and the stable `billing_source_instance` identity. Schema v41 adds resolved routing identity columns to usage observations. Schema v42 adds the fenced `generation_replan_requests.planner_claim_token`. Schema v43 adds the navigation projections, indexed history and Gateway segment/Turn-observation indexes; v44 adds indexed Gateway command admissions and atomic legacy import markers; v45 adds durable Retry Wake continuation facts for timeout recovery; v46 adds the indexed latest Task-creation timestamp used to order Conversation history; v47 adds body-separated Conversation entities, projection checkpoints/tail/staging rebuild, activity invalidation and witness indexes, trace/content-search indexes, client navigation, durable approval acceptance/application and notification routes/outbox. Amounts are constrained decimal text; aggregation happens in exact money code, not SQLite floats. The schema includes the durable planning, Kernel, resource, workspace, permission, execution-backend, dispatch, publication, cancellation and recovery facts plus immutable Result Objects, direct-edge ResultReferences, revision-pinned `artifact` ContextRefs and Planner proposal configuration-revision pins for safe replay. Schema v37 also permits image preview kinds in `task_artifacts`. The physical names `attempt_sandboxes`, `sandbox_container_id` and `sandbox_lost` remain durable compatibility names and are not the current abstraction names. `dependencies` is the only topology and typed handoff source. Downstream work becomes runnable only after direct dependencies are published, receives authorized references and full Git ancestry, and never absorbs sibling or integration-branch state implicitly.
 
 `SubtaskExecutionContext` is the only production Executor input. Task title/goal are background, the current Subtask goal is the sole operational instruction, siblings expose only titles as out of scope, and Planner-selected evidence has deterministic per-reference and total preview budgets. Historical Artifact refs are validated against Account/Conversation/Workspace ownership, publication status, regular-file safety and content hash, then copied to attempt-local `inputs/` with stable `input-XX-*` names. Runtime keeps Task/Subtask/attempt/WorkUnit identities and acceptance/handoff keys outside the model-facing prompt and report. Ordinary assistant/Executor history never enters the context. Codex and Pi may access eligible Task evidence through the same attempt-bound read-only authorization; image-capable adapters consume only the materialized input directory.
 

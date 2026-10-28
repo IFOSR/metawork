@@ -35,7 +35,7 @@ console.log('service cwd=' + process.cwd());
 http.createServer((req,res) => { res.statusCode=req.url==='/health'?200:503;res.end('ready'); }).listen(process.env.PORT,process.env.HOST);`);
   const spec: LocalServiceSpecification = { serviceId: 'backend', taskId: 'task', command: process.execPath,
     args: ['server.mjs'], environmentReferences: {}, host: '127.0.0.1', port, healthPath: health,
-    startupTimeoutMs: 2000, restartPolicy: 'explicit' };
+    startupTimeoutMs: 2000, restartPolicy: 'explicit', origin: 'manifest' };
   await writeFile(join(published, '.metawork-service.json'), JSON.stringify(spec));
   const deps = { accountId: 'local-default', store: new ManagedLocalServiceRepo(db, 'local-default'),
     logRoot: join(root, 'private', 'managed-services'), resolvePublishedDirectory: async () => published,
@@ -121,6 +121,26 @@ spawn(process.execPath,['child.mjs'],{stdio:'inherit'});process.on('SIGTERM',()=
       expect(() => validateLocalServiceSpecification({ ...spec, environmentReferences: { [key]: 'vault:override' } })).toThrow();
     }
   });
+
+  it('requires an explicit contract from a manifest but allows a discovered one', () => {
+    const manifest = { serviceId: 'site', taskId: 'task', command: 'node', args: ['server.js'],
+      environmentReferences: {}, host: '127.0.0.1' as const, startupTimeoutMs: 1_000,
+      restartPolicy: 'explicit' as const };
+    // A manifest that silently omits its port/health contract is invalid; an
+    // explicit null declares "no port/health check".
+    expect(() => validateLocalServiceSpecification({ ...manifest, origin: 'manifest' })).toThrow();
+    expect(() => validateLocalServiceSpecification({
+      ...manifest, port: null, healthPath: null, origin: 'manifest',
+    })).not.toThrow();
+    // A discovered launch has the project itself as evidence.
+    const discovered = validateLocalServiceSpecification({
+      ...manifest, port: 8080, healthPath: null, origin: 'discovered',
+    });
+    expect(discovered.origin).toBe('discovered');
+    expect(discovered.healthPath).toBeNull();
+    expect(validateLocalServiceSpecification({ ...manifest, port: 8080, healthPath: '/health' }).origin)
+      .toBe('manifest');
+  });
   it('starts published code once, answers real HTTP, recovers after Server replacement, stops and restarts', async () => {
     const { manager, spec, deps, published } = await fixture();
     expect(await manager.readSpecification('task')).toEqual(spec);
@@ -184,7 +204,7 @@ describe('durable authorized service operations', () => {
   it('survives actual Server process exit and is rediscovered without spawning again', async () => {
     const { manager, spec, deps, root, published } = await fixture();
     // Compile only the Runtime adapter for a real, independent Server process.
-    for (const source of ['core/local-service-revision', 'execution/managed-local-service', 'storage/managed-local-service-repo', 'task/local-service', 'utils/public-text', 'utils/redact-sensitive-text']) {
+    for (const source of ['core/local-service-revision', 'execution/local-service-discovery', 'execution/managed-local-service', 'execution/run-target', 'storage/managed-local-service-repo', 'task/local-service', 'utils/public-text', 'utils/redact-sensitive-text']) {
       const target = join(root, 'compiled', source + '.js');
       await mkdir(join(target, '..'), { recursive: true });
       await writeFile(target, ts.transpileModule(await readFile(join(process.cwd(), 'src', source + '.ts'), 'utf8'),
@@ -348,11 +368,13 @@ setTimeout(() => process.exit(3), 1500);`);
     expect(observation.diagnostics.logTail).toContain('boot diagnostics line');
     expect(observation.diagnostics.specificationRevision)
       .toBe(localServiceSpecificationRevision(spec));
-    // The public view keeps its contract: no process identity leaks out.
+    // The public view keeps its contract: no process identity leaks out. The
+    // resolved target project is public-safe (it is the user's own directory).
     expect(JSON.stringify(observation.view)).not.toContain(String(observation.diagnostics.processId));
     expect(Object.keys(observation.view).sort()).toEqual(
-      ['message', 'serviceId', 'state', 'taskId', 'url'],
+      ['message', 'serviceId', 'state', 'target', 'taskId', 'url'],
     );
+    expect(observation.view.target).toEqual({ targetPath: '', source: 'manifest' });
   }, 15000);
 });
 

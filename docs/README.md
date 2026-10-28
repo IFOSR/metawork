@@ -19,6 +19,7 @@ This directory contains both current technical documentation and historical plan
 
 ## Current Docs
 
+- [Web 用户路径验收测试报告](current/2026-10-27-web-acceptance-test-report.md)（2026-10-27）：真实浏览器对照架构 A1–A17、Memory 五组与滚动 12 景验收；结论为未通过，含 P0 阻断（同会话追问被 Kernel 拒绝、失败任务不释放会话槽位、Run Contract `serviceIntent` 生产路径缺失）与证据截图。
 
 - [Agent 执行架构重构方案](plans/2026-10-27-agent-execution-architecture-realignment-plan.md) 与 [技术实施方案](plans/2026-10-27-agent-execution-architecture-realignment-implementation-plan.md)：收敛 Planner → Work Graph → Kernel → Executor 链路，让 Runtime 不再干预 Harness 内部循环。已固化“Executor 内部失败由 Harness 消化、MetaWork 验收失败默认反馈 continuation、只有硬边界或预算耗尽才交给用户”的原则。P0/P1/P2 已实施：Run Contract 投影、服务身份与失败修复 continuation（ADR-0051）、失败诊断进入 Planner 与 Executor、终态 Task 自然取代、In-place 交付语义收敛；实施记录与未完成项见文档末尾。
 
@@ -218,6 +219,8 @@ replacing those semantics.
 - [前端观察架构全盘升级方案](plans/2026-10-02-frontend-observation-architecture-upgrade-design.md)：Web/TUI/Feishu 同账户同权查看与控制、任意端发送/停止/审批、持久仲裁、独立通知路由，以及有界历史、实体仓库和正文虚拟化。[Accepted ADR-0043](adr/0043-explicit-conversation-observation-and-client-read-models.md) 替代 ADR-0036 的来源端独占规则。已完成本地源码与隔离安装验证，运行证据与剩余验收门见[实施记录](plans/2026-10-02-frontend-observation-implementation.md)；用户验收前不推送实施变更。
 
 ## Implementation Plans
+
+- [Kernel 兼容性中继与可选服务规格优化方案](plans/2026-10-28-transparent-execution-and-optional-service-specification.md)：2026-10-28 已实施 P0/P1；按 ADR-0053 补齐通用后续执行、可选服务文件、目标项目定位、`terminal_disposition` 执行事实与对话/轨迹状态一致性。完成记录、验证与未关闭项见文档末尾。
 
 - [任务执行可靠性统一方案](plans/2026-10-15-task-execution-reliability-unified-plan.md)：2026-10-15 已实施核心代码并逐阶段 review；统一四态、局部等待/失败与独立恢复。主机验收通过，Docker/真实飞书/正式安装平台发布门未关闭，状态仍为实施中。
 

@@ -18,10 +18,11 @@ export interface LocalServiceRevisionInput {
   directory?: string;
   environmentReferences: Record<string, string>;
   host: '127.0.0.1' | '::1';
-  port: number;
-  healthPath: string;
+  port: number | null;
+  healthPath: string | null;
   startupTimeoutMs: number;
   restartPolicy: 'explicit';
+  origin?: 'manifest' | 'discovered';
 }
 
 export function localServiceSpecificationRevision(
@@ -38,6 +39,9 @@ export function localServiceSpecificationRevision(
     specification.healthPath,
     specification.startupTimeoutMs,
     specification.restartPolicy,
+    // A discovered contract is a different launch source than an explicit
+    // manifest, so adopting one later is a real specification change.
+    specification.origin ?? 'manifest',
   ]);
   return `service_revision_${createHash('sha256').update(material).digest('hex').slice(0, 32)}`;
 }

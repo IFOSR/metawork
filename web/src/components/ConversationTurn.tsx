@@ -10,6 +10,7 @@ import { ArtifactLink } from './ArtifactLink';
 import { TurnBillCard } from './TurnBillCard';
 import { ExecutionNotice, type TurnFailureFacts } from './ExecutionNotice';
 import { conversationOutput } from '../conversation-output';
+import { turnExecutionPresentation } from '../turn-execution-presentation';
 
 function formatAttachmentSize(size: number): string {
   if (size < 1024) return `${size} B`;
@@ -24,12 +25,11 @@ function attachmentIcon(mediaClass: string): string {
   return '📄';
 }
 
-function executionStatusLabel(status: ConversationTurnProjection['status']): string {
-  if (status === 'running') return '执行中';
-  if (status === 'blocked') return '需要处理';
-  if (status === 'failed') return '失败';
-  if (status === 'cancelled') return '已取消';
-  return '已完成';
+function executionStatusLabel(turn: ConversationTurnProjection): string {
+  // The Turn status alone cannot name the fact behind it: a Planner answer and a
+  // finished Task both end `completed`. Use the same presentation projection the
+  // trajectory uses so both surfaces name the same entity.
+  return turnExecutionPresentation(turn).label;
 }
 
 function deliveryPending(turn: ConversationTurnProjection): boolean {
@@ -195,7 +195,7 @@ export function ConversationTurnView({
             ? '等待自动重试'
             : resultPending
             ? '执行已完成，正在整理结果'
-            : resultFailed ? '执行已完成，结果交付失败' : executionStatusLabel(turn.status)}{stepCount > 0 ? ` · ${stepCount} 步` : ''}</span>
+            : resultFailed ? '执行已完成，结果交付失败' : executionStatusLabel(turn)}{stepCount > 0 ? ` · ${stepCount} 步` : ''}</span>
           {onOpenTrajectory && (
             <button
               type="button"

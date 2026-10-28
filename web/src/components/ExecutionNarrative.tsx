@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react';
 import type { ConversationTurnProjection } from '../api/session-types';
 import type { InteractionTraceEvent } from '../api/types';
-import { executionElapsedEndMs } from '../execution-duration';
+import { formatExecutionDuration } from '../execution-duration';
 import { ExecutionStep } from './ExecutionStep';
 import { subtaskTitle, type WorkGraphTitleIndex } from '../work-graph-titles';
 
@@ -119,14 +119,13 @@ export function ExecutionNarrative({ turn, titleBySubtask }: {
                         </span>
                         <strong className="executor-attempt-status">{attempt.displayStatus}</strong>
                         <time className="executor-attempt-duration">
-                          {formatElapsed(
-                            attempt.startedAt,
-                            executionElapsedEndMs(
-                              attempt.displayStatus === '执行中',
-                              attempt.updatedAt,
-                              nowMs,
-                            ),
-                          )}
+                          {formatExecutionDuration({
+                            executionStartedAt: attempt.executionStartedAt,
+                            executionCompletedAt: attempt.executionCompletedAt,
+                            updatedAt: attempt.updatedAt,
+                            running: attempt.displayStatus === '执行中',
+                            nowMs,
+                          })}
                         </time>
                       </header>
                       <ol>
@@ -163,14 +162,6 @@ function statusLabel(status: ConversationTurnProjection['status']): string {
     blocked: '阻塞',
     cancelled: '已取消',
   }[status];
-}
-
-function formatElapsed(start: string | undefined, nowMs: number): string {
-  if (!start) return '';
-  const elapsed = Math.max(0, nowMs - Date.parse(start));
-  if (!Number.isFinite(elapsed)) return '';
-  const seconds = Math.floor(elapsed / 1_000);
-  return seconds < 60 ? `${seconds}s` : `${Math.floor(seconds / 60)}m ${seconds % 60}s`;
 }
 
 function formatClock(value: string): string {

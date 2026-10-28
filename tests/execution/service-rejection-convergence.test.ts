@@ -37,7 +37,7 @@ afterEach(() => { db?.close(); db = null; });
 function compose(input: {
   taskStatus: string;
   published: boolean;
-  readSpecification?: () => Promise<typeof PUBLISHED_SPEC>;
+  resolveServiceSpecification?: () => Promise<{ specification: typeof PUBLISHED_SPEC }>;
   applyAuthorizedOperation?: (input: { decisionId: string; operation: string; serviceId: string })
     => Promise<{ decisionId: string; serviceId: string; operation: 'start'; phase: 'completed';
       initialToken: null; result: null; error: string | null }>;
@@ -62,7 +62,8 @@ function compose(input: {
     getConfigurationRevision,
     maxConcurrentAttempts: 4,
     managedLocalServices: {
-      readSpecification: input.readSpecification ?? (async () => PUBLISHED_SPEC),
+      resolveServiceSpecification: input.resolveServiceSpecification
+        ?? (async () => ({ specification: PUBLISHED_SPEC })),
       isPublished: async () => input.published,
       resolveServiceWorkspaceId: async () => 'workspace_service',
       find: () => null,
@@ -80,7 +81,7 @@ describe('managed service rejection convergence', () => {
     const { runtime } = compose({
       taskStatus: 'cancelled',
       published: false,
-      readSpecification: async () => { throw new Error('代码尚未发布到用户任务目录'); },
+      resolveServiceSpecification: async () => { throw new Error('代码尚未发布到用户任务目录'); },
     });
     const error = await runtime.manageLocalService(TASK_ID, 'start').catch(value => value);
     expect(error).toBeInstanceOf(KernelApplicationRejectionError);
@@ -93,10 +94,9 @@ describe('managed service rejection convergence', () => {
     const error = await runtime.manageLocalService(TASK_ID, 'start').catch(value => value);
     expect(error).toBeInstanceOf(KernelApplicationRejectionError);
     expect(error).toMatchObject({ code: 'service_request_rejected' });
-    // P0-5: the refusal names the service, the task and the real cause.
-    expect(error.message).toContain('serviceId=systemone-decision');
-    expect(error.message).toContain(`taskId=${TASK_ID}`);
-    expect(error.message).toContain('任务状态=cancelled');
+    // The remaining refusal is the mechanical fact (nothing was published);
+    // a completed/cancelled source Task no longer refuses a follow-up run.
+    expect(error.message).toContain('代码尚未发布到用户任务目录');
   });
 
   it('turns a journaled operation error into a settled outcome', async () => {

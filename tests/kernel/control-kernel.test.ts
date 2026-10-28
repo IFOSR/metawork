@@ -14,6 +14,8 @@ import {
   type AuthorizedExecutorBinding,
 } from '../../src/core/authorized-executor-binding.js';
 import { workGraphPlan } from '../support/planning-agent-plans.js';
+import { localServiceSpecificationRevision } from '../../src/core/local-service-revision.js';
+import { validateLocalServiceSpecification } from '../../src/execution/managed-local-service.js';
 import { capabilityRequestFingerprint, type NormalizedCapabilityRequest } from '../../src/resource/index.js';
 
 const configurationRevision = 'revision-test';
@@ -212,7 +214,7 @@ describe('ControlKernel', () => {
     const published = {
       schemaVersion: 5 as const,
       type: 'service_control' as const,
-      task: { id: 'task_1', status: 'done' as const },
+      task: { id: 'task_1', status: 'succeeded' as const },
       published: true,
       serviceTaskId: null,
     };
@@ -221,11 +223,76 @@ describe('ControlKernel', () => {
     });
     expect(kernel.decide(event, { ...published, published: false })).toMatchObject({
       action: { type: 'reject_request' },
-      reason: '代码尚未发布到用户任务目录，不能启动服务：serviceId=backend，taskId=task_1，任务状态=done',
+      reason: '代码尚未发布到用户任务目录，不能启动服务',
     });
-    expect(kernel.decide(event, { ...published, task: { id: 'task_1', status: 'failed' as const } })).toMatchObject({
-      action: { type: 'reject_request' },
-      reason: '任务已取消、归档或失败，不能启动服务：serviceId=backend，taskId=task_1，任务状态=failed',
+  });
+
+  it('relays a follow-up service operation on a completed source Task instead of refusing it', () => {
+    // 2026-10-28 transparent execution §Kernel boundary: a Task's terminal
+    // status describes its own history. It does not make the delivered
+    // Workspace read-only, so starting the artifact again is a legitimate
+    // follow-up that Kernel must relay, not reject.
+    for (const status of ['succeeded', 'failed', 'cancelled'] as const) {
+      const decision = new ControlKernel().decide(
+        runtimeEvent({ type: 'managed_service_requested', operation: 'start', serviceId: 'backend' }),
+        {
+          schemaVersion: 5,
+          type: 'service_control',
+          task: { id: 'task_1', status },
+          published: true,
+          serviceTaskId: null,
+          serviceHandedOver: false,
+        } as KernelSnapshot,
+      );
+      expect(decision.action).toMatchObject({
+        type: 'control_managed_service',
+        taskId: 'task_1',
+        serviceId: 'backend',
+        operation: 'start',
+      });
+    }
+  });
+
+  it('relays a discovered launch contract that declares no port or health check', () => {
+    const specification = validateLocalServiceSpecification({
+      serviceId: 'ai-radar-site',
+      taskId: 'task_1',
+      command: 'node',
+      args: ['server.js'],
+      directory: 'deliverables/ai-radar-site',
+      environmentReferences: {},
+      host: '127.0.0.1',
+      port: null,
+      healthPath: null,
+      startupTimeoutMs: 10_000,
+      restartPolicy: 'explicit',
+      origin: 'discovered',
+    });
+    const decision = new ControlKernel().decide(
+      runtimeEvent({
+        type: 'managed_service_requested',
+        operation: 'start',
+        serviceId: 'ai-radar-site',
+        specification,
+        workspaceId: 'workspace_1',
+        specificationRevision: localServiceSpecificationRevision(specification),
+      }),
+      {
+        schemaVersion: 5,
+        type: 'service_control',
+        task: { id: 'task_1', status: 'succeeded' },
+        published: true,
+        serviceTaskId: null,
+        serviceWorkspaceId: 'workspace_1',
+        serviceRevision: null,
+      } as KernelSnapshot,
+    );
+    expect(decision.action).toMatchObject({
+      type: 'control_managed_service',
+      taskId: 'task_1',
+      serviceId: 'ai-radar-site',
+      operation: 'start',
+      specificationRevision: localServiceSpecificationRevision(specification),
     });
   });
 

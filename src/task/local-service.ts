@@ -1,5 +1,15 @@
 export { localServiceSpecificationRevision } from '../core/local-service-revision.js';
 
+/**
+ * Where a launch contract came from. A manifest is the user's/Executor's explicit
+ * declaration; a discovered contract is the Runtime's reading of the delivered
+ * project (package scripts, entry files). Both are launch contracts and both
+ * carry a revision, so a later explicit manifest is a *different* contract that
+ * needs an explicit update authorization instead of silently replacing the
+ * running one (2026-10-28 transparent execution §optional service specification).
+ */
+export type LocalServiceSpecificationOrigin = 'manifest' | 'discovered';
+
 export interface LocalServiceSpecification {
   serviceId: string;
   taskId: string;
@@ -8,10 +18,22 @@ export interface LocalServiceSpecification {
   directory?: string;
   environmentReferences: Record<string, string>;
   host: '127.0.0.1' | '::1';
-  port: number;
-  healthPath: string;
+  /**
+   * Loopback port passed to the process as `PORT`. `null` means the contract
+   * declares no port; the Runtime then records the process without an HTTP
+   * address instead of inventing one.
+   */
+  port: number | null;
+  /**
+   * HTTP health path. `null` means the contract declares no health check: the
+   * process being alive is the only available fact, and the service state is
+   * `running`, never a fabricated `healthy`.
+   */
+  healthPath: string | null;
   startupTimeoutMs: number;
   restartPolicy: 'explicit';
+  /** Defaults to `'manifest'` for specifications persisted before this field. */
+  origin: LocalServiceSpecificationOrigin;
 }
 
 /**
@@ -24,7 +46,23 @@ export interface LocalServiceSpecification {
 // the pure Core module so Kernel policy does not depend on Task runtime code.
 export type { LocalServiceRevisionInput } from '../core/local-service-revision.js';
 
-export type LocalServiceState = 'starting' | 'healthy' | 'unhealthy' | 'stopped' | 'failed';
+export type LocalServiceState =
+  | 'starting'
+  | 'healthy'
+  | 'unhealthy'
+  | 'stopped'
+  | 'failed'
+  /**
+   * The process is alive but the contract declares no health check. This is not
+   * `healthy`: nothing verified an HTTP endpoint.
+   */
+  | 'running';
+
+/** True when the service is usable for the current operation. */
+export function isServiceReadyState(state: LocalServiceState | string | null | undefined): boolean {
+  return state === 'healthy' || state === 'running';
+}
+
 export interface LocalServiceRecord {
   accountId: string;
   /** Workspace the service belongs to; identity is (account, workspace, service). */
@@ -49,12 +87,23 @@ export interface LocalServiceStore {
   findOperation(decisionId: string): LocalServiceEffect | null;
   saveOperation(effect: LocalServiceEffect): void;
 }
+/** Target project of this run, as resolved from durable facts. */
+export interface LocalServiceTargetView {
+  /** Workspace-relative project directory; `''` is the Workspace root. */
+  targetPath: string;
+  /** Where the launch contract came from. */
+  source: LocalServiceSpecificationOrigin;
+}
+
 export interface LocalServiceView {
   serviceId: string;
   taskId: string;
   state: LocalServiceState;
+  /** HTTP address when the contract declares a port; `''` otherwise. */
   url: string;
   message: string | null;
+  /** Resolved target project; absent on historical records. */
+  target?: LocalServiceTargetView | null;
 }
 
 /**

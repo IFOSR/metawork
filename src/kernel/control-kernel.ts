@@ -101,6 +101,19 @@ export type KernelDispatchItemStatus =
   | 'terminal'
   | 'cancelled'
   | 'uncertain';
+
+/**
+ * How a `terminal` dispatch item stopped being active.
+ *
+ * `terminal` only means "this dispatch item no longer owns scheduler capacity".
+ * It never implies the Attempt succeeded: success requires an immutable receipt
+ * with `terminal_state = completed` (2026-10-28 transparent execution §P2.1).
+ *
+ * - `executed`: the Runtime reported an execution fact for the Attempt.
+ * - `not_started`: the Attempt yielded before executing (resource partition,
+ *   unavailable Executor). No receipt, runtime, work unit or duration exists.
+ */
+export type KernelDispatchTerminalDisposition = 'executed' | 'not_started';
 export type KernelAttemptPayload =
   | {
       protocol: 'completion-correction-v2';
@@ -1008,14 +1021,13 @@ export class ControlKernel {
           && facts.serviceRevision && facts.serviceRevision !== event.specificationRevision) {
           return decision(event, { type: 'reject_request' }, `服务规格 revision 与已授权 revision 不一致，需要显式更新授权：serviceId=${event.serviceId}`);
         }
-        const terminalServiceRefusal = ['cancelled', 'failed', 'archived'].includes(String(facts.task.status))
-          || (facts.task.status === 'succeeded'
-            && !facts.serviceHandedOver
-            && facts.serviceTaskId !== resourceTaskId);
-        if (event.operation !== 'stop' && terminalServiceRefusal) {
-          return decision(event, { type: 'reject_request' },
-            `任务已结束，不能启动服务：serviceId=${event.serviceId}，taskId=${event.taskId}，任务状态=${facts.task.status}`);
-        }
+        // A follow-up operation on an already delivered artifact is still a
+        // legitimate user request. The historical Task status describes whether
+        // that work finished; it does not make the Workspace read-only, so a
+        // `succeeded` source Task must never refuse starting, restarting or
+        // observing the service it produced (2026-10-28 transparent execution
+        // §Kernel boundary). Coordination facts below still decide whether the
+        // operation is mechanically applicable.
         if (event.operation !== 'stop' && !facts.published) {
           return decision(event, { type: 'reject_request' }, '代码尚未发布到用户任务目录，不能启动服务');
         }

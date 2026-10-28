@@ -200,8 +200,8 @@ describe('WebConversationProjector', () => {
 
     await projector.applyTimeline({
       ...timeline,
-      status: 'done',
-      stages: timeline.stages.map(stage => ({ ...stage, status: 'succeeded' })),
+      status: 'succeeded',
+      stages: timeline.stages.map(stage => ({ ...stage, status: 'done' })),
     });
 
     expect(projector.getSnapshot()?.status).toBe('completed');
@@ -216,8 +216,8 @@ describe('WebConversationProjector', () => {
 
     await projector.applyTimeline({
       ...timeline,
-      status: 'done',
-      stages: timeline.stages.map(stage => ({ ...stage, status: 'succeeded' })),
+      status: 'succeeded',
+      stages: timeline.stages.map(stage => ({ ...stage, status: 'done' })),
     });
     await projector.applyTimeline(timeline);
 

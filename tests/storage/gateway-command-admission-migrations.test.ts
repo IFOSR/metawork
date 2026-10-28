@@ -327,6 +327,12 @@ function schema43(path?: string): Database.Database {
     CREATE INDEX idx_task_execution_evidence_task
           ON task_execution_evidence(task_id, created_at, id);
   `);
+  // The dispatch terminal disposition arrived after schema 43. Dropping the
+  // column restores the historical table shape this hash describes.
+  if ((db.prepare('PRAGMA table_info(kernel_dispatch_items)').all() as Array<{ name: string }>)
+    .some(column => column.name === 'terminal_disposition')) {
+    db.exec('ALTER TABLE kernel_dispatch_items DROP COLUMN terminal_disposition');
+  }
   db.exec('UPDATE schema_version SET version = 43');
   expect(schemaHash(db)).toBe(schema43Hash);
   db.exec(`
