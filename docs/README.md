@@ -19,12 +19,15 @@ This directory contains both current technical documentation and historical plan
 
 ## Current Docs
 
+
 - [Agent 执行架构重构方案](plans/2026-10-27-agent-execution-architecture-realignment-plan.md) 与 [技术实施方案](plans/2026-10-27-agent-execution-architecture-realignment-implementation-plan.md)：收敛 Planner → Work Graph → Kernel → Executor 链路，让 Runtime 不再干预 Harness 内部循环。已固化“Executor 内部失败由 Harness 消化、MetaWork 验收失败默认反馈 continuation、只有硬边界或预算耗尽才交给用户”的原则。P0/P1/P2 已实施：Run Contract 投影、服务身份与失败修复 continuation（ADR-0051）、失败诊断进入 Planner 与 Executor、终态 Task 自然取代、In-place 交付语义收敛；实施记录与未完成项见文档末尾。
 
 - [Executor Pi 打包入口修复](plans/2026-10-23-executor-pi-packaging-fix.md)：修正本地 DMG 将 Executor 指向定制 Planner 的错误，增加打包与安装参数校验，修复包已完成本地自动验收。
 
 - [单一 In-place Workspace 技术实施方案](plans/2026-10-25-in-place-only-workspace-execution-implementation-plan.md)：已于 2026-10-25 实施。新任务直接在 Conversation 绑定 Workspace 执行；只读任务使用受控 scratch，不申请写租约，不创建 publication；旧 Worktree 事实只停放并拒绝恢复（ADR-0050）。
 - [被取代的 Planner Workspace 模式设计](plans/2026-10-25-planner-owned-workspace-mode-design.md)：历史方案，仅用于理解迁移背景。
+- [Executor 工具能力与 Kernel 边界（ADR-0052）](adr/0052-executor-owned-tool-capabilities-and-kernel-boundary.md)：Planner 的 Workspace effect 只用于 admission 与验收；Harness 自己拥有工具注册和内部执行循环，Kernel 保留持久化协调与恢复，不再把 `read_only` 转成工具 allowlist。
+- [Planner、持久协调与 Executor 权责（ADR-0053）](adr/0053-planner-graph-coordinator-and-executor-authority.md)：重新审查 Kernel 边界；Planner 只负责语义和 Work Graph，Executor/Host 负责工具与 capability policy，剩余 Kernel 仅作为迁移期的 durable Task Coordinator。
 
 - [斜杠指令参考](current/commands.md)：唯一的当前指令清单与 Desktop/Web 联想说明；[精简与联想验收记录](plans/2026-10-22-command-simplification-and-desktop-completion.md)。
 
@@ -105,6 +108,7 @@ Key recent ADRs:
 - [ADR-0032: Result-First Delivery And Completion Certification](adr/0032-result-first-delivery-and-completion-certification.md): Completion Protocol v4, immutable Result Objects, authorized ResultReferences, chunked delivery, and safe partial-result recovery.
 - [ADR-0033: Hot Configuration Activation And Auto Model Routing](adr/0033-hot-configuration-activation-and-auto-model-routing.md): AccountRuntime activation gate, concrete Planner/Executor Auto routing, safe completion, and read-only Work Graph presentation.
 - [ADR-0034: Independent Server And Client Process Lifecycle](adr/0034-independent-server-and-client-process-lifecycle.md): persistent workspace-neutral Server, independent TUI/Web Clients, endpoint discovery, Workspace admission, draining, and Server-owned Feishu connectivity.
+- [ADR-0053: Planner Graph, Durable Coordinator And Executor Authority](adr/0053-planner-graph-coordinator-and-executor-authority.md): Planner decomposition, durable graph coordination, Executor/Harness capability ownership, and the removal of Kernel as a security layer.
 
 [ADR-0021: Work Graph v4 And Subtask Execution Contract](adr/0021-work-graph-v4-subtask-execution-contract.md)
 is the foundational dependency/handoff/completion contract. ADR-0025/0026
