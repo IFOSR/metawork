@@ -28,7 +28,7 @@ export interface LocalServiceRevisionInput {
 export function localServiceSpecificationRevision(
   specification: LocalServiceRevisionInput & { revision?: string },
 ): string {
-  const material = JSON.stringify([
+  const contract = [
     specification.serviceId,
     specification.command,
     specification.args,
@@ -39,9 +39,15 @@ export function localServiceSpecificationRevision(
     specification.healthPath,
     specification.startupTimeoutMs,
     specification.restartPolicy,
-    // A discovered contract is a different launch source than an explicit
-    // manifest, so adopting one later is a real specification change.
-    specification.origin ?? 'manifest',
-  ]);
+  ];
+  // The historical manifest contract is exactly those ten fields. Persisted
+  // records already carry a revision computed from them, so the material must
+  // stay byte-identical for a manifest specification: appending an element
+  // would invalidate every stored registration on upgrade. A discovered
+  // contract is a different launch source, so it is namespaced instead of
+  // reusing the manifest material.
+  const material = specification.origin === 'discovered'
+    ? JSON.stringify(['discovered', ...contract])
+    : JSON.stringify(contract);
   return `service_revision_${createHash('sha256').update(material).digest('hex').slice(0, 32)}`;
 }
