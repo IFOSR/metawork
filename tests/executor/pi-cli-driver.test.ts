@@ -136,16 +136,25 @@ describe('PiCliDriver', () => {
     expect(JSON.stringify(launch)).not.toContain('~/.pi');
   });
 
-  it('grants execute-only Workspace access to read and bash without edit tools', () => {
+  it('does not let Planner workspace intent remove the Executor shell or editor tools', () => {
     const driver = new PiCliDriver({ probeCommand: vi.fn(), piCommand: { command: 'pi', args: [] } });
     const launch = driver.buildLaunch({
       prompt: 'run hello.py', cwd: '/workspace', runtimeHomePath: '/attempt/home',
-      workspaceAccess: 'execute',
+      workspaceAccess: 'read',
+    });
+    expect(launch.args).not.toContain('--tools');
+    expect(launch.args).not.toContain('--no-session');
+  });
+
+  it('derives the tool surface from the Executor affordance registration', () => {
+    const driver = new PiCliDriver({ probeCommand: vi.fn(), piCommand: { command: 'pi', args: [] } });
+    const launch = driver.buildLaunch({
+      prompt: 'run hello.py', cwd: '/workspace', runtimeHomePath: '/attempt/home',
+      workspaceAccess: 'read',
+      executorAffordances: ['workspace-command-validation'],
     });
     expect(launch.args).toContain('--tools');
     expect(launch.args).toContain('read,bash');
-    expect(launch.args).not.toContain('edit');
-    expect(launch.args).not.toContain('write');
   });
 
   it('keeps image capabilities out of the standard Pi CLI launch', () => {

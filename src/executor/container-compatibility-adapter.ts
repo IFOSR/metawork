@@ -105,6 +105,9 @@ export class ContainerCompatibilityAdapter implements ExecutorAdapter {
         cwd: '/workspace',
         runtimeHomePath: '/runtime-home',
         executionTarget: 'container',
+        ...(this.executorAffordances
+          ? { executorAffordances: this.executorAffordances }
+          : {}),
         providerRef: this.authorizedBinding.providerRef,
         modelId: this.modelId,
         ...(input.context.currentSubtask.requiredCapabilities.length > 0

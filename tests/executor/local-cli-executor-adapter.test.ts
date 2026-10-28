@@ -144,6 +144,33 @@ describe('LocalCliExecutorAdapter', () => {
     });
   });
 
+  it('keeps a shell-capable Harness launch for read-only Workspace attempts', async () => {
+    const driver = harnessDriver('pi-cli');
+    const processRunner: LocalCliChildProcessRunner = {
+      run: vi.fn(async () => ({ exitCode: 0, stdout: 'checked\n', stderr: '' })),
+      abort: vi.fn(),
+    };
+    const adapter = new LocalCliExecutorAdapter({
+      agentClassId: 'quality-beta',
+      driver,
+      runtimeBinding: runtimeBinding(),
+      authorizedBinding: authorizedBinding(),
+      modelId: 'deepseek-v4-pro',
+      attemptsRoot: '/runtime/attempts',
+      processRunner,
+    });
+    const input = executorInput('attempt-read-only');
+    input.context.currentSubtask.deliveryKind = 'report';
+    input.context.workspaceContext.accessMode = 'read';
+
+    await adapter.execute(input);
+
+    expect(driver.buildLaunch).toHaveBeenCalledWith(expect.objectContaining({
+      workspaceAccess: 'read',
+      responseOnly: false,
+    }));
+  });
+
   it('fails closed before materializing a Home when attempt execution input is missing', async () => {
     const driver = harnessDriver('codex-cli');
     const processRunner: LocalCliChildProcessRunner = {

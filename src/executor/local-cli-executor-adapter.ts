@@ -163,8 +163,15 @@ export class LocalCliExecutorAdapter implements ExecutorAdapter {
           : executionBinding.workspacePath,
         runtimeHomePath: runtimeHome.homePath,
         executionTarget: 'host',
-        responseOnly: input.context.workspaceContext.accessMode === 'read',
+        // A normal Attempt is always a full Harness execution. The Runtime's
+        // access mode remains a filesystem/prompt boundary; it must not remove
+        // the Harness shell tool before the Executor can inspect or run the
+        // target. Response-only correction has its own explicit entrypoint.
+        responseOnly: false,
         workspaceAccess: input.context.workspaceContext.accessMode,
+        ...(this.executorAffordances
+          ? { executorAffordances: this.executorAffordances }
+          : {}),
         providerRef: this.authorizedBinding.providerRef,
         modelId: this.modelId,
         ...(input.context.currentSubtask.requiredCapabilities.length > 0

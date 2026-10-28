@@ -121,16 +121,20 @@ export class PiCliDriver implements HarnessDriver {
 
   buildLaunch(input: HarnessLaunchInput): HarnessLaunchSpec {
     const agentPath = `${input.runtimeHomePath}/.pi/agent`;
+    // Workspace access describes the Runtime's filesystem boundary. It is not
+    // a Planner-controlled tool allowlist. The Executor owns its own tool
+    // registry and must retain shell access for read/inspect/run tasks. The
+    // only intentionally reduced launch is the explicit response-only
+    // correction path.
+    const toolArgs = input.responseOnly
+      ? ['--no-session', '--tools', 'read']
+      : piExecutorToolArgs(input.executorAffordances);
     return {
       command: this.command,
       args: [
         '--mode',
         'json',
-        ...(input.responseOnly || input.workspaceAccess === 'read'
-          ? ['--no-session', '--tools', 'read']
-          : input.workspaceAccess === 'execute'
-            ? ['--no-session', '--tools', 'read,bash']
-            : []),
+        ...toolArgs,
         ...(input.providerRef && input.modelId
           ? ['--provider', input.providerRef, '--model', input.modelId]
           : []),
@@ -352,6 +356,19 @@ export class PiCliDriver implements HarnessDriver {
     await copyFile(this.webExtensionSourcePath, target);
     await chmod(target, 0o600);
   }
+}
+
+function piExecutorToolArgs(
+  affordances: readonly ExecutorAffordanceId[] | undefined,
+): string[] {
+  // An omitted affordance projection preserves Pi's own standard tool
+  // registry. When the authorized Executor publishes one, derive its tool
+  // surface from that Executor-owned registration, never from workspaceAccess.
+  if (!affordances) return [];
+  const tools = ['read'];
+  if (affordances.includes('workspace-command-validation')) tools.push('bash');
+  if (affordances.includes('workspace-read-write')) tools.push('edit', 'write');
+  return ['--tools', tools.join(',')];
 }
 
 class PiResultStreamTracker implements HarnessResultStreamTracker {

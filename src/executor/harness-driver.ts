@@ -88,6 +88,8 @@ export interface HarnessLaunchInput {
   responseOnly?: boolean;
   /** Workspace capability exposed to the harness. */
   workspaceAccess?: 'read' | 'execute' | 'write';
+  /** Executor-owned affordances used to register the Harness tool surface. */
+  executorAffordances?: readonly ExecutorAffordanceId[];
   requiredCapabilities?: readonly string[];
   executionTarget?: 'host' | 'container';
 }
