@@ -113,6 +113,10 @@ import {
   normalizeDependencyMaterializationFailure,
 } from '../executor/error-utils.js';
 import { kernelFailure } from '../core/kernel-failure.js';
+import {
+  EdgeHandoffMaterializationError,
+  assertEdgeHandoffsMaterializable,
+} from './subtask-handoff-materializer.js';
 import { publicText } from '../utils/public-text.js';
 import {
   ResultObjectRepo,
@@ -235,11 +239,16 @@ export class SubtaskAttemptRunner {
     this.managedGitWorkspace = new ManagedGitWorkspaceService(deps.workspaceStore);
     this.dispatchItemRepo = new KernelDispatchItemRepo(deps.db);
     this.publicationRepo = new WorkspacePublicationRepo(deps.db);
-    this.terminalService = new AttemptTerminalService(deps.db);
     this.resultObjectRepo = new ResultObjectRepo(
       deps.db,
       deps.resultRoot,
     );
+    this.terminalService = new AttemptTerminalService(deps.db, {
+      ...(deps.accountId === undefined ? {} : { accountId: deps.accountId }),
+      subtaskRepo: deps.subtaskRepo,
+      handoffRepo: this.handoffRepo,
+      results: this.resultObjectRepo,
+    });
   }
 
   private get sessionId(): string {
@@ -1601,6 +1610,28 @@ export class SubtaskAttemptRunner {
       if (!dispatchItem) {
         throw new Error(`authorized dispatch item not found: ${attemptId}`);
       }
+      // A completion that owes an outgoing edge must be able to hand its result
+      // downstream. Failing here keeps the Subtask out of `done` instead of
+      // stranding the dependent node with `missing_handoff` forever.
+      const edgeHandoffInput = directCompletion
+        ? {
+            generationId: subtask.generationId,
+            completionSchemaVersion: 4 as const,
+            declaredHandoffs: completedEnvelope.handoffs,
+            safeProjection: safeProjectionForEdgeHandoffs(
+              this.resultObjectRepo,
+              resultObjects.safeProjectionId,
+              safeBody,
+            ),
+          }
+        : null;
+      if (edgeHandoffInput) {
+        assertEdgeHandoffsMaterializable(
+          { subtaskRepo: this.deps.subtaskRepo },
+          { taskId: task.id, subtaskId: subtask.id },
+          edgeHandoffInput.safeProjection,
+        );
+      }
       const landing = this.terminalService.land({
         receipt: buildReceipt({
           attemptId,
@@ -1629,6 +1660,7 @@ export class SubtaskAttemptRunner {
           },
         } : {}),
         ...(directCompletion ? { directCompletion: true } : {}),
+        ...(edgeHandoffInput ? { edgeHandoffs: edgeHandoffInput } : {}),
         ...(!directCompletion ? { publication: {
           id: `publication_${attemptId}`,
           taskId: task.id,
@@ -1732,14 +1764,28 @@ export class SubtaskAttemptRunner {
         );
       }
       const message = error instanceof Error ? error.message : String(error);
-      const dependencyFailure = isDependencyMaterializationError(message)
+      const edgeHandoffFailure = error instanceof EdgeHandoffMaterializationError
+        ? kernelFailure({
+            kind: 'infrastructure',
+            scope: 'task',
+            code: error.code,
+            summary: '完成结果无法交接给下游节点（系统问题）',
+            detail: message,
+            origin: 'kernel',
+            stage: 'completion',
+            retryable: false,
+            attemptStarted: true,
+            externalSideEffect: false,
+          })
+        : null;
+      const dependencyFailure = !edgeHandoffFailure && isDependencyMaterializationError(message)
         ? normalizeDependencyMaterializationFailure(error, {
             sourceSubtaskId: subtask.dependencies[0]?.fromSubtaskId ?? null,
             targetSubtaskId: subtask.id,
             referenceId: extractReferenceId(message),
           })
         : null;
-      const normalizedFailure = dependencyFailure
+      const normalizedFailure = edgeHandoffFailure ?? (dependencyFailure
         ? kernelFailure({
             kind: dependencyFailure.retryable ? 'infrastructure' : 'capability_mismatch',
             scope: 'task',
@@ -1759,7 +1805,7 @@ export class SubtaskAttemptRunner {
               attemptStarted: false,
               externalSideEffect: false,
             })
-          : null;
+          : null);
       if (mergeRepair) {
         this.publicationRepo.recordRepairFailure(
           mergeRepair.publicationId,
@@ -2943,4 +2989,21 @@ export function declaredOutputsDelta(root: string, outputs: readonly string[]): 
     }
   }
   return { kind: 'git_status_delta_v1' as const, changed, baselineTruncated: false, finalTruncated: false };
+}
+
+/**
+ * The safe projection identity an edge handoff points at. Absent when the
+ * completion persisted no body; the caller then fails the completion instead of
+ * landing a `done` Subtask that owes an unmaterializable edge.
+ */
+function safeProjectionForEdgeHandoffs(
+  results: ResultObjectRepo,
+  safeProjectionId: string | null | undefined,
+  safeBody: string | null,
+): { resultId: string; byteLength: number } | null {
+  if (!safeProjectionId || safeBody === null) return null;
+  const object = results.findObject(safeProjectionId);
+  return object
+    ? { resultId: object.resultId, byteLength: object.byteLength }
+    : null;
 }
