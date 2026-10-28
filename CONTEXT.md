@@ -952,6 +952,18 @@ Success is proven only by an immutable receipt with `terminal_state = completed`
 Projections never label a dispatch item "已完成" from its status alone, and a
 `ready` Subtask keeps its canonical state even when its last Attempt yielded.
 
+User-facing status has exactly one vocabulary. Only the six Task states
+(`排队/执行中/待处理/成功/失败/取消`, ADR-0049) are presented as task status, and
+every surface reads them from the same durable TaskView/ExecutionTimeline fact.
+Dispatch status, `terminal_disposition`, Attempt/runtime facts, receipt terminal
+states, Subtask lifecycle, work-graph node state and trace/stage state are
+internal: they may choose progress text and visual encoding, but they are never
+rendered as a status label or chip. An execution card therefore shows progress,
+not its own status; a planner-only Turn names its phase, never a Task conclusion.
+Progress text must also be true at read time: a terminal fact is not narrated as
+"正在校验…", a yielded Attempt does not claim the Executor started, and a missing
+timestamp shows no duration.
+
 Timing obeys the same rule: end-to-end Turn time, queue time and measured
 execution time are separate facts read from the same entity. Execution duration
 uses the Attempt runtime start and the receipt completion only; when either is

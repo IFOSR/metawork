@@ -34,16 +34,13 @@ interface ExecutionCard {
   state: ExecutionCardState;
 }
 
+/**
+ * Card state is an internal presentation mechanic: it selects the visual
+ * treatment and whether the card folds into a summary. It is never rendered as
+ * a status label — the owning Task's six-state conclusion is the only status a
+ * user sees (2026-10-28 transparent execution §status consistency).
+ */
 type ExecutionCardState = 'completed' | 'running' | 'waiting' | 'blocked' | 'failed' | 'unknown';
-
-const EXECUTION_CARD_STATE_LABEL: Record<ExecutionCardState, string> = {
-  completed: '已完成',
-  running: '执行中',
-  waiting: '等待启动',
-  blocked: '已阻塞',
-  failed: '执行失败',
-  unknown: '状态待确认',
-};
 
 /**
  * 当前执行卡片：把安全的 InteractionTrace 里程碑按 Subtask 分组展示，
@@ -128,9 +125,6 @@ function CardBody({ card, completed, nowMs }: { card: ExecutionCard; completed: 
     <>
       <div className="execution-card-title-row">
         <h4 title={card.subtaskTitle}>{card.subtaskTitle}</h4>
-        <span className="execution-card-state" data-state={card.state}>
-          {EXECUTION_CARD_STATE_LABEL[card.state]}
-        </span>
       </div>
       <dl>
         <dt>Executor</dt><dd>{card.executorDisplayName || '—'}</dd>
@@ -193,6 +187,11 @@ export function collectExecutionCards(
   for (const subtask of executionStage?.subtasks ?? []) {
     const attempt = subtask.attempts.at(-1);
     const latest = attempt?.progressHistory?.at(-1);
+    // An Attempt that yielded before executing (no runtime fact, nothing
+    // pending) must not claim the Executor started.
+    const attemptExecuted = Boolean(attempt?.executionStartedAt)
+      || attempt?.displayStatus === '执行中'
+      || attempt?.displayStatus === '已完成';
     const subtaskTitle = titleBySubtask.get(subtask.id)
       || presentationTitle(subtask.title, timeline?.title);
     const waitingFor = dependencies.filter(([, target]) => target === subtask.id)
@@ -206,7 +205,7 @@ export function collectExecutionCards(
       harnessDisplayName: subtask.harnessDisplayName || subtask.harness || '',
       providerDisplayName: subtask.providerDisplayName || subtask.provider || '',
       modelDisplayName: subtask.modelDisplayName || subtask.model || '',
-      stepLabel: latest?.text || (attempt ? '执行器已启动，等待实际进度…'
+      stepLabel: latest?.text || (attemptExecuted ? '执行器已启动，等待实际进度…'
         : waitingFor.length ? `尚未启动，等待：${waitingFor.join('、')}` : '尚未启动，等待前置结果或调度'),
       stepKey: latest?.kind || 'executor_waiting',
       progress: null,

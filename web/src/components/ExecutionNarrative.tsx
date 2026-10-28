@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import type { ConversationTurnProjection } from '../api/session-types';
 import type { InteractionTraceEvent } from '../api/types';
 import { formatExecutionDuration } from '../execution-duration';
+import { turnExecutionPresentation } from '../turn-execution-presentation';
 import { ExecutionStep } from './ExecutionStep';
 import { subtaskTitle, type WorkGraphTitleIndex } from '../work-graph-titles';
 
@@ -40,7 +41,7 @@ export function ExecutionNarrative({ turn, titleBySubtask }: {
       <header>
         <div className="narrative-header-main">
           <span>EXECUTION NARRATIVE</span>
-          <strong data-status={turn.status}>{statusLabel(turn.status)}</strong>
+          <strong data-status={turn.status}>{turnExecutionPresentation(turn).label || '—'}</strong>
         </div>
         <button
           type="button"
@@ -152,16 +153,6 @@ export function ExecutionNarrative({ turn, titleBySubtask }: {
       })}
     </section>
   );
-}
-
-function statusLabel(status: ConversationTurnProjection['status']): string {
-  return {
-    running: '执行中',
-    completed: '已完成',
-    failed: '失败',
-    blocked: '阻塞',
-    cancelled: '已取消',
-  }[status];
 }
 
 function formatClock(value: string): string {

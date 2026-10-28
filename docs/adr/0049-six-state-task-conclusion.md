@@ -144,3 +144,29 @@ unapplied legacy non-cancellation events/applications for inspection and new
 authorization. Both Web and TUI require `task_view_v2`; lower Task versions cannot
 replace a newer conclusion. See the [fix and validation record](../plans/2026-10-22-task-state-review-fixes.md)
 for tested boundaries and deployment limitations.
+
+## Amendment (2026-10-28): one user-facing status vocabulary
+
+The decision above governs persistence and derivation, but clients still shipped
+their own status words for the same Task (Web card `已完成/等待启动/已阻塞/
+状态待确认`, graph nodes `待执行`, turn labels `已完成`, timeline stages
+`进行中/完成`). A settled Task could therefore read "已完成" in one place and
+"正在校验" in another, because one surface read the Task conclusion while the
+other collapsed an internal Attempt/trace status.
+
+Rules now enforced by the client contract:
+
+1. **Only the six labels are user-facing task status.** Every surface that names a
+   Task's status renders `TASK_STATUS_LABELS` from the durable TaskView /
+   `ExecutionTimeline.status` (Web keeps a mirrored module plus a parity test).
+   No client re-derives or renames a Task status.
+2. **Internal states are not status.** Dispatch status, `terminal_disposition`,
+   Attempt/runtime facts, receipt terminal states, Subtask lifecycle, work-graph
+   node state and trace/stage state may select *progress text* and *visual
+   encoding* (`data-state`), but they are never rendered as a status label or a
+   status chip. Execution cards therefore carry no per-card status chip.
+3. **A Turn without a Task is not a Task status.** A planner-only Turn names its
+   phase ("已完成规划，未启动执行"); it never borrows a Task conclusion.
+4. **Progress text must be true at the moment it is read.** Terminal facts may not
+   be narrated in the present progressive ("正在校验…"), a yielded Attempt may not
+   claim the Executor started, and missing timestamps show no duration.

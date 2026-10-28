@@ -15,15 +15,6 @@ const PHASE_LABEL: Record<string, string> = {
   delivery: '交付',
 };
 
-const STATUS_LABEL: Record<string, string> = {
-  pending: '待定',
-  running: '进行中',
-  done: '完成',
-  failed: '失败',
-  blocked: '需要处理',
-  waiting: '等待中', executing: '执行中', needs_action: '需要处理', finished: '已结束',
-};
-
 export function ExecutionTimelineView({ timeline, titleBySubtask }: ExecutionTimelineViewProps) {
   if (!timeline) {
     return (
@@ -49,7 +40,6 @@ export function ExecutionTimelineView({ timeline, titleBySubtask }: ExecutionTim
             <div className="stage-head">
               <span className="stage-dot" />
               <span className="stage-name">{PHASE_LABEL[stage.phase] ?? stage.phase}</span>
-              <span className="stage-status">{STATUS_LABEL[stage.status] ?? stage.status}</span>
             </div>
 
             {stage.proposal && (
@@ -89,7 +79,6 @@ function SubtaskRow({ subtask, titleBySubtask }: { subtask: SubtaskCard; titleBy
     <div className="subtask-row" data-status={subtask.status}>
       <span className="subtask-name">{subtaskTitle(titleBySubtask, subtask.id, subtask.title)}</span>
       {subtask.executor && <span className="subtask-executor">{subtask.executor}</span>}
-      <span className="subtask-status">{STATUS_LABEL[subtask.status] ?? subtask.status}</span>
     </div>
   );
 }

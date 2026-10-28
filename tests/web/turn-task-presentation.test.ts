@@ -181,9 +181,10 @@ describe('Turn Task presentation', () => {
     expect(html).toContain('data-state="completed"');
     expect(html).toContain('data-state="running"');
     expect(html).toContain('data-state="waiting"');
-    expect(html).toContain('已完成');
-    expect(html).toContain('执行中');
-    expect(html).toContain('等待启动');
+    // Card state is a visual mechanic only: no per-card status vocabulary may
+    // impersonate the Task's six-state conclusion.
+    expect(html).not.toContain('class="execution-card-state"');
+    expect(html).not.toContain('等待启动');
   });
 
   it('shows every current-Task Subtask but excludes a foreign Task trace card', () => {
@@ -402,9 +403,10 @@ describe('Turn Task presentation', () => {
         },
       } as unknown as ConversationTurnProjection,
     }));
-    expect(html).toContain('等待启动');
+    expect(html).not.toContain('class="execution-card-state"');
     expect(html).not.toContain('已完成');
     expect(html).not.toContain('0s');
+    expect(html).toContain('尚未启动');
   });
 
   it('does not read "verifying" on a card whose Subtask already settled', () => {

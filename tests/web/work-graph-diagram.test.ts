@@ -30,7 +30,7 @@ describe('inline Work Graph DAG', () => {
     expect(html).toContain('目标 a');
   });
 
-  it('renders a visible status label and distinct state attribute on every graph node', () => {
+  it('encodes node state visually without printing an internal status label', () => {
     const projection = graph([
       node('done'), node('running', 1), node('ready', 2), node('blocked', 3), node('failed', 4),
     ]);
@@ -41,17 +41,17 @@ describe('inline Work Graph DAG', () => {
     projection.nodes[4]!.status = 'failed';
     const html = renderToStaticMarkup(createElement(WorkGraphPanel, { projection }));
 
-    expect(html.match(/class="work-graph-node-status"/g)).toHaveLength(6);
     expect(html).toContain('data-status="completed"');
     expect(html).toContain('data-status="running"');
     expect(html).toContain('data-status="waiting"');
     expect(html).toContain('data-status="blocked"');
     expect(html).toContain('data-status="failed"');
-    expect(html).toContain('已完成');
-    expect(html).toContain('执行中');
-    expect(html).toContain('待执行');
-    expect(html).toContain('已阻塞');
-    expect(html).toContain('失败');
+    // Node state is an internal execution fact. The six-state Task conclusion
+    // is the only status text a user sees, so no node prints one.
+    expect(html).not.toContain('class="work-graph-node-status"');
+    expect(html).not.toContain('待执行');
+    expect(html).not.toContain('已阻塞');
+    expect(html).not.toContain('状态待确认');
   });
 
   it('lays out a diamond with parallel branches and a join, independent of input order', () => {

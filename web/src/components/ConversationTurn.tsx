@@ -189,13 +189,16 @@ export function ConversationTurnView({
       {liveExecutionPanel}
       {(!isSystemCommand || hasTaskExecution) && hasTaskExecution && (
         <section className="execution-status-line" data-status={turn.status}>
-          <span>{resumedExecution
-            ? '已恢复执行'
-            : automaticRetryScheduled
-            ? '等待自动重试'
-            : resultPending
-            ? '执行已完成，正在整理结果'
-            : resultFailed ? '执行已完成，结果交付失败' : executionStatusLabel(turn)}{stepCount > 0 ? ` · ${stepCount} 步` : ''}</span>
+          <span>{[
+            resumedExecution
+              ? '已恢复执行'
+              : automaticRetryScheduled
+              ? '等待自动重试'
+              : resultPending
+              ? '执行已完成，正在整理结果'
+              : resultFailed ? '执行已完成，结果交付失败' : executionStatusLabel(turn),
+            ...(stepCount > 0 ? [`${stepCount} 步`] : []),
+          ].filter(Boolean).join(' · ')}</span>
           {onOpenTrajectory && (
             <button
               type="button"

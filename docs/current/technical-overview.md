@@ -272,10 +272,15 @@ no receipt, Attempt runtime, work unit or duration. `ExecutionProjector` derives
 an Attempt's display status and result from the receipt (and disposition), never
 from the dispatch status alone, and separates the scheduler attempt window from
 the measured execution window (`executionStartedAt`/`executionCompletedAt`).
-Web surfaces read the same facts: the Subtask's canonical status decides a
-card's main state, a missing timestamp renders no duration (or `尚未执行`), a real
-sub-second execution is `<1s`, and a Planner-only Turn is labelled "已完成规划，
-未启动执行".
+User-facing status has one vocabulary: only the six Task states are presented as
+task status, read from the same durable TaskView/ExecutionTimeline fact on every
+surface. Dispatch/Attempt/receipt/Subtask/node/stage states are internal and may
+only choose progress text and visual encoding; execution cards carry no per-card
+status chip, and a Planner-only Turn names its phase ("已完成规划，未启动执行")
+instead of borrowing a Task conclusion. Progress text is settled with its fact: a
+terminal Subtask is not narrated as "正在校验…", a yielded Attempt does not claim
+the Executor started, a missing timestamp renders no duration (or `尚未执行`), and
+a real sub-second execution is `<1s`.
 
 #### Execution boundary and Mentor feedback (2026-10-27)
 

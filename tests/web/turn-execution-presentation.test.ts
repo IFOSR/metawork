@@ -56,10 +56,18 @@ describe('Turn execution presentation', () => {
     expect(presentation.planningDurationMs).toBe(11_787);
   });
 
-  it('keeps a completed Turn that owns a Task out of the planner-only label', () => {
-    const presentation = turnExecutionPresentation(turn({ taskId: 'task_site' }));
-    expect(presentation.phase).toBe('completed');
-    expect(presentation.label).toBe('已完成');
+  it('names a Task-owned Turn with the six-state conclusion only', () => {
+    const completed = turnExecutionPresentation(turn({
+      taskId: 'task_site',
+      executionTimeline: timeline('succeeded', [{ id: 's1', status: 'done', attempts: [] }]),
+    }));
+    expect(completed.taskStatus).toBe('succeeded');
+    expect(completed.label).toBe('成功');
+
+    // No timeline loaded yet: no label is invented from the Turn/trace status.
+    const pending = turnExecutionPresentation(turn({ taskId: 'task_site' }));
+    expect(pending.taskStatus).toBeNull();
+    expect(pending.label).toBe('');
   });
 
   it('reports a queued Task without inventing execution or a duration', () => {
@@ -70,7 +78,7 @@ describe('Turn execution presentation', () => {
       executionTimeline: timeline('queued', [{ id: 'sub_1', status: 'ready', attempts: [] }]),
     }));
     expect(presentation.phase).toBe('queued');
-    expect(presentation.label).toBe('已排队，尚未执行');
+    expect(presentation.label).toBe('排队');
     expect(presentation.executionStarted).toBe(false);
     expect(presentation.executionDurationMs).toBeNull();
   });
@@ -96,6 +104,7 @@ describe('Turn execution presentation', () => {
       }]),
     }), Date.parse('2026-10-28T06:34:40.000Z'));
     expect(presentation.phase).toBe('executing');
+    expect(presentation.label).toBe('执行中');
     expect(presentation.executionStarted).toBe(true);
     expect(presentation.executionDurationMs).toBe(10_000);
     expect(presentation.planningDurationMs).toBeNull();

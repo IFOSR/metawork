@@ -1,13 +1,9 @@
+/**
+ * Internal node state used for the graph's visual encoding (`data-status`).
+ * It is never rendered as a status label: the six-state Task conclusion is the
+ * only status a user sees.
+ */
 export type WorkGraphExecutionState = 'completed' | 'running' | 'waiting' | 'blocked' | 'failed' | 'unknown';
-
-export const WORK_GRAPH_STATUS_LABEL: Record<WorkGraphExecutionState, string> = {
-  completed: '已完成',
-  running: '执行中',
-  waiting: '待执行',
-  blocked: '已阻塞',
-  failed: '失败',
-  unknown: '状态待确认',
-};
 
 export function workGraphExecutionState(status: string): WorkGraphExecutionState {
   if (status === 'done' || status === 'completed' || status === 'succeeded') return 'completed';

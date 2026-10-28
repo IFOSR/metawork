@@ -1,5 +1,6 @@
 import type { ConversationTurnProjection } from './api/session-types';
 import type { ExecutionTimeline } from './api/types';
+import { isTaskStatus, taskStatusLabel, type TaskStatus } from './task-status';
 import { projectTurnForPresentation } from './turn-task-presentation';
 
 /**
@@ -24,7 +25,12 @@ export interface TurnExecutionPresentation {
   /** Durable execution entity of this Turn, when one exists. */
   taskId: string | null;
   phase: TurnExecutionPhase;
-  /** Short status label; planner-only Turns never read as a completed Task. */
+  /**
+   * The Task's canonical six-state conclusion, when this Turn owns a Task.
+   * `label` is derived from it, so every surface names the same status.
+   */
+  taskStatus: TaskStatus | null;
+  /** Task status label (six states) or the plannner-only phase label. */
   label: string;
   /** An Attempt reported a real execution start (Runtime/Attempt fact). */
   executionStarted: boolean;
@@ -36,14 +42,18 @@ export interface TurnExecutionPresentation {
   executionDurationMs: number | null;
 }
 
+/**
+ * Planner-only Turns own no Task, so they name the Turn phase instead of a task
+ * status. A Turn that owns a Task always uses the six-state label.
+ */
 const PHASE_LABEL: Record<TurnExecutionPhase, string> = {
   planning: '已完成规划，未启动执行',
-  queued: '已排队，尚未执行',
-  executing: '执行中',
-  completed: '已完成',
-  blocked: '需要处理',
-  failed: '失败',
-  cancelled: '已取消',
+  queued: '尚未开始执行',
+  executing: '尚未开始执行',
+  completed: '尚未开始执行',
+  blocked: '尚未开始执行',
+  failed: '尚未开始执行',
+  cancelled: '尚未开始执行',
 };
 
 export function turnExecutionPresentation(
@@ -61,11 +71,22 @@ export function turnExecutionPresentation(
     ? completedMs - startedMs
     : null;
   const phase = turnPhase(turn, timeline, executionStarted, projected.taskId);
+  // A Turn that owns a Task names that Task's conclusion with the single
+  // six-state vocabulary. Only a planner-only Turn uses a phase label, and a
+  // Task whose status fact is not loaded yet shows no label instead of
+  // inventing one from the Turn/trace status.
+  const taskStatus = projected.taskId && timeline && isTaskStatus(timeline.status)
+    ? timeline.status
+    : null;
+  const label = projected.taskId
+    ? taskStatusLabel(taskStatus) ?? ''
+    : phaseLabel(phase, turn);
 
   return {
     taskId: projected.taskId,
     phase,
-    label: phaseLabel(phase, turn),
+    taskStatus,
+    label,
     executionStarted,
     turnDurationMs,
     planningDurationMs: projected.taskId === null ? turnDurationMs : null,

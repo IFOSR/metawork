@@ -1,7 +1,7 @@
 import { useId, useMemo } from 'react';
 import type { WorkGraphPresentationProjection } from '../api/types';
 import { DAG_NODE_HEIGHT, DAG_NODE_WIDTH, layoutWorkGraph, workGraphNodeLabel } from '../work-graph-layout';
-import { WORK_GRAPH_STATUS_LABEL, workGraphExecutionState } from '../work-graph-status';
+import { workGraphExecutionState } from '../work-graph-status';
 
 export function WorkGraphDiagram({ projection, selectedId, onSelect }: {
   projection: WorkGraphPresentationProjection;
@@ -51,9 +51,6 @@ export function WorkGraphDiagram({ projection, selectedId, onSelect }: {
               onClick={() => onSelect(node.id)}>
               <span className="work-graph-diagram-node-meta">
                 <span>子任务 {numbers.get(node.id)}</span>
-                <span className="work-graph-node-status" data-status={node.executionState ?? workGraphExecutionState(node.status)}>
-                  {WORK_GRAPH_STATUS_LABEL[node.executionState ?? workGraphExecutionState(node.status)]}
-                </span>
               </span>
               <strong>{workGraphNodeLabel(node)}</strong>
               <small>{node.dependencies.length ? `${node.dependencies.length} 个前置依赖` : '无前置依赖'}</small>

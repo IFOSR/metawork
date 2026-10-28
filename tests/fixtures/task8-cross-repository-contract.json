@@ -1,7 +1,7 @@
 {
   "schemaVersion": 1,
   "metawork": {
-    "contractCommit": "e165b3979bcfd5428ecfa03401dd8cb3a22507e3"
+    "contractCommit": "b7a50cfee2acc7f9775c25a5e2d077e1510fd246"
   },
   "anyFusionPi": {
     "vendored": "planner/AnyFusion-Pi"
@@ -9,5 +9,5 @@
   "hostProtocolVersion": 2,
   "planningAgentPlanVersion": 8,
   "workGraphVersion": 7,
-  "planningAgentPlanSchemaSha256": "89386bc828f4dc66b942e6a515609a6dd5c66b1238b0203f45088f99f8b84b5a"
+  "planningAgentPlanSchemaSha256": "1f8f6b06dad8596afa1ff3d13b1aeab11c67a750f9ee2d2fd4f279953f35e384"
 }

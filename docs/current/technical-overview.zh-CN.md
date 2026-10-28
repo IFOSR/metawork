@@ -1174,6 +1174,12 @@ Workspace 根目录的服务文件只有在 Task 没有交付可运行项目时�
 schema 61 新增 `terminal_disposition`（`executed` / `not_started`）。资源分区或容量
 让位通过 `AttemptSupervisor → markNotStarted()` 记为 `not_started`，没有 receipt、
 Attempt runtime、Work Unit 或耗时。`ExecutionProjector` 的 Attempt 状态与结果由
-receipt 与 disposition 推导，并区分调度尝试窗口与实际执行窗口；前端使用 Subtask 的
-规范状态作为卡片主状态，缺失时间不显示耗时（或显示“尚未执行”），真实不足一秒显示
-`<1s`，只有 Planner 的 Turn 显示“已完成规划，未启动执行”。
+receipt 与 disposition 推导，并区分调度尝试窗口与实际执行窗口。
+
+用户可见的任务状态只有一套词汇：仅六态（排队/执行中/待处理/成功/失败/取消）作为
+任务状态呈现，且所有位置都读取同一份 TaskView / ExecutionTimeline 事实。Dispatch、
+Attempt、receipt、Subtask、工作图节点与阶段状态都是内部事实，只能用于选择进度文案和
+视觉编码，不能作为状态标签或状态徽章；执行卡片因此不再显示逐卡片状态，只有 Planner
+的 Turn 以阶段命名（“已完成规划，未启动执行”），不借用任务结论。进度文案必须与其
+事实同时成立：终态不再叙述“正在校验…”，让位的 Attempt 不再声称执行器已启动，缺失
+时间不显示耗时（或“尚未执行”），真实不足一秒显示 `<1s`。
