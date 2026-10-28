@@ -942,6 +942,20 @@ nothing verified an HTTP endpoint, and task completion treats it as ready only
 because that is the strongest fact the contract declares. A port-owning
 operation (health check, URL) exists only when the contract declares one.
 
+An Attempt owns its process group, not only the process it spawned. The Executor
+CLI is spawned as a group leader, so every command, browser, watcher or helper it
+starts stays in that group even after the leader exits. Settlement therefore reaps
+the group on every path — cancellation and normal completion — with SIGTERM, a
+bounded grace and SIGKILL, and records the bounded residual facts
+(`pid` + executable basename) on the Attempt. Only members younger than the
+Attempt are signalled, so a reused process-group id can never touch an unrelated
+process. A long-lived process must go through the managed-service path (Runtime
+records its token, state and URL); an Executor must not daemonize. A successful
+Attempt that had to be cleaned up is reported as such instead of a silent success.
+The Workspace source of a correction or accepted-result commit is the authorized
+Workspace binding — never the account-wide legacy `sourceRoot`, which points at
+the internal workspace store and is refused explicitly.
+
 Dispatch facts are equally explicit. A `kernel_dispatch_items` row that is no
 longer active is `terminal`, and `terminal` means only "this dispatch item no
 longer owns scheduler capacity". `terminal_disposition` records how it stopped:

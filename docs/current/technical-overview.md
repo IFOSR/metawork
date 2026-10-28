@@ -267,6 +267,18 @@ public address is empty rather than invented. Optional `running` state,
 `isServiceReadyState()` and the target project view are the only way surfaces
 learn that a service has no health check.
 
+An Attempt also owns its process group. The Executor CLI is a group leader, so the
+commands, browsers and watchers it starts stay in the group after the leader
+exits; settlement reaps them on both the cancellation and the normal-completion
+path (SIGTERM, bounded grace, SIGKILL), records bounded residual facts (pid +
+executable basename) on the Attempt, and only signals members younger than the
+Attempt so a reused group id cannot hit an unrelated process. Long-lived
+processes belong to the managed-service path; an Attempt must not leave an
+unowned daemon behind. The Workspace source used by a correction or
+accepted-result commit is the authorized Workspace binding, never the account-wide
+legacy `sourceRoot` (the internal workspace store), which now fails closed with a
+specific error.
+
 Dispatch facts follow the same rule. `kernel_dispatch_items.terminal` now means
 only "this dispatch item no longer owns scheduler capacity"; schema 61 adds
 `terminal_disposition` (`executed` | `not_started`). A partition/capacity yield

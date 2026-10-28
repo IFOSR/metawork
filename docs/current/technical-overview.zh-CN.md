@@ -1172,6 +1172,15 @@ Workspace 根目录的服务文件只有在 Task 没有交付可运行项目时�
 `HOST`/`PORT`，并把进程记录为 `running`（进程存活）。`running` 不等于 `healthy`，
 公开视图不伪造访问地址。
 
+Attempt 拥有的是整个进程组，而不只是它启动的那个进程。Executor CLI 是进程组组长，它
+启动的命令、浏览器、watcher 即使组长退出也仍留在该组内；因此结算时无论取消还是正常
+完成都会回收该组（SIGTERM → 有界宽限 → SIGKILL），并在 Attempt 上记录有界残留事实
+（pid + 可执行文件名）。只对"比 Attempt 更年轻"的成员发信号，因此被复用的进程组 id
+不会误伤无关进程。长期运行的进程必须走受管服务路径，Executor 不得留下无人拥有的守护
+进程；因清理而收尾的成功 Attempt 会如实报告，而不是静默成功。修正/结果接受提交使用的
+Workspace 来源是授权的 Workspace binding，不再是账户级历史 `sourceRoot`（内部 workspace
+store），后者会以明确错误失败。
+
 调度事实同样显式：`kernel_dispatch_items.terminal` 只表示该调度项不再占用调度容量，
 schema 61 新增 `terminal_disposition`（`executed` / `not_started`）。资源分区或容量
 让位通过 `AttemptSupervisor → markNotStarted()` 记为 `not_started`，没有 receipt、

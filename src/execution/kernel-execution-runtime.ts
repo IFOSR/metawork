@@ -3374,6 +3374,11 @@ export class KernelExecutionRuntime {
             subtaskId: item.subtaskId,
             authorizedBinding: item.authorizedBinding,
             bindingFingerprint: item.bindingFingerprint,
+            // The correction commits into the same authorized Workspace as the
+            // attempt it corrects. Without it the runner fell back to the
+            // account-wide `sourceRoot` (the internal workspace store), which
+            // then tried to import the store into itself.
+            ...(request.workspacePath ? { sourceRoot: request.workspacePath } : {}),
             completionContract: item.attemptPayload.completionContract,
             violations: item.attemptPayload.violations as Parameters<
               SubtaskAttemptRunner['runCorrection']
@@ -4805,6 +4810,30 @@ export class KernelExecutionRuntime {
     }));
   }
 
+  /**
+   * Bounded residual facts the Executor adapter recorded when it reaped the
+   * Attempt's process group. Pid plus executable basename only.
+   */
+  private residualProcessFacts(attemptId: string): {
+    members: Array<{ pid: number; command: string }>;
+    signalled: string;
+  } | null {
+    const progress = this.deps.attemptRuntimeRepo?.find(attemptId)?.progress as
+      Record<string, unknown> | undefined;
+    const diagnostics = progress?.diagnostics as Record<string, unknown> | undefined;
+    const process = diagnostics?.process as Record<string, unknown> | undefined;
+    const group = process?.residualGroup as Record<string, unknown> | undefined;
+    if (!group || !Array.isArray(group.members)) return null;
+    const members = group.members
+      .filter((member): member is { pid: number; command: string } => Boolean(member)
+        && typeof (member as { pid?: unknown }).pid === 'number'
+        && typeof (member as { command?: unknown }).command === 'string')
+      .slice(0, 20)
+      .map(member => ({ pid: member.pid, command: member.command.slice(0, 64) }));
+    if (members.length === 0) return null;
+    return { members, signalled: String(group.signalled ?? 'unknown') };
+  }
+
   private appendExecutorOutcomeTrace(
     item: KernelDispatchItemRecord,
     outcome: SubtaskAttemptOutcome,
@@ -4826,6 +4855,11 @@ export class KernelExecutionRuntime {
       subtaskId: item.subtaskId,
       subtaskTitle: this.deps.subtaskRepo.findById(item.subtaskId)?.title ?? item.subtaskId,
     });
+    // A settled Attempt must not leave unowned processes behind. When the
+    // Runtime had to stop leftovers in the Attempt's process group, say so: the
+    // fact belongs to this Attempt's record, not to a silent success
+    // (2026-10-28 transparent execution §execution-fact contract).
+    const residual = this.residualProcessFacts(item.attemptId);
     this.appendExecutionTrace({
       phase: 'verification',
       actor: 'executor',
@@ -4833,7 +4867,9 @@ export class KernelExecutionRuntime {
       status,
       title: isCompleted ? 'Executor result observed' : 'Executor attempt settled',
       summary: isCompleted
-        ? 'Executor completed the authorized attempt; Runtime is verifying the result.'
+        ? residual
+          ? `Executor completed the authorized attempt; Runtime stopped ${residual.members.length} process(es) it left running, then verified the result.`
+          : 'Executor completed the authorized attempt; Runtime is verifying the result.'
         : isContractResult
           ? 'Executor returned a result that Runtime is certifying for delivery.'
           : outcome.outcome === 'executor_unavailable'
@@ -4846,6 +4882,7 @@ export class KernelExecutionRuntime {
         attemptId: item.attemptId,
         executorName: item.authorizedBinding.agentClassRef,
         outcome: outcome.outcome,
+        ...(residual ? { residualProcesses: residual.members, residualSignal: residual.signalled } : {}),
         ...(isContractResult ? {
           deliverability: outcome.deliverability,
           certification: outcome.certification,

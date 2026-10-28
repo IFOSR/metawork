@@ -10,6 +10,11 @@ import type { ExecutorResult } from '../core/types.js';
 import type { ExecutorAdapter, ExecutorInput, ExecutorProbeResult } from './adapter.js';
 import { normalizeExecutorFailure, type ExecutorFailureContext } from './error-utils.js';
 import { readCapturedWorkspacePaths } from '../execution/workspace-capture-spool.js';
+import {
+  processGroupOwnershipNow,
+  reapProcessGroup,
+  type ProcessGroupReapResult,
+} from '../execution/process-group-reaper.js';
 import type {
   HarnessActivitySignal,
   HarnessDriver,
@@ -22,6 +27,8 @@ import type { ExecutorAffordanceId } from '../routing/types.js';
 const MAX_CAPTURE_BYTES = 16 * 1024 * 1024;
 const DEFAULT_EXECUTOR_IDLE_TIMEOUT_MS = 300_000;
 const DEFAULT_TERMINATION_GRACE_MS = 5_000;
+/** Short grace for reaping what a settled Attempt left in its process group. */
+const DEFAULT_RESIDUAL_GRACE_MS = 1_000;
 
 export interface LocalCliChildProcessInput extends HarnessLaunchSpec {
   attemptId: string;
@@ -52,6 +59,11 @@ export interface LocalCliProcessDiagnostics {
   sigtermSentAt: string | null;
   sigkillSentAt: string | null;
   exitCode: number | null;
+  /**
+   * Processes the Attempt left running after its CLI exited, and what Runtime
+   * did about them. Absent when the group was already empty (the normal case).
+   */
+  residualGroup?: ProcessGroupReapResult | null;
 }
 
 export interface LocalCliChildProcessRunner {
@@ -88,6 +100,8 @@ export interface SpawnLocalCliChildProcessRunnerDependencies {
   hostEnvironment?: NodeJS.ProcessEnv;
   signalProcess?: (pid: number, signal: NodeJS.Signals) => void;
   terminationGraceMs?: number;
+  /** Grace before SIGKILL when reaping processes an Attempt left behind. */
+  residualGraceMs?: number;
   processGroupExists?: (pid: number) => boolean;
   probeOperation?: (pid: number, operationId: string) => Promise<{ state: 'active' | 'unknown' | 'unresponsive' | 'exited'; evidence: string }>;
 }
@@ -472,6 +486,7 @@ export class SpawnLocalCliChildProcessRunner implements LocalCliChildProcessRunn
   private readonly hostEnvironment: NodeJS.ProcessEnv;
   private readonly signalProcess: (pid: number, signal: NodeJS.Signals) => void;
   private readonly terminationGraceMs: number;
+  private readonly residualGraceMs: number;
   private readonly probeOperation: NonNullable<SpawnLocalCliChildProcessRunnerDependencies['probeOperation']>;
   private readonly processGroupExists: (pid: number) => boolean;
 
@@ -480,6 +495,7 @@ export class SpawnLocalCliChildProcessRunner implements LocalCliChildProcessRunn
     this.hostEnvironment = dependencies.hostEnvironment ?? process.env;
     this.signalProcess = dependencies.signalProcess ?? process.kill;
     this.terminationGraceMs = dependencies.terminationGraceMs ?? DEFAULT_TERMINATION_GRACE_MS;
+    this.residualGraceMs = dependencies.residualGraceMs ?? DEFAULT_RESIDUAL_GRACE_MS;
     this.processGroupExists = dependencies.processGroupExists ?? (pid => {
       try { process.kill(-pid, 0); return true; }
       catch (error) { return (error as NodeJS.ErrnoException).code !== 'ESRCH'; }
@@ -502,6 +518,9 @@ export class SpawnLocalCliChildProcessRunner implements LocalCliChildProcessRunn
     }
 
     return new Promise(resolve => {
+      // Real wall clock (not a patched timer) so ownership of the group is
+      // provable even when a test framework fakes time.
+      const groupCreatedAtMs = processGroupOwnershipNow();
       const child = this.spawnProcess(input.command, input.args, {
         cwd: input.cwd,
         env: {
@@ -528,6 +547,7 @@ export class SpawnLocalCliChildProcessRunner implements LocalCliChildProcessRunn
       let idleTimer: NodeJS.Timeout | null = null;
       let forceKillTimer: NodeJS.Timeout | null = null;
       let groupCleanupTimer: NodeJS.Timeout | null = null;
+      let residualGroup: ProcessGroupReapResult | null = null;
       const monitor = new OperationActivityMonitor({
         quietMs: input.idleTimeoutMs ?? DEFAULT_EXECUTOR_IDLE_TIMEOUT_MS,
         probe: operation => child.pid ? this.probeOperation(child.pid, operation)
@@ -576,6 +596,7 @@ export class SpawnLocalCliChildProcessRunner implements LocalCliChildProcessRunn
             sigtermSentAt,
             sigkillSentAt,
             exitCode,
+            ...(residualGroup ? { residualGroup } : {}),
           },
         });
       };
@@ -625,7 +646,21 @@ export class SpawnLocalCliChildProcessRunner implements LocalCliChildProcessRunn
       });
       child.once('exit', code => {
         if (terminationSource !== 'abort' || process.platform === 'win32' || !child.pid) {
-          finish(code); return;
+          // A settled Attempt owns its process group too: anything the Executor
+          // left running (browser, watcher, dev server) would otherwise survive
+          // as an orphan with no owner, no projection and an occupied port.
+          if (process.platform === 'win32' || !child.pid) { finish(code); return; }
+          void reapProcessGroup({
+            pgid: child.pid,
+            graceMs: this.residualGraceMs,
+            sinceMs: groupCreatedAtMs,
+          })
+            .then(result => {
+              if (result.signalled !== 'none' || result.members.length > 0) residualGroup = result;
+            })
+            .catch(() => undefined)
+            .finally(() => finish(code));
+          return;
         }
         const processGroupExists = () => this.processGroupExists(child.pid!);
         if (!processGroupExists()) { finish(code); return; }

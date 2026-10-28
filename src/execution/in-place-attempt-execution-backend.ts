@@ -6,6 +6,11 @@ import type {
   AttemptExecutionRecord,
   CreateAttemptExecutionInput,
 } from './attempt-execution-backend.js';
+import {
+  processGroupOwnershipNow,
+  reapProcessGroup,
+  type ResidualProcessFact,
+} from './process-group-reaper.js';
 
 // Retained for compatibility with schema-v30 recovery and existing Docker labels.
 const MANAGED_LABEL = 'io.metaclaw.attempt-sandbox';
@@ -16,6 +21,8 @@ interface InPlaceAttempt {
   record: AttemptExecutionRecord;
   workspacePath: string;
   child: ChildProcess | null;
+  /** Real wall clock when the child was spawned; bounds group ownership. */
+  groupCreatedAtMs: number | null;
   logs: string;
   waitPromise: Promise<number> | null;
   resolveWait: ((exitCode: number) => void) | null;
@@ -77,6 +84,7 @@ export class InPlaceAttemptExecutionBackend implements AttemptExecutionBackend {
       record,
       workspacePath: workspace.source,
       child: null,
+      groupCreatedAtMs: null,
       logs: '',
       waitPromise: null,
       resolveWait: null,
@@ -87,6 +95,7 @@ export class InPlaceAttemptExecutionBackend implements AttemptExecutionBackend {
   async start(containerId: string): Promise<void> {
     const attempt = this.requireAttempt(containerId);
     if (attempt.child) return;
+    attempt.groupCreatedAtMs = processGroupOwnershipNow();
     const child = spawn(attempt.input.command, attempt.input.args, {
       cwd: attempt.workspacePath,
       env: {
@@ -116,7 +125,12 @@ export class InPlaceAttemptExecutionBackend implements AttemptExecutionBackend {
     });
     child.once('exit', (code, signal) => {
       if (signal) append(`\nprocess terminated by ${signal}\n`);
-      this.finish(attempt, code ?? 1);
+      // The Attempt owns its process group, not only the process it spawned.
+      // Reap leftovers before the backend reports the Attempt as exited, so a
+      // successful Attempt can never leave an unowned daemon behind.
+      void this.reapResidualGroup(attempt, append).finally(() => {
+        this.finish(attempt, code ?? 1);
+      });
     });
   }
 
@@ -202,6 +216,33 @@ export class InPlaceAttemptExecutionBackend implements AttemptExecutionBackend {
     const attempt = this.attempts.get(containerId);
     if (!attempt) throw new Error(`in-place attempt not found: ${containerId}`);
     return attempt;
+  }
+
+  /**
+   * Stop anything still running in the Attempt's process group and record the
+   * bounded facts. A group that is already empty returns immediately, so a
+   * well-behaved Attempt pays nothing.
+   */
+  private async reapResidualGroup(
+    attempt: InPlaceAttempt,
+    append: (chunk: string) => void,
+  ): Promise<void> {
+    const pid = attempt.child?.pid;
+    if (!pid || process.platform === 'win32') return;
+    const result = await reapProcessGroup({
+      pgid: pid,
+      graceMs: 1_000,
+      sinceMs: attempt.groupCreatedAtMs ?? undefined,
+    }).catch(() => null);
+    if (!result || result.signalled === 'none') return;
+    attempt.record.residualProcesses = result.members;
+    const listed = result.members
+      .map(member => `${member.command}(${member.pid})`)
+      .join(', ') || 'unknown members';
+    append(
+      `\n[in_place] reaped ${result.members.length} residual process(es) after the Attempt `
+      + `exited (${result.signalled}, ${listed})\n`,
+    );
   }
 
   private finish(attempt: InPlaceAttempt, exitCode: number): void {

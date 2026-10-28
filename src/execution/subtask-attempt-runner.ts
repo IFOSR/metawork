@@ -7,7 +7,7 @@ import { WorkspaceChangeRecordRepo } from '../storage/workspace-change-record-re
 import { TaskEventRepo } from '../storage/task-event-repo.js';
 import { createHash } from 'node:crypto';
 import { canonicalizeWorkspacePath, isWithin, isWorkspaceRelativePath } from '../workspace/workspace-path.js';
-import { basename, extname, join, relative, resolve } from 'node:path';
+import { basename, extname, join, relative, resolve, sep } from 'node:path';
 import { chmod, copyFile, lstat, mkdir } from 'node:fs/promises';
 import { mkdtempSync, readFileSync, rmSync, statSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -214,6 +214,24 @@ export interface SubtaskAttemptRunnerDeps {
 
 /** Owns one Subtask attempt from claim through immutable terminal persistence. */
 export class SubtaskAttemptRunner {
+  /**
+   * The account-wide `sourceRoot` is a legacy default, not the Workspace of a
+   * specific Task. If it points at the internal workspace store, importing it
+   * would copy the store into one of its own repositories, so refuse with the
+   * real reason instead of surfacing a self-import error.
+   */
+  private requireSourceRoot(purpose: string): string {
+    const configured = resolve(this.deps.sourceRoot);
+    const storeRoot = resolve(this.deps.workspaceStore.rootPath);
+    if (configured === storeRoot || configured.startsWith(`${storeRoot}${sep}`)) {
+      throw new Error(
+        `${purpose} has no authorized Workspace source: the configured source root is the internal `
+        + `workspace store (${storeRoot})`,
+      );
+    }
+    return this.deps.sourceRoot;
+  }
+
   private readonly contextBuilder: SubtaskExecutionContextBuilder;
   private readonly receiptRepo: ExecutorAttemptReceiptRepo;
   private readonly handoffRepo: SubtaskHandoffRepo;
@@ -366,7 +384,9 @@ export class SubtaskAttemptRunner {
       ? { commit: `in-place:${expected.attemptId}` }
       : await this.managedGitWorkspace.commit(
         await this.managedGitWorkspace.ensure({ taskId: expected.taskId,
-          generationId: expected.generationId, subtaskId: expected.subtaskId }, this.deps.sourceRoot),
+          generationId: expected.generationId, subtaskId: expected.subtaskId },
+        this.deps.workspaceExecutionBindingRepo?.find(expected.taskId, expected.generationId)?.canonicalPath
+          ?? this.requireSourceRoot('accepted result')),
         `fix: publish accepted ${subtask.id} result`,
       );
     const dispatch = this.dispatchItemRepo.find(expected.attemptId)!;
@@ -2224,7 +2244,10 @@ export class SubtaskAttemptRunner {
         throw new Error(`authorized dispatch item not found: ${input.attemptId}`);
       }
       const correctedWorkspace = await this.managedGitWorkspace.ensure({ taskId: task.id,
-        generationId: subtask.generationId, subtaskId: subtask.id }, input.sourceRoot ?? this.deps.sourceRoot);
+        generationId: subtask.generationId, subtaskId: subtask.id },
+      input.sourceRoot
+        ?? this.deps.workspaceExecutionBindingRepo?.find(task.id, subtask.generationId)?.canonicalPath
+        ?? this.requireSourceRoot('correction attempt'));
       const correctedCommit = await this.managedGitWorkspace.commit(correctedWorkspace, `fix: certify ${subtask.id} result`);
       const landing = this.terminalService.land({
         receipt: buildReceipt({

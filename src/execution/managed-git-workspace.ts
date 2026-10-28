@@ -2,7 +2,7 @@ import { createHash } from 'node:crypto';
 import { execFile } from 'node:child_process';
 import { chmod, cp, lstat, mkdir, mkdtemp, readFile, realpath, rm, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { dirname, join, relative, resolve } from 'node:path';
+import { dirname, join, relative, resolve, sep } from 'node:path';
 import { promisify } from 'node:util';
 import type { WorkspaceHandle, WorkspaceIdentity, WorkspaceStore } from './workspace-store.js';
 import { boundedPathSegment } from '../utils/bounded-path-segment.js';
@@ -165,6 +165,16 @@ export class ManagedGitWorkspaceService {
   async ensure(identity: WorkspaceIdentity, sourcePath: string): Promise<ManagedGitWorkspace> {
     const detectedSource = await this.detectSource(sourcePath);
     const sourceRoot = detectedSource?.root ?? await realpath(sourcePath);
+    // The internal workspace store is Runtime state, never a Task's source.
+    // Importing it (or a clone of it) would copy the store into one of its own
+    // repositories, so a caller that passes it fails closed with the real
+    // reason instead of a confusing self-import error.
+    const storeRoot = await realpath(this.store.rootPath).catch(() => this.store.rootPath);
+    if (sourceRoot === storeRoot || sourceRoot.startsWith(`${storeRoot}${sep}`)) {
+      throw new Error(
+        `managed Git source must be the authorized Workspace, not the internal workspace store: ${sourceRoot}`,
+      );
+    }
     const sourceInfo = await stat(sourceRoot);
     if (!sourceInfo.isDirectory()) throw new Error('managed Git source must be a directory');
     await mkdir(this.repositoriesPath, { recursive: true });

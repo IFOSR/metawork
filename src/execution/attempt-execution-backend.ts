@@ -47,6 +47,12 @@ export interface AttemptExecutionRecord {
   status: 'created' | 'running' | 'paused' | 'exited' | 'missing';
   exitCode: number | null;
   labels: Record<string, string>;
+  /**
+   * Processes the Attempt left running in its own process group after its
+   * command exited. Runtime reaps them on settlement; the facts stay bounded
+   * (pid + executable basename) for audit.
+   */
+  residualProcesses?: Array<{ pid: number; command: string }>;
 }
 
 export interface AttemptExecutionBackend {
