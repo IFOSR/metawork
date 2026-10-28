@@ -115,11 +115,16 @@ handoffs. Resume uses the existing Kernel route and checks generation/revision;
 failed delivery retries files, never Executor work. Legacy publication history is
 not backfilled or silently re-published.
 
-Execution boundary and feedback principle (2026-10-27): Planner understands the
-user goal and produces the Work Graph; Kernel reviews and authorizes that Graph;
-Executor/Harness owns the complete internal execution loop; MetaWork receives
-the final Attempt fact, verifies the external postconditions, assembles the
-Graph result and delivers it. Harness-owned tool errors, command failures,
+Execution boundary and feedback principle (2026-10-27, clarified by ADR-0052):
+Planner understands the user goal and produces the Work Graph; Kernel reviews
+and authorizes that Graph; Executor/Harness owns the complete internal
+execution loop and its tool registry; MetaWork receives the final Attempt fact,
+verifies the external postconditions, assembles the Graph result and delivers
+it. `workspaceIntent` describes the requested Workspace effect for admission
+and verification, but it never becomes a Harness tool allowlist. A normal
+Executor keeps its shell and other registered tools available; only an explicit
+response-only correction may request a reduced surface. Harness-owned tool
+errors, command failures,
 test failures, code repair, Provider backoff and multi-turn reasoning must stay
 inside the Harness. They are not user decisions and must not be promoted to a
 MetaWork terminal failure after the first error. `executor_failed` means that
@@ -430,7 +435,7 @@ plan; earlier source-only checkpoints are historical. Web restoration reads off-
 
 Phase 6 established the durable attempt and recovery substrate, and ADR-0037
 extends it to parallel top-level Tasks across Conversations. The active path
-remains `event -> durable inbox -> KernelWorkflow -> snapshot -> ControlKernel.decide -> immutable decision ledger + application -> durable dispatch items -> attempt supervisor -> normalized observation inbox`. `KernelWorkflow` serializes authorization and application, while independent top-level Tasks from different Conversations may run concurrently within configured account limits. A Conversation has one durable execution slot; its later Tasks queue and never overlap its executing or cleaning-up Task. New attempts execute directly in the Conversation-bound Workspace: write attempts claim the authorized physical path before launch, while read-only attempts use a Runtime scratch directory and a read-only Workspace boundary. In-place attempts persist snapshots, change records, receipts and uncertainty through retry and recovery; they do not create a candidate publication. The Docker attempt backend remains an explicit compatibility mode. The isolated AnyFusion-Pi `PlanningAgent` owns user conversation, read-only queries and natural-language planning semantics; `ControlKernel` owns scheduling, cancellation and recovery policy, and Execution owns WorkUnit claims, leases, backend runtimes and Git side effects. See ADR-0037 and the active implementation plan for the multi-Conversation rollout.
+remains `event -> durable inbox -> Durable Task Coordinator -> immutable coordination fact -> durable dispatch items -> attempt supervisor -> normalized observation inbox`. The current `KernelWorkflow`/`ControlKernel` pair is the migration implementation of that coordinator; it serializes graph admission and durable application, while independent top-level Tasks from different Conversations may run concurrently within configured account limits. A Conversation has one durable execution slot; its later Tasks queue and never overlap its executing or cleaning-up Task. New attempts execute directly in the Conversation-bound Workspace: write attempts claim the authorized physical path before launch, while read-only attempts use a Runtime scratch directory and a read-only Workspace boundary. In-place attempts persist snapshots, change records, receipts and uncertainty through retry and recovery; they do not create a candidate publication. The Docker attempt backend remains an explicit compatibility mode. The isolated AnyFusion-Pi `PlanningAgent` owns user conversation, read-only queries and natural-language planning semantics; the Coordinator owns durable scheduling, cancellation and recovery facts, and Execution owns WorkUnit claims, leases, backend runtimes and Git side effects. Executor/Host owns capability decisions. See ADR-0037 and ADR-0053.
 
 `src/planning/` owns the PlanningAgent interface (`AnyFusionPlanningAgent`), controlled-lifecycle AnyFusion-Pi JSONL RPC runner, the structured proposal contract, and catalog-aware validation. One Conversation maps to one persisted Pi session file. Semantic turns use `--mode rpc` over stdin/stdout JSONL and serialize writers per Conversation; MetaWork does not replay SQLite interaction history into prompts. Stable instructions and one fixed `metaclaw-planner/SKILL.md` live in the AnyFusion-Pi fork, while dynamic Task, runtime, authorization and routing facts come only from seven allowlisted read-only MetaWork MCP tools. Semantic RPC turns expose only those authoritative MCP tools plus the native proposal tool; Pi-native repository readers, Web reconnaissance, shell, edit and write tools are disabled in this mode. The interactive client-only TUI may retain read-only repository tools for workspace questions, but it does not own Web research or execution. New semantic Planner proposals may not use `direct_reply`: work-like requests must use `plan_work_graph` and a Kernel-authorized Executor, while historical direct-reply records remain readable for audit and replay. Slash-prefixed system commands stay on the Application-Shell path. Real-time/source-dependent facts, supplied URLs and public research requests are routed directly to an AgentClass covering `current-web-research`; the Executor performs final Web retrieval and receives the bounded current user input through `contextRefs`. Shell execution, unavailable Workspace inspection, file/Git/storage mutation, authenticated external actions, other side effects, durable progress, monitoring, artifacts and downstream handoffs require `plan_work_graph` and a Kernel-authorized Executor. This remains semantic Planner policy, not Session/Kernel keyword routing. MetaWork remains the only validator and the only owner of Task, Kernel, Executor and storage mutation. Pi submits `PlanningAgentPlan v9` only through its restricted native `submit_planning_proposal` tool. Runtime injects session, turn, user input and deterministic submission identity; the model supplies only `plan`. A rejection remains ordinary structured tool feedback in the same ReAct turn, with no proposal-specific retry count, repair prompt or outer coordination loop. `src/work-graph/` owns the shared v7 graph types and pure structural rules consumed by Planning, Kernel, and Execution. Transport uncertainty is distinct from validation rejection and is resolved only by idempotently replaying the identical submission. Planner convergence exhaustion is a separate fail-closed terminal result; it creates no fallback proposal, Task, Kernel event or Executor attempt, and asks the user to retry or narrow the request. There is no assistant-text envelope parser, earlier-schema production parser, legacy intent route, semantic default, keyword fallback or Codex Planner fallback.`
 
@@ -582,10 +587,10 @@ material, contract, orphan and external-effect blockers remain authoritative.
 Kernel rejects retry when recovery capabilities are externally non-idempotent;
 blocked Subtasks must contribute to those safety facts even with an empty frontier.
 Runtime does
-not rewrite the receipt or Kernel ledger, does not relax permission, material,
-contract or external-effect recovery, and `ControlKernel` remains the sole
-authority for `resume_task`. Task and Subtask state restoration is applied only
-with the Kernel decision. Uncertain Kernel applications converge by declared postcondition rather than by
+not rewrite the receipt or coordination ledger, does not relax material,
+contract or external-effect recovery, and the Durable Task Coordinator remains
+the authority for `resume_task`. Task and Subtask state restoration is applied
+only with its durable coordination command. Uncertain applications converge by declared postcondition rather than by
 manual SQLite repair. One shared convergence entry runs at startup and on the
 account periodic review, selected from durable pending facts rather than a
 blocked-only Task scan. It inspects each managed action family (`dispatch`,
@@ -764,7 +769,16 @@ credentials, never touches Feishu-side app state, and has no effect on other
 machines sharing the same Feishu app. The Web surface offers no bind/unbind
 operation.
 
-`src/kernel/` owns the pure `ControlKernel` and the deep control-loop interface. Kernel contract v5 includes the executor-recovery and deferred-availability lifecycle in addition to the Phase 6 dispatch, cancellation, publication and permission contracts. `ControlKernel` reads no time, IDs, repositories, adapters or raw logs. Storage and Runtime implement the ledger and apply seams from outside the Kernel module.
+`src/kernel/` currently contains the pure `ControlKernel` compatibility contract
+and the durable workflow seam. Per ADR-0053, this code is being narrowed into
+the Durable Task Coordinator: it may validate Work Graph identity, persist Task
+facts, derive a runnable frontier and coordinate parallel claims/recovery. It is
+not a security layer, does not choose Executor tools, and does not grant or
+deny Executor capabilities. Capability requests are decided by the
+Executor/Host policy path; the old Kernel permission actions exist only for
+historical replay during migration. `ControlKernel` reads no time, IDs,
+repositories, adapters or raw logs. Storage and Runtime implement the durable
+facts and side effects outside the compatibility module.
 
 `src/execution/subtask-attempt-runner.ts` executes one Kernel-authorized deterministic attempt. A successful In-place primary/correction attempt commits an immutable receipt and change record, then completes the Subtask directly; it does not create a candidate publication. Workspace delivery records change facts and live references atomically after the attempt receipt is sealed. Every non-success commits a terminal receipt and returns control to Kernel policy. A first completion-contract failure may receive one response-only correction on the same AgentClass. In-place write uncertainty is fenced for reconciliation; legacy publication/merge-repair records are migration facts and are never dispatched for new work.
 
@@ -788,7 +802,7 @@ Managed path-naming invariant: durable identities (Task, generation, Subtask, at
 
 The current product implementation uses SQLite schema version 60. Fresh databases start at v60; supported pre-release databases migrate transactionally through v31→v32→…→v59→v60 on a verified clone while unsupported older schemas are refused. Schema 52 is the main-owned six-state Task base; schema 58 pins the single In-place Workspace binding and parks unfinished legacy Worktree publications instead of replaying an implicit copy. Schema v42 adds `generation_replan_requests.planner_claim_token`, the fencing token that makes one Planner turn land at most once even when two account workers re-claim the same Job after a lease expiry. Schema v41 adds the resolved routing identity columns (`agent_class_ref`, `provider_ref`, `model_id`) on `usage_observations`. Schema v39/v40 adds the ADR-0042 Query usage and billing facts: Query attribution contexts with one request-scoped idempotency key, Query-to-cost-Task links, execution-segment mappings, metering spans, normalized usage observations with one row per `(source_id, source_event_key, metric)`, normalization issues, immutable price versions, cost entries, per-Query bills and stage lines, the consumption outbox and receipts, bill adjustments, and the stable billing source-instance identity. Amounts are constrained decimal text; all aggregation happens in exact money code. Schema v38 adds the durable `planner_turn_inputs` record holding one Planner Turn's attachment facts for the host-bridge submission, so admission stays correct across a Server restart. Schema v37 permits image preview kinds in the durable `task_artifacts` table. The migration converts active/recoverable Planning and Work Graph payloads from v7/v6 to v8/v7, including revision-pinned `executorBindings`, while terminal Kernel ledger history remains immutable. Any ambiguous recoverable payload rolls the cloned migration back and refuses activation; runtime has no earlier-schema read fallback. Schema v32 added immutable Result Objects and edge-scoped ResultReferences; schema v33 adds the Planner proposal configuration-revision pin used by replay and recovery. `awaiting_decision` and `awaiting_integration` remain Subtask-only states; startup recovery reconciles applications, child items, cancellation cleanup, execution-backend records, leases, publications and result delivery before accepting input. The physical names `attempt_sandboxes`, `sandbox_container_id` and `sandbox_lost` are retained only as durable schema/event compatibility names; new TypeScript abstractions use Execution Backend terminology.
 
-The legacy routing/intent subsystem, `PolicyKernel`, `TaskAdmissionGate`, `SchedulerEngine`, queue/preemption policy and parked auto-resume have been removed. The target active path is `PlanningAgent/Application Shell → KernelWorkflow → ControlKernel → idempotent Runtime handlers → SubtaskAttemptRunner`; do not reintroduce a parallel strategic interpreter or allow a workflow framework to own domain retry policy.
+The legacy routing/intent subsystem, `PolicyKernel`, `TaskAdmissionGate`, `SchedulerEngine`, queue/preemption policy and parked auto-resume have been removed. The target active path is `PlanningAgent/Application Shell → Work Graph → Durable Task Coordinator → idempotent Runtime handlers → Executor/Harness`; the current `KernelWorkflow → ControlKernel` implementation is the migration adapter for that coordinator. Do not reintroduce a parallel strategic interpreter, a Kernel security gate, or allow a workflow framework to own Harness retry policy.
 
 Startup inserts the missing `planner` class and force-converges the persisted `codex-cli` and `pi-agent` AgentClasses to their canonical definitions, including permission-profile bindings and the image fields used by Docker compatibility mode. Custom classes without a valid runtime command/permission profile remain audit-visible but fail closed. Only `planner-1` is seeded; executor WorkUnits are created and probed on demand after kernel authorization. `ExecutorRegistry` resolves every executable AgentClass through the backend-aware `BackendExecutorAdapter`; the in-place backend is the trusted native process path, and Docker remains explicit compatibility coverage rather than a second semantic executor router.
 
@@ -828,7 +842,8 @@ separate from Planner-declared downloadable fileOutputs. Ordinary clients expose
 only the Workspace, public task directory, relative files, delivery state and
 conflicts; internal execution paths and secrets are redacted from public text.
 
-Planner proposes service intent; Kernel authorizes; Runtime owns the process.
+Planner proposes service intent; the Durable Task Coordinator validates the
+Task/workspace identity; Runtime owns the process.
 For an explicit implement-and-start request, startServiceAfterPublish gates
 completion on publication and a real health check. The Executor produces
 .metawork-service.json without needing a Task ID; Runtime binds that identity and
@@ -1386,15 +1401,20 @@ The small interface exposed by a planner work unit: given a planning context, re
 _Avoid_: policy kernel, session intent service, executor
 
 **PlanningAgentPlan**:
-A strict v8 proposal from the PlanningAgent describing intent, target, task control, risk, confidence and clarification needs. It contains one non-empty v7 work graph only for `plan_work_graph`, or an exact approve/deny resolution only for a pending `authorization_resolution`; all other action-specific fields are null. The graph pins one `configurationRevision`; each node uses structured dependencies, typed context references, keyed acceptance criteria, `deliveryKind: edit | report`, and one or more complete authorized Executor binding candidates. A plan is not executable until its durable event is authorized or rewritten by `ControlKernel` and recorded in the decision ledger.
+A strict v8 proposal from the PlanningAgent describing intent, target, task control, risk, confidence and clarification needs. It contains one non-empty v7 work graph only for `plan_work_graph`, or an exact approve/deny resolution only for a pending `authorization_resolution`; all other action-specific fields are null. The graph pins one `configurationRevision`; each node uses structured dependencies, typed context references, keyed acceptance criteria, `deliveryKind: edit | report`, and one or more complete Executor binding candidates. A plan is executable after Work Graph validation and durable Task Coordinator admission; Planner fields never become a Harness tool allowlist.
 _Avoid_: runtime command, task event, execution policy
 
 **ControlKernel**:
-The pure deterministic v5 decision module for Planning, frontier batch dispatch, capacity, execution outcome, Task/Subtask cancellation, partial-result acceptance, generation replan, deferred availability, Executor recovery, publication conflict, contract failure and timer events. Its only public Interface is `decide(event, snapshot)`.
+The migration compatibility module for deterministic Work Graph admission,
+frontier coordination and durable recovery facts. It is not a security layer,
+does not select Harness tools, and does not own Executor capability policy.
+The target public seam is the Durable Task Coordinator; `decide(event,
+snapshot)` remains only while the extraction is in progress.
 _Avoid_: planning agent, runtime applier, executor router
 
 **KernelDecision**:
-The one high-level authorization that Runtime may apply. Its identity is deterministically derived from the triggering event ID.
+A migration-era durable coordination command applied by Runtime. It is not a
+permission grant and cannot widen an Executor's tools or Host boundary.
 _Avoid_: raw plan, route decision, executor output
 
 **KernelSnapshot**:
@@ -1414,7 +1434,7 @@ The runtime lifecycle vocabulary for work units: starting, idle, claimed, runnin
 _Avoid_: task state, subtask state
 
 **Work Graph**:
-The sole execution-structure fact for one task generation: a v7 revisioned DAG pinned to one configuration revision, with capability-minimal Subtasks whose `dependencies` are both topology and typed delivery contracts. Every node declares its primary delivery channel (`edit` for Workspace/file delivery, `report` for report/answer delivery); both kinds may create ordinary user-space files, including Workspace files and research intermediates. It carries ordered complete Executor bindings rather than free-form class preferences. Every edge has one to twelve keyed `text` or `artifact` items; only published direct-edge handoffs and controlled task evidence enter downstream context. A pure function derives the runnable frontier without persisting an execution layer. Kernel may authorize up to four independent nodes in one deterministic batch; retry, fallback, continuation, merge repair and bounded replans remain Kernel policy.
+The sole execution-structure fact for one task generation: a v7 revisioned DAG pinned to one configuration revision, with capability-minimal Subtasks whose `dependencies` are both topology and typed delivery contracts. Every node declares its primary delivery channel (`edit` for Workspace/file delivery, `report` for report/answer delivery); both kinds may create ordinary user-space files, including Workspace files and research intermediates. It carries ordered complete Executor bindings rather than free-form class preferences. Every edge has one to twelve keyed `text` or `artifact` items; only published direct-edge handoffs and controlled task evidence enter downstream context. A pure function derives the runnable frontier without persisting an execution layer. The Durable Task Coordinator may claim up to four independent nodes in one deterministic batch; Harness retry/repair remains inside the Executor, while cross-attempt recovery and publication remain durable coordination facts.
 _Avoid_: raw prompt, route decision, executor plan, issue thread
 
 **Subtask Execution Context**:
@@ -1535,7 +1555,7 @@ The attempt-bound claim over one normalized repository, worktree, mount-relative
 _Avoid_: permanent workspace ownership, WorkUnit identity, host absolute path
 
 **Capability Request**:
-An Executor's structured request for one concrete operation outside its default AgentClass permission profile. Runtime canonicalizes it; Kernel v5 alone grants a bounded capability, denies with an Executor-visible reason, or denies and escalates the exact request to Planner/user authorization. A granted request returns an opaque grant ID but does not itself widen execution authority or container sandbox policy. Runtime supplies versioned explicit rules: exact Task-registered read partitions, plus normalized public HTTP(S) targets only for the public-web-research profile; secrets and mutations are never profile-allowed.
+An Executor's structured request for one concrete operation outside its default AgentClass capability profile. Runtime canonicalizes it; the Executor/Host capability policy grants a bounded capability, denies with an Executor-visible reason, or escalates the exact request to user authorization. A granted request returns an opaque grant ID but does not itself widen execution authority or container sandbox policy. Runtime supplies versioned explicit rules: exact Task-registered read partitions, plus normalized public HTTP(S) targets only for the public-web-research profile; secrets and mutations are never profile-allowed. Kernel does not interpret this request.
 _Avoid_: Planner resource claim, stderr parsing, broad permission prompt
 
 **Capability Use**:

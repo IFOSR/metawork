@@ -19,6 +19,10 @@ migration record are archived as ADR-0019.
 
 ADR-0022 is the origin authority for the unified Kernel event/snapshot/decision Interface, decision ledger, `awaiting_decision`, synchronous control loop, capacity candidate switching, and response-only correction. Its contract has since been amended through ADR-0023/0024/0025/0026 and the current Kernel wire version is v5. Its 2026-09-25 amendment renames the public vocabulary to "attempt settled" and canonical `awaiting_completion` while retaining the persisted column spellings for migration and audit.
 
+ADR-0053 supersedes the strategic-authority interpretation of that contract:
+the durable event/ledger facts remain useful during migration, while capability
+policy, Harness tool selection and Harness retry/repair are outside Kernel.
+
 ADR-0023 is the current authority for the durable KernelWorkflow, structured failure and availability rules, idempotent application recovery, Work Graph revisions, continuation, outbox, manual recovery, and the 2026-07-30 deferred-availability/executor-recovery amendment. Its 2026-09-25 amendment replaces the foreground `request_replan` callback application with the durable `schedule_replan` Job plus an account-scoped Planner Worker, and requires every uncertain application to converge through its declared postcondition.
 
 ADR-0024 is the current authority for Phase 5 resource partitions, persistent workspaces, per-attempt Docker sandboxes, durable resource leases and runtime capability elevation.
@@ -127,11 +131,19 @@ actual tools and authority, and migrate eligible standard profiles only through
 unified settings activation. Local source, native and Electron validation are
 complete; the linked plan retains the real Docker acceptance gate.
 
+ADR-0052 is retained for the Executor-owned Harness tool surface. Its
+strategic-Kernel decision is superseded by ADR-0053, which makes the durable
+Task Coordinator a coordination seam rather than a permission authority.
+Planner Workspace intent is an effect declaration for admission and
+postconditions, never a Harness tool allowlist.
+
 ## Current authority matrix
 
 | Topic | Current authority | What it decides |
 | --- | --- | --- |
 | Executor baseline operations (local implementation; Docker acceptance open) | [ADR-0046](0046-agent-baseline-operations-and-responsibility-separation.md), amending ADR-0024/0028/0033 | System-owned ordinary operations; duties do not grant authority; exact profile migration via unified activation; historical, Planner and custom restrictions preserved |
+| Planner graph, durable coordination and Executor authority | [ADR-0053](0053-planner-graph-coordinator-and-executor-authority.md), superseding the strategic portions of ADR-0020/0022/0023/0024/0052 | Planner owns semantics and graph decomposition; the durable coordinator owns Task/graph facts and parallel claims; Executor/Host owns tools and capability policy; Kernel is not a security layer |
+| Executor tool surface | [ADR-0052](0052-executor-owned-tool-capabilities-and-kernel-boundary.md), as retained by ADR-0053 | Harness owns its tool registry and internal loop; Planner Workspace intent is an effect declaration, never a tool allowlist |
 | Task lifecycle state contracts | [ADR-0020](0020-core-module-ownership-and-dependency-direction.md) §2026-09-25 amendment, [ADR-0022](0022-unified-kernel-control-plane-and-decision-ledger.md), [ADR-0023](0023-durable-kernel-workflow-recovery-and-availability.md), [ADR-0037](0037-multi-conversation-task-parallelism.md) | Canonical Task/Subtask/Attempt lifecycle ownership, the single Task/Work Graph transition port, durable Replan Jobs and per-family uncertain-application postconditions, residue-based slot release, and the read-only TaskView projection consumed by TUI/Web/Feishu |
 | Multi-client observation and control | [ADR-0043](0043-explicit-conversation-observation-and-client-read-models.md) | Equal Account-scoped rights; bounded read models, explicit observers, exact cancellation, durable approval arbitration and independent notification routes; supersedes ADR-0036 |
 | Planner 主导的 Workspace 执行模式 | [ADR-0050](0050-planner-owned-workspace-execution-mode.md) | Planner 唯一语义判断、Kernel 确定性准入、`in_place` 主路径、内部 Worktree 隔离执行、授权变更集发布、模式对 Task 不可变 |

@@ -24,24 +24,31 @@ MetaWork 是本仓库统一呈现的闭源商业产品。AnyFusion 是独立的�
 > generation 级 AgentClass/Model/Harness 绑定、future A2A transport seam，
 > 以及带签名和崩溃恢复的原生 update transaction。
 
-升级保持唯一控制链：
+升级收敛到以下职责链：
 
 ```text
-Planner 提案 -> ControlKernel 决策 -> Runtime 应用
--> ExecutorAdapter 传输一个已授权 attempt
+Planner 提案 -> Work Graph 验证 -> Durable Task Coordinator 持久化与调度
+-> Executor/Harness 自己运行 loop -> Runtime/Host 执行边界并记录事实
 ```
 
 目标配置对每个 Work Graph generation 固定一个 immutable revision；graph
 revision、deferred recovery、decision、dispatch、attempt 和 receipt 都继续引用
 该 revision。Provider/Model health 是带 revision identity 的 Kernel 投影，
-Runtime 与 Adapter 只上报事实，不决定 fallback。Permission Profile 语义仍由
-Resource/Kernel 的代码契约拥有。数据库采用 v30→v31→v32 事务升级，并与
+Runtime 与 Adapter 只上报事实，不决定 fallback。`workspaceIntent` 只描述
+Workspace effect 和目标路径，供 admission 与验收使用，不是 Harness 工具
+allowlist。Durable Task Coordinator 继续负责持久化 admission、执行身份、租约、结算、发布和恢复，
+但不把 `read_only` 或 `run_in_target` 翻译成工具集合；Executor/Harness 自己
+拥有 agent loop、工具注册和 capability request。正常 Pi Attempt 保留 shell 和标准文件工具，只有
+显式 response-only correction 才使用缩减工具面。Permission Profile 与 Host
+sandbox 仍由 Resource/Runtime 负责实际边界。详见
+[ADR-0052](../adr/0052-executor-owned-tool-capabilities-and-kernel-boundary.md)。
+数据库采用 v30→v31→v32 事务升级，并与
 release 验签、关闭 Task admission、dispatch quiesce、数据库备份、candidate
 health check 和 rollback 协调。A2A 实现移入独立后续路线图。
 
 MetaWork 是一个本地优先的 AI Task OS。它把自然语言需求变成可持久化、可检索、可调度、可验收的任务，让 AI 工作不再只是“回答这一轮”，而是可以跨中断继续执行、恢复上下文、规划子任务、claim executor work unit，并把最终产物交付到用户真正查看的地方。
 
-它适合需要 AI Agent 长时间可靠工作的团队：任务有状态机，记忆有边界，自然语言主路径采用 PlanningAgent / ControlKernel / Durable KernelWorkflow / work-unit runtime，复杂任务有拆解和验收，文件产物有记录，飞书交付有后端，真实端到端烟测可以验证用户路径是否跑通。
+它适合需要 AI Agent 长时间可靠工作的团队：任务有状态机，记忆有边界，自然语言主路径采用 PlanningAgent / Work Graph / Durable Task Coordinator / Executor-Harness runtime，复杂任务有拆解和验收，文件产物有记录，飞书交付有后端，真实端到端烟测可以验证用户路径是否跑通。
 
 ## 核心能力
 
@@ -53,7 +60,7 @@ MetaWork 是一个本地优先的 AI Task OS。它把自然语言需求变成可
 - 通过本地 SQLite FTS 索引向 PlanningAgent 提供显式的历史任务检索。
 - 将复杂任务规划为显式 subtasks、验收标准和聚合规则。
 - 将工作表示为 task-owned subtask graph，排序候选 agent classes，并让空闲 executor work units claim ready subtasks。
-- Planner → ControlKernel → Runtime 是唯一策略主链；验收、retry、fallback、replan 和 recovery 不再由第二套 Agentic Loop 解释。
+- Planner → Work Graph → Durable Task Coordinator → Executor/Harness 是执行主链；验收与持久恢复由 Runtime/Coordinator 记录，retry、fallback 和 repair 留在 Harness 内部，不再由第二套 Agentic Loop 解释。
 - 每个 Conversation 绑定一个持久 AnyFusion-Pi Planner session；已确认偏好和运行时事实通过只读查询边界按需获取。
 - 生成文件自动记录为任务产物。
 - 飞书回复、文件同步和 Markdown 在线预览由后端统一处理。
@@ -122,7 +129,7 @@ flowchart LR
   Planning --> Plan[PlanningAgentPlan v9<br/>Workspace 意图、目标、风险、<br/>v7 graph 或授权确认]
   Plan --> Event[KernelEvent<br/>plan_proposed]
   Event --> Workflow[Durable KernelWorkflow v5<br/>inbox、snapshot、decision、application]
-  Workflow --> Kernel[ControlKernel<br/>frontier、batch、资源、<br/>permission 与恢复]
+  Workflow --> Kernel[Durable Task Coordinator<br/>frontier、batch、资源与恢复]
   Kernel --> Decision{KernelDecision}
   Decision -->|clarification / task_control / no_action| Conversation[KernelDecisionApplier<br/>非执行状态或澄清]
   Decision -->|plan_work_graph| Executor[Kernel-authorized Executor<br/>完成工作结果]
@@ -155,7 +162,7 @@ flowchart LR
   Attempt <--> Store
 ```
 
-所有自然语言输入统一进入隔离的 AnyFusion-Pi `PlanningAgent`，产出严格 v8 `PlanningAgentPlan`。Work Graph 使用 v7 契约，固定一个配置 revision 并携带完整 Executor bindings；Planner 不枚举资源 claim 或 execution layer。`ControlKernel` 根据 frontier、pending/active item、AgentClass、资源和 slot 事实授权确定性 batch；Execution 并行运行 attempt，并由 publication worker 按拓扑层、首次授权顺序和 Subtask ID 发布成果。
+所有自然语言输入统一进入隔离的 AnyFusion-Pi `PlanningAgent`，产出严格 v8 `PlanningAgentPlan`。Work Graph 使用 v7 契约，固定一个配置 revision 并携带完整 Executor bindings；Planner 不枚举资源 claim、工具 allowlist 或 execution layer。当前 `ControlKernel` 是迁移期 Durable Task Coordinator 兼容实现，根据 frontier、pending/active item、AgentClass、资源和 slot 事实协调确定性 batch；Execution 并行运行 attempt，并由 publication worker 按拓扑层、首次授权顺序和 Subtask ID 发布成果。Executor/Host 直接处理 capability policy，Kernel 不参与权限解释。
 
 AnyFusion-Pi `PlanningAgent` 使用专用 process runner，而不复用 Executor adapter。一个 Conversation 对应一个持久 Pi session 文件。语义入口以 `--mode rpc` 启动 Planner，通过 stdin/stdout 交换 JSONL；同一 Conversation 的 writer 串行执行，避免多个进程并发写入 session 文件。交互 Pi 进程则以 `--gateway-socket` 和 `--conversation-id` 启动，在创建模型、工具或本地会话 runtime 之前进入 client-only 模式，把原始用户命令提交给 Server。Planner fork 管理服务端 RPC 对话历史和固定 system instructions；MetaWork 不从 SQLite interaction 重建提示词。Provider/Model 与 Planner 工具由 MetaWork 固定管理。语义 RPC 模式不暴露 Pi 原生文件读取工具，避免 Planner 通过源码反推 Runtime 或 Kernel 语义；交互式 client-only TUI 可为工作区问题保留只读的 `read`、`grep`、`find` 和 `ls`。所有模式都禁用 `bash`、`edit` 和 `write`。每个语义 turn 通过受限原生 `submit_planning_proposal({ plan })` 工具提交；runtime 注入 session、turn、user input 和 deterministic submission identity。rejection 是当前 ReAct turn 的结构化反馈，transport uncertain 与 rejection 严格分离；不存在 assistant 文本 proposal parser、proposal 专用 retry、repair prompt 或外层 validation loop。
 
@@ -186,7 +193,7 @@ Context Bridge 不返回私有发布路径、绝对 Workspace 路径或凭据。
 语义 Planner 无法完成的 Workspace
 检查、文件/Git/存储修改、认证外部操作、其他外部副作用、持久进度、监控、
 产物和下游交接必须使用
-`plan_work_graph`，进入 Kernel 授权的 Executor 路径。这是 Planner 所有的
+`plan_work_graph`，进入 Durable Task Coordinator 调度的 Executor 路径。这是 Planner 所有的
 语义路由，不新增 Session/Kernel 关键词路由。
 
 Planner 的收敛预算仍是 8 个处理轮次和 12 次非提案工具调用。超过任一预算
@@ -257,24 +264,24 @@ Subtask 会先按必需模型能力过滤候选，再由 Kernel 选择具体图�
 flowchart LR
   Input[用户要求执行工作] --> Planning[PlanningAgent]
   Planning --> Proposal[PlanningAgentPlan<br/>WorkGraphProposal]
-  Proposal --> Kernel[ControlKernel<br/>授权或重写]
-  Kernel --> Decision[KernelDecision<br/>plan_work_graph]
+  Proposal --> Kernel[Durable Task Coordinator<br/>验证 graph 与身份]
+  Kernel --> Decision[协调命令<br/>plan_work_graph]
   Decision --> Apply[KernelDecisionApplier]
   Apply --> Task[TaskRuntimeService<br/>创建或绑定任务]
   Task --> KernelRuntime[KernelExecutionRuntime<br/>构造 snapshot、应用 Decision]
   KernelRuntime --> WorkGraphRuntime[WorkGraphRuntimeService<br/>应用已授权 graph]
   WorkGraphRuntime --> WorkGraph[Work Graph<br/>持久化 Subtasks]
   WorkGraph --> Ready[Runnable frontier<br/>直接依赖已发布]
-  Ready --> Batch[Kernel dispatch_batch<br/>持久 attempt items]
+  Ready --> Batch[Coordinator dispatch_batch<br/>持久 attempt items]
   Batch --> Attempt[Attempt supervisor<br/>独立 claim 与运行]
   Attempt --> Run[ExecutionRuntime<br/>传输并执行]
   Run --> Verify[Completion Protocol v4<br/>result objects、delta 与 candidate]
   Verify --> Done{Workspace 结果是否封存？}
   Done -->|是| Result[原子记录 result、handoff、<br/>live 文件与 done]
-  Done -->|不确定| Repair[Kernel 授权恢复]
+  Done -->|不确定| Repair[Coordinator 持久恢复]
 ```
 
-这就是 Task OS 路径。任务状态、恢复上下文、Kernel 授权、Subtask 状态、WorkUnit/resource lease、产物捕获、验收和 Workspace 就地交付都在这里发生。ADR-0037 允许不同 Conversation 的顶层 Task 并行，同时每个 Task 内互不依赖的 Subtasks 仍可并行。
+这就是 Task OS 路径。任务状态、恢复上下文、Coordinator 命令、Subtask 状态、WorkUnit/resource lease、产物捕获、验收和 Workspace 就地交付都在这里发生。ADR-0037 允许不同 Conversation 的顶层 Task 并行，同时每个 Task 内互不依赖的 Subtasks 仍可并行。
 
 当前自然语言路径由 Conversation slot 约束：同一 Conversation 同时只能有一个执行或清理中的顶层 Task，后续 Task 持久化排队；不同 Conversation 的 Task 由 AccountRuntime 统一调度并可并行。普通问答、澄清、状态查询和清理命令仍可通过。调度受系统配置的 Task/attempt 上限、优先级、aging 和公平性约束，采用非抢占策略；跨 Conversation 详细上下文仍严格隔离。
 
@@ -1028,9 +1035,9 @@ ADR-0042 接受按 Query 归因的用量计量、精确 MetaCoin 账单，以及
 - `clarification`、`task_control` 或 `no_action`：不应 claim executor work unit；历史 `direct_reply` 只用于兼容回放，新的语义提案入口会拒绝它。
 - `plan_work_graph`：planner 提出一个 work graph proposal，节点是未来的 `Subtask` 记录。每个 proposal 都带有依赖、验收标准、`deliveryKind: edit | report`、受控的 `requiredCapabilities` 和完整有序的 canonical AgentClass 候选集合。`edit` 表示主要交付 Workspace/文件变化，`report` 表示主要交付报告/回答；两者都不代表只读权限，调研缓存、临时文件和普通用户态中间结果都可以产生。
 
-`ControlKernel` v5 验证 schema、priority、task status、单活跃任务冲突、Work Graph、AgentClass 和 scheduling snapshot，也唯一决定 batch dispatch、Task/Subtask 取消、显式部分接受、generation replan、deferred availability、Executor recovery、retry/fallback、merge repair/conflict replan、permission grant/deny/escalate、partition wait 和执行后端恢复。
+`ControlKernel` v5 当前负责迁移期的 schema、priority、Task/Conversation 身份、Work Graph 和 scheduling facts，并协调 batch dispatch、Task/Subtask 取消、显式部分接受、generation replan、deferred availability、Executor recovery、partition wait 和执行后端恢复。它不决定 Harness 工具集合，也不解释 capability grant/deny/escalate；Executor/Host capability policy 直接处理这些请求。Harness 内部 retry、fallback 和 repair 留在 Executor 内部。
 
-`DurableKernelWorkflow` 负责 event inbox、Decision/application 原子 issuance、幂等 Runtime apply 和 observation drain。`WorkGraphRuntimeService` 只持久化或投影 Kernel 授权的 v7 Work Graph revision。`KernelExecutionRuntime` 构造快照并应用授权；`AttemptSupervisor` 管理 durable child launch；`SubtaskAttemptRunner` 负责 attempt-aware claim、唯一 context、Completion Protocol、receipt 和 candidate commit；`WorkspacePublicationWorker` 负责稳定 Git 集成与原子 completion 发布。
+当前 `DurableKernelWorkflow` 是迁移期的 event inbox、协调命令/application 原子 issuance、幂等 Runtime apply 和 observation drain。`WorkGraphRuntimeService` 只持久化或投影经过 Work Graph/Coordinator 验证的 v7 revision。`KernelExecutionRuntime` 构造事实并应用协调命令；`AttemptSupervisor` 管理 durable child launch；`SubtaskAttemptRunner` 负责 attempt-aware claim、唯一 context、Completion Protocol、receipt 和 candidate commit；`WorkspacePublicationWorker` 负责稳定 Git 集成与原子 completion 发布。
 
 旧版 `ExecutorRouter`、`ExecutorRoutingCoordinator`、`ExecutionPolicyPlanner` 以及 `IntentOrchestrator` 路由子系统已整体删除——不再有独立的 executor-selection 层。`repo_execution`、`research_workflow` 等旧 route intent 名称仅作为 agent class 排序的 affinity key 保留。
 

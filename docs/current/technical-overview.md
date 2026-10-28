@@ -112,19 +112,32 @@ It is built for teams who need agents to do more than answer the current turn. M
 > transport-only A2A seam, and signed crash-recoverable native update
 > transaction.
 
-The transition keeps the existing ownership path:
+The transition is converging on the following ownership path:
 
 ```text
-Planner proposes -> ControlKernel decides -> Runtime applies
--> ExecutorAdapter transports one authorized attempt
+Planner proposes -> Work Graph validates -> Durable Task Coordinator persists
+and schedules -> Executor/Harness runs its own loop -> Runtime/Host enforces
+the selected backend and records facts
 ```
+
+The capability boundary is deliberately separate from this coordination flow. The
+Planner's `workspaceIntent` describes the requested Workspace effect and target
+paths for admission and postcondition checks; it does not select the Harness
+tools. The Coordinator retains durable graph admission, execution identity,
+resource leases, settlement, publication and crash recovery, but does not
+translate `read_only` or `run_in_target` into a tool allowlist. Executor/Harness
+owns the agent loop, tool registry and capability request. A normal Pi Attempt therefore retains
+its shell and standard file tools even when the Workspace boundary is read-only;
+only an explicit response-only correction requests a reduced tool surface. See
+[ADR-0052](../adr/0052-executor-owned-tool-capabilities-and-kernel-boundary.md).
 
 The target configuration uses one immutable revision per Work Graph generation.
 All graph revisions, deferred recovery, decisions, dispatches, attempts and
 receipts remain pinned to that revision. Provider/Model health is a
 revision-scoped Kernel projection; Runtime and adapters report facts but do not
-choose fallback. Permission Profile semantics remain code-owned under
-Resource/Kernel policy. The target schema change is one transaction from v30 to
+choose fallback. Permission Profile and Host sandbox semantics remain
+code-owned resource/runtime policy, while Harness tool registration and the
+internal execution loop remain Executor-owned. The target schema change is one transaction from v30 to
 v31, coordinated with signed release verification, Task-admission closure,
 dispatch quiescence, database backup, candidate health checks and rollback. A2A
 implementation is deferred to a separate roadmap.
@@ -190,7 +203,7 @@ Task re-launches the same contract. Consequently:
   (`ManagedLocalServices.findForWorkspace`), and a bare `find(serviceId)` keeps
   refusing an id registered in more than one Workspace.
 - A historical `failed`/`stopped` record is diagnosis input. `startRequestedPublishedService`
-  always drives the current specification through Kernel authorization instead
+  always drives the current specification through durable Task coordination instead
   of degrading to `status()`; a live process is observed, a dead one is started.
 - A manifest an earlier Task left in an In-place Workspace is accepted only when
   this Workspace already registered the identical launch contract; otherwise it
@@ -224,7 +237,7 @@ Task re-launches the same contract. Consequently:
 The execution contract is deliberately one-directional:
 
 ```text
-Planner → Work Graph → Kernel authorization → Executor/Harness
+Planner → Work Graph → Durable Task Coordinator → Executor/Harness
 → final Attempt result → MetaWork verification and assembly → user delivery
 ```
 
@@ -453,10 +466,10 @@ flowchart LR
   Conversation --> MemoryRecall[Server-projected memory recall<br/>bounded candidates, no engine credential]
   Conversation --> Planning[Planner Work Unit<br/>PlanningAgent]
   Planning --> Plan[PlanningAgentPlan v9<br/>workspace intent, target, risk,<br/>v7 graph or authorization resolution]
-  Plan --> Event[KernelEvent<br/>plan_proposed]
-  Event --> Loop[Durable KernelWorkflow v5<br/>inbox, snapshot, decide, application, apply]
-  Loop --> Kernel[ControlKernel<br/>one pure decide interface]
-  Kernel --> Decision{KernelDecision<br/>one action}
+  Plan --> Event[Plan / Work Graph proposal]
+  Event --> Loop[Durable Task Coordinator<br/>admit graph, claims, facts, recovery]
+  Loop --> Kernel[Compatibility ControlKernel<br/>coordination only]
+  Kernel --> Decision{Coordination command}
   Decision --> Runtime[Runtime handlers]
   Runtime --> Observation[Normalized KernelEvent]
   Observation --> Loop
@@ -479,7 +492,7 @@ flowchart LR
   Attempt <--> Store
 ```
 
-Every natural-language input becomes `plan_proposed`; deterministic commands become versioned Kernel events; attempts return capacity, structured outcome, Workspace change, permission, partition, execution-backend or contract facts. `ControlKernel` validates Planning admission, derives one deterministic dispatch batch from the runnable frontier, and remains the sole authority for recovery, retry, fallback, merge repair, replan, partition waiting, permission decisions and derived availability. Runtime applies no unpersisted strategy.
+Every natural-language input becomes a Work Graph proposal; deterministic commands become versioned application events; attempts return capacity, structured outcome, Workspace change, capability, partition, execution-backend or contract facts. The Durable Task Coordinator validates graph identity, derives deterministic dispatch batches from the runnable frontier and persists recovery/publication facts. Executor/Harness owns tool retry and repair; Runtime/Host owns capability enforcement. No Planner field or Kernel command changes the Executor tool registry.
 
 The AnyFusion-Pi `PlanningAgent` uses a dedicated process runner rather than an Executor adapter. One Conversation maps to one persisted Pi session file. Semantic turns launch the Planner with `--mode rpc`, exchange JSONL over stdin/stdout, and serialize writers per Conversation so only one process writes that file at a time. The interactive Pi process is separate: it is launched with `--gateway-socket` and `--conversation-id`, creates no local model/tool/session runtime, and submits raw user commands to the Server Gateway. The fork owns dialogue history for server-side Planner RPC, a small stable system prompt and exactly one fixed `metaclaw-planner/SKILL.md`; MetaWork does not rebuild history from SQLite interactions. Dynamic facts are queried through exactly seven read-only MetaWork MCP tools: `search_tasks`, `get_task_context`, `get_current_session_context`, `get_planning_context`, `get_runtime_state`, `list_executor_status` and `get_executor_diagnostics`. Semantic RPC mode exposes no Pi-native repository readers, preventing source inspection from being used to reverse-engineer Runtime or Kernel semantics. The interactive client-only TUI may retain read-only `read`, `grep`, `find` and `ls` for workspace questions; `bash`, `edit` and `write` remain disabled in every mode. Provider/model selection, external Skills/extensions/MCP configuration, prompt templates, installation and updates are fixed or disabled by MetaWork. Every semantic turn uses the restricted native `submit_planning_proposal({ plan })` tool. Runtime identity is injected outside the model, rejection is structured feedback in the current ReAct turn, and proposal-host transport uncertainty remains distinct from MCP unavailability. A missing fixed MCP tool fails startup; mid-turn MCP loss locks proposal submission and aborts that loop. There is no assistant-text proposal parser, proposal-specific retry count, repair prompt or outer validation loop.
 
@@ -1731,7 +1744,7 @@ The index is a deterministic read model, not a semantic router. The PlanningAgen
 
 MetaWork admits one executing or cleaning-up top-level Task per Conversation. An account-scoped scheduler selects Tasks from different Conversations under `maxConcurrentTasks`, `maxConcurrentAttempts`, `maxConcurrentAttemptsPerTask`, aging and fair-share policy; same-Conversation Tasks remain queued. Within each Task, Work Graph facts derive a stable runnable frontier and Kernel v5 may authorize up to four independent attempt items in one batch. Scheduling is non-preemptive; clarifications, status/query commands and explicit task-control commands remain available, while new semantic Planner turns cannot complete through `direct_reply`. This parallel rollout is governed by ADR-0037 and is implemented incrementally under the active implementation plan.
 
-Every natural-language proposal and deterministic execution entrypoint enters the same persisted control chain: `event → bounded snapshot → ControlKernel.decide → kernel_decisions → Runtime apply → normalized event`. `KernelWorkflow` remains serial, but applying `dispatch_batch` only persists `kernel_dispatch_items`; an Execution-owned supervisor launches them asynchronously and submits each outcome independently. A sibling failure never cancels the rest of the batch.
+Every natural-language proposal and deterministic execution entrypoint enters the same persisted coordination chain: `event → bounded graph/task facts → durable coordination command → Runtime apply → normalized event`. The current `KernelWorkflow` remains serial during migration, but applying `dispatch_batch` only persists `kernel_dispatch_items`; an Execution-owned supervisor launches them asynchronously and submits each outcome independently. A sibling failure never cancels the rest of the batch.
 
 Whole-Task and explicit Subtask cancellation use the same durable control chain. The cancellation fence commits before process termination; `cancelling` dispatch/publication rows continue to own capacity until the exact backend execution has exited or is confirmed missing and WorkUnit/resource leases are released. Late outcomes are `no_op`. Subtask cancellation atomically includes every downstream dependent while independent siblings continue. After the surviving graph drains, the Task blocks until the user either cancels it or explicitly accepts the published subset with `/task accept-partial <taskId>`.
 
@@ -1787,7 +1800,13 @@ Natural-language dispatch is split into Planner understanding, kernel authorizat
 - `direct_reply`, `clarification`, `task_control`, or `no_action`: no executor work unit should be claimed unless the kernel rewrites the plan into executable work.
 - `plan_work_graph`: the planner must propose a non-empty capability-minimal work graph whose nodes are future `Subtask` records. Each proposal carries dependencies, acceptance criteria, `deliveryKind: edit | report`, non-empty controlled `requiredCapabilities`, and the complete ordered set of statically eligible canonical AgentClasses in `preferredAgentClassList`.
 
-`ControlKernel` exposes only `decide(event, snapshot)`. Kernel contract v5 validates Planning proposals, single-active-Task admission, graph and canonical coverage facts, then decides batch dispatch, capacity handling, execution landing, Task/Subtask cancellation, partial-result acceptance, generation replan, deferred availability, Executor recovery, merge repair/conflict replan, timer rechecks, contract correction, permission grant/deny/escalation, partition waiting and execution-backend recovery without reading repositories, clocks, adapters or raw logs. Every event/snapshot/decision uses a versioned discriminated union, and decision and attempt identities are deterministic from the event and batch item.
+The current compatibility `ControlKernel` exposes `decide(event, snapshot)` while
+the Durable Task Coordinator extraction is in progress. It validates graph and
+identity facts, coordinates dispatch/cancellation/recovery and emits durable
+commands without reading repositories, clocks, adapters or raw logs. It does
+not select Harness tools or decide capability grants. Every coordination fact
+uses a versioned discriminated union, and decision and attempt identities are
+deterministic from the event and batch item.
 
 `DurableKernelWorkflow` first writes every event to `kernel_events`, atomically issues one immutable `kernel_decisions` authorization plus a pending application, then invokes an idempotent Runtime handler. Stable observations return to the inbox. Duplicate events resume the existing application instead of issuing a second Decision, and startup reconciles applications, child dispatch items, execution-backend records and publication state before accepting input. Planner runs and bounded redacted tool summaries remain audited separately. `WorkGraphRuntimeService` derives graph facts without selecting strategy. `KernelExecutionRuntime` builds snapshots and applies decisions; `AttemptSupervisor` owns child launch; `SubtaskAttemptRunner` produces receipts and candidate commits; `WorkspacePublicationWorker` owns ordered integration and atomic completion publication.
 
@@ -2194,7 +2213,7 @@ and the [baseline operations plan](../plans/2026-10-06-agent-baseline-permission
 replace the ordinary research/engineering permission choice with a system-owned
 baseline supporting task file/command work and public HTTP(S). Responsibility
 text only guides work allocation; actual tools/models supply capabilities and
-Kernel retains authorization authority. Eligible standard profiles migrate in
+the Executor/Host owns capability authority. Eligible standard profiles migrate in
 the next unified settings activation; software upgrade or viewing settings does
 not widen the active configuration. Planner, custom restrictions and historical
 revision-pinned attempts remain unchanged. New installations seed
