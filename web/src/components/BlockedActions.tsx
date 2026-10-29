@@ -3,6 +3,7 @@ import type { GatewayTaskViewSnapshot } from '../../../src/gateway/task-view';
 import type { TaskPendingAction, TaskPendingResultIdentity } from '../../../src/task/task-state';
 import type { HttpClient } from '../api/http';
 import type { WsClient } from '../api/ws';
+import { isOfficialAuthorizationBlock, userFacingBlockReason } from '../block-reason';
 
 type Permission = GatewayTaskViewSnapshot['pendingPermission'];
 
@@ -43,7 +44,9 @@ export function BlockedActions({ ws, http, conversationId, taskId, fallbackStatu
       actions?: readonly string[];
     } | null;
   } | undefined);
-  const reason = lifecycle?.reason?.message?.trim() ?? legacy?.userStateReason?.trim() ?? '';
+  const rawReason = lifecycle?.reason?.message?.trim() ?? legacy?.userStateReason?.trim() ?? '';
+  const reason = userFacingBlockReason(rawReason);
+  const authorizationBlocked = isOfficialAuthorizationBlock(rawReason);
   const needsAction = lifecycle?.status === 'needs_action'
     || legacy?.userState === 'needs_action'
     || (!lifecycle && fallbackStatus === 'blocked');
@@ -214,7 +217,11 @@ export function BlockedActions({ ws, http, conversationId, taskId, fallbackStatu
               直接在下方说明要继续或修复什么，系统会用上面的真实错误开启新的一轮；旧任务记录会保留，无需先清理。
             </p>
           )}
-          {recommendation && <p className="blocked-actions-recommendation">{recommendation}</p>}
+          {(authorizationBlocked || recommendation) && (
+            <p className="blocked-actions-recommendation">{authorizationBlocked
+              ? '下一步：先点页面右上角「登录 / 注册」完成官方账号登录，再点「继续未完成部分」。'
+              : recommendation}</p>
+          )}
           <div className="blocked-actions-buttons">
             {/* The Kernel already decided which action is authorized next; the
                 card renders exactly those actions and highlights that one. */}

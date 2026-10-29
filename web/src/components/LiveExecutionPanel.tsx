@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
 import { formatExecutionDuration } from '../execution-duration';
+import { userFacingBlockReason } from '../block-reason';
 import type { ConversationTurnProjection } from '../api/session-types';
 import type { ExecutionTimeline, InteractionTraceEvent, SubtaskCard, WorkGraphPresentationProjection } from '../api/types';
 import {
@@ -297,7 +298,23 @@ export function collectExecutionCards(
     };
     bySubtask.set(subtaskId, next);
   }
-  return [...bySubtask.values()].map(settleTerminalStep);
+  // A blocked Task's current reason outranks an older yield step: the card must
+  // not keep narrating "waiting for a resource partition" when the Task is now
+  // blocked on something else entirely (for example the official-account gate).
+  const blockReason = timeline && timeline.status === 'needs_action' && timeline.reasonCode !== 'none'
+    ? userFacingBlockReason(timeline.reasonMessage ?? timeline.explanation)
+    : '';
+  return [...bySubtask.values()].map(card => {
+    const settled = settleTerminalStep(card);
+    if (!blockReason || settled.state === 'completed' || settled.state === 'failed') return settled;
+    return {
+      ...settled,
+      stepKey: 'task_blocked',
+      stepLabel: blockReason,
+      activityStatus: 'blocked',
+      healthText: null,
+    };
+  });
 }
 
 /**
