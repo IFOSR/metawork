@@ -341,6 +341,17 @@ describe('proven system-block correction', () => {
       decisionId: 'state_correction_2',
       expectedVersion: fx.version,
       to: 'succeeded',
+      // A block that still asks the user carries a pending action.
+      detail: {
+        ...detailed(createTaskReason('result_acceptance_required', 'accept the safe result')),
+        pendingActions: [{
+          actionId: 'accept:1',
+          kind: 'accept_result',
+          label: '接受结果',
+          reason: createTaskReason('result_acceptance_required', 'accept first'),
+          result: null,
+        }],
+      },
     }))).toThrow(/rejected cross-layer lifecycle transition/u);
     expect(fx.taskRepo.findById('task_state')!.status).toBe('needs_action');
   });

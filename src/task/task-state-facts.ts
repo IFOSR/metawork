@@ -356,7 +356,14 @@ export function readTaskEvaluationInput(raw: TaskStateRawFacts): TaskEvaluationI
     dependency.type !== 'kernel_retry' && dependency.type !== 'kernel_capacity'
     && dependency.type !== 'kernel_anomaly'
   ));
+  const allRequiredWorkComplete = requiredWork.length > 0
+    && requiredWork.every(work => work.state === 'completed');
   for (const dependency of userBlockers) {
+    // A blocker that only existed to unblock work is moot once every required
+    // item is complete. Keeping it would ask the user for input after the Task
+    // already delivered, which is exactly the dead end a stale authorization
+    // gate produced (2026-10-28 execution-fact contract).
+    if (allRequiredWorkComplete) continue;
     pendingActions.push({ actionId: `dependency:${dependency.type}:${dependency.createdAt}:${dependency.description}`,
       kind: 'provide_input', label: dependency.description,
       reason: createTaskReason(

@@ -459,22 +459,20 @@ function operationConflict(taskId: string, operationKey: string): TaskOperationC
 }
 
 /**
- * `needs_action -> succeeded` is allowed only as the correction of a
- * system-caused block whose required work is now proven complete:
- *
- * - the Task is blocked with a system reason (`no_authorized_driver` or
- *   `system_anomaly`), not a user decision;
- * - the new detail has no pending action (nothing waits for the user);
- * - the caller is the authority reconciling durable facts.
+ * `needs_action -> succeeded` is allowed only as the correction of a stale block
+ * whose required work is now proven complete and where nothing waits for the
+ * user (the new detail carries no pending action). The authority only proposes
+ * this target after evaluating durable facts; a block that asks the user to
+ * accept, retry or provide input still has a pending action and is refused.
  */
 function isProvenSystemBlockCorrection(
   task: Task,
   command: ApplyTaskChangeCommand,
 ): boolean {
   if (task.status !== 'needs_action' || command.to !== 'succeeded') return false;
-  if (command.detail.pendingActions.length > 0) return false;
-  const reason = task.stateDetail?.reason?.code;
-  return reason === 'no_authorized_driver' || reason === 'system_anomaly';
+  // The facts already proved every required item complete (the authority only
+  // proposes this target after evaluating them) and nothing waits for the user.
+  return command.detail.pendingActions.length === 0;
 }
 
 function lifecycleError(input: {

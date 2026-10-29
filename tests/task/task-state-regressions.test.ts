@@ -401,3 +401,64 @@ describe('system block corrected to its proven conclusion', () => {
     } finally { db.close(); }
   });
 });
+
+describe('a stale input blocker does not outlive the work', () => {
+  it('concludes success when every required item is complete and only a login blocker remains', () => {
+    const db = new Database(':memory:');
+    runMigrations(db);
+    try {
+      const repo = new TaskRepo(db);
+      const task = new TaskEngine(repo, '/tmp/review-state-stale-input').create({ title: 'PPT', goal: 'Deliver' });
+      const authority = createTaskStateAuthority({ db, workUnitClaimService: { hasClaimedByTask: () => false } });
+      // 1. The official-account gate blocks the Task before work starts.
+      authority.reconcile({
+        taskId: task.id, decisionId: 'gate', operationKey: 'gate',
+        actor: 'kernel-execution-runtime', reason: 'official authorization state: logged_out',
+        facts: () => {
+          repo.update(task.id, { dependencies: [{
+            taskId: task.id, type: 'manual', description: 'official authorization state: logged_out',
+            status: 'waiting', createdAt: '2026-10-29T01:18:26.977Z',
+          }] });
+          return [];
+        },
+      });
+      expect(repo.findById(task.id)!.status).toBe('needs_action');
+      expect(repo.findById(task.id)!.stateDetail.pendingActions.map(action => action.kind))
+        .toEqual(['provide_input']);
+
+      // 2. The user resumed anyway and the Executor finished the work.
+      const configRevision = 'cfg';
+      db.prepare(`INSERT INTO configuration_revisions (revision_id, content_hash, source_kind, imported_at)
+        VALUES (?, 'hash', 'native', '2026-10-29T00:00:00Z')`).run(configRevision);
+      db.prepare(`INSERT INTO work_units (id, agent_class_name, agent_class_kind, created_at, updated_at)
+        VALUES ('wu', 'pi-agent', 'executor', '2026-10-29T00:00:00Z', '2026-10-29T00:00:00Z')`).run();
+      db.prepare(`INSERT INTO work_graph_revisions
+        (id, task_id, revision, generation_id, configuration_revision, proposal_source, automatic_replan,
+          status, created_at, updated_at, completion_requirements_json)
+        VALUES ('rev_1', ?, 1, 'gen_1', ?, 'initial', 0, 'active',
+          '2026-10-29T00:00:00Z', '2026-10-29T00:00:00Z', ?)`)
+        .run(task.id, configRevision, JSON.stringify([
+          { key: 'execution:a', kind: 'execution', label: 'A', subtaskId: 'a', serviceId: null },
+        ]));
+      db.prepare(`INSERT INTO subtasks (id, task_id, generation_id, graph_revision, title, goal, status,
+        dependencies_json, context_refs_json, required_capabilities_json, executor_bindings_json,
+        file_outputs_json, acceptance_json, risk_level, created_at, updated_at)
+        VALUES ('a', ?, 'gen_1', 1, 'A', 'Deliver', 'done', '[]', '[]', '[]', '[]', '[]', '[]', 'low',
+          '2026-10-29T00:00:00Z', '2026-10-29T00:00:00Z')`).run(task.id);
+      db.prepare(`INSERT INTO executor_attempt_receipts (
+        attempt_id, execution_id, task_id, subtask_id, work_unit_id, agent_class_name,
+        started_at, completed_at, terminal_state, raw_response, parsing_json, verification_json,
+        attempt_kind, generation_id, graph_revision, configuration_revision,
+        authorized_binding_json, binding_fingerprint)
+        VALUES ('attempt_primary', 'exec', ?, 'a', 'wu', 'pi-agent', 'start', '2026-10-29T01:38:52Z',
+          'completed', 'body', '{}', '{}', 'primary', 'gen_1', 1, ?, '{}', 'fp')`).run(task.id, configRevision);
+
+      // 3. Recovery re-evaluates; the stale login blocker no longer asks for input.
+      const result = authority.reconcile({
+        taskId: task.id, decisionId: 'recovery:1', operationKey: 'recovery:1',
+        actor: 'task-state-authority', reason: 'durable facts prove completion',
+      });
+      expect(result?.task.status).toBe('succeeded');
+    } finally { db.close(); }
+  });
+});

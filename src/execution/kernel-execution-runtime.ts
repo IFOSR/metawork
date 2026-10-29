@@ -2399,6 +2399,22 @@ export class KernelExecutionRuntime {
         operationKey: `resume:${decision.id}`,
         resumeAuthorized: true,
         reason: `Kernel-authorized resume after ${action.blockerCategory} blocker`,
+        // The resume resolves the blockers that stopped the Task. Leaving them
+        // `waiting` made a stale gate (for example the official-account login
+        // check) outlive the resume and re-block the Task after it finished.
+        facts: () => {
+          const current = this.deps.taskRuntimeService.findTask(task.id);
+          if (!current) return [];
+          const cleared = current.dependencies.filter(dependency => (
+            dependency.status === 'waiting'
+            && (dependency.type === 'manual' || dependency.type.startsWith('kernel_'))
+          ));
+          if (cleared.length === 0) return [];
+          this.deps.taskRuntimeService.updateTask(task.id, {
+            dependencies: current.dependencies.filter(dependency => !cleared.includes(dependency)),
+          });
+          return cleared.map(dependency => `dependency:${dependency.type}:${dependency.createdAt}`);
+        },
       });
       this.deps.callbacks.refreshRuntimeState();
       if (action.recovery) {

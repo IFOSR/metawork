@@ -75,16 +75,6 @@ export interface ReconcileTaskStateInput {
   readonly resolvedResult?: { readonly attemptId: string; readonly resultId: string };
 }
 
-/**
- * Block reasons the system itself produced. A Task blocked this way may be
- * corrected to `succeeded` when durable facts prove every required item
- * complete; a user-facing block (accept, retry, input) never is.
- */
-const SYSTEM_BLOCK_REASON_CODES = new Set<TaskStateDetail['reason']['code']>([
-  'no_authorized_driver',
-  'system_anomaly',
-]);
-
 export interface TaskStateReconciliation {
   readonly task: Task;
   readonly detail: TaskStateDetail;
@@ -153,12 +143,15 @@ export class TaskStateAuthority {
       // user, so the stale block is corrected to its proven conclusion instead
       // of asking the user to resume work that is already done
       // (ADR-0049 2026-10-28 amendment).
-      const provenSystemCompletion = raw.task.status === 'needs_action'
+      // The guard is the fact, not the previous reason: all required work is
+      // proven complete and nothing waits for the user. A stale block (a system
+      // anomaly, or an input request that only existed to unblock work) must not
+      // outlive its cause.
+      const provenCompletion = raw.task.status === 'needs_action'
         && evaluation.status === 'succeeded'
-        && evaluation.detail.pendingActions.length === 0
-        && SYSTEM_BLOCK_REASON_CODES.has(raw.task.stateDetail.reason.code);
+        && evaluation.detail.pendingActions.length === 0;
       if (raw.task.status === 'needs_action' && evaluation.status !== 'cancelled'
-        && !provenSystemCompletion) {
+        && !provenCompletion) {
         evaluation = (input.resumeAuthorized || (input.resolvedResult && evaluation.detail.pendingActions.length === 0))
           ? { status: 'queued', detail: { ...evaluation.detail, phase: null,
               reason: createTaskReason('waiting_for_capacity', '等待执行名额。') } }
@@ -166,7 +159,7 @@ export class TaskStateAuthority {
               reason: evaluation.status === 'needs_action' ? evaluation.detail.reason : raw.task.stateDetail.reason } };
       }
       if (evaluation.status !== raw.task.status
-        && !provenSystemCompletion
+        && !provenCompletion
         && !allowedTaskStatusTransitions(raw.task.status).includes(evaluation.status)) {
         evaluation = { status: raw.task.status, detail: raw.task.stateDetail };
       }
