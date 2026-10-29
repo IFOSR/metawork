@@ -29,8 +29,16 @@ export function readPendingTaskResults(db: Database.Database, taskId: string): P
           AND application.status = 'applied'
           AND json_extract(decision.decision_json, '$.action.attemptId') = r.attempt_id
           AND json_extract(decision.decision_json, '$.action.resultId') = json_extract(r.parsing_json, '$.resultObjects.safeProjectionId'))
+      -- A newer attempt supersedes this safe result, except a *failed* metadata
+      -- correction: it repaired nothing, so the safe body is still the user's
+      -- result and keeps its accept action (2026-10-28 execution-fact contract).
       AND NOT EXISTS (SELECT 1 FROM executor_attempt_receipts newer WHERE newer.subtask_id = r.subtask_id
-        AND newer.generation_id = r.generation_id AND (newer.completed_at > r.completed_at OR (newer.completed_at = r.completed_at AND newer.rowid > r.rowid)))
+        AND newer.generation_id = r.generation_id
+        AND NOT (newer.attempt_kind = 'contract_correction'
+          AND newer.terminal_state IN (
+            'executor_failed', 'contract_blocked', 'heartbeat_lost', 'cancelled_or_stale',
+            'contract_failed'))
+        AND (newer.completed_at > r.completed_at OR (newer.completed_at = r.completed_at AND newer.rowid > r.rowid)))
     ORDER BY r.completed_at DESC, r.rowid DESC`).all(taskId) as
     Array<{ attempt_id: string; account_id: string }>;
   return candidates.flatMap(candidate => {
