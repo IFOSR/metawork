@@ -12,6 +12,7 @@
  */
 
 import type { SubtaskStatus, TaskStatus } from '../core/types.js';
+import type { PendingResultIdentity } from './safe-result-identity.js';
 import type { KernelAttemptKind, KernelSubtaskStatus } from '../kernel/control-kernel.js';
 import type { KernelFailure } from '../core/kernel-failure.js';
 import type { ExecutorAttemptTerminalState } from '../storage/executor-attempt-receipt-repo.js';
@@ -27,6 +28,7 @@ import {
   type SubtaskLifecycleState,
 } from './task-lifecycle.js';
 import {
+  createTaskReason,
   TASK_STATUS_LABELS,
   isTerminalTaskStatus,
   normalizeCleanup,
@@ -222,6 +224,13 @@ export function projectTaskView(facts: TaskViewFacts): TaskView {
   const detail = normalizeTaskStateDetail(facts.task.stateDetail);
   const cleanup = normalizeCleanup(detail.cleanup);
   const status = facts.task.status;
+  // The persisted detail records the actions that existed when the conclusion
+  // was written. A safe result that is still acceptable is a *live* durable
+  // fact, so it must appear even when the state has not transitioned since
+  // (for example after a failed metadata correction). Without this the surface
+  // offers a generic resume that the Kernel can only answer with `no_op`.
+  const pendingActions = mergePendingActions(detail.pendingActions, facts.pendingDecision);
+  const projectedDetail: TaskStateDetail = { ...detail, pendingActions };
   const blockingResidue = deriveBlockingResidue({
     activeAttempt,
     replanJob,
@@ -246,7 +255,7 @@ export function projectTaskView(facts: TaskViewFacts): TaskView {
       stateVersion: facts.task.stateVersion,
       reason: detail.reason,
       phase: detail.phase,
-      pendingActions: detail.pendingActions,
+      pendingActions,
       cleanup,
       nextWakeAt: detail.nextWakeAt ?? facts.retryWakeAt,
       completedAt: facts.task.completedAt ?? null,
@@ -272,9 +281,9 @@ export function projectTaskView(facts: TaskViewFacts): TaskView {
     currentReplanJob: replanJob,
     currentRecovery: recovery,
     blockingResidue,
-    nextAuthorizedAction: nextAuthorizedAction(status, detail, recoveryDiagnosis),
+    nextAuthorizedAction: nextAuthorizedAction(status, projectedDetail, recoveryDiagnosis),
     recoveryDiagnosis,
-    pendingActions: detail.pendingActions,
+    pendingActions,
     cleanup,
     explanation: explain(status, detail),
     result: facts.result,
@@ -291,6 +300,51 @@ export function projectTaskView(facts: TaskViewFacts): TaskView {
       ),
       nextWakeAt: detail.nextWakeAt ?? facts.retryWakeAt ?? replanJob?.updatedAt ?? null,
     },
+  };
+}
+
+/**
+ * Actions derived from a live pending result, merged after the persisted ones.
+ *
+ * `pendingDecision` is the durable fact of "a safe (uncertified) result is still
+ * acceptable"; the persisted `state_detail.pendingActions` snapshot may predate
+ * it, so the projection exposes both without inventing a new Task status.
+ */
+function mergePendingActions(
+  persisted: readonly TaskPendingAction[],
+  decision: TaskViewPendingDecisionFact | null | undefined,
+): readonly TaskPendingAction[] {
+  if (!decision) return persisted;
+  const expected = decision.expectedResult ?? null;
+  if (!expected) return persisted;
+  const known = new Set(persisted.map(action => action.kind));
+  const actions: TaskPendingAction[] = [...persisted];
+  if (decision.actions.includes('accept_result') && !known.has('accept_result')) {
+    actions.push(pendingResultAction('accept_result', expected));
+  }
+  if (decision.actions.includes('retry_attempt') && !known.has('retry_attempt')) {
+    actions.push(pendingResultAction('retry_attempt', expected));
+  }
+  return actions;
+}
+
+function pendingResultAction(
+  kind: 'accept_result' | 'retry_attempt',
+  expected: PendingResultIdentity,
+): TaskPendingAction {
+  return {
+    actionId: `${kind === 'accept_result' ? 'accept' : 'retry'}:`
+      + `${expected.subtaskId}:${expected.attemptId}:${expected.resultId}`,
+    kind,
+    label: kind === 'accept_result' ? '接受结果并继续交付' : '重新执行',
+    reason: createTaskReason(
+      'result_acceptance_required',
+      kind === 'accept_result'
+        ? '结果已安全保存，但完成验收还缺少执行说明。'
+        : '需要重新执行这一步，用新的结果替换当前安全结果。',
+      [`receipt:${expected.attemptId}`, `result:${expected.resultId}`],
+    ),
+    result: expected,
   };
 }
 

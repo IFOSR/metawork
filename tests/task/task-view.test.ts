@@ -189,3 +189,95 @@ describe('ordinary in-place completion is not a user decision', () => {
     expect(view.state.pendingActions).toEqual([]);
   });
 });
+
+describe('live pending result actions', () => {
+  const expected = {
+    taskId: 'task_1',
+    generationId: 'generation_1',
+    graphRevision: 1,
+    subtaskId: 'task_1_execute',
+    attemptId: 'attempt_safe',
+    resultId: 'result_safe',
+  };
+
+  it('offers accept and retry even when the persisted detail predates the result', () => {
+    // A failed metadata correction left the state detail without actions, but
+    // the safe result is still acceptable. The projection must not answer with
+    // a generic resume.
+    const view = projectTaskView(facts({
+      task: {
+        id: 'task_1',
+        status: 'needs_action',
+        stateVersion: 5,
+        stateDetail: stateDetail({
+          reason: createTaskReason('result_acceptance_required', '结果已安全保存'),
+          pendingActions: [],
+        }),
+        updatedAt: NOW,
+      },
+      subtasks: [{ id: 'task_1_execute', status: 'awaiting_decision' }],
+      dispatches: [],
+      pendingDecision: {
+        owner: 'user',
+        reason: 'uncertified_result',
+        resultId: 'result_safe',
+        attemptId: 'attempt_safe',
+        expectedResult: expected,
+        actions: ['accept_result', 'retry_attempt'],
+      },
+    }));
+
+    expect(view.nextAuthorizedAction).toBe('accept_result');
+    expect(view.pendingActions.map(action => action.kind)).toEqual(['accept_result', 'retry_attempt']);
+    expect(view.state.pendingActions.map(action => action.kind)).toEqual(['accept_result', 'retry_attempt']);
+    expect(view.pendingActions[0]?.result).toEqual(expected);
+  });
+
+  it('keeps a persisted recovery action when the same kinds are already present', () => {
+    const persisted = {
+      actionId: 'accept:candidate',
+      kind: 'accept_result' as const,
+      label: '接受候选变更并发布到工作区',
+      reason: createTaskReason('input_required', '候选变更等待接受'),
+      result: null,
+      publicationId: 'publication_1',
+    };
+    const view = projectTaskView(facts({
+      task: {
+        id: 'task_1',
+        status: 'needs_action',
+        stateVersion: 5,
+        stateDetail: stateDetail({ pendingActions: [persisted] }),
+        updatedAt: NOW,
+      },
+      subtasks: [{ id: 'task_1_execute', status: 'awaiting_decision' }],
+      dispatches: [],
+      pendingDecision: {
+        owner: 'user',
+        reason: 'uncertified_result',
+        resultId: 'result_safe',
+        attemptId: 'attempt_safe',
+        expectedResult: expected,
+        actions: ['accept_result'],
+      },
+    }));
+    expect(view.pendingActions).toHaveLength(1);
+    expect(view.pendingActions[0]?.publicationId).toBe('publication_1');
+  });
+
+  it('projects no action when there is no live pending decision', () => {
+    const view = projectTaskView(facts({
+      task: {
+        id: 'task_1',
+        status: 'needs_action',
+        stateVersion: 5,
+        stateDetail: stateDetail({ pendingActions: [] }),
+        updatedAt: NOW,
+      },
+      subtasks: [{ id: 'task_1_execute', status: 'awaiting_decision' }],
+      dispatches: [],
+    }));
+    expect(view.pendingActions).toEqual([]);
+    expect(view.nextAuthorizedAction).toBe('await_user_input');
+  });
+});
