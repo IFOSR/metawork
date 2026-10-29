@@ -842,6 +842,15 @@ separate from Planner-declared downloadable fileOutputs. Ordinary clients expose
 only the Workspace, public task directory, relative files, delivery state and
 conflicts; internal execution paths and secrets are redacted from public text.
 
+Planner decomposition is a Planner responsibility with a stated policy: split
+independent research/implementation streams into parallel subtasks plus one
+synthesis subtask that depends on their handoffs, and keep a single node only for
+one atomic deliverable. A one-node graph for a multi-question request is answered
+with a repairable `work_graph_quality` rejection (at most once per turn, so a
+deliberate atomic plan can still proceed); the Planner revises in the same turn.
+The quality warning alone was trace-only and never reached the Planner, which is
+why complex queries used to collapse into one node.
+
 Planner proposes service intent; the Durable Task Coordinator validates the
 Task/workspace identity; Runtime owns the process.
 For an explicit implement-and-start request, startServiceAfterPublish gates
