@@ -147,3 +147,34 @@ describe('ConversationTaskSchedulerRepo', () => {
     ]);
   });
 });
+
+describe('stale run entry of a requeued Task', () => {
+  it('re-queues the entry of a Task that yielded back to queued', () => {
+    const database = db();
+    const repository = new ConversationTaskSchedulerRepo(database);
+    repository.enqueueTask('task-a', 'conversation-a', '2026-08-29T00:00:00.000Z', {
+      requestText: 'keep me', generationId: 'generation-a',
+    } as never);
+    repository.markScheduled('task-a', '2026-08-29T00:00:01.000Z');
+    repository.markRunning('task-a', '2026-08-29T00:00:02.000Z');
+    // The Task yielded back to `queued` (capacity / partition wait).
+    database.prepare("UPDATE tasks SET status = 'queued' WHERE id = 'task-a'").run();
+
+    expect(repository.requeueStaleEntry('task-a')).toBe(true);
+    expect(repository.getQueuedReason('task-a')).toBeTruthy();
+    expect(repository.getQueuedPayload('task-a')).toMatchObject({ requestText: 'keep me' });
+    database.close();
+  });
+
+  it('leaves a Task that is not queued alone', () => {
+    const database = db();
+    const repository = new ConversationTaskSchedulerRepo(database);
+    repository.enqueueTask('task-a', 'conversation-a', '2026-08-29T00:00:00.000Z');
+    repository.markScheduled('task-a', '2026-08-29T00:00:01.000Z');
+    repository.markRunning('task-a', '2026-08-29T00:00:02.000Z');
+    database.prepare("UPDATE tasks SET status = 'running' WHERE id = 'task-a'").run();
+
+    expect(repository.requeueStaleEntry('task-a')).toBe(false);
+    database.close();
+  });
+});

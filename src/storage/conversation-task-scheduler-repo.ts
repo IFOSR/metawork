@@ -401,6 +401,25 @@ export class ConversationTaskSchedulerRepo {
     `).run(now, taskId).changes === 1;
   }
 
+  /**
+   * Re-queue the schedule entry of a Task that is `queued` again but still holds
+   * a stale `running`/`reserved`/`eligible` entry (a `running -> queued`
+   * capacity or partition yield leaves it behind). Fairness timestamps and the
+   * immutable queued payload are preserved; the entry only becomes eligible for
+   * promotion again.
+   */
+  requeueStaleEntry(taskId: string): boolean {
+    return this.db.prepare(`
+      UPDATE task_schedule_entries
+      SET state = 'queued'
+      WHERE task_id = ? AND state IN ('running', 'reserved', 'eligible')
+        AND EXISTS (
+          SELECT 1 FROM tasks
+          WHERE tasks.id = task_schedule_entries.task_id AND tasks.status = 'queued'
+        )
+    `).run(taskId).changes === 1;
+  }
+
   markTerminal(taskId: string, now: string): boolean {
     return this.db.prepare(`
       UPDATE task_schedule_entries

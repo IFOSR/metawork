@@ -475,6 +475,9 @@ export class AccountStartupRecoveryService {
     // A partition/capacity yield is a scheduler wait: once its resource waits
     // are resolved, the stale blocker must not keep the Task queued forever.
     const clearedCapacityBlocks = this.clearStaleCapacityBlocks();
+    // A Task that is `queued` again must be promotable: its entry cannot stay
+    // `running` from the attempt that yielded.
+    const requeuedEntries = this.requeueQueuedTaskEntries();
     await this.convergeConversationSlots(now);
     await this.promoteAvailableQueuedTasks(now);
     // Internal Worktree directories are Runtime state: retire the ones whose
@@ -489,7 +492,8 @@ export class AccountStartupRecoveryService {
       || retriedTaskIds.length > 0
       || retryWakeResidue > 0
       || retryWakesDelivered > 0
-      || clearedCapacityBlocks.length > 0;
+      || clearedCapacityBlocks.length > 0
+      || requeuedEntries > 0;
   }
 
   /**
@@ -1172,6 +1176,16 @@ export class AccountStartupRecoveryService {
         });
       },
     });
+  }
+
+  /** Make every `queued` Task promotable again by closing a stale run entry. */
+  private requeueQueuedTaskEntries(): number {
+    const scheduler = this.deps.repositories.conversationTaskSchedulerRepo;
+    let changed = 0;
+    for (const task of this.deps.taskServices.taskRuntimeService.listTasksByStatus('queued')) {
+      if (scheduler.requeueStaleEntry(task.id)) changed += 1;
+    }
+    return changed;
   }
 
   private async convergeConversationSlots(now: string): Promise<void> {
