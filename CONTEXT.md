@@ -995,6 +995,18 @@ Task when the completed work is safe to reuse. It runs at most once per failure 
 (a remaining-work retry never spawns another one) and reuses an existing successor.
 A refused retry keeps the real failure conclusion.
 
+Completion evidence belongs to the result, not to the newest attempt. An
+accepted or certified receipt of the current generation proves the node even when
+a later completion-metadata correction failed; a failed correction repairs
+nothing and therefore hides nothing. A `needs_action` Task whose reason is
+system-caused (`no_authorized_driver`/`system_anomaly`) and whose durable facts
+now prove every required item complete with no pending action is corrected to
+`succeeded` — the only extra edge in the transition table, guarded by the
+authority (system reason only) and the lifecycle port (no pending actions). A
+block that asks the user to accept, retry or provide input is never overridden;
+recovery re-evaluates such system blocks once per pass so they converge without
+user work.
+
 A Terminal Task (succeeded/failed/cancelled) is a historical fact, never an
 admission blocker: the Conversation slot is released before the next planning
 turn, the current explicit request supersedes it, and the old Task keeps its

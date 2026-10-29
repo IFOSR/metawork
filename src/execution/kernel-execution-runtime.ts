@@ -1892,6 +1892,22 @@ export class KernelExecutionRuntime {
       },
       recoveryOnly: true,
     }));
+    // A system-caused block may be stale: the facts can already prove the
+    // conclusion (for example an accepted result whose later metadata
+    // correction failed). Re-evaluate once so recovery converges instead of
+    // leaving a Task that has nothing left to do at `needs_action`.
+    const current = this.deps.taskRuntimeService.findTask(taskId);
+    if (current?.status === 'needs_action') {
+      try {
+        this.reconcileTaskState(taskId, {
+          decisionId: `recovery_reconcile:${taskId}:${current.stateVersion}`,
+          operationKey: `recovery_reconcile:${taskId}:${current.stateVersion}`,
+          reason: reason || 'durable recovery re-evaluated the block',
+        });
+      } catch {
+        // A reconcile that cannot apply keeps the block; startup must continue.
+      }
+    }
     const after = this.deps.taskRuntimeService.findTask(taskId);
     return after !== null
       && (after.status !== beforeStatus || after.updatedAt !== beforeUpdatedAt);

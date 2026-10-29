@@ -279,6 +279,13 @@ accepted-result commit is the authorized Workspace binding, never the account-wi
 legacy `sourceRoot` (the internal workspace store), which now fails closed with a
 specific error.
 
+Completion evidence belongs to the result, not to the newest attempt: an accepted
+or certified receipt of the current generation proves a node even after a failed
+metadata correction. A system-caused `needs_action` block (`no_authorized_driver`,
+`system_anomaly`) that durable facts now disprove is corrected to `succeeded`;
+the authority only proposes it for a system reason and the lifecycle port rejects
+it while any pending action remains, so a user-facing block is never overridden.
+
 Dispatch facts follow the same rule. `kernel_dispatch_items.terminal` now means
 only "this dispatch item no longer owns scheduler capacity"; schema 61 adds
 `terminal_disposition` (`executed` | `not_started`). A partition/capacity yield

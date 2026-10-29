@@ -170,3 +170,33 @@ Rules now enforced by the client contract:
 4. **Progress text must be true at the moment it is read.** Terminal facts may not
    be narrated in the present progressive ("正在校验…"), a yielded Attempt may not
    claim the Executor started, and missing timestamps show no duration.
+
+## Amendment (2026-10-28): completion evidence is per result, not per newest attempt
+
+The transition table and the evidence rules assume "the latest attempt describes
+the node". That is wrong for a metadata correction: a completion-correction
+attempt repairs certification metadata only, produces no new result, and can fail
+after the result was already accepted or certified. Two consequences were
+observed in production:
+
+1. A failed correction hid the safe result from the acceptance surface
+   (`readPendingTaskResults` supersession and the pending-decision projection).
+2. It also erased the completion evidence: `execution`/`delivery`/`safety_report`
+   requirements looked only at the newest receipt, so a Task whose result was
+   accepted stayed `needs_action` with no pending action — a dead end.
+
+Rules now enforced:
+
+- Completion evidence is an accepted or certified receipt **of this generation**,
+  independent of newer failed corrections.
+- A `needs_action` block whose reason is system-caused (`no_authorized_driver`,
+  `system_anomaly`) and whose evaluation now proves every required item complete
+  with zero pending actions is corrected to `succeeded`. This is the only
+  addition to the transition table (`needs_action -> succeeded`) and it is
+  guarded twice: `TaskStateAuthority` only proposes it for a system reason, and
+  `TaskLifecycleTransitionPort` rejects the write when the new detail still has
+  pending actions. A user-facing block (accept, retry, input) can never be
+  overridden this way.
+- Recovery re-evaluates a `needs_action` Task once per pass, so a stale system
+  block converges from durable facts instead of waiting for the user to resume
+  work that is already done.

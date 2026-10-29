@@ -276,14 +276,22 @@ function applyInTransaction(
     throw staleState(task.id, command.expectedVersion, task.stateVersion);
   }
   if (!isTaskStatusTransitionAllowed(task.status, command.to)) {
-    throw lifecycleError({
-      code: 'invalid_task_transition',
-      taskId: task.id,
-      from: task.status,
-      to: command.to,
-      actor: command.actor,
-      reason: command.reason,
-    });
+    // A `needs_action` block that the system itself caused may be corrected to
+    // success when the facts now prove every required item complete and no user
+    // action is pending. This is a fact correction, not an override: a block
+    // that asks the user for something (accept/retry/input) has pending
+    // actions, and a Task with unfinished work never evaluates to `succeeded`
+    // (ADR-0049 2026-10-28 amendment).
+    if (!isProvenSystemBlockCorrection(task, command)) {
+      throw lifecycleError({
+        code: 'invalid_task_transition',
+        taskId: task.id,
+        from: task.status,
+        to: command.to,
+        actor: command.actor,
+        reason: command.reason,
+      });
+    }
   }
   // A committed cancellation fence rejects every later business conclusion.
   if (task.status === 'cancelled' && command.to !== 'cancelled') {
@@ -448,6 +456,25 @@ function operationConflict(taskId: string, operationKey: string): TaskOperationC
     taskId,
     operationKey,
   });
+}
+
+/**
+ * `needs_action -> succeeded` is allowed only as the correction of a
+ * system-caused block whose required work is now proven complete:
+ *
+ * - the Task is blocked with a system reason (`no_authorized_driver` or
+ *   `system_anomaly`), not a user decision;
+ * - the new detail has no pending action (nothing waits for the user);
+ * - the caller is the authority reconciling durable facts.
+ */
+function isProvenSystemBlockCorrection(
+  task: Task,
+  command: ApplyTaskChangeCommand,
+): boolean {
+  if (task.status !== 'needs_action' || command.to !== 'succeeded') return false;
+  if (command.detail.pendingActions.length > 0) return false;
+  const reason = task.stateDetail?.reason?.code;
+  return reason === 'no_authorized_driver' || reason === 'system_anomaly';
 }
 
 function lifecycleError(input: {

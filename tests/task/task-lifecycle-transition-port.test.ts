@@ -304,3 +304,64 @@ describe('in-process port over a fake store', () => {
     expect(createSqliteTaskStateTransaction).toBeTypeOf('function');
   });
 });
+
+describe('proven system-block correction', () => {
+  function blockedFixture(reasonCode: 'no_authorized_driver' | 'result_acceptance_required') {
+    const fx = fixture();
+    fx.port.applyTaskChange(command({ to: 'running' }));
+    fx.port.applyTaskChange(command({
+      operationKey: 'block:1',
+      decisionId: 'decision_block',
+      expectedVersion: 2,
+      to: 'needs_action',
+      detail: detailed(createTaskReason(reasonCode, 'blocked')),
+    }));
+    return { ...fx, version: fx.taskRepo.findById('task_state')!.stateVersion };
+  }
+
+  it('corrects a system-caused block to success when nothing waits for the user', () => {
+    const fx = blockedFixture('no_authorized_driver');
+    const result = fx.port.applyTaskChange(command({
+      operationKey: 'state:correction:1',
+      decisionId: 'state_correction_1',
+      expectedVersion: fx.version,
+      to: 'succeeded',
+      detail: detailed(createTaskReason('none', 'all required work completed')),
+      actor: 'task-state-authority',
+      reason: 'durable facts prove every required item complete',
+    }));
+    expect(result.applied).toBe(true);
+    expect(fx.taskRepo.findById('task_state')!.status).toBe('succeeded');
+  });
+
+  it('never overrides a block that asks the user to accept or retry', () => {
+    const fx = blockedFixture('result_acceptance_required');
+    expect(() => fx.port.applyTaskChange(command({
+      operationKey: 'state:correction:2',
+      decisionId: 'state_correction_2',
+      expectedVersion: fx.version,
+      to: 'succeeded',
+    }))).toThrow(/rejected cross-layer lifecycle transition/u);
+    expect(fx.taskRepo.findById('task_state')!.status).toBe('needs_action');
+  });
+
+  it('never concludes success while a user action is still pending', () => {
+    const fx = blockedFixture('no_authorized_driver');
+    expect(() => fx.port.applyTaskChange(command({
+      operationKey: 'state:correction:3',
+      decisionId: 'state_correction_3',
+      expectedVersion: fx.version,
+      to: 'succeeded',
+      detail: {
+        ...detailed(createTaskReason('none', '')),
+        pendingActions: [{
+          actionId: 'accept:1',
+          kind: 'accept_result',
+          label: '接受结果',
+          reason: createTaskReason('result_acceptance_required', 'accept first'),
+          result: null,
+        }],
+      },
+    }))).toThrow(/rejected cross-layer lifecycle transition/u);
+  });
+});

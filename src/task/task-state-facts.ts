@@ -512,11 +512,17 @@ function resolveRequiredWork(input: {
   }
   const latestReceipt = [...input.receipts]
     .sort((left, right) => left.completedAt.localeCompare(right.completedAt)).at(-1) ?? null;
+  // Completion evidence belongs to the attempt that produced the result, not to
+  // the newest attempt. A failed metadata correction is newer but proves
+  // nothing, so an accepted/certified result still closes the node
+  // (2026-10-28 execution-fact contract).
+  const hasCompletionEvidence = input.receipts.some(receipt =>
+    receipt.terminalState === 'completed' || receipt.accepted === true);
   if (requirement.kind === 'safety_report') {
     // A safety report is delivered inline with the result object, so the
     // Subtask's own completion is its durable delivery evidence. File delivery
     // (`delivery`) additionally requires the publication checkpoint below.
-    return subtask.status === 'done' && (latestReceipt?.terminalState === 'completed' || latestReceipt?.accepted === true)
+    return subtask.status === 'done' && hasCompletionEvidence
       ? { fact: { ...base, state: 'completed', reason: null }, failureReason: null }
       : { fact: { ...base, state: 'pending', reason: null }, failureReason: null };
   }
@@ -526,7 +532,7 @@ function resolveRequiredWork(input: {
     // the durable delivery fact for declared file outputs.
     if (input.raw.task.executionMode === 'in_place'
       && subtask.status === 'done'
-      && (latestReceipt?.terminalState === 'completed' || latestReceipt?.accepted === true)) {
+      && hasCompletionEvidence) {
       return { fact: { ...base, state: 'completed', reason: null }, failureReason: null };
     }
     // The normalized operation result is the latest word on delivery, so a
@@ -568,7 +574,7 @@ function resolveRequiredWork(input: {
       failureReason: null,
     };
   }
-  if (subtask.status === 'done' && (latestReceipt?.terminalState === 'completed' || latestReceipt?.accepted === true)) {
+  if (subtask.status === 'done' && hasCompletionEvidence) {
     // `done` is only evidence when the result was certified or explicitly
     // accepted; otherwise the pending acceptance action carries the fact.
     return { fact: { ...base, state: 'completed', reason: null }, failureReason: null };

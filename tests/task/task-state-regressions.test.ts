@@ -288,3 +288,116 @@ describe('service failure is repairable, not final', () => {
       .toMatchObject({ state: 'running' });
   });
 });
+
+describe('accepted result survives a newer failed metadata correction', () => {
+  const acceptedReceipt = {
+    attemptId: 'attempt_primary',
+    subtaskId: 'a',
+    terminalState: 'uncertified_result' as const,
+    failureCode: 'completion_malformed',
+    failureKind: 'completion_malformed',
+    completedAt: '2026-10-28T14:29:59.000Z',
+    accepted: true,
+  };
+  const failedCorrection = {
+    attemptId: 'attempt_correction',
+    subtaskId: 'a',
+    terminalState: 'executor_failed' as const,
+    failureCode: 'correction_exception',
+    failureKind: 'correction_exception',
+    completedAt: '2026-10-28T14:30:02.000Z',
+    accepted: false,
+  };
+
+  it('closes the execution requirement from the accepted result, not the newest attempt', () => {
+    const facts = raw({
+      subtasks: [{ id: 'a', title: 'A', status: 'done', dependencySubtaskIds: [] }],
+      receipts: [acceptedReceipt, failedCorrection],
+      completionRequirements: [
+        { key: 'execution:a', kind: 'execution', label: 'A', subtaskId: 'a', serviceId: null },
+      ],
+    });
+    expect(readTaskEvaluationInput(facts).requiredWork[0]!.state).toBe('completed');
+    expect(evaluate(facts).status).toBe('succeeded');
+  });
+
+  it('still requires action when nothing was accepted', () => {
+    const facts = raw({
+      subtasks: [{ id: 'a', title: 'A', status: 'awaiting_decision', dependencySubtaskIds: [] }],
+      receipts: [{ ...acceptedReceipt, accepted: false }, failedCorrection],
+      completionRequirements: [
+        { key: 'execution:a', kind: 'execution', label: 'A', subtaskId: 'a', serviceId: null },
+      ],
+    });
+    expect(readTaskEvaluationInput(facts).requiredWork[0]!.state).not.toBe('completed');
+    expect(evaluate(facts).status).not.toBe('succeeded');
+  });
+});
+
+describe('system block corrected to its proven conclusion', () => {
+  it('concludes success when a system block is disproved by durable work evidence', () => {
+    const db = new Database(':memory:');
+    runMigrations(db);
+    try {
+      const repo = new TaskRepo(db);
+      const task = new TaskEngine(repo, '/tmp/review-state-converge').create({ title: 'Delivered', goal: 'Deliver' });
+      const authority = createTaskStateAuthority({ db, workUnitClaimService: { hasClaimedByTask: () => false } });
+
+      // 1. A system-caused block before any work is admitted or proven.
+      authority.reconcile({
+        taskId: task.id, decisionId: 'structure', operationKey: 'structure',
+        actor: 'kernel-execution-runtime', reason: 'no authorized driver',
+        facts: () => {
+          repo.update(task.id, { dependencies: [{
+            taskId: task.id, type: 'kernel_anomaly', description: '系统问题',
+            status: 'waiting', createdAt: '2026-10-28T00:00:00Z',
+          }] });
+          return [];
+        },
+      });
+      expect(repo.findById(task.id)!.status).toBe('needs_action');
+      expect(repo.findById(task.id)!.stateDetail.reason.code).toBe('system_anomaly');
+
+      // 2. The work completes. A later failed metadata correction is newer but
+      //    proves nothing, so the certified result still closes the requirement.
+      const configRevision = 'cfg';
+      db.prepare(`INSERT INTO configuration_revisions (revision_id, content_hash, source_kind, imported_at)
+        VALUES (?, 'hash', 'native', '2026-10-28T00:00:00Z')`).run(configRevision);
+      db.prepare(`INSERT INTO work_units (id, agent_class_name, agent_class_kind, created_at, updated_at)
+        VALUES ('wu', 'pi-agent', 'executor', '2026-10-28T00:00:00Z', '2026-10-28T00:00:00Z')`).run();
+      db.prepare(`INSERT INTO work_graph_revisions
+        (id, task_id, revision, generation_id, configuration_revision, proposal_source, automatic_replan,
+          status, created_at, updated_at, completion_requirements_json)
+        VALUES ('rev_1', ?, 1, 'gen_1', ?, 'initial', 0, 'active',
+          '2026-10-28T00:00:00Z', '2026-10-28T00:00:00Z', ?)`)
+        .run(task.id, configRevision, JSON.stringify([
+          { key: 'execution:a', kind: 'execution', label: 'A', subtaskId: 'a', serviceId: null },
+        ]));
+      db.prepare(`INSERT INTO subtasks (id, task_id, generation_id, graph_revision, title, goal, status,
+        dependencies_json, context_refs_json, required_capabilities_json, executor_bindings_json,
+        file_outputs_json, acceptance_json, risk_level, created_at, updated_at)
+        VALUES ('a', ?, 'gen_1', 1, 'A', 'Deliver', 'done', '[]', '[]', '[]', '[]', '[]', '[]', 'low',
+          '2026-10-28T00:00:00Z', '2026-10-28T00:00:00Z')`).run(task.id);
+      const insertReceipt = (attemptId: string, terminalState: string, kind: string, completedAt: string) => {
+        db.prepare(`INSERT INTO executor_attempt_receipts (
+          attempt_id, execution_id, task_id, subtask_id, work_unit_id, agent_class_name,
+          started_at, completed_at, terminal_state, raw_response, parsing_json, verification_json,
+          attempt_kind, generation_id, graph_revision, configuration_revision,
+          authorized_binding_json, binding_fingerprint)
+          VALUES (?, 'exec', ?, 'a', 'wu', 'pi-agent', 'start', ?, ?, 'body', '{}', '{}', ?, 'gen_1', 1, ?,
+            '{}', 'fp')`)
+          .run(attemptId, task.id, completedAt, terminalState, kind, configRevision);
+      };
+      insertReceipt('attempt_primary', 'completed', 'primary', '2026-10-28T01:00:00Z');
+      insertReceipt('attempt_correction', 'executor_failed', 'contract_correction', '2026-10-28T01:02:00Z');
+
+      // 3. Recovery converges: every required item is proven, nothing waits.
+      repo.update(task.id, { dependencies: [] });
+      const result = authority.reconcile({
+        taskId: task.id, decisionId: 'recovery:1', operationKey: 'recovery:1',
+        actor: 'task-state-authority', reason: 'durable facts prove completion',
+      });
+      expect(result?.task.status).toBe('succeeded');
+    } finally { db.close(); }
+  });
+});

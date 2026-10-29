@@ -1181,6 +1181,12 @@ Attempt 拥有的是整个进程组，而不只是它启动的那个进程。Exe
 Workspace 来源是授权的 Workspace binding，不再是账户级历史 `sourceRoot`（内部 workspace
 store），后者会以明确错误失败。
 
+完成证据属于“结果”而不是“最新一次尝试”：本代内被接受或已认证的 receipt 即可证明节点完成，
+之后的元数据修正失败不会抹掉它。系统原因导致的 `needs_action`（`no_authorized_driver`、
+`system_anomaly`）若持久事实已证明全部必需工作完成且没有待用户处理事项，会被纠正为
+`succeeded`；该边只由状态权威在系统原因下提出，并由生命周期端口在仍有 pendingAction 时拒绝，
+因此不会覆盖真正的用户阻塞。恢复流程每轮会重新评估这类系统阻塞。
+
 调度事实同样显式：`kernel_dispatch_items.terminal` 只表示该调度项不再占用调度容量，
 schema 61 新增 `terminal_disposition`（`executed` / `not_started`）。资源分区或容量
 让位通过 `AttemptSupervisor → markNotStarted()` 记为 `not_started`，没有 receipt、
