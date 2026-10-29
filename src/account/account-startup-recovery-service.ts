@@ -14,6 +14,7 @@ import {
   type GenerationReplanPlannerPort,
 } from './generation-replan-worker.js';
 import { RetryWakeWorker } from './retry-wake-worker.js';
+import { clearStaleCapacityBlocks } from './capacity-block-convergence.js';
 import type {
   KernelConfigurationView,
   PlannerConfigurationView,
@@ -471,6 +472,9 @@ export class AccountStartupRecoveryService {
     const retryWakeResidue = await this.convergeMissingRetryWakes(now);
     const retryWakesDelivered = await this.getRetryWakeWorker().run(now);
     const signalled = await this.convergeRecoveryRequired(now);
+    // A partition/capacity yield is a scheduler wait: once its resource waits
+    // are resolved, the stale blocker must not keep the Task queued forever.
+    const clearedCapacityBlocks = this.clearStaleCapacityBlocks();
     await this.convergeConversationSlots(now);
     await this.promoteAvailableQueuedTasks(now);
     // Internal Worktree directories are Runtime state: retire the ones whose
@@ -484,7 +488,8 @@ export class AccountStartupRecoveryService {
     return signalled
       || retriedTaskIds.length > 0
       || retryWakeResidue > 0
-      || retryWakesDelivered > 0;
+      || retryWakesDelivered > 0
+      || clearedCapacityBlocks.length > 0;
   }
 
   /**
@@ -1145,6 +1150,30 @@ export class AccountStartupRecoveryService {
     if (promotion) await this.promoteConversationTask(promotion.taskId, slot.conversationId);
   }
 
+  /**
+   * Clear `kernel_capacity` blockers whose resource waits are already resolved.
+   * The Kernel still authorizes the dispatch; this only removes a stale
+   * scheduler fact so the queue can resume the Task.
+   */
+  private clearStaleCapacityBlocks(): string[] {
+    const tasks = this.deps.taskServices.taskRuntimeService;
+    return clearStaleCapacityBlocks({
+      tasks: tasks.listTasksByStatus('queued'),
+      hasUnresolvedWait: taskId => (
+        this.deps.runtimeExecutionServices.resourceLeaseService.findWaiting(taskId) ?? []
+      ).length > 0,
+      clear: taskId => {
+        const task = tasks.findTask(taskId);
+        if (!task) return;
+        tasks.updateTask(taskId, {
+          dependencies: task.dependencies.filter(dependency => !(
+            dependency.status === 'waiting' && dependency.type === 'kernel_capacity'
+          )),
+        });
+      },
+    });
+  }
+
   private async convergeConversationSlots(now: string): Promise<void> {
     const scheduler = this.deps.repositories.conversationTaskSchedulerRepo;
     const tasks = this.deps.taskServices.taskRuntimeService;
@@ -1156,15 +1185,19 @@ export class AccountStartupRecoveryService {
       const terminal = task.status === 'succeeded' || task.status === 'failed'
         || task.status === 'cancelled';
       // `needs_action` is the only non-terminal state that must never hold a slot
-      // after its cleanup converged, and `queued` never holds one.
-      const releasableBlock = task.status === 'needs_action';
+      // after its cleanup converged, and `queued` never holds one: a
+      // `running -> queued` capacity edge leaves the slot behind unless it is
+      // released here (otherwise the queue can never be promoted).
+      const releasableBlock = task.status === 'needs_action' || task.status === 'queued';
       if (!terminal && !releasableBlock) continue;
       if (this.hasReleasableResidue(taskId, this.activeGenerationId(taskId))) {
         scheduler.releaseSlotAndPromote(slot.conversationId, taskId, now, true);
         continue;
       }
-      if (task.status === 'needs_action') {
-        // A needs-action Task with no residue must not hold its Conversation.
+      if (task.status === 'needs_action' || task.status === 'queued') {
+        // A blocked or queued Task with no residue must not hold its
+        // Conversation; releasing it lets the queue (this Task included) be
+        // promoted again.
         const promotion = scheduler.releaseSlotAndPromote(
           slot.conversationId,
           taskId,
