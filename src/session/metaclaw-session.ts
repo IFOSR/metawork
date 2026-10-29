@@ -74,6 +74,7 @@ import {
   type PlannerProcessController,
 } from '../planning/planner-process-supervisor.js';
 import {
+  collectDecompositionRejections,
   collectWorkGraphQualityWarnings,
   validatePlanningAgentPlan,
 } from '../planning/planning-agent-plan-validator.js';
@@ -425,6 +426,8 @@ export class MetaclawSession {
   private readonly kernelConfiguration: KernelConfigurationView;
   private readonly plannerBinding: RevisionedAgentBinding;
   private readonly plannerBindingFingerprint: string;
+  /** Turns that already got one repairable decomposition rejection. */
+  private readonly decompositionRejectedTurns = new Set<string>();
   private readonly interactionTraceStream: InteractionTraceStream;
   private unregisterPlannerHost: (() => void) | null = null;
   private disposePromise: Promise<void> | null = null;
@@ -1052,6 +1055,28 @@ export class MetaclawSession {
         : null,
     );
     const parsedPlan = PlanningAgentPlanSchema.safeParse(normalizedPlan);
+    if (parsedPlan.success && purpose === 'kernel' && validation.valid
+      && !this.decompositionRejectedTurns.has(normalizedTurnId)) {
+      // The Planner owns decomposition; this only tells it that a multi-question
+      // request was compressed into one node, and allows exactly one revision
+      // per turn so a deliberate atomic deliverable is never dead-locked.
+      const issues = collectDecompositionRejections(
+        parsedPlan.data as PlanningAgentPlan,
+        normalizedInput,
+      );
+      if (issues.length > 0) {
+        this.decompositionRejectedTurns.add(normalizedTurnId);
+        return {
+          status: 'rejected',
+          turnId: normalizedTurnId,
+          submissionId: submission.submissionId,
+          planId: (parsedPlan.data as PlanningAgentPlan).id,
+          rejectionType: 'validation',
+          issues,
+          kernel: null,
+        };
+      }
+    }
     const planId = parsedPlan.success ? parsedPlan.data.id : null;
     if (parsedPlan.success) {
       this.recordPlannerIntentTrace(parsedPlan.data as PlanningAgentPlan, submission.submissionId);

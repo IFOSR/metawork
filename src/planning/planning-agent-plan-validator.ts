@@ -63,6 +63,38 @@ export function validatePlanningAgentPlan(
   return { valid: errors.length === 0, errors: errors.sort() };
 }
 
+/**
+ * A repairable decomposition issue for a multi-question request compressed into
+ * one subtask.
+ *
+ * The Planner owns decomposition, but it only learns that a graph is too thin if
+ * the rejection says so: the existing quality warning is trace-only. This is a
+ * narrow, evidence-based signal (several independent questions plus a long
+ * single-subtask goal), not a style rule; the caller rejects at most once per
+ * turn, so a deliberate atomic deliverable still proceeds.
+ */
+export function collectDecompositionRejections(
+  plan: PlanningAgentPlan,
+  userInput: string,
+): string[] {
+  if (plan.action !== 'plan_work_graph' || !plan.workGraph) return [];
+  const subtasks = plan.workGraph.subtasks;
+  if (subtasks.length !== 1) return [];
+  const goal = subtasks[0]?.goal?.trim() ?? '';
+  if (goal.length < 300) return [];
+  const questions = (userInput.match(/[?？]/gu) ?? []).length;
+  const enumerations = (userInput.match(/另外|还有|同时|分别|以及|第[一二三四五六七八九十]|(?:^|\n)\s*\d+[.、)]/gu) ?? []).length;
+  if (questions < 3 && enumerations < 3) return [];
+  const evidence = questions >= 3 ? `${questions} 个独立问题` : `${enumerations} 个并列要求`;
+  return [
+    'work_graph_quality: the request contains '
+    + `${evidence} but the graph has one subtask. Split the independent research/analysis streams into `
+    + 'one subtask per stream and add one synthesis subtask that depends on them (contextRefs carrying the '
+    + 'predecessor handoffs); keep a single node only when the work is genuinely one atomic deliverable, '
+    + 'and resubmit to confirm that choice.',
+  ];
+}
+
 /** Non-authoritative Planner feedback used to improve decomposition quality. */
 export function collectWorkGraphQualityWarnings(plan: PlanningAgentPlan): string[] {
   if (plan.action !== 'plan_work_graph' || !plan.workGraph) return [];

@@ -1892,23 +1892,27 @@ export class KernelExecutionRuntime {
       },
       recoveryOnly: true,
     }));
-    // A system-caused block may be stale: the facts can already prove the
-    // conclusion (for example an accepted result whose later metadata
-    // correction failed). Re-evaluate once so recovery converges instead of
-    // leaving a Task that has nothing left to do at `needs_action`.
-    const current = this.deps.taskRuntimeService.findTask(taskId);
-    if (current?.status === 'needs_action') {
+    const after = this.deps.taskRuntimeService.findTask(taskId);
+    // A block may be stale: the facts can already prove the conclusion (for
+    // example an accepted result whose later metadata correction failed).
+    // Re-evaluate once so recovery converges instead of leaving a Task that has
+    // nothing left to do at `needs_action`. Only a corrected *conclusion*
+    // counts as recovery progress; re-deriving the same block is not progress
+    // (otherwise a blocked Task would suppress every watchdog reminder).
+    if (after?.status === 'needs_action' && this.shouldReconcileBlockedTask(after)) {
       try {
-        this.reconcileTaskState(taskId, {
-          decisionId: `recovery_reconcile:${taskId}:${current.stateVersion}`,
-          operationKey: `recovery_reconcile:${taskId}:${current.stateVersion}`,
+        const reconciliation = this.deps.taskStateAuthority.reconcile({
+          taskId,
+          decisionId: `recovery_reconcile:${taskId}:${after.stateVersion}`,
+          operationKey: `recovery_reconcile:${taskId}:${after.stateVersion}`,
+          actor: 'kernel-execution-runtime',
           reason: reason || 'durable recovery re-evaluated the block',
         });
+        if (reconciliation?.applied && reconciliation.task.status !== after.status) return true;
       } catch {
         // A reconcile that cannot apply keeps the block; startup must continue.
       }
     }
-    const after = this.deps.taskRuntimeService.findTask(taskId);
     return after !== null
       && (after.status !== beforeStatus || after.updatedAt !== beforeUpdatedAt);
   }
@@ -4956,6 +4960,19 @@ export class KernelExecutionRuntime {
       eventKey: `${item.attemptId}:result`,
       taskId: item.taskId,
     });
+  }
+
+  /**
+   * Recovery re-evaluates only a block that durable facts may already resolve:
+   * a system-caused block, or the official-authorization gate. A block that
+   * asks the user for material, acceptance or a decision is left untouched (its
+   * reason is the current, correct one).
+   */
+  private shouldReconcileBlockedTask(task: import('../core/types.js').Task): boolean {
+    const reason = task.stateDetail?.reason;
+    if (!reason) return false;
+    if (reason.code === 'no_authorized_driver' || reason.code === 'system_anomaly') return true;
+    return /official authorization state:|official_authorization_required/u.test(reason.message ?? '');
   }
 
   private async recoverExpiredAttempts(workflow: KernelWorkflow, attemptFacts: KernelAttemptFact[]): Promise<void> {
