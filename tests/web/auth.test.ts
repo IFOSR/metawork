@@ -4,6 +4,7 @@ import { WsClient } from '../../web/src/api/ws.js';
 import {
   clearLaunchFragment,
   exchangeWebCredential,
+  hasWebSession,
   launchTokenFromHash,
   resolveWebLaunchSuggestion,
 } from '../../web/src/auth.js';
@@ -42,6 +43,19 @@ afterEach(() => {
 });
 
 describe('Web Cookie authentication', () => {
+  it('never caches the ephemeral Web session check', async () => {
+    const fetchImpl = vi.fn(async () => new Response(JSON.stringify({ authenticated: true }), {
+      status: 200,
+      headers: { 'content-type': 'application/json' },
+    }));
+
+    await expect(hasWebSession(fetchImpl)).resolves.toEqual({ authenticated: true });
+    expect(fetchImpl).toHaveBeenCalledWith('/api/auth/session', {
+      credentials: 'same-origin',
+      cache: 'no-store',
+    });
+  });
+
   it('restores drafts only for a terminal admission rejection and stops retrying that input', () => {
     vi.stubGlobal('window', { location: { protocol: 'http:', host: '127.0.0.1:8788' },
       setTimeout: vi.fn(() => 1), clearTimeout: vi.fn() });

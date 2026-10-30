@@ -468,6 +468,7 @@ describe('ManagementServer WebSocket authentication', () => {
       const response = await fetch(`${server.address}/api/auth/session`);
       expect(response.status).toBe(200);
       expect(response.headers.get('set-cookie')).toContain('anyfusion_web_session=');
+      expect(response.headers.get('cache-control')).toBe('no-store');
     } finally {
       await server.stop();
     }

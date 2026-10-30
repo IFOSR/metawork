@@ -68,6 +68,27 @@ describe('WorkspaceDirectoryService', () => {
       .rejects.toMatchObject({ code: 'workspace_contains_workspace_store' });
   });
 
+  it('projects a catalog Workspace as unavailable when its directory was removed', async () => {
+    const value = await fixture();
+    await value.workspaceCatalog.writeCatalog({
+      version: 1,
+      workspaces: [{
+        id: 'workspace_missing',
+        accountId: 'local-default',
+        displayName: 'Missing Workspace',
+        canonicalPath: join(roots[0]!, 'removed-repo'),
+        availability: 'available',
+        createdAt: '2026-08-27T00:00:00.000Z',
+        updatedAt: '2026-08-27T00:00:00.000Z',
+        createdByPrincipal: 'local',
+        archived: false,
+      }],
+    });
+
+    await expect(value.service.listWorkspaces('local'))
+      .resolves.toMatchObject([{ id: 'workspace_missing', availability: 'unavailable' }]);
+  });
+
   it('uses an indexed page without reading the catalog or activity sources', async () => {
     const value = await fixture();
     const selection = await value.service.selectByPath(value.repo, 'local');

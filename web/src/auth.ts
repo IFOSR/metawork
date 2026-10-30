@@ -61,6 +61,11 @@ export async function exchangeWebCredential(
 export async function hasWebSession(fetchImpl: FetchLike = fetch): Promise<WebAuthSession | null> {
   const response = await fetchImpl('/api/auth/session', {
     credentials: 'same-origin',
+    // The transport session is held in Server memory and is invalidated on a
+    // restart. A cached 200 can therefore claim that the browser is
+    // authenticated while the following WebSocket handshake has no valid
+    // Cookie.
+    cache: 'no-store',
   });
   if (response.status === 401) return null;
   if (!response.ok) throw new Error(`HTTP ${response.status}: ${await response.text()}`);

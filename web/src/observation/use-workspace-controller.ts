@@ -31,6 +31,7 @@ export function useWorkspaceController() {
   const [connected, setConnected] = useState(false);
   const [workspaces, setWorkspaces] = useState<WorkspaceSummary[]>([]);
   const [activeWorkspaceId, setActiveWorkspaceId] = useState<string | null>(null);
+  const [pendingWorkspaceId, setPendingWorkspaceId] = useState<string | null>(null);
   const [sessions, setSessions] = useState<WebSessionMetadata[]>([]);
   const [directoryCursor, setDirectoryCursor] = useState<string | null>(null);
   const [directoryLoading, setDirectoryLoading] = useState(false);
@@ -193,8 +194,16 @@ export function useWorkspaceController() {
       setConnected(false);
       void establishWebSession().then(session => {
         if (!startupLifetime.current()) return;
-        setAuthenticated(Boolean(session));
-        setAuthError(session ? null : '无法建立本机 Web 会话，请刷新页面重试。');
+        if (!session) {
+          setAuthenticated(false);
+          setAuthError('无法建立本机 Web 会话，请刷新页面重试。');
+          return;
+        }
+        // WsClient closes itself after an unauthorized handshake. Reusing the
+        // old instance leaves closedByUser=true and can never reconnect; a
+        // reload recreates the transport and also refreshes the session-bound
+        // WebSocket cookie.
+        window.location.reload();
       }).catch(error => {
         if (!startupLifetime.current()) return;
         setAuthenticated(false);
@@ -540,6 +549,7 @@ export function useWorkspaceController() {
       setActivationNotice(`Workspace ${workspace.displayName} 当前不可用。`);
       return;
     }
+    setPendingWorkspaceId(workspace.id);
     void handleSelectWorkspacePath(workspace.canonicalPath);
   };
   const handleCreateWorkspace = async (path: string): Promise<string | null> => {
@@ -577,6 +587,7 @@ export function useWorkspaceController() {
       setSearch('');
       setDirectoryCursor(result.nextCursor ?? null);
       setActiveWorkspaceId(result.activeWorkspaceId);
+      setPendingWorkspaceId(null);
       activeConversationRef.current = workspaceActiveSessionId;
       browsedConversationRef.current = workspaceActiveSessionId;
       setActiveSessionId(workspaceActiveSessionId);
@@ -606,6 +617,7 @@ export function useWorkspaceController() {
       setActivationNotice(message);
       return message;
     } finally {
+      if (!keepPreparing) setPendingWorkspaceId(null);
       if (switchRequestId === workspaceSwitchRequestRef.current && !keepPreparing) {
         workspaceSwitchRef.current = false;
         setWorkspaceSwitching(false);
@@ -983,7 +995,7 @@ export function useWorkspaceController() {
   const executionDetailOpen = executionDetail !== null && executionDetailTurn !== null;
   return {
     themePreference, setThemePreference, authenticated, authError, connected,
-    workspaces, activeWorkspaceId, sessions, directoryCursor, directoryLoading,
+    workspaces, activeWorkspaceId, pendingWorkspaceId, sessions, directoryCursor, directoryLoading,
     newSessionPending, pendingDeleteSessionIds,
     activeSessionId, workspaceSwitching, tab, setTab, setSelectedTrajectoryTurnId,
     draft, route, search, setSearch, settingsOpen,

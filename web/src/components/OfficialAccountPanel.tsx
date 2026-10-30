@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import QRCode from 'qrcode';
+import { establishWebSession } from '../auth';
 
 export interface OfficialStatus {
   state: 'logged_out' | 'active' | 'pending_payment' | 'expired' | 'revoked' | 'unavailable';
@@ -33,11 +34,20 @@ const orderStatusLabels: Record<string, string> = { pending_payment: '待支付'
 const MAX_QR_REOPEN = 3;
 
 async function request<T>(path: string, body?: unknown): Promise<T> {
-  const response = await fetch(`/api/official-auth/${path}`, {
+  const send = () => fetch(`/api/official-auth/${path}`, {
     method: body === undefined ? 'GET' : 'POST', credentials: 'same-origin',
     headers: body === undefined ? {} : { 'Content-Type': 'application/json' },
     ...(body === undefined ? {} : { body: JSON.stringify(body) }),
   });
+  let response = await send();
+  if (response.status === 401) {
+    // The local transport session lives in Server memory, so a restart makes an
+    // already-open tab's cookie unknown without an error the user can act on.
+    // Re-establish it once and resend: the 401 came from the session gate, so
+    // neither a login nor an order was executed yet.
+    const session = await establishWebSession().catch(() => null);
+    if (session) response = await send();
+  }
   const value = response.status === 204 ? null : await response.json();
   if (!response.ok) {
     throw new Error(value?.message

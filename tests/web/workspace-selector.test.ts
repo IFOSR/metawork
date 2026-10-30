@@ -24,6 +24,21 @@ const workspaces: WorkspaceSummary[] = [
 ];
 
 describe('WorkspaceSelector', () => {
+  it('keeps the requested Workspace selected while the switch is pending', () => {
+    const html = renderToStaticMarkup(createElement(WorkspaceSelector, {
+      workspaces,
+      activeWorkspaceId: null,
+      pendingWorkspaceId: 'workspace-a',
+      disabled: true,
+      preparing: true,
+      onSelect: () => undefined,
+      onCreateWorkspace: () => undefined,
+    }));
+
+    expect(html).toContain('value="workspace-a"');
+    expect(html).toContain('Workspace · 创建中…');
+  });
+
   it.each([null, 'stale-workspace-id'])(
     'shows a placeholder instead of implying the first Workspace is active for %s',
     activeWorkspaceId => {

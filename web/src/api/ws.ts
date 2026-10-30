@@ -355,6 +355,7 @@ export class WsClient {
     try {
       const response = await fetch('/api/auth/session', {
         credentials: 'same-origin',
+        cache: 'no-store',
       });
       if (response.status === 401) {
         this.rejectAuthentication();
@@ -372,6 +373,7 @@ export class WsClient {
     try {
       const response = await fetch('/api/ws/diagnostics', {
         credentials: 'same-origin',
+        cache: 'no-store',
       });
       const body = await response.json().catch(() => null) as {
         message?: string;

@@ -20,6 +20,7 @@ export function WorkspaceShell({
   onLoadMoreConversations,
   workspaces,
   activeWorkspaceId,
+  pendingWorkspaceId,
   activeSessionId,
   selectedSessionId,
   workspaceSwitching,
@@ -71,6 +72,7 @@ export function WorkspaceShell({
   onLoadMoreConversations?: () => void;
   workspaces: WorkspaceSummary[];
   activeWorkspaceId: string | null;
+  pendingWorkspaceId?: string | null;
   activeSessionId: string | null;
   selectedSessionId: string | null;
   workspaceSwitching: boolean;
@@ -149,7 +151,9 @@ export function WorkspaceShell({
         onLoadMoreConversations={onLoadMoreConversations}
         workspaces={workspaces}
         activeWorkspaceId={activeWorkspaceId}
+        pendingWorkspaceId={pendingWorkspaceId}
         activeSessionId={activeSessionId}
+        connected={connected}
         runningSessionId={running ? activeSessionId : null}
         selectedSessionId={selectedSessionId}
         workspaceSwitching={workspaceSwitching}

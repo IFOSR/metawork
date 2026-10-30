@@ -835,7 +835,9 @@ export class ManagementServer {
     if (request.method === 'GET' && url.pathname === '/api/auth/session') {
       // The local Web session is a transport session, not the user's account.
       // Establish it automatically so the official subscription account is the
-      // only user-facing login boundary.
+      // only user-facing login boundary. Never cache: a cached 200 would replay
+      // an old transport session that a Server restart has already discarded.
+      response.setHeader('Cache-Control', 'no-store');
       const existing = this.deps.webAuth.getSession(request.headers.cookie);
       const created = existing ? null : this.deps.webAuth.createSession();
       if (created) response.setHeader('Set-Cookie', this.deps.webAuth.sessionCookie(created.sessionToken));
@@ -846,6 +848,7 @@ export class ManagementServer {
     }
 
     if (request.method === 'GET' && url.pathname === '/api/ws/diagnostics') {
+      response.setHeader('Cache-Control', 'no-store');
       const diagnostic = this.getWebSocketDiagnostic(request);
       this.sendJson(response, diagnostic.status, {
         ok: diagnostic.ok,

@@ -182,9 +182,21 @@ export class WorkspaceDirectoryService {
     const authorized = await Promise.all(workspaces.map(async workspace => (
       await this.canAccessWorkspace(workspace, principalId) ? workspace : null
     )));
-    return authorized
+    const available = await Promise.all(authorized
       .filter((workspace): workspace is WorkspaceRecord => workspace !== null)
-      .map(workspace => this.workspaceWithGitState(workspace, this.deps.gitLifecycle?.state?.(workspace.id), this.deps.gitLifecycle?.error?.(workspace.id)))
+      .map(async workspace => ({
+        workspace,
+        pathAvailable: await isWorkspaceDirectoryAvailable(workspace.canonicalPath),
+      })));
+    return available
+      .map(({ workspace, pathAvailable }) => this.workspaceWithGitState({
+        ...workspace,
+        // The catalog keeps the last known state so historical Conversations
+        // remain addressable. The directory projection must still reflect the
+        // path on disk, otherwise the selector offers an entry that selection
+        // can only reject in preflightPath().
+        availability: pathAvailable ? workspace.availability : 'unavailable',
+      }, this.deps.gitLifecycle?.state?.(workspace.id), this.deps.gitLifecycle?.error?.(workspace.id)))
       .sort((left, right) => right.updatedAt.localeCompare(left.updatedAt));
   }
 
@@ -404,6 +416,15 @@ function safeRealpathForComparison(path: string): string {
   // here also keeps tests and early-startup errors deterministic if a root is
   // not present yet.
   return path.endsWith(sep) && path.length > 1 ? path.slice(0, -1) : path;
+}
+
+async function isWorkspaceDirectoryAvailable(path: string): Promise<boolean> {
+  try {
+    const canonicalPath = await realpath(path);
+    return (await stat(canonicalPath)).isDirectory();
+  } catch {
+    return false;
+  }
 }
 
 function decodeCursor(cursor: string | undefined): number {

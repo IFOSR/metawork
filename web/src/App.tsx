@@ -11,7 +11,7 @@ export function App() {
   const [officialStatus, setOfficialStatus] = useState<OfficialStatus | null>(null);
   const {
     themePreference, setThemePreference, authenticated, authError, connected,
-    workspaces, activeWorkspaceId, sessions, directoryCursor, directoryLoading,
+    workspaces, activeWorkspaceId, pendingWorkspaceId, sessions, directoryCursor, directoryLoading,
     activeSessionId, workspaceSwitching, newSessionPending, pendingDeleteSessionIds, tab, setTab, setSelectedTrajectoryTurnId,
     draft, route, search, setSearch, settingsOpen,
     setSettingsOpen, workspaceCreatorOpen, setWorkspaceCreatorOpen, configurationRuntime, agentReadiness,
@@ -51,6 +51,7 @@ export function App() {
         onLoadMoreConversations={() => void handleLoadMoreConversations()}
         workspaces={workspaces}
         activeWorkspaceId={activeWorkspaceId}
+        pendingWorkspaceId={pendingWorkspaceId}
         activeSessionId={activeSessionId}
         selectedSessionId={selectedId}
         workspaceSwitching={workspaceSwitching}

@@ -6,7 +6,9 @@ export function SessionSidebar({
   sessions,
   workspaces,
   activeWorkspaceId,
+  pendingWorkspaceId,
   activeSessionId,
+  connected,
   runningSessionId,
   selectedSessionId,
   workspaceSwitching,
@@ -29,7 +31,9 @@ export function SessionSidebar({
   sessions: WebSessionMetadata[];
   workspaces: WorkspaceSummary[];
   activeWorkspaceId: string | null;
+  pendingWorkspaceId?: string | null;
   activeSessionId: string | null;
+  connected: boolean;
   runningSessionId: string | null;
   selectedSessionId: string | null;
   workspaceSwitching: boolean;
@@ -58,6 +62,7 @@ export function SessionSidebar({
       <WorkspaceSelector
         workspaces={workspaces}
         activeWorkspaceId={activeWorkspaceId}
+        pendingWorkspaceId={pendingWorkspaceId}
         disabled={workspaceSwitching}
         preparing={workspaceSwitching}
         onSelect={onSelectWorkspace}
@@ -66,10 +71,10 @@ export function SessionSidebar({
       <button
         className="new-session-button"
         onClick={onNewSession}
-        disabled={!activeWorkspaceId || workspaceSwitching || newWorkBlocked || newSessionPending}
-        title={newWorkBlocked ? '请先安装必需智能体' : undefined}
+        disabled={!activeWorkspaceId || !connected || workspaceSwitching || newWorkBlocked || newSessionPending}
+        title={!connected ? '正在连接 MetaWork…' : newWorkBlocked ? '请先安装必需智能体' : undefined}
       >
-        <span>{newSessionPending ? '⋯' : '＋'}</span> {newSessionPending ? '创建中…' : '新建会话'}
+        <span>{newSessionPending || !connected ? '⋯' : '＋'}</span> {newSessionPending ? '创建中…' : !connected ? '连接中…' : '新建会话'}
       </button>
       <label className="session-search">
         <span>⌕</span>
