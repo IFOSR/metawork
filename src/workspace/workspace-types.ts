@@ -15,6 +15,9 @@ export interface WorkspaceRecord {
   readonly updatedAt: string;
   readonly createdByPrincipal: string;
   readonly archived: boolean;
+  /** Runtime-owned Git preparation state; absent in legacy catalog rows. */
+  readonly gitState?: 'initializing' | 'ready' | 'recovering' | 'failed';
+  readonly gitError?: string;
 }
 
 export interface WorkspaceCatalogFile {

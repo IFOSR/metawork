@@ -81,7 +81,7 @@ export class WorkspaceMergeWorker {
         job=this.repo.updateJob(job.jobId,'preparing');
         const delivered=await this.git.ref(root.repositoryPath,'refs/metawork/delivered');
         const intent=this.repo.operationRecord(job.operationId);
-        const external=intent?.targetCommit ?? await this.git.capture(root.repositoryPath,root.userRoot,delivered,'Capture external Workspace edits');
+        const external=intent?.targetCommit ?? await this.git.captureUserRoot(root.repositoryPath,root.userRoot,delivered,'Capture external Workspace edits');
         const before=intent?.expectedRef ?? delivered;
         await this.git.updateRef(root.repositoryPath,`${opRef}-external`,external);
         this.repo.operation({operationId:job.operationId,workspaceId:root.workspaceId,kind:'merge',expectedRef:before,targetCommit:external,payload:{jobId:job.jobId,sourceCommit:job.sourceCommit}});
@@ -90,7 +90,9 @@ export class WorkspaceMergeWorker {
         if(actualMain!==before&&actualMain!==external)throw new Error('unexpected_workspace_main');
         if(actualMain!==external)await this.git.updateRef(root.repositoryPath,'refs/heads/main',external,before);
         if(delivered!==external)await this.git.updateRef(root.repositoryPath,'refs/metawork/delivered',external,before);
-        root={...root,mainCommit:external,deliveredCommit:external};this.repo.saveRoot(root);
+        root={...root,mainCommit:external,deliveredCommit:external};
+        await this.git.refreshSourceIndex(root.repositoryPath, root.userRoot, external);
+        this.repo.saveRoot(root);
         job=this.repo.updateJob(job.jobId,'merging',{expectedMain:external,externalCommit:external,error:null});
       }
       const expected=job.externalCommit!;
@@ -135,6 +137,7 @@ export class WorkspaceMergeWorker {
     await verify();
     const delivered=await this.git.ref(root.repositoryPath,'refs/metawork/delivered');
     if(delivered!==merged)await this.git.updateRef(root.repositoryPath,'refs/metawork/delivered',merged,external);
+    await this.git.refreshSourceIndex(root.repositoryPath, root.userRoot, merged);
     this.repo.saveRoot({...root,mainCommit:merged,deliveredCommit:merged});
     this.repo.operationState(job.operationId,'applied');
     return this.repo.updateJob(job.jobId,'delivered',{error:null});
@@ -153,7 +156,7 @@ export class WorkspaceMergeWorker {
     return withWorkspaceGitLock(root.repositoryPath, 'integration', async () => {
       const {job, paths} = await this.conflicts(jobId);
       if (job.conflictVersion !== version || !paths.includes(path)) throw new Error('stale_workspace_conflict');
-      const main = job.mergedCommit ? await this.git.capture(root.repositoryPath, root.userRoot, job.externalCommit!, 'Observe writeback conflict') : job.externalCommit!;
+      const main = job.mergedCommit ? await this.git.captureUserRoot(root.repositoryPath, root.userRoot, job.externalCommit!, 'Observe writeback conflict') : job.externalCommit!;
       const base = await this.git.text(['--git-dir', root.repositoryPath, 'merge-base', job.externalCommit!, job.sourceCommit]);
       const versions: import('../workspace/workspace-git-contracts.js').WorkspaceConflictVersions['versions'] = [];
       for (const [side, commit] of [['base', base], ['main', main], ['session', job.sourceCommit]] as const) {
@@ -251,7 +254,7 @@ export class WorkspaceMergeWorker {
     return {path:action.path,oid,mode:template?.kind==='file'?template.mode:'100644',kind:'file'};
   }
   private async reviseWriteback(root:WorkspaceGitRoot,job:WorkspaceMergeJob,actions:WorkspaceConflictAction[],verify:()=>Promise<void>):Promise<void>{
-    const external=await this.git.capture(root.repositoryPath,root.userRoot,job.externalCommit!,'Capture user edits during delivery');
+    const external=await this.git.captureUserRoot(root.repositoryPath,root.userRoot,job.externalCommit!,'Capture user edits during delivery');
     const actual=new Map((await this.git.entries(root.repositoryPath,external)).map(e=>[e.path,e]));
     const changes:Array<{path:string;entry:GitTreeEntry|null}>=[];
     const reserved=(await this.git.entries(root.repositoryPath,job.mergedCommit!)).map(entry=>entry.path);
@@ -300,7 +303,7 @@ export class WorkspaceMergeWorker {
       if(current.state==='cancelled')return;
       this.repo.operation({operationId:`cancel_request_${requestId}`,workspaceId:root.workspaceId,kind:'cancel_request',payload:{jobId,version,...(partialDecision?{partialDecision}:{})}});
       const before=await this.git.ref(root.repositoryPath,'refs/metawork/delivered');
-      const preserved=partial?await this.git.capture(root.repositoryPath,root.userRoot,job.mergedCommit??before,'Preserve partially delivered Workspace'):before;
+      const preserved=partial?await this.git.captureUserRoot(root.repositoryPath,root.userRoot,job.mergedCommit??before,'Preserve partially delivered Workspace'):before;
       const operationId=`cancel_${jobId}`;
       await this.git.updateRef(root.repositoryPath,`refs/metawork/operations/${operationId}`,preserved);
       this.repo.operation({operationId,workspaceId:root.workspaceId,kind:'merge_cancel',targetCommit:preserved,payload:{jobId}});

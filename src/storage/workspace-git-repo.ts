@@ -39,14 +39,14 @@ export class WorkspaceGitRepo implements WorkspaceGitPort {
     const row = this.db.prepare('SELECT * FROM workspace_git_roots WHERE workspace_id=?').get(workspaceId) as Row | undefined;
     return row ? { workspaceId: row.workspace_id, accountId: row.account_id, userRoot: row.canonical_path,
       repositoryPath: row.repository_path, integrationPath: row.integration_path, state: row.state,
-      mainCommit: row.main_commit, deliveredCommit: row.delivered_commit } : null;
+      mainCommit: row.main_commit, deliveredCommit: row.delivered_commit, lastError: row.last_error } : null;
   }
   roots(): WorkspaceGitRoot[] { return (this.db.prepare('SELECT workspace_id FROM workspace_git_roots').all() as Row[]).map(row => this.root(row.workspace_id)!); }
   saveRoot(root: WorkspaceGitRoot): void {
-    this.db.prepare(`INSERT INTO workspace_git_roots(workspace_id,account_id,canonical_path,repository_path,integration_path,state,main_commit,delivered_commit,created_at,updated_at)
-      VALUES(?,?,?,?,?,?,?,?,?,?) ON CONFLICT(workspace_id) DO UPDATE SET state=excluded.state, main_commit=excluded.main_commit,
-      delivered_commit=excluded.delivered_commit,row_version=row_version+1,updated_at=excluded.updated_at`).run(
-      root.workspaceId, root.accountId, root.userRoot, root.repositoryPath, root.integrationPath, root.state, root.mainCommit || null, root.deliveredCommit || null, now(), now());
+    this.db.prepare(`INSERT INTO workspace_git_roots(workspace_id,account_id,canonical_path,repository_path,integration_path,state,main_commit,delivered_commit,last_error,created_at,updated_at)
+      VALUES(?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(workspace_id) DO UPDATE SET state=excluded.state, main_commit=excluded.main_commit,
+      delivered_commit=excluded.delivered_commit,last_error=excluded.last_error,row_version=row_version+1,updated_at=excluded.updated_at`).run(
+      root.workspaceId, root.accountId, root.userRoot, root.repositoryPath, root.integrationPath, root.state, root.mainCommit || null, root.deliveredCommit || null, root.lastError ?? null, now(), now());
   }
   failRoot(workspaceId: string, error: string): void { this.db.prepare("UPDATE workspace_git_roots SET state='failed',last_error=?,updated_at=? WHERE workspace_id=?").run(error, now(), workspaceId); }
   conversation(conversationId: string): ConversationGitWorktree | null {

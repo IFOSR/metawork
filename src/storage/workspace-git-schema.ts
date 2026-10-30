@@ -80,6 +80,7 @@ export function installWorkspaceGitSchema(db: Database.Database): void {
     const columns = db.pragma(`table_info(${table})`) as Array<{ name: string }>;
     if (columns.length && !columns.some(item => item.name === column)) db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${type}`);
   };
+  add('workspace_git_roots', 'last_error', 'TEXT');
   for (const [column, type] of [['worktree_id','TEXT'],['worktree_incarnation','INTEGER'],['before_commit','TEXT'],['after_commit','TEXT']]) add('executor_attempt_runtime', column, type);
   for (const column of ['source_commit','source_task_id','operation_task_id','project_path','service_worktree_id']) add('managed_local_services', column, 'TEXT');
   for (const column of ['git_commit','git_relative_path']) add('artifact_versions', column, 'TEXT');

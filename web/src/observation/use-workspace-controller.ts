@@ -37,6 +37,8 @@ export function useWorkspaceController() {
   const [activeSessionId, setActiveSessionId] = useState<string | null>(null);
   const [browsedSessionId, setBrowsedSessionId] = useState<string | null>(null);
   const [workspaceSwitching, setWorkspaceSwitching] = useState(false);
+  const [newSessionPending, setNewSessionPending] = useState(false);
+  const [pendingDeleteSessionIds, setPendingDeleteSessionIds] = useState<ReadonlySet<string>>(new Set());
   const [selectedRecord, setSelectedRecord] = useState<{ id: string; title: string; workspaceId: string | null } | null>(null);
   const directoryChangesRef = useRef(new NavigationDirectoryChanges());
   const [tab, setTab] = useState<WorkspaceTab>('conversation');
@@ -83,6 +85,8 @@ export function useWorkspaceController() {
   const conversationRequestRef = useRef(0);
   const recordRequestRef = useRef(0);
   const workspaceSwitchRef = useRef(false);
+  const newSessionPendingRef = useRef(false);
+  const pendingDeleteSessionIdsRef = useRef(new Set<string>());
   const workspaceSwitchRequestRef = useRef(0);
   const directoryLoadedRef = useRef<{ workspaceId: string; query: string } | null>(null);
   const startupLaunchAppliedRef = useRef(false);
@@ -555,6 +559,7 @@ export function useWorkspaceController() {
     setWorkspaceSwitching(true);
     setActivationNotice(null);
     const eventsAtRequest = directoryChangesRef.current.sequence;
+    let keepPreparing = false;
     try {
       const result = await loadWorkspaceSelection(http, workspacePath);
       if (switchRequestId !== workspaceSwitchRequestRef.current) return null;
@@ -583,13 +588,25 @@ export function useWorkspaceController() {
       setActivationNotice(null);
       writeConversationRoute({ workspaceId: result.activeWorkspaceId, conversationId: workspaceActiveSessionId });
       setRoute(null);
+      if (result.workspace?.gitState === 'initializing') {
+        keepPreparing = true;
+        void waitForWorkspaceGitReady(http, workspacePath, result.activeWorkspaceId, {
+          isCurrent: () => switchRequestId === workspaceSwitchRequestRef.current,
+          setWorkspaces,
+          setNotice: setActivationNotice,
+          setPreparing: setWorkspaceSwitching,
+          release: () => {
+            workspaceSwitchRef.current = false;
+          },
+        });
+      }
       return null;
     } catch (error) {
       const message = `Workspace 切换失败：${(error as Error).message}`;
       setActivationNotice(message);
       return message;
     } finally {
-      if (switchRequestId === workspaceSwitchRequestRef.current) {
+      if (switchRequestId === workspaceSwitchRequestRef.current && !keepPreparing) {
         workspaceSwitchRef.current = false;
         setWorkspaceSwitching(false);
       }
@@ -687,7 +704,7 @@ export function useWorkspaceController() {
     if (activeWorkspaceRef.current) writeConversationRoute({ workspaceId: activeWorkspaceRef.current, conversationId: sessionId });
   };
   const handleNewSession = async () => {
-    if (workspaceSwitchRef.current) return;
+    if (workspaceSwitchRef.current || newSessionPendingRef.current) return;
     const requiredBlock = requiredAgentBlock(agentReadiness);
     if (requiredBlock.blocked) {
       setActivationNotice(requiredBlock.message);
@@ -697,6 +714,8 @@ export function useWorkspaceController() {
       setActivationNotice('请先选择 Workspace，再新建会话。');
       return;
     }
+    newSessionPendingRef.current = true;
+    setNewSessionPending(true);
     const generation = conversationNavigationRef.current.generation + 1;
     conversationNavigationRef.current = { generation, target: 'new' };
     const workspaceGeneration = workspaceSwitchRequestRef.current;
@@ -727,6 +746,8 @@ export function useWorkspaceController() {
           : `新建会话失败：${message}`,
       );
     } finally {
+      newSessionPendingRef.current = false;
+      setNewSessionPending(false);
       if (generation === conversationNavigationRef.current.generation) {
         conversationNavigationRef.current.target = null;
       }
@@ -742,7 +763,9 @@ export function useWorkspaceController() {
     setSettingsOpen(true);
   };
   const handleDeleteSession = async (sessionId: string) => {
-    if (!httpRef.current) return;
+    if (!httpRef.current || pendingDeleteSessionIdsRef.current.has(sessionId)) return;
+    pendingDeleteSessionIdsRef.current.add(sessionId);
+    setPendingDeleteSessionIds(new Set(pendingDeleteSessionIdsRef.current));
     try {
       await httpRef.current.deleteConversation(sessionId);
       setSessions(current => current.filter(session => session.id !== sessionId));
@@ -755,6 +778,9 @@ export function useWorkspaceController() {
       setActivationNotice(null);
     } catch (error) {
       setActivationNotice(`删除失败：${(error as Error).message}`);
+    } finally {
+      pendingDeleteSessionIdsRef.current.delete(sessionId);
+      setPendingDeleteSessionIds(new Set(pendingDeleteSessionIdsRef.current));
     }
   };
   const handleFilesSelected = async (files: File[]) => {
@@ -958,6 +984,7 @@ export function useWorkspaceController() {
   return {
     themePreference, setThemePreference, authenticated, authError, connected,
     workspaces, activeWorkspaceId, sessions, directoryCursor, directoryLoading,
+    newSessionPending, pendingDeleteSessionIds,
     activeSessionId, workspaceSwitching, tab, setTab, setSelectedTrajectoryTurnId,
     draft, route, search, setSearch, settingsOpen,
     setSettingsOpen, workspaceCreatorOpen, setWorkspaceCreatorOpen, configurationRuntime, agentReadiness,
@@ -982,4 +1009,49 @@ function activationMessage(result: WebSessionActivationResult): string | null {
     task_runtime_active: '当前 Task 仍在执行或等待处理，不能强制切换会话。',
     session_unavailable: '会话不存在、已归档或无法恢复。',
   }[result.reason];
+}
+
+async function waitForWorkspaceGitReady(
+  http: Pick<HttpClient, 'getWorkspaces'>,
+  workspacePath: string,
+  workspaceId: string,
+  hooks: {
+    isCurrent: () => boolean;
+    setWorkspaces: (value: WorkspaceSummary[] | ((current: WorkspaceSummary[]) => WorkspaceSummary[])) => void;
+    setNotice: (value: string | null) => void;
+    setPreparing: (value: boolean) => void;
+    release: () => void;
+  },
+): Promise<void> {
+  for (let attempt = 0; attempt < 120; attempt += 1) {
+    await new Promise(resolve => window.setTimeout(resolve, 250));
+    if (!hooks.isCurrent()) return;
+    try {
+      const catalog = await http.getWorkspaces();
+      const workspace = catalog.workspaces.find(item => item.id === workspaceId || item.canonicalPath === workspacePath);
+      if (!workspace) continue;
+      hooks.setWorkspaces(current => [...current.filter(item => item.id !== workspace.id), workspace]);
+      if (workspace.gitState === 'failed' || workspace.gitState === 'recovering') {
+        hooks.setNotice(workspace.gitError
+          ? `Workspace 初始化失败：${workspace.gitError}`
+          : `Workspace 初始化失败或需要恢复：${workspace.gitState}`);
+        hooks.setPreparing(false);
+        hooks.release();
+        return;
+      }
+      if (workspace.gitState === undefined || workspace.gitState === 'ready') {
+        hooks.setNotice(null);
+        hooks.setPreparing(false);
+        hooks.release();
+        return;
+      }
+    } catch {
+      // Keep the preparing state while a transient catalog request fails.
+    }
+  }
+  if (hooks.isCurrent()) {
+    hooks.setNotice('Workspace 初始化仍在进行，请稍候后重试。');
+    hooks.setPreparing(false);
+    hooks.release();
+  }
 }

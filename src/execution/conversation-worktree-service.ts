@@ -13,7 +13,43 @@ export function conversationBindingFingerprint(binding: Omit<ConversationExecuti
 
 export class ConversationWorktreeService {
   private readonly pending=new Map<string,Promise<unknown>>();
+  private readonly initializations = new Map<string, Promise<WorkspaceGitRoot>>();
+  private readonly cleanups = new Map<string, Promise<void>>();
   constructor(readonly git:WorkspaceGitService,readonly repo:WorkspaceGitPort){}
+  beginInitialize(input:{accountId:string;workspaceId:string;userRoot:string}): { state: WorkspaceGitRoot['state']; ready: Promise<WorkspaceGitRoot> } {
+    const existing = this.repo.root(input.workspaceId);
+    if (existing?.state === 'ready') return { state: 'ready', ready: Promise.resolve(existing) };
+    const active = this.initializations.get(input.workspaceId);
+    if (active) return { state: 'initializing', ready: active };
+    const ready = this.initialize(input).finally(() => {
+      if (this.initializations.get(input.workspaceId) === ready) this.initializations.delete(input.workspaceId);
+    });
+    this.initializations.set(input.workspaceId, ready);
+    void ready.catch(() => undefined);
+    return { state: 'initializing', ready };
+  }
+  state(workspaceId:string): WorkspaceGitRoot['state'] {
+    return this.repo.root(workspaceId)?.state ?? (this.initializations.has(workspaceId) ? 'initializing' : 'failed');
+  }
+  error(workspaceId:string): string | null {
+    return this.repo.root(workspaceId)?.lastError ?? null;
+  }
+  beginCleanup(conversationId:string): { state: 'cleaning' | 'retained' | 'cleaned'; ready: Promise<void> } {
+    const worktree = this.repo.conversation(conversationId);
+    if (!worktree) return { state: 'cleaned', ready: Promise.resolve() };
+    const active = this.cleanups.get(conversationId);
+    if (active) return { state: 'cleaning', ready: active };
+    this.repo.requestCleanup(worktree.worktreeId);
+    if (this.repo.conversationState(worktree.worktreeId).ownerToken || this.repo.cleanupBlocked(worktree.worktreeId)) {
+      return { state: 'retained', ready: Promise.resolve() };
+    }
+    const ready = this.cleanupNow(conversationId).finally(() => {
+      if (this.cleanups.get(conversationId) === ready) this.cleanups.delete(conversationId);
+    });
+    this.cleanups.set(conversationId, ready);
+    void ready.catch(() => undefined);
+    return { state: 'cleaning', ready };
+  }
   async initialize(input:{accountId:string;workspaceId:string;userRoot:string}):Promise<WorkspaceGitRoot>{
     return this.serial(`root:${input.workspaceId}`,async()=>{
       const existing=this.repo.root(input.workspaceId);
@@ -24,7 +60,7 @@ export class ConversationWorktreeService {
       }
       const canonicalInput = {...input, userRoot: await realpath(input.userRoot)};
       if(existing?.mainCommit || existing?.deliveredCommit)throw new Error('workspace_git_requires_recovery');
-      this.repo.saveRoot({...canonicalInput,...this.git.paths(input.workspaceId),mainCommit:'',deliveredCommit:'',state:'initializing'});
+      this.repo.saveRoot({...canonicalInput,...this.git.paths(input.workspaceId),mainCommit:'',deliveredCommit:'',state:'initializing',lastError:null});
       const operationId = `initialize_${input.workspaceId}`;
       this.repo.operation({operationId, workspaceId: input.workspaceId, kind: 'initialize', payload: canonicalInput});
       try{
@@ -61,8 +97,7 @@ export class ConversationWorktreeService {
       const delivered=await this.git.ref(root.repositoryPath,'refs/metawork/delivered');
       // Inspect even when refs agree: a failed or interrupted Attempt may have
       // left unsealed bytes. Planner can inspect them, but a new Task cannot bind.
-      const captured = await this.git.capture(root.repositoryPath, worktree.rootPath, worktree.headCommit, 'Inspect retained Conversation');
-      if (captured !== worktree.headCommit) return worktree;
+      if (!(await this.git.isWorktreeClean(worktree.rootPath, worktree.headCommit))) return worktree;
       if(worktree.headCommit===delivered)return worktree;
       if (!(await this.git.isAncestor(root.repositoryPath, worktree.headCommit, delivered))) return worktree;
       const operationId = `sync_${worktree.worktreeId}_${delivered}`;
@@ -78,7 +113,7 @@ export class ConversationWorktreeService {
       root=this.repo.root(root.workspaceId)!;
       await this.git.validateRoot(root);
       const delivered=root.deliveredCommit;
-      const external=await this.git.capture(root.repositoryPath,root.userRoot,delivered,'Observe user Workspace edits',explicitPaths);
+      const external=await this.git.captureUserRoot(root.repositoryPath,root.userRoot,delivered,'Observe user Workspace edits',explicitPaths);
       if(external===delivered)return;
       const operationId=`external_${delivered}_${external}`;
       this.repo.operation({operationId,workspaceId:root.workspaceId,kind:'external',expectedRef:delivered,targetCommit:external});
@@ -87,6 +122,7 @@ export class ConversationWorktreeService {
       await this.git.updateRef(root.repositoryPath,'refs/heads/main',external,delivered);
       await this.git.updateRef(root.repositoryPath,'refs/metawork/delivered',external,delivered);
       await this.git.text(['-C',root.integrationPath,'reset','--hard',external]);
+      await this.git.refreshSourceIndex(root.repositoryPath, root.userRoot, external);
       this.repo.saveRoot({...root,mainCommit:external,deliveredCommit:external});
       this.repo.operationState(operationId,'applied');
     });
@@ -135,10 +171,10 @@ export class ConversationWorktreeService {
       if (!observation || observation.state === 'applied' || observation.expectedRef !== worktree.headCommit
         || observation.payload.worktreeId !== worktree.worktreeId || observation.payload.incarnation !== worktree.incarnation) throw new Error('stale_planner_context');
     }
-    const tree = await this.git.capture(root.repositoryPath,worktree.rootPath,worktree.headCommit,'Check Task base');
+    const clean = await this.git.isWorktreeClean(worktree.rootPath, worktree.headCommit);
     const prior = this.repo.latestBinding(input.conversationId);
     const ownRetainedWork = prior?.taskId === input.taskId && prior.worktreeId === worktree.worktreeId;
-    if(tree!==worktree.headCommit || (!ownRetainedWork && !(await this.git.isAncestor(root.repositoryPath,worktree.headCommit,(this.repo.root(root.workspaceId)!).deliveredCommit))))throw new Error('conversation_has_unsealed_or_undelivered_work');
+    if(!clean || (!ownRetainedWork && !(await this.git.isAncestor(root.repositoryPath,worktree.headCommit,(this.repo.root(root.workspaceId)!).deliveredCommit))))throw new Error('conversation_has_unsealed_or_undelivered_work');
     const heldBase = ownRetainedWork ? null : this.repo.heldBaseCommit(input.conversationId);
     const taskBaseCommit = ownRetainedWork ? prior.taskBaseCommit : heldBase ?? worktree.headCommit;
     const facts={bindingVersion:'conversation-git-v1' as const,taskId:input.taskId,generationId:input.generationId,workspaceId:input.workspaceId,
@@ -202,6 +238,9 @@ export class ConversationWorktreeService {
     this.repo.operationState(operationId,'applied');
   }
   async requestCleanup(conversationId:string):Promise<void>{
+    await this.beginCleanup(conversationId).ready;
+  }
+  private async cleanupNow(conversationId:string):Promise<void>{
     const worktree=this.repo.conversation(conversationId);if(!worktree)return;
     this.repo.requestCleanup(worktree.worktreeId);
     if(this.repo.conversationState(worktree.worktreeId).ownerToken||this.repo.cleanupBlocked(worktree.worktreeId))return;
@@ -210,8 +249,7 @@ export class ConversationWorktreeService {
       this.repo.setConversationState(worktree.worktreeId,'cleaning');
       const operationId=`cleanup_${worktree.worktreeId}`;
       if(!this.repo.operationRecord(operationId)) {
-        const sealed=await this.git.capture(worktree.repositoryPath,worktree.rootPath,worktree.headCommit,'Inspect cleanup');
-        if(sealed!==worktree.headCommit){this.repo.setConversationState(worktree.worktreeId,'retained');return;}
+        if(!(await this.git.isWorktreeClean(worktree.rootPath, worktree.headCommit))){this.repo.setConversationState(worktree.worktreeId,'retained');return;}
       }
       this.repo.operation({operationId,workspaceId:worktree.workspaceId,kind:'cleanup_conversation',payload:{conversationId,worktreeId:worktree.worktreeId}});
       try { await this.git.removeConversation(worktree); }

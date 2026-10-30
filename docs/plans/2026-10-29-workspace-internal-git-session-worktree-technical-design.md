@@ -3,9 +3,10 @@
 - 日期：2026-10-29
 - 状态：核心实现已落地，最终验收中（代码尚未提交）
 - 产品依据：[确定性设计](2026-10-29-workspace-internal-git-session-worktree-design.md)
-- 源码基线：本次检查 `src/storage/migrations.ts` 的 `CURRENT_SCHEMA_VERSION = 61`；实施迁移预定为 62，若主干先占用该编号，整体顺延，不修改已经发布的迁移
+- 源码基线：本次实现使用 `src/storage/migrations.ts` 的 `CURRENT_SCHEMA_VERSION = 62`
 - 权责依据：[ADR-0020](../adr/0020-core-module-ownership-and-dependency-direction.md)，战略权限部分以 [ADR-0053](../adr/0053-planner-graph-coordinator-and-executor-authority.md) 的修订为准
 - 完成记录：核心运行实现、schema 62、真实 Git/FIFO/冲突测试、服务身份与恢复路径已交付；`npm run lint`、Web 构建及 focused tests 已通过；原生/Docker 全场景验收与 closing commit 待完成
+- 2026-10-30 实现记录：完成 Workspace 私有 Git、持久 source index、会话 Worktree、FIFO 合并恢复、后台初始化/清理回执、初始化错误反馈和前端防重复操作；修正恢复流程全量扫描及增量索引固定排除规则。
 
 ## 1. 固定决策和实施边界
 
@@ -157,6 +158,20 @@ Worktree 不是 OS 沙箱。原生 Harness 的任意 shell 不可能单靠 cwd �
 7. 空目录保留 seed commit 作为 baseline。初始化不写回用户目录。
 
 Catalog 与 SQLite 无共同事务：Catalog 成功但 DB 未创建时，重复选择/启动恢复按 workspaceId 补齐初始化；DB 已存在但目录失效时记录错误，不创建替代用户目录。失败 Workspace 仍能被查询、重试和移除，不能显示为无内容的新成功 Workspace。
+
+### 4.3.1 初始化反馈、幂等和客户端状态
+
+私有 Git 初始化是一次性成本，但不能表现为无响应的同步阻塞。应用命令在写入 `workspace_git_roots(state='initializing')` 和初始化 operation 后立即返回准备中回执；回执至少包含 `workspaceId`、`operationId`、`state` 和可重试标记。前端收到回执后将创建按钮置为“创建中…”，禁用重复提交，并显示不确定进度提示“正在建立 Workspace 基线”。初始化完成前，Workspace 选择器和会话入口只能展示 `initializing`，不能让 Planner、Executor 或 Session Worktree 进入 ready。
+
+初始化请求必须由客户端生成稳定 `requestId`，服务端以规范化 `canonical_path`、Workspace 身份和 requestId 做幂等判定：
+
+1. 同一活动 operation 的重复请求返回原 operation 和当前状态，不再次扫描、不再次 `git init`、不创建第二个身份。
+2. Server 重启或客户端重连时，先读取 operation/root 状态，再恢复“创建中…”或错误提示；不能把未完成操作当作未点击。
+3. 成功时以同一持久化提交更新 `ready`，前端才恢复创建按钮和会话入口。
+4. 失败时保留 `failed`、真实错误和 operation 诊断，按钮改为“重试”；重试继续原 Workspace 身份并先执行恢复对账。
+5. 初始化过程中若用户再次点击，客户端阻止请求，服务端仍必须拒绝重复 operation，不能依赖 UI 作为唯一保护。
+
+Session Worktree 创建、会话删除和清理使用同一套模式：先持久化 `preparing` 或 `cleanup_pending`，快速返回回执，再由后台完成检出或清理；按钮状态由 Gateway 读模型更新。快速回执只表示请求已接纳，不表示 Git 操作已经完成。
 
 ### 4.4 文件规则及边界
 
@@ -380,7 +395,7 @@ external commit 记录的是已在用户目录里的状态，必须在推进 del
 
 写回遇到 Office 文件占用、只读权限、磁盘满、目标被删除，保留文件清单和已应用项；Task 显示交付故障，重试只恢复写回。复制文件不继承内部 Worktree 的 owner/chown；保留原文件普通权限，新文件使用用户环境正常权限，不调用旧 WorkspaceStore 对用户目录递归 chmod/chown。
 
-### 7.4 冲突 API 与并发点击
+### 7.4 冲突 API、初始化反馈与并发点击
 
 复用 Gateway 命令分发和身份校验，新增以下应用命令（目标 schema）：
 
@@ -401,6 +416,8 @@ type ConflictResolution = {
 ```
 
 查询：`get_workspace_merge_queue`、`get_workspace_merge_conflict`。动作：`resolve_workspace_merge_conflict`、`retry_workspace_merge`、`cancel_workspace_merge`。会话同步冲突由同一 resolve facade 根据 operation kind 路由，客户端不能把 jobId 换成另一个任务。
+
+Workspace 初始化和 Session 生命周期查询复用同一 Gateway 读模型，至少暴露 `state`、`operationId`、`requestId`、`createdAt`、`updatedAt` 和有界错误信息。初始化不新增一套临时 UI 状态；Web、TUI 和其他客户端都依据该事实显示“创建中/准备中/清理中/失败/就绪”。
 
 用户选择只修改内部冲突现场。全部路径解决、stage 1/2/3 清空后生成 M，再走统一写回流程。手工文件必须通过有界内容引用读取，客户端不能传内部绝对路径。旧 conflictVersion 返回 stale，不“尽量套用”；同 requestId 重放返回原结果，多客户端只有一次决策生效。
 
@@ -607,6 +624,8 @@ AGENTS.md 仅在导航入口变动时更新，不塞入运行时字段细节。�
 | 生成网站→启动→修改→重启 | 运行提交正确；终态源 Task 不阻止新操作；不同服务端口独立 | Service E2E |
 | 服务会话清理 | 原会话目录删除不影响服务；运行数据 retained 不丢失 | Retention |
 | 历史附件 | 会话清理和 live 文件改变后，下载仍为原 commit 内容 | Artifact |
+| 初始化反馈与重复点击 | 首次建立私有 Git 立即显示创建中；重复点击只得到同一 operation；重启/重连后状态可恢复；失败可重试且不产生空基线 | Workspace/Gateway/Web |
+| Session 准备与清理反馈 | Worktree 创建和删除先返回 pending，再异步完成；按钮不会重复创建或删除 | Workspace/Gateway/Web |
 | 升级与旧 schema | 新库/升级库一致；旧执行全部停放；61→62 fixtures 不丢历史产物 | Migration |
 | 状态一致 | 聊天/轨迹/任务列表同 stateVersion；等待合并不显示 succeeded/0 秒 | Gateway/Web/TUI |
 
@@ -626,5 +645,7 @@ AGENTS.md 仅在导航入口变动时更新，不塞入运行时字段细节。�
 - 2026-10-29：完成源码接点核对、唯一技术路径、数据模型、状态/恢复、合并写回、服务与迁移方案编写。
 - 仅新增技术文档并更新设计导航；未修改执行代码、数据库和当前运行配置。
 - 本次文档验证：相对链接存在性、Markdown 代码围栏、`git diff --check`。
-- 运行实现完成日期：未实施。
-- 运行验证、安装验收、closing commit：未完成，后续实施记录补齐。
+- 运行实现完成日期：2026-10-30。
+- 已通过：`npm run lint`、`npm run build:web`、Workspace Git、Workspace 合并、Workspace Directory、Gateway focused tests，以及 `git diff --check`。
+- 全量 `npm test -- --run` 已执行；当前仓库仍有 63 项失败，集中在旧 In-place/Kernel 行为断言、迁移基线和缺失发布环境文件，未将其伪报为本轮通过。
+- 原生/Docker 安装验收与 closing commit：未完成。

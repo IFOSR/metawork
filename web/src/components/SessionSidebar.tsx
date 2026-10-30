@@ -10,6 +10,8 @@ export function SessionSidebar({
   runningSessionId,
   selectedSessionId,
   workspaceSwitching,
+  newSessionPending,
+  pendingDeleteSessionIds,
   search,
   onSearch,
   onSelectWorkspace,
@@ -31,6 +33,8 @@ export function SessionSidebar({
   runningSessionId: string | null;
   selectedSessionId: string | null;
   workspaceSwitching: boolean;
+  newSessionPending: boolean;
+  pendingDeleteSessionIds: ReadonlySet<string>;
   search: string;
   onSearch: (value: string) => void;
   onSelectWorkspace: (workspace: WorkspaceSummary) => void;
@@ -55,16 +59,17 @@ export function SessionSidebar({
         workspaces={workspaces}
         activeWorkspaceId={activeWorkspaceId}
         disabled={workspaceSwitching}
+        preparing={workspaceSwitching}
         onSelect={onSelectWorkspace}
         onCreateWorkspace={onCreateWorkspace}
       />
       <button
         className="new-session-button"
         onClick={onNewSession}
-        disabled={!activeWorkspaceId || workspaceSwitching || newWorkBlocked}
+        disabled={!activeWorkspaceId || workspaceSwitching || newWorkBlocked || newSessionPending}
         title={newWorkBlocked ? '请先安装必需智能体' : undefined}
       >
-        <span>＋</span> 新建会话
+        <span>{newSessionPending ? '⋯' : '＋'}</span> {newSessionPending ? '创建中…' : '新建会话'}
       </button>
       <label className="session-search">
         <span>⌕</span>
@@ -123,17 +128,18 @@ export function SessionSidebar({
                   tabIndex={0}
                   onClick={event => {
                     event.stopPropagation();
-                    onDeleteSession(session.id);
+                    if (!pendingDeleteSessionIds.has(session.id)) onDeleteSession(session.id);
                   }}
                   onKeyDown={event => {
                     if (event.key === 'Enter' || event.key === ' ') {
                       event.preventDefault();
                       event.stopPropagation();
-                      onDeleteSession(session.id);
+                      if (!pendingDeleteSessionIds.has(session.id)) onDeleteSession(session.id);
                     }
                   }}
+                  aria-disabled={pendingDeleteSessionIds.has(session.id)}
                 >
-                  ✕
+                  {pendingDeleteSessionIds.has(session.id) ? '…' : '✕'}
                 </span>
               )}
             </button>

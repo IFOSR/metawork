@@ -4,12 +4,14 @@ export function WorkspaceSelector({
   workspaces,
   activeWorkspaceId,
   disabled = false,
+  preparing = false,
   onSelect,
   onCreateWorkspace,
 }: {
   workspaces: WorkspaceSummary[];
   activeWorkspaceId: string | null;
   disabled?: boolean;
+  preparing?: boolean;
   onSelect: (workspace: WorkspaceSummary) => void;
   onCreateWorkspace: () => void;
 }) {
@@ -17,7 +19,7 @@ export function WorkspaceSelector({
   return (
     <div className="workspace-selector">
       <div className="workspace-selector-head">
-        <label htmlFor="workspace-select">Workspace</label>
+        <label htmlFor="workspace-select">{preparing ? 'Workspace · 创建中…' : 'Workspace'}</label>
         <button
           type="button"
           className="workspace-create-button"
@@ -56,9 +58,13 @@ export function WorkspaceSelector({
           </option>
         ))}
       </select>
-      <div className="workspace-selector-path" title={active?.canonicalPath}>
+      <div className="workspace-selector-path" title={active?.gitError ?? active?.canonicalPath}>
         <span data-availability={active?.availability ?? 'unavailable'} />
-        <code>{active?.canonicalPath ?? '点击添加按钮选择本机目录'}</code>
+        <code>{preparing
+          ? '正在建立 Workspace 基线，请稍候…'
+          : active?.gitError
+            ? `初始化失败：${active.gitError}`
+            : active?.canonicalPath ?? '点击添加按钮选择本机目录'}</code>
       </div>
     </div>
   );

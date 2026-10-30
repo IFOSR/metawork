@@ -20,6 +20,8 @@ import { measureNavigationStageSync } from '../utils/navigation-diagnostics.js';
 export interface WorkspaceSelectionResult {
   readonly workspace: WorkspaceRecord;
   readonly created: boolean;
+  readonly gitState?: WorkspaceRecord['gitState'];
+  readonly gitError?: string | null;
 }
 
 export type WorkspacePreflightCode =
@@ -60,8 +62,12 @@ export interface WorkspaceConversationPage {
 export interface WorkspaceDirectoryServiceDeps {
   readonly gitLifecycle?: {
     initialize(input: { accountId: string; workspaceId: string; userRoot: string }): Promise<unknown>;
+    beginInitialize?(input: { accountId: string; workspaceId: string; userRoot: string }): { state: NonNullable<WorkspaceRecord['gitState']>; ready: Promise<unknown> };
+    state?(workspaceId: string): NonNullable<WorkspaceRecord['gitState']>;
+    error?(workspaceId: string): string | null;
     prepareConversation(input: { accountId: string; workspaceId: string; userRoot: string; conversationId: string }): Promise<unknown>;
     requestCleanup(conversationId: string): Promise<void>;
+    beginCleanup?(conversationId: string): { state: 'cleaning' | 'retained' | 'cleaned'; ready: Promise<void> };
   };
   readonly accountId: string;
   readonly workspaceCatalog: WorkspaceCatalogStore;
@@ -110,8 +116,8 @@ export class WorkspaceDirectoryService {
         if (existing.archived || existing.availability !== 'available') {
           throw new Error('workspace_unavailable');
         }
-        await this.deps.gitLifecycle?.initialize({accountId: this.deps.accountId, workspaceId: existing.id, userRoot: canonicalPath});
-        return { workspace: existing, created: false };
+        const preparation = this.prepareGit(existing.id, canonicalPath);
+        return { workspace: this.workspaceWithGitState(existing, preparation.state), created: false, gitState: preparation.state, gitError: this.deps.gitLifecycle?.error?.(existing.id) ?? null };
       }
       const registered = (await this.deps.workspaceCatalog.readCatalog()).workspaces;
       if (registered.some(item => item.accountId === this.deps.accountId && item.canonicalPath !== canonicalPath && pathsOverlap(item.canonicalPath, canonicalPath))) {
@@ -134,8 +140,8 @@ export class WorkspaceDirectoryService {
         ...catalog,
         workspaces: [...catalog.workspaces, workspace],
       });
-      await this.deps.gitLifecycle?.initialize({accountId: this.deps.accountId, workspaceId: workspace.id, userRoot: canonicalPath});
-      return { workspace, created: true };
+      const preparation = this.prepareGit(workspace.id, canonicalPath);
+      return { workspace: this.workspaceWithGitState(workspace, preparation.state), created: true, gitState: preparation.state, gitError: this.deps.gitLifecycle?.error?.(workspace.id) ?? null };
     });
   }
 
@@ -178,6 +184,7 @@ export class WorkspaceDirectoryService {
     )));
     return authorized
       .filter((workspace): workspace is WorkspaceRecord => workspace !== null)
+      .map(workspace => this.workspaceWithGitState(workspace, this.deps.gitLifecycle?.state?.(workspace.id), this.deps.gitLifecycle?.error?.(workspace.id)))
       .sort((left, right) => right.updatedAt.localeCompare(left.updatedAt));
   }
 
@@ -232,6 +239,8 @@ export class WorkspaceDirectoryService {
     if (workspace.availability !== 'available') {
       throw new Error('workspace_unavailable');
     }
+    const gitState = this.deps.gitLifecycle?.state?.(workspaceId);
+    if (gitState && gitState !== 'ready') throw new Error(gitState === 'initializing' ? 'workspace_initializing' : 'workspace_unavailable');
     const now = this.deps.now?.() ?? new Date().toISOString();
     const id = this.deps.createConversationId?.() ?? `conv_${randomUUID()}`;
     const metadata: ConversationMetadata = {
@@ -325,7 +334,11 @@ export class WorkspaceDirectoryService {
         item.id === conversationId ? metadata : item
       )),
     }));
+    if (this.deps.gitLifecycle?.beginCleanup) {
+      this.deps.gitLifecycle.beginCleanup(conversationId);
+    } else {
       await this.deps.gitLifecycle?.requestCleanup(conversationId);
+    }
   }
 
   private async mutate<T>(operation: () => Promise<T>): Promise<T> {
@@ -354,6 +367,17 @@ export class WorkspaceDirectoryService {
       throw new Error('workspace_unauthorized');
     }
     return workspace;
+  }
+
+  private prepareGit(workspaceId: string, userRoot: string): { state: NonNullable<WorkspaceRecord['gitState']>; ready: Promise<unknown> } {
+    const input = { accountId: this.deps.accountId, workspaceId, userRoot };
+    if (this.deps.gitLifecycle?.beginInitialize) return this.deps.gitLifecycle.beginInitialize(input);
+    const ready = this.deps.gitLifecycle?.initialize(input) ?? Promise.resolve();
+    return { state: 'ready', ready };
+  }
+
+  private workspaceWithGitState(workspace: WorkspaceRecord, state?: WorkspaceRecord['gitState'], error?: string | null): WorkspaceRecord {
+    return state ? { ...workspace, gitState: state, ...(error ? { gitError: error } : {}) } : workspace;
   }
 
   private async canAccessWorkspace(

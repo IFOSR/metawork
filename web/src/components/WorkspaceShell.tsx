@@ -23,6 +23,8 @@ export function WorkspaceShell({
   activeSessionId,
   selectedSessionId,
   workspaceSwitching,
+  newSessionPending,
+  pendingDeleteSessionIds,
   search,
   title,
   workspace,
@@ -72,6 +74,8 @@ export function WorkspaceShell({
   activeSessionId: string | null;
   selectedSessionId: string | null;
   workspaceSwitching: boolean;
+  newSessionPending: boolean;
+  pendingDeleteSessionIds: ReadonlySet<string>;
   search: string;
   title: string;
   workspace: WorkspaceSummary | null;
@@ -149,6 +153,8 @@ export function WorkspaceShell({
         runningSessionId={running ? activeSessionId : null}
         selectedSessionId={selectedSessionId}
         workspaceSwitching={workspaceSwitching}
+        newSessionPending={newSessionPending}
+        pendingDeleteSessionIds={pendingDeleteSessionIds}
         search={search}
         onSearch={onSearch}
         onSelectWorkspace={onSelectWorkspace}

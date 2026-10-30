@@ -1,6 +1,7 @@
-import { mkdtemp, mkdir, readFile, readlink, rm, symlink, writeFile } from 'node:fs/promises';
+import { access, mkdtemp, mkdir, readFile, readlink, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { vi } from 'vitest';
 import { WorkspaceGitService } from '../../src/execution/workspace-git-service.js';
 
 describe('private Workspace Git', () => {
@@ -64,5 +65,29 @@ describe('private Workspace Git', () => {
     await writeFile(join(userRoot, 'large.txt'), '12345');
     service = new WorkspaceGitService({ internalRoot: join(directory, 'runtime'), maxFileBytes: 4 });
     await expect(initialize()).rejects.toThrow('large.txt');
+  });
+  test('uses a persistent source index and hashes only changed user files', async () => {
+    await writeFile(join(userRoot, 'unchanged.md'), 'unchanged');
+    await writeFile(join(userRoot, 'changed.md'), 'before');
+    const root = await initialize();
+    await expect(access(service.sourceIndexPath(root.repositoryPath))).resolves.toBeUndefined();
+    const scan = vi.spyOn(service, 'scan');
+    expect(await service.captureUserRoot(root.repositoryPath, userRoot, root.deliveredCommit, 'No external change')).toBe(root.deliveredCommit);
+    expect(scan).not.toHaveBeenCalled();
+    await writeFile(join(userRoot, 'changed.md'), 'after');
+    const changed = await service.captureUserRoot(root.repositoryPath, userRoot, root.deliveredCommit, 'Capture one external change');
+    expect(changed).not.toBe(root.deliveredCommit);
+    expect((await service.entries(root.repositoryPath, changed)).map(entry => entry.path)).toEqual(['changed.md', 'unchanged.md']);
+    scan.mockRestore();
+  });
+  test('keeps fixed runtime and dependency exclusions when discovering new files incrementally', async () => {
+    const root = await initialize();
+    await mkdir(join(userRoot, 'node_modules', 'pkg'), { recursive: true });
+    await writeFile(join(userRoot, 'node_modules', 'pkg', 'index.js'), 'dependency');
+    await mkdir(join(userRoot, '.metawork-tmp'), { recursive: true });
+    await writeFile(join(userRoot, '.metawork-tmp', 'scratch.txt'), 'scratch');
+    const captured = await service.captureUserRoot(root.repositoryPath, userRoot, root.deliveredCommit, 'Ignore runtime files');
+    expect(captured).toBe(root.deliveredCommit);
+    expect(await service.entries(root.repositoryPath, captured)).toEqual([]);
   });
 });

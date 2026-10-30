@@ -899,6 +899,10 @@ export async function main(cliCommand = parseCliArgs(process.argv.slice(2))) {
   const workspaceDirectory = new WorkspaceDirectoryService({
     gitLifecycle: {
       initialize: input => workspaceGitServices().conversationWorktrees.initialize(input),
+      beginInitialize: input => workspaceGitServices().conversationWorktrees.beginInitialize(input),
+      state: workspaceId => workspaceGitServices().conversationWorktrees.state(workspaceId),
+      error: workspaceId => workspaceGitServices().conversationWorktrees.error(workspaceId),
+      beginCleanup: conversationId => workspaceGitServices().conversationWorktrees.beginCleanup(conversationId),
       prepareConversation: async input => {
         const service = workspaceGitServices().conversationWorktrees;
         return service.prepareTurn(await service.initialize(input), input.conversationId);

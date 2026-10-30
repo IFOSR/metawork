@@ -43,6 +43,7 @@ export class WorkspaceGitRecovery {
                 if (current !== target) await git.updateRef(root.repositoryPath, ref, target, current);
               }
               await git.text(['-C', root.integrationPath, 'reset', '--hard', target]);
+              await git.refreshSourceIndex(root.repositoryPath, root.userRoot, target);
               root = {...root, mainCommit: target, deliveredCommit: target};
               repo.saveRoot(root);
               repo.operationState(operation.operationId, 'applied');
@@ -53,8 +54,7 @@ export class WorkspaceGitRecovery {
             await withWorkspaceGitLock(root.repositoryPath, 'metadata', async () => {
               const head = await git.ref(root.repositoryPath, `refs/heads/${worktree.branch}`);
               if (head !== operation.expectedRef && head !== operation.targetCommit) throw new Error('sync_ref_identity_mismatch');
-              const captured = await git.capture(root.repositoryPath,worktree.rootPath,head,'Recover session sync');
-              if (captured !== head) throw new Error('conversation_has_unsealed_work');
+              if (!(await git.isWorktreeClean(worktree.rootPath, head))) throw new Error('conversation_has_unsealed_work');
               const synced = await git.syncConversation({...worktree,headCommit:head},operation.targetCommit!);
               repo.saveConversation(synced);
               repo.operationState(operation.operationId,'applied');

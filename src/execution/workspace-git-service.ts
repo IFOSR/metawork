@@ -38,7 +38,13 @@ export class WorkspaceGitService {
     return { repositoryPath: join(root, 'repository.git'), integrationPath: join(root, 'integration') };
   }
 
-  async run(args: string[], input?: Buffer | string | Readable, extraEnv: NodeJS.ProcessEnv = {}, timeoutMs?: number): Promise<Buffer> {
+  /** The user Workspace is deliberately outside the private repository. This
+   * index is the Git index used to observe that external work tree. */
+  sourceIndexPath(repositoryPath: string): string {
+    return join(repositoryPath, 'metawork-source.index');
+  }
+
+  async run(args: string[], input?: Buffer | string | Readable, extraEnv: NodeJS.ProcessEnv = {}, timeoutMs?: number, allowedExitCodes: readonly (number | string)[] = []): Promise<Buffer> {
     const env: NodeJS.ProcessEnv = Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith('GIT_')));
     Object.assign(env, {
       GIT_CONFIG_NOSYSTEM: '1', GIT_CONFIG_GLOBAL: '/dev/null', GIT_CONFIG_SYSTEM: '/dev/null',
@@ -51,7 +57,9 @@ export class WorkspaceGitService {
         '-c', 'core.hooksPath=/dev/null', '-c', 'core.attributesFile=/dev/null', '-c', 'gc.auto=0', ...args,
       ], { env, encoding: 'buffer', timeout: timeoutMs ?? this.options.gitTimeoutMs ?? 120_000,
         maxBuffer: (this.options.maxFileBytes ?? 1024 ** 3) + 1024 * 1024, windowsHide: true },
-      (error, stdout, stderr) => error ? reject(new WorkspaceGitCommandError(`Git ${args[0]}: ${stderr.toString().slice(0, 4000) || error.message}`, error.code ?? undefined)) : resolve(stdout));
+      (error, stdout, stderr) => error && !allowedExitCodes.includes(error.code ?? '')
+        ? reject(new WorkspaceGitCommandError(`Git ${args[0]}: ${stderr.toString().slice(0, 4000) || error.message}`, error.code ?? undefined))
+        : resolve(stdout));
       child.stdin?.on('error', () => {});
       if (input instanceof Readable) {
         void pipeline(input, child.stdin!).catch(error => { child.kill(); reject(error); });
@@ -93,6 +101,7 @@ export class WorkspaceGitService {
       await this.updateRef(paths.repositoryPath, 'refs/metawork/delivered', main, '0'.repeat(40));
       delivered = main;
     }
+    await this.refreshSourceIndex(paths.repositoryPath, userRoot, delivered);
     return { ...input, userRoot, ...paths, mainCommit: main, deliveredCommit: delivered, state: 'ready' };
   }
 
@@ -133,8 +142,7 @@ export class WorkspaceGitService {
   async syncConversation(worktree: ConversationGitWorktree, targetCommit?: string): Promise<ConversationGitWorktree> {
     await this.validateWorktree(worktree);
     const target = targetCommit ?? await this.ref(worktree.repositoryPath, 'refs/metawork/delivered');
-    const tree = await this.capture(worktree.repositoryPath, worktree.rootPath, worktree.headCommit, 'Check pending session work');
-    if (tree !== worktree.headCommit) throw new Error('conversation_has_unsealed_work');
+    if (!(await this.isWorktreeClean(worktree.rootPath, worktree.headCommit))) throw new Error('conversation_has_unsealed_work');
     if (worktree.headCommit !== worktree.baseCommit && !(await this.isAncestor(worktree.repositoryPath, worktree.headCommit, target))) {
       throw new Error('conversation_has_undelivered_work');
     }
@@ -151,6 +159,121 @@ export class WorkspaceGitService {
     await this.updateRef(worktree.repositoryPath, `refs/heads/${worktree.branch}`, commit, actualHead);
     await this.text(['-C', worktree.rootPath, 'read-tree', commit]);
     return { commit, changedPaths };
+  }
+
+  /**
+   * Check an internal Session Worktree without reading every file into Git
+   * objects. Git uses its work-tree stat cache and only inspects candidates
+   * that may have changed. Full capture remains the sealing operation.
+   */
+  async isWorktreeClean(worktreeRoot: string, headCommit: string): Promise<boolean> {
+    const output = await this.run([
+      '-C', worktreeRoot, 'status', '--porcelain=v1', '-z', '--untracked-files=all',
+    ]);
+    if (output.length > 0) return false;
+    const head = await this.text(['-C', worktreeRoot, 'rev-parse', 'HEAD']);
+    return head === headCommit;
+  }
+
+  /**
+   * Incrementally capture the user Workspace using one persistent Git index.
+   * The index contains the last captured tree and stat data; unchanged files
+   * reuse their existing object ids. Only changed, deleted, explicitly
+   * requested, or newly discovered paths are read and hashed.
+   */
+  async captureUserRoot(
+    repositoryPath: string,
+    userRoot: string,
+    parent: string,
+    message: string,
+    explicitPaths: string[] = [],
+  ): Promise<string> {
+    const index = this.sourceIndexPath(repositoryPath);
+    await mkdir(dirname(index), { recursive: true, mode: 0o700 });
+    const parentTree = await this.text(['--git-dir', repositoryPath, 'rev-parse', `${parent}^{tree}`]);
+    const longTimeout = this.options.longOperationTimeoutMs ?? 30 * 60 * 1_000;
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      let indexTree: string | null = null;
+      if (await exists(index)) {
+        indexTree = await this.text(['--git-dir', repositoryPath, 'write-tree'], undefined, { GIT_INDEX_FILE: index }, longTimeout).catch(() => null);
+      }
+      if (indexTree !== parentTree) {
+        await this.text(['--git-dir', repositoryPath, 'read-tree', parent], undefined, { GIT_INDEX_FILE: index }, longTimeout);
+        await this.refreshSourceIndex(repositoryPath, userRoot, parent);
+      }
+
+      const changed = await this.sourceIndexChanges(repositoryPath, userRoot, parent, index);
+      const candidates = new Set<string>(changed.map(item => item.path));
+      for (const path of await this.sourceIndexUntracked(repositoryPath, userRoot, index)) candidates.add(path);
+      for (const path of explicitPaths) { assertGitPath(path); candidates.add(path); }
+      const tracked = new Map((await this.entries(repositoryPath, parent)).map(entry => [entry.path, entry]));
+      const changes: Array<{ path: string; entry: GitTreeEntry | null }> = [];
+      let unstable = false;
+      for (const path of [...candidates].sort()) {
+        const absolute = join(userRoot, ...path.split('/'));
+        const statBefore = await lstat(absolute).catch(() => null);
+        if (!statBefore) {
+          if (tracked.has(path)) changes.push({ path, entry: null });
+          continue;
+        }
+        if (!statBefore.isFile() && !statBefore.isSymbolicLink()) continue;
+        if (statBefore.size > (this.options.maxFileBytes ?? 1024 ** 3)) throw new Error(`workspace_file_limit: ${path}`);
+        const entry = await this.hashSourceEntry(repositoryPath, absolute, path, statBefore.mode, statBefore.isSymbolicLink(), longTimeout);
+        changes.push({ path, entry });
+        const statAfter = await lstat(absolute).catch(() => null);
+        if (!statAfter || statAfter.ino !== statBefore.ino || statAfter.size !== statBefore.size
+          || statAfter.mtimeMs !== statBefore.mtimeMs || statAfter.ctimeMs !== statBefore.ctimeMs || statAfter.mode !== statBefore.mode) {
+          unstable = true;
+          break;
+        }
+      }
+      if (unstable) continue;
+      if (changes.length) await this.updateIndex(repositoryPath, changes, { GIT_INDEX_FILE: index });
+      await this.refreshSourceIndexStats(repositoryPath, userRoot);
+      const tree = await this.text(['--git-dir', repositoryPath, 'write-tree'], undefined, { GIT_INDEX_FILE: index }, longTimeout);
+      if (tree === parentTree) return parent;
+      const commit = await this.commitTree(repositoryPath, tree, [parent], message);
+      await this.refreshSourceIndex(repositoryPath, userRoot, commit);
+      return commit;
+    }
+    throw new Error('source_changing: Workspace changed during incremental capture');
+  }
+
+  /** Rebind the persistent source index to a delivered commit and refresh its stat cache. */
+  async refreshSourceIndex(repositoryPath: string, userRoot: string, commit: string): Promise<void> {
+    const index = this.sourceIndexPath(repositoryPath);
+    await mkdir(dirname(index), { recursive: true, mode: 0o700 });
+    await this.text(['--git-dir', repositoryPath, 'read-tree', commit], undefined, { GIT_INDEX_FILE: index });
+    await this.refreshSourceIndexStats(repositoryPath, userRoot);
+  }
+
+  private async refreshSourceIndexStats(repositoryPath: string, userRoot: string): Promise<void> {
+    const index = this.sourceIndexPath(repositoryPath);
+    await this.text(['--git-dir', repositoryPath, '--work-tree', userRoot, 'update-index', '--refresh'], undefined, { GIT_INDEX_FILE: index }).catch(error => {
+      // Git exits 1 when a file differs from the commit. The index still has
+      // the refreshed stat data; the next diff-index reports the candidate.
+      if (!(error instanceof WorkspaceGitCommandError) || error.exitCode !== 1) throw error;
+    });
+  }
+
+  private async sourceIndexChanges(repositoryPath: string, userRoot: string, parent: string, index: string): Promise<Array<{ status: string; path: string }>> {
+    const output = await this.run(['--git-dir', repositoryPath, '--work-tree', userRoot, 'diff-index', '--no-renames', '--name-status', '-z', parent], undefined, { GIT_INDEX_FILE: index }, undefined, [1]);
+    const parts = output.toString('utf8').split('\0');
+    const result: Array<{ status: string; path: string }> = [];
+    for (let i = 0; i + 1 < parts.length; i += 2) if (parts[i] && parts[i + 1]) result.push({ status: parts[i]!, path: parts[i + 1]! });
+    return result;
+  }
+
+  private async sourceIndexUntracked(repositoryPath: string, userRoot: string, index: string): Promise<string[]> {
+    const output = await this.run(['--git-dir', repositoryPath, '--work-tree', userRoot, 'ls-files', '--others', '--exclude-standard', '-z'], undefined, { GIT_INDEX_FILE: index });
+    return output.toString('utf8').split('\0').filter(Boolean).map(path => { assertGitPath(path); return path; })
+      .filter(path => !isExcludedSourcePath(path));
+  }
+
+  private async hashSourceEntry(repositoryPath: string, absolute: string, path: string, mode: number, symlink: boolean, timeout: number): Promise<GitTreeEntry> {
+    const source = symlink ? Readable.from([Buffer.from(await readlink(absolute))]) : createReadStream(absolute);
+    const oid = await this.text(['--git-dir', repositoryPath, 'hash-object', '--no-filters', '-w', '--stdin'], source, undefined, timeout);
+    return { path, oid, mode: symlink ? '120000' : (mode & 0o111) ? '100755' : '100644', kind: symlink ? 'symlink' : 'file' };
   }
 
   async capture(repositoryPath: string, sourceRoot: string, parent: string, message: string, explicitPaths: string[] = []): Promise<string> {
@@ -337,6 +460,11 @@ export class WorkspaceGitService {
 export function assertOid(value: string): void { if (!OID.test(value)) throw new Error('invalid_git_oid'); }
 export function assertGitPath(path: string): void {
   if (!path || isAbsolute(path) || path.includes('\\') || path.includes('\0') || path.split('/').some(segment => !segment || segment === '..' || segment === '.' || segment.toLowerCase() === '.git')) throw new Error('invalid_git_path');
+}
+function isExcludedSourcePath(path: string): boolean {
+  const segments = path.split('/');
+  return segments.some(segment => EXCLUDED.has(segment) || segment.startsWith('.metawork-write-'))
+    || segments[0] === '.metawork-tmp';
 }
 function within(root: string, path: string): boolean { const rel = relative(root, path); return rel === '' || (!rel.startsWith('..') && !isAbsolute(rel)); }
 async function exists(path: string): Promise<boolean> { return lstat(path).then(() => true, () => false); }

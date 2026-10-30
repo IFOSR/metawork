@@ -9,6 +9,7 @@ export interface WorkspaceGitRoot {
   mainCommit: string;
   deliveredCommit: string;
   state: WorkspaceGitState;
+  lastError?: string | null;
 }
 export interface ConversationGitWorktree extends WorkspaceGitRoot {
   conversationId: string;

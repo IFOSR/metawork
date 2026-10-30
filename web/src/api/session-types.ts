@@ -189,6 +189,8 @@ export interface WorkspaceSummary {
   updatedAt: string;
   createdByPrincipal: string;
   archived: boolean;
+  gitState?: 'initializing' | 'ready' | 'recovering' | 'failed';
+  gitError?: string;
 }
 
 export interface ConversationActivityProjection {

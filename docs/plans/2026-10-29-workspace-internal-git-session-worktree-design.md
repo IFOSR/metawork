@@ -1,9 +1,9 @@
 # Workspace 内部 Git 与会话 Worktree 并行模型
 
 - 日期：2026-10-29
-- 状态：实现已落地，正在进行最终验证（代码尚未提交）
+- 状态：实现已落地，已完成本轮代码验证（代码尚未提交）
 - 技术方案：[详细技术设计与实施步骤](2026-10-29-workspace-internal-git-session-worktree-technical-design.md)
-- 本次修订：删除快照后端、Copy-on-Write、文件认领、只读特殊后端和延迟物化等备选路径
+- 本次修订：删除快照后端、Copy-on-Write、文件认领、只读特殊后端和延迟物化等备选路径；补充私有 Git 首次初始化的用户反馈、幂等和防重复操作规则（2026-10-30）
 - 范围：代码、网站、调研、PPT、日常文档、普通问答统一采用本模型
 - 运行实现已接入私有 Git、会话 Worktree、Workspace FIFO 合并与固定服务 Worktree；ADR 与部署切换仍需最终验收后更新
 
@@ -56,6 +56,10 @@ Workspace 创建时执行以下唯一流程：
 
 Git 作为 MetaWork 必备运行依赖随安装检查。初始化失败时显示真实错误并支持重试，不静默退回共享目录执行，不把空基线当成成功。
 
+初始化可能需要几秒到更长时间，不能让用户面对没有反馈的同步等待。Workspace 创建或首次选择进入初始化时，应用立即持久化 `initializing` 状态并返回可观察的准备中回执；界面将创建按钮改为“创建中…”并暂时禁用重复点击，同时显示“正在建立 Workspace 基线”的简单提示。初始化期间不允许启动 Planner/Executor，也不把未完成的 Workspace 显示为 ready。
+
+初始化请求必须带稳定 `requestId`。同一规范路径只允许一个活动初始化 operation；重复点击返回原 operation 的状态，不创建第二个私有仓库、第二次扫描或第二个 Workspace 身份。初始化成功后统一推送 `ready` 状态并恢复按钮；失败时保留 `failed` 及真实错误，恢复“重试”操作，重试复用 Workspace 身份和 operation 对账，不创建空基线。客户端重连或刷新后从持久化状态恢复提示，不能把等待中的操作误显示为未点击。
+
 ### 2.2 已有 Git 目录初始化
 
 与非 Git 目录执行相同流程，额外跳过用户的 `.git` 文件和目录。导入用户磁盘上的当前内容，包括未提交的业务文件修改；不从用户 HEAD 克隆基线。
@@ -80,6 +84,8 @@ MetaWork 不操作用户 Git 的 refs、index、hooks、remotes，不替用户�
 ### 3.1 创建和执行
 
 新会话创建时，从当前已交付的 `main` 提交建立 `sessions/<conversationId>` 分支及真实 Worktree。Planner 的目录观察和 Executor 的文件操作指向这个会话目录，避免 Planner 读主干、Executor 读旧分支造成上下文错位。规划侧现有只读职责保持不变。
+
+建立 Session Worktree 也使用 `preparing` 状态和幂等 requestId。按钮在 Worktree 准备完成前保持禁用或显示“准备中…”，后台完成后再变为可用；创建请求的快速回执不等于 Worktree 已经 ready。普通路径不得因为等待 Worktree 检出而让用户重复点击。
 
 同一会话内所有轮次、Task 和重试复用该 Worktree。不同会话的 Worktree 并行运行，不申请用户 Workspace 根目录的全程写锁。
 
@@ -216,9 +222,9 @@ Planner 负责理解用户目标和处理歧义；Executor 负责工具循环；
 
 ## 9. 实施顺序与切换
 
-1. 实现私有仓库初始化、会话真实 Worktree、路径归属和固定文件范围；先不切换生产任务。
+1. 实现私有仓库初始化、会话真实 Worktree、路径归属和固定文件范围；同时接入 `initializing/preparing/ready/failed` 回执、按钮状态和 requestId 幂等，先不切换生产任务。
 2. 实现 Workspace 持久化 FIFO、外部变更导入、冲突交互、逐文件写回和崩溃恢复。
-3. 接通多轮会话、同会话写者串行、结果状态、历史附件和会话清理。
+3. 接通多轮会话、同会话写者串行、结果状态、历史附件和会话清理；删除使用 `cleanup_pending` 和后台清理反馈。
 4. 接通固定提交服务 Worktree，验证生成网站 → 启动 → 修改 → 重启。
 5. 完成验收后统一切换新会话，停用新任务 In-place 根目录写锁和旧 publication 主路径。
 
@@ -240,8 +246,13 @@ Planner 负责理解用户目标和处理歧义；Executor 负责工具循环；
 10. 崩溃发生在合并前、合并后、写回一半、状态提交前，恢复均不重跑 Executor、不重复交付、不误报成功。
 11. 合并队列跨进程互斥；别名和重叠 Workspace 不形成两个写回者。
 12. 会话清理后重开、历史产物下载、取消合并、放弃成果都不误删用户 Workspace。
+13. 私有 Git 首次初始化期间立即显示“创建中/准备中”，重复点击只返回同一 operation，不产生重复 Workspace、仓库或扫描。
+14. 初始化完成、失败、重试和客户端重连后，按钮和 Workspace 状态均来自同一持久化事实。
+15. Session Worktree 创建、会话删除和后台清理期间均有可见 pending 状态，用户不会因无反馈而重复提交操作。
 
-实施完成后须补充完成日期、交付行为、验证结果和 closing commit。当前只完成设计修订，未完成这些运行验收。
+实施完成后须补充完成日期、交付行为、验证结果和 closing commit。2026-10-30 已完成运行代码落地；原生/Docker 全场景验收和 closing commit 仍待单独执行。
+
+本轮交付包括：Workspace 私有 Git 与持久 source index、会话 Git Worktree、Workspace FIFO 合并及恢复路径；初始化/清理后台化回执；前端创建、切换和删除操作的 pending 状态及重复点击保护；初始化错误持久化与展示；恢复流程和增量索引的排除规则修正。
 
 ## 11. 公开实现参考
 
