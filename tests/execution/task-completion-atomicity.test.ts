@@ -94,7 +94,7 @@ describe('Task completion atomicity', () => {
       workGraphRevisionRepo: revisions,
       effectOutboxRepo: effects,
       taskEventRepo: new TaskEventRepo(db),
-      dispatchItemRepo: { listPending: vi.fn().mockReturnValue([]) },
+      dispatchItemRepo: { listPending: vi.fn().mockReturnValue([]), listByTask: vi.fn().mockReturnValue([]) },
       maxConcurrentAttempts: 4,
       cancellationCoordinator: {
         completionBlockedReasons: vi.fn().mockReturnValue([]),

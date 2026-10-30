@@ -22,7 +22,12 @@ import type { SubtaskExecutionContext } from './subtask-execution-context.js';
 export interface RunContractServiceIntent {
   readonly requested: boolean;
   readonly serviceId?: string;
-  readonly specificationRevision?: string;
+  readonly specificationRevision?: string | null;
+  readonly sourceTaskId?: string | null;
+  readonly operationTaskId?: string | null;
+  readonly sourceCommit?: string;
+  readonly serviceWorktreeId?: string;
+  readonly projectPath?: string;
 }
 
 export interface RunContractProjection {
@@ -82,7 +87,9 @@ export function projectRunContract(sources: RunContractSources): RunContractProj
     objective: context.currentSubtask.goal,
     acceptance: [...(context.currentSubtask.acceptance ?? [])],
     fileOutputs: [...(context.currentSubtask.fileOutputs ?? [])],
-    ...(sources.serviceIntent ? { serviceIntent: sources.serviceIntent } : {}),
+    ...(sources.serviceIntent ? { serviceIntent: sources.serviceIntent } : workspace.service ? {
+      serviceIntent: { requested: true, ...workspace.service },
+    } : {}),
     configurationRevision: executionBinding?.configurationRevision ?? null,
     bindingFingerprint: executionBinding?.bindingFingerprint ?? null,
   };

@@ -27,7 +27,7 @@ export interface Verifier {
 
 export interface DeliveryPreparationInput {
   output: string;
-  durationMs: number;
+  durationMs: number | null;
   userPrompt: string;
   workspaceContext?: WorkspaceContext;
   nextStep: string;
@@ -49,7 +49,7 @@ export interface TaskCompletionDeliveryInput {
   summary: string;
   output: string;
   artifactPaths: string[];
-  durationMs: number;
+  durationMs: number | null;
   executionMode: 'fresh' | 'resume-parked' | 'resume-blocked' | 'follow-up';
   origin: 'user' | 'system';
   recoveryTrigger?: TaskRecoveryTrigger;
@@ -253,7 +253,7 @@ export class VerificationAndDeliveryService {
 
   formatCompletion(input: {
     output: string;
-    durationMs: number;
+    durationMs: number | null;
     workspaceContext?: WorkspaceContext;
     artifactPaths: string[];
     summary: string;
@@ -273,7 +273,7 @@ export class VerificationAndDeliveryService {
       '',
       `任务：#${input.taskId} ${input.title}`,
       `恢复方式：${formatExecutionModeText(input.executionMode)}`,
-      `耗时：${(input.durationMs / 1000).toFixed(1)}s`,
+      `耗时：${input.durationMs === null ? '未记录' : `${(input.durationMs / 1000).toFixed(1)}s`}`,
       '',
       `摘要：${summary}`,
     ];
@@ -386,7 +386,7 @@ export class VerificationAndDeliveryService {
 
   private buildCompletionLines(input: {
     output: string;
-    durationMs: number;
+    durationMs: number | null;
     workspaceContext?: WorkspaceContext;
     artifactPaths: string[];
     summary: string;
@@ -397,7 +397,7 @@ export class VerificationAndDeliveryService {
       ? '任务已完成，详见上方 Executor 最终结果'
       : input.summary;
     const lines = [
-      `✓ 任务完成 (${(input.durationMs / 1000).toFixed(1)}s)`,
+      `✓ 任务完成 (${input.durationMs === null ? '未记录' : `${(input.durationMs / 1000).toFixed(1)}s`})`,
       '',
       '┌─ 任务结果 ───────────────────────────────────────┐',
       `│ 摘要: ${completionSummary || '无'}`,
@@ -466,7 +466,7 @@ function formatBlockedRecoveryCompletedText(input: TaskCompletionDeliveryInput):
     lines.push(`触发输入：${recoveryTrigger.sourceInputExcerpt}`);
   }
   lines.push(
-    `耗时：${(input.durationMs / 1000).toFixed(1)}s`,
+    `耗时：${input.durationMs === null ? '未记录' : `${(input.durationMs / 1000).toFixed(1)}s`}`,
     '',
     '答案：',
     summary,

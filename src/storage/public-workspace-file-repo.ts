@@ -44,4 +44,9 @@ export class PublicWorkspaceFileRepo {
     this.db.prepare('DELETE FROM public_workspace_files WHERE account_id=? AND task_id=? AND relative_path=?')
       .run(accountId, taskId, relativePath);
   }
+
+  invalidatePath(accountId: string, publishedPath: string): void {
+    this.db.prepare('DELETE FROM public_workspace_files WHERE account_id=? AND published_path=?')
+      .run(accountId, publishedPath);
+  }
 }

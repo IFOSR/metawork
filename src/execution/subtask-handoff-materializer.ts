@@ -49,6 +49,7 @@ export interface EdgeHandoffContext {
   readonly generationId: string;
   readonly attemptId: string;
   readonly completionSchemaVersion: number;
+  readonly artifactVersions?: Readonly<Record<string, string>>;
   /** Handoffs the completion envelope declared explicitly, per target. */
   readonly declaredHandoffs: readonly CompletionHandoffV4[];
 }
@@ -155,7 +156,12 @@ export function materializeOutgoingHandoffs(
     const artifactItems = (declared?.items ?? []).map(item => (
       item.type === 'text'
         ? null
-        : { key: item.key, type: 'artifact' as const, paths: [...item.paths] }
+        : { key: item.key, type: 'artifact' as const, paths: [...item.paths],
+            ...(context.artifactVersions ? { versions: item.paths.map(path => {
+              const artifactVersionId = context.artifactVersions![path];
+              if (!artifactVersionId) throw new EdgeHandoffMaterializationError(context.taskId, context.subtaskId, `missing fixed artifact: ${path}`);
+              return {path, artifactVersionId};
+            }) } : {}) }
     ));
     const fallbackItems = keys.map(key => ({
       key,
@@ -163,7 +169,7 @@ export function materializeOutgoingHandoffs(
       summary: `Authorized upstream result for ${key}`,
     }));
     const effectiveSummary = declared && summaryItems.length > 0 ? summaryItems : fallbackItems;
-    const effectiveArtifacts: Array<{ key: string; type: 'artifact'; paths: string[] } | null> =
+    const effectiveArtifacts: Array<{ key: string; type: 'artifact'; paths: string[]; versions?: Array<{path:string;artifactVersionId:string}> } | null> =
       declared && summaryItems.length > 0 ? artifactItems : keys.map(() => null);
     insertEdgeHandoff(deps, {
       accountId,
@@ -189,7 +195,7 @@ function insertEdgeHandoff(
     toSubtaskId: string;
     requiredKeys: string[];
     summaryItems: Array<{ key: string; type: string; summary?: string; paths?: string[] }>;
-    artifactItems: Array<{ key: string; type: 'artifact'; paths: string[] } | null>;
+    artifactItems: Array<{ key: string; type: 'artifact'; paths: string[]; versions?: Array<{path:string;artifactVersionId:string}> } | null>;
     safeProjection: EdgeHandoffSafeProjection;
     now: string;
   },

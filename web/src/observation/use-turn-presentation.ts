@@ -22,6 +22,8 @@ type Presentation = Pick<ConversationTurnProjection, 'traceEvents' | 'executionT
     publicDelivery?: GatewayTaskViewSnapshot['publicDelivery'];
     pendingPermission?: GatewayTaskViewSnapshot['pendingPermission'];
     workspaceChanges?: GatewayTaskViewSnapshot['workspaceChanges'];
+    workspaceMerge?: GatewayTaskViewSnapshot['workspaceMerge'];
+    workspaceId?: string | null;
   };
 interface TaskResource {
   targetConversationId: string; turnId: string; taskId: string;
@@ -29,6 +31,8 @@ interface TaskResource {
   publicDelivery?: GatewayTaskViewSnapshot['publicDelivery'];
   pendingPermission?: GatewayTaskViewSnapshot['pendingPermission'];
   workspaceChanges?: GatewayTaskViewSnapshot['workspaceChanges'];
+  workspaceMerge?: GatewayTaskViewSnapshot['workspaceMerge'];
+  workspaceId?: string | null;
   timeline: ConversationTurnProjection['executionTimeline'];
   artifacts: ConversationTurnProjection['artifacts'];
 }
@@ -119,6 +123,8 @@ export function useTurnPresentation(ws: WsClient, http: HttpClient, conversation
             publicDelivery: task.publicDelivery,
             pendingPermission: task.pendingPermission,
             workspaceChanges: task.workspaceChanges,
+            workspaceMerge: task.workspaceMerge,
+            workspaceId: task.workspaceId,
             executionTimeline: task.timeline,
             artifacts: task.artifacts,
             ...(projectedStatus ? {

@@ -1,3 +1,4 @@
+import { WorkspaceGitRepo } from './workspace-git-repo.js';
 import { readPendingTaskResults } from './pending-task-result.js';
 import type Database from 'better-sqlite3';
 import type { SubtaskStatus } from '../core/types.js';
@@ -71,9 +72,14 @@ export class SqliteTaskStateFactsReader implements TaskStateFactsPort {
     // compiling it from that revision's own persisted Subtasks is the documented
     // migration path, never a guessed conclusion.
     const recorded = revision ? parseCompletionRequirements(revision.completionRequirements) : [];
-    const requirements = recorded.length > 0
+    const requirements = [...(recorded.length > 0
       ? recorded
-      : this.compileMigratedRequirements(task, subtasks);
+      : this.compileMigratedRequirements(task, subtasks))];
+    const gitRepo = new WorkspaceGitRepo(this.deps.db);
+    const binding = generationId ? gitRepo.binding(taskId,generationId) : null;
+    if(binding && !requirements.some(item=>item.kind==='workspace_delivery'))requirements.push({key:`workspace_delivery:${generationId}`,kind:'workspace_delivery',label:'合并并写回 Workspace',subtaskId:null,serviceId:null});
+    const workspaceMerge = binding ? gitRepo.summary(taskId,generationId!) : null;
+    const noChanges = binding ? !!this.deps.db.prepare("SELECT 1 FROM workspace_git_operations WHERE operation_id=? AND state='applied'").get(`task_delivery_${taskId}_${generationId}`) : false;
     const residueReasons = revision
       ? this.deps.residue.blockingReasons(taskId, generationId)
       : this.deps.residue.blockingReasons(taskId, null);
@@ -87,6 +93,7 @@ export class SqliteTaskStateFactsReader implements TaskStateFactsPort {
     const capacityWaiting = this.readCapacityWaiting(taskId);
     return {
       task,
+      workspaceDelivery: binding ? {summary:workspaceMerge,noChanges,held:gitRepo.hasHeldChange(taskId,generationId!)} : undefined,
       activeGraph: activeRevision
         ? { generationId: activeRevision.generationId, revision: activeRevision.revision }
         : null,

@@ -1,3 +1,4 @@
+import type { WorkspaceGitService } from '../execution/workspace-git-service.js';
 import { withWorkspacePublicationLock } from './workspace-publication-lock.js';
 import { containsInternalRuntimePath } from '../utils/public-text.js';
 import { tmpdir } from 'node:os';
@@ -152,6 +153,37 @@ export class UserArtifactPublicationService {
     }
     const canonicalRoot = await realpath(resolve(userWorkspaceRoot));
     return withWorkspacePublicationLock(canonicalRoot, () => this.publishLocked(input, canonicalRoot));
+  }
+
+  /** Prepare immutable blobs and pins before the terminal DB transaction. Registration runs inside it. */
+  async prepareGitArtifacts(input:{git:WorkspaceGitService;repositoryPath:string;commit:string;accountId:string;workspaceId:string;taskId:string;attemptId:string;generationId:string;subtaskId:string;relativePaths:readonly string[]}):Promise<{commit:()=>void;versions:ArtifactVersion[]}> {
+    const repo=this.deps.artifactVersionRepo;if(!repo)throw new Error('artifact_version_repository_missing');
+    const entries=new Map((await input.git.entries(input.repositoryPath,input.commit)).map(entry=>[entry.path,entry]));
+    const versions:ArtifactVersion[]=[];
+    for(const path of [...new Set(input.relativePaths)]) {
+      const entry=entries.get(path);if(!entry||entry.kind!=='file')throw new Error(`git_artifact_file_missing:${path}`);
+      const bytes=await input.git.blob(input.repositoryPath,entry.oid);
+      if(bytes.length>MAX_SINGLE_ARTIFACT_BYTES)throw new Error(`artifact_content_too_large:${path}`);
+      const contentHash=createHash('sha256').update(bytes).digest('hex');
+      const existing=repo.findByContent(input.workspaceId,path,contentHash);
+      const version:ArtifactVersion=existing??{artifactVersionId:`artifact_version_${randomUUID()}`,accountId:input.accountId,workspaceId:input.workspaceId,
+        sourceTaskId:input.taskId,sourceAttemptId:input.attemptId,relativePath:path,contentHash,byteLength:bytes.length,
+        objectUri:`git-object:${input.workspaceId}:${input.commit}:${encodeURIComponent(path)}`,gitCommit:input.commit,gitRelativePath:path,
+        mediaType:mediaTypeForRelativePath(path),createdAt:this.now()};
+      if(version.gitCommit)await input.git.updateRef(input.repositoryPath,`refs/metawork/artifacts/${version.artifactVersionId}`,version.gitCommit);
+      versions.push(version);
+    }
+    return {versions,commit:()=>{
+      for(const candidate of versions) {
+        const version=repo.record(candidate);
+        const existing=this.taskArtifactRepo.listByTask(input.taskId).find(a=>a.relativePath===version.relativePath&&a.contentHash.replace(/^sha256:/u,'')===version.contentHash);
+        if(existing){this.taskArtifactRepo.linkArtifactVersion(existing.artifactId,version.artifactVersionId,this.now());continue;}
+        this.taskArtifactRepo.insert({accountId:input.accountId,taskId:input.taskId,generationId:input.generationId,subtaskId:input.subtaskId,
+          displayName:basename(version.relativePath),relativePath:version.relativePath,publishedPath:'',mediaType:version.mediaType,
+          previewKind:classifyPreviewKind(version.relativePath),contentHash:`sha256:${version.contentHash}`,byteLength:version.byteLength,
+          referenceKind:'artifact_version',workspaceId:input.workspaceId,artifactVersionId:version.artifactVersionId,sourceRelativePath:version.relativePath,now:this.now()});
+      }
+    }};
   }
 
   /**

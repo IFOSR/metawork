@@ -137,6 +137,7 @@ export type KernelAttemptPayload =
    */
   | {
       protocol: 'metawork:service-repair:v1';
+      servicePreparation?: {serviceWorktreeId:string;sourceCommit:string;projectPath:string};
       serviceId: string;
       workspaceId: string | null;
       specificationRevision: string;

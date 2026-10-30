@@ -148,6 +148,7 @@ export class TaskStateAuthority {
       // anomaly, or an input request that only existed to unblock work) must not
       // outlive its cause.
       const provenCompletion = raw.task.status === 'needs_action'
+        && !raw.workspaceDelivery
         && evaluation.status === 'succeeded'
         && evaluation.detail.pendingActions.length === 0;
       if (raw.task.status === 'needs_action' && evaluation.status !== 'cancelled'
@@ -157,6 +158,13 @@ export class TaskStateAuthority {
               reason: createTaskReason('waiting_for_capacity', '等待执行名额。') } }
           : { status: 'needs_action', detail: { ...evaluation.detail, phase: null,
               reason: evaluation.status === 'needs_action' ? evaluation.detail.reason : raw.task.stateDetail.reason } };
+      }
+      // Delivery resumes through the existing six-state transitions, including
+      // when a crash left a fully delivered Task paused or queued.
+      if (raw.workspaceDelivery && raw.task.status === 'queued'
+        && evaluation.status === 'succeeded') {
+        evaluation = { status: 'running', detail: { ...evaluation.detail,
+          phase: 'delivering' } };
       }
       if (evaluation.status !== raw.task.status
         && !provenCompletion

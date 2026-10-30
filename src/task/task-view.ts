@@ -82,6 +82,7 @@ export interface TaskViewPendingDecisionFact {
 }
 
 export interface TaskViewFacts {
+  readonly workspaceMerge?: import('../workspace/workspace-git-contracts.js').WorkspaceMergeSummary|null;
   readonly serviceState?: string | null;
   readonly task: {
     readonly id: string;
@@ -133,6 +134,7 @@ export interface TaskViewFacts {
 }
 
 export interface TaskView {
+  readonly workspaceMerge?: import('../workspace/workspace-git-contracts.js').WorkspaceMergeSummary|null;
   readonly taskId: string;
   /** The one Task conclusion every surface reads. */
   readonly state: TaskStateSnapshot;
@@ -249,6 +251,7 @@ export function projectTaskView(facts: TaskViewFacts): TaskView {
       : null;
   return {
     taskId: facts.task.id,
+    workspaceMerge: facts.workspaceMerge??null,
     state: {
       taskId: facts.task.id,
       status,
@@ -479,6 +482,8 @@ function defaultReasonText(code: TaskStateDetail['reason']['code']): string {
       return '服务未能启动。';
     case 'service_health_timeout':
       return '服务未在期限内通过健康检查。';
+    case 'workspace_merge_conflict':
+      return 'Workspace 合并冲突需要选择文件版本。';
     case 'delivery_failed':
       return '文件交付失败。';
     case 'execution_failed':

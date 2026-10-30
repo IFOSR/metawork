@@ -49,6 +49,8 @@ type AttemptTerminalEvent =
     });
 
 export interface AttemptTerminalLanding {
+  /** Prepared Git/artifact facts; synchronous and committed with done + outgoing handoffs. */
+  commitFacts?:()=>void;
   receipt: ExecutorAttemptReceiptInsert;
   expectedSubtaskStatus: SubtaskStatus;
   nextSubtaskStatus: SubtaskStatus;
@@ -73,6 +75,7 @@ export interface AttemptTerminalLanding {
     generationId: string;
     completionSchemaVersion: number;
     declaredHandoffs: readonly CompletionHandoffV4[];
+    artifactVersions?: Readonly<Record<string, string>>;
     safeProjection: EdgeHandoffSafeProjection | null;
   };
   now: string;
@@ -200,6 +203,7 @@ export class AttemptTerminalService {
         input.now,
       );
       if (!cancellationWon) {
+        input.commitFacts?.();
         const changed = this.db.prepare(`
           UPDATE subtasks
           SET status = ?,
@@ -244,6 +248,7 @@ export class AttemptTerminalService {
             attemptId: input.receipt.attemptId,
             completionSchemaVersion: input.edgeHandoffs.completionSchemaVersion,
             declaredHandoffs: input.edgeHandoffs.declaredHandoffs,
+            artifactVersions: input.edgeHandoffs.artifactVersions,
           }, input.edgeHandoffs.safeProjection, input.now);
         }
         if (input.publication && !input.directCompletion) {

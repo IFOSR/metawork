@@ -386,7 +386,7 @@ export interface WorkspaceContext {
   targetPaths: string[];
   /** Workspace identity the Attempt was bound to at admission. */
   workspaceId?: string;
-  executionMode?: 'worktree' | 'in_place';
+  executionMode?: 'worktree' | 'in_place' | 'conversation_git' | 'service_git';
   /** Workspace access granted for this Attempt. Read admissions never receive a write mount. */
   /**
    * `read` only inspects files, `execute` may run commands in the canonical
@@ -397,6 +397,16 @@ export interface WorkspaceContext {
   readOnlySourcePath?: string;
   /** Canonical Workspace root; live file references resolve against this. */
   canonicalRoot?: string;
+  /** Fixed service checkout identity when this Attempt prepares/runs a service. */
+  service?: {
+    serviceId?: string;
+    sourceTaskId?: string | null;
+    operationTaskId?: string | null;
+    sourceCommit: string;
+    serviceWorktreeId: string;
+    projectPath: string;
+    specificationRevision?: string | null;
+  };
 }
 
 export interface ExecutionContextBundleV2 {

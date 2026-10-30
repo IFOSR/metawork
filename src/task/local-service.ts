@@ -64,6 +64,13 @@ export function isServiceReadyState(state: LocalServiceState | string | null | u
 }
 
 export interface LocalServiceRecord {
+  sourceCommit?:string|null;
+  /** Task whose service artifact supplied the running source. */
+  sourceTaskId?:string|null;
+  /** Task/operation that requested the current process lifecycle change. */
+  operationTaskId?:string|null;
+  projectPath?:string|null;
+  serviceWorktreeId?:string|null;
   accountId: string;
   /** Workspace the service belongs to; identity is (account, workspace, service). */
   workspaceId: string | null;

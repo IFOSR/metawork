@@ -171,7 +171,7 @@ export class TaskRepo {
       task.admittedAt ?? task.createdAt,
       task.publicTaskDirectory ?? null,
       JSON.stringify(task.publicDeliveryBaseline ?? {}), task.startServiceAfterPublish ? 1 : 0, task.publicProject ? 1 : 0,
-      task.executionMode ?? 'in_place',
+      task.executionMode ?? null,
       task.workspaceExecutionSource ?? '',
       task.workspaceDeliveryPolicy ?? '',
       JSON.stringify(task.workspaceTargetPaths ?? []),

@@ -18,7 +18,7 @@ import { dirname, join, relative, resolve, sep } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { boundedPathSegment } from '../utils/bounded-path-segment.js';
 
-export type WorkspaceKind = 'git' | 'in_place';
+export type WorkspaceKind = 'git' | 'in_place' | 'conversation_git';
 export type CheckpointReason = 'attempt_start' | 'explicit' | 'permission_suspended' | 'success' | 'failure' | 'cancelled';
 
 export interface WorkspaceIdentity {
@@ -114,6 +114,13 @@ export class WorkspaceStore {
     this.workspacesPath = join(this.rootPath, 'workspaces');
     this.objectsPath = join(this.rootPath, 'objects', 'sha256');
     this.repositoriesPath = join(this.rootPath, 'repositories');
+  }
+
+  async bindConversationWorkspace(identity: WorkspaceIdentity, executionRoot: string, attemptId: string): Promise<WorkspaceHandle> {
+    const rootPath = join(executionRoot, '.metawork-tmp', workspaceSegment('attempt', attemptId));
+    const checkpointsPath = join(rootPath, 'checkpoints');
+    await mkdir(checkpointsPath, {recursive: true});
+    return {...identity, id: `conversation_${attemptId}`, kind: 'conversation_git', rootPath, filesPath: executionRoot, checkpointsPath};
   }
 
   async initialize(): Promise<void> {
@@ -369,6 +376,10 @@ export class WorkspaceStore {
     }
   }
 
+  async removeConversationScratch(workspace: WorkspaceHandle, executionRoot:string):Promise<void> {
+    if(workspace.kind!=='conversation_git'||dirname(workspace.rootPath)!==join(executionRoot,'.metawork-tmp'))throw new Error('invalid_conversation_scratch');
+    await rm(workspace.rootPath,{recursive:true,force:true});
+  }
   async removeWorkspaceUri(rootUri: string): Promise<void> {
     const target = this.assertFileUriUnder(rootUri, this.workspacesPath, 'workspace cleanup');
     await rm(target, { recursive: true, force: true });

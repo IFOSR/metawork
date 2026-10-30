@@ -10,7 +10,7 @@ export interface PublicDeliveryView {
   workspace: string;
   /** `null` unless the user explicitly selected an existing Workspace subdirectory. */
   taskDirectory: string | null;
-  mode: 'in_place';
+  mode: 'in_place' | 'worktree';
   /** Which admission fact authorized the mode. */
   modeSource: 'explicit_user' | 'planner' | 'fallback' | 'kernel_safety' | null;
   deliveryPolicy: 'none' | 'auto_publish' | 'await_acceptance' | null;
@@ -39,6 +39,7 @@ export const IN_PLACE_DELIVERY_LABELS: Record<PublicDeliveryView['state'], strin
 
 const MODE_LABELS: Record<PublicDeliveryView['mode'], string> = {
   in_place: '目标 Workspace 就地执行',
+  worktree: '任务目录隔离交付',
 };
 
 const SOURCE_LABELS: Record<NonNullable<PublicDeliveryView['modeSource']>, string> = {
@@ -74,6 +75,21 @@ export function projectPublicDelivery(input: {
   const mode = 'in_place' as const;
   if (!input.workspace) return null;
   const workspace = resolve(input.workspace);
+  // Historical rows created before the Conversation Git protocol may still
+  // carry a task directory and no immutable execution mode. Keep their read
+  // model stable; no new execution path writes this projection.
+  if (!input.task.executionMode && input.task.publicTaskDirectory) {
+    const taskDirectory = resolve(workspace, input.task.publicTaskDirectory);
+    const rel = relative(workspace, taskDirectory);
+    if (!rel || rel.split(/[\\/]/u).includes('..') || isAbsolute(rel)) return null;
+    const files = [...new Set(input.artifacts.filter(item => item.status === 'published' && item.taskId === input.task.id
+      && item.publishedPath === resolve(taskDirectory, item.relativePath)).map(item => item.relativePath))].sort();
+    return {
+      workspace, taskDirectory, mode: 'worktree', modeSource: null, deliveryPolicy: null,
+      files, conflicts: [], candidate: 'none', state: files.length ? 'published' : 'not_published',
+      stateLabel: files.length ? '已发布到任务目录' : '尚未发布到任务目录',
+    };
+  }
   // Only an explicitly selected existing project keeps a subdirectory root.
   let taskDirectory: string | null = null;
   if (input.task.publicProject && input.task.publicTaskDirectory) {
@@ -115,7 +131,9 @@ export function projectPublicDelivery(input: {
 }
 
 export function publicDeliveryStateLabel(view: PublicDeliveryView): string {
-  return IN_PLACE_DELIVERY_LABELS[view.state];
+  return view.mode === 'worktree'
+    ? (view.state === 'published' ? '已发布到任务目录' : view.state === 'not_published' ? '尚未发布到任务目录' : PUBLIC_DELIVERY_LABELS[view.state])
+    : IN_PLACE_DELIVERY_LABELS[view.state];
 }
 
 export function publicDeliveryLines(view: PublicDeliveryView | null): string[] {

@@ -302,6 +302,9 @@ function schema43(path?: string): Database.Database {
   for (const table of [...admissionTables, ...retryWakeTables, ...observationTables, 'workspace_publication_deliveries']) {
     db.exec(`DROP TABLE IF EXISTS ${table}`);
   }
+  for (const table of ['workspace_merge_files','workspace_merge_jobs','task_workspace_changes','conversation_execution_bindings','conversation_git_worktrees','workspace_git_operations','service_git_worktrees','workspace_git_roots']) db.exec(`DROP TABLE ${table}`);
+  for (const column of ['worktree_id','worktree_incarnation','before_commit','after_commit']) db.exec(`ALTER TABLE executor_attempt_runtime DROP COLUMN ${column}`);
+  for (const column of ['git_commit','git_relative_path']) db.exec(`ALTER TABLE artifact_versions DROP COLUMN ${column}`);
   // Restore the historical global evidence key; keep the captured schema43 hash meaningful.
   db.exec(`
     DROP TABLE public_workspace_files;
@@ -334,10 +337,18 @@ function schema43(path?: string): Database.Database {
     db.exec('ALTER TABLE kernel_dispatch_items DROP COLUMN terminal_disposition');
   }
   db.exec('UPDATE schema_version SET version = 43');
+  // Reconstruct the historical NOT NULL/default contract, rather than changing
+  // the frozen fingerprint when schema 62 makes this legacy column nullable.
+  db.unsafeMode(true);
+  db.pragma('writable_schema = ON');
+  db.prepare("UPDATE sqlite_master SET sql=replace(sql, 'execution_mode TEXT,', 'execution_mode TEXT NOT NULL DEFAULT ''in_place'',') WHERE type='table' AND name='tasks'").run();
+  db.pragma('writable_schema = OFF');
+  db.unsafeMode(false);
+  db.pragma(`schema_version = ${Number(db.pragma('schema_version', { simple: true })) + 1}`);
   expect(schemaHash(db)).toBe(schema43Hash);
   db.exec(`
-    INSERT INTO tasks (id, title, status, created_at, updated_at)
-      VALUES ('task_done', 'Retained task', 'succeeded', '2026-09-26', '2026-09-26');
+    INSERT INTO tasks (id, title, status, created_at, updated_at, execution_mode)
+      VALUES ('task_done', 'Retained task', 'succeeded', '2026-09-26', '2026-09-26', 'in_place');
     INSERT INTO conversation_metadata_projection VALUES ('account_one', 'conv_one', '{"title":"retained"}');
     INSERT INTO gateway_journal_streams VALUES ('account_one', 'conv_one', 7, '{"lastSequence":7}', 2);
     INSERT INTO gateway_journal_segments VALUES ('account_one', 'conv_one', 'segment_one', 3, 7, 128);

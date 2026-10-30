@@ -1,10 +1,10 @@
-import { mkdtemp, rm } from 'node:fs/promises';
+import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import Database from 'better-sqlite3';
 import { afterEach, describe, expect, it } from 'vitest';
 import { SpawnLocalCliChildProcessRunner } from '../../src/executor/local-cli-executor-adapter.js';
-import { InPlaceAttemptExecutionBackend } from '../../src/execution/in-place-attempt-execution-backend.js';
+import { NativeAttemptExecutionBackend } from '../../src/execution/native-attempt-execution-backend.js';
 import { runMigrations } from '../../src/storage/migrations.js';
 
 const posix = process.platform !== 'win32';
@@ -74,7 +74,7 @@ describe('Attempt process-group ownership', () => {
     const db = new Database(join(root, 'state.db'));
     runMigrations(db);
     cleanups.push(async () => db.close());
-    const backend = new InPlaceAttemptExecutionBackend();
+    const backend = new NativeAttemptExecutionBackend();
 
     const created = await backend.create({
       attemptId: 'attempt-backend-group',
@@ -106,4 +106,53 @@ describe('Attempt process-group ownership', () => {
     expect(record?.residualProcesses).toEqual([expect.objectContaining({ pid: childPid, command: 'sleep' })]);
     expect(pidAlive(childPid)).toBe(false);
   }, 20_000);
+  it.skipIf(!posix)('recovers a live native process from durable identity before releasing its files', async () => {
+    const root=await mkdtemp(join(tmpdir(),'metawork-native-recovery-'));
+    cleanups.push(()=>rm(root,{recursive:true,force:true}));
+    const state=join(root,'processes');
+    const backend=new NativeAttemptExecutionBackend(state);
+    const created=await backend.create({
+      attemptId:'recovered',taskId:'t',generationId:'g',subtaskId:'s',workUnitId:'w',
+      leaseToken:'lease',idempotencyKey:'key',imageRef:'native',resolvedImageId:'sha256:test',
+      command:'/bin/sh',args:['-c','echo $$ > owner; exec sleep 30'],environment:{},
+      mounts:[{source:root,target:'/workspace',mode:'rw'}],controlNetwork:'none',egressMode:'disabled',
+      limits:{cpus:1,memoryBytes:1,pids:8,tmpfsBytes:1,logSize:'1m',logFiles:1},
+    });
+    cleanups.push(()=>backend.stop(created.containerId));
+    await backend.start(created.containerId);
+    let pid=0;
+    for(let i=0;i<200&&!pid;i++) {
+      pid=await readFile(join(root,'owner'),'utf8').then(Number,()=>0);
+      if(!pid)await new Promise(resolve=>setTimeout(resolve,10));
+    }
+    expect(pid).toBeGreaterThan(1);
+    const recovered=new NativeAttemptExecutionBackend(state);
+    expect(await recovered.listManaged()).toEqual([expect.objectContaining({status:'running'})]);
+    await recovered.stop(created.containerId);
+    expect(pidAlive(pid)).toBe(false);
+    expect(await recovered.inspect(created.containerId)).toMatchObject({status:'exited'});
+    await recovered.remove(created.containerId);
+    expect(await recovered.listManaged()).toEqual([]);
+  },20_000);
+
+  it.skipIf(!posix)('fences a delayed launch after an unstarted receipt is recovered', async () => {
+    const root=await mkdtemp(join(tmpdir(),'metawork-native-fence-'));
+    cleanups.push(()=>rm(root,{recursive:true,force:true}));
+    const state=join(root,'processes');
+    const backend=new NativeAttemptExecutionBackend(state);
+    const created=await backend.create({
+      attemptId:'unstarted',taskId:'t',generationId:'g',subtaskId:'s',workUnitId:'w',
+      leaseToken:'lease',idempotencyKey:'key',imageRef:'native',resolvedImageId:'sha256:test',
+      command:'/bin/sh',args:['-c','echo unsafe > launched'],environment:{},
+      mounts:[{source:root,target:'/workspace',mode:'rw'}],controlNetwork:'none',egressMode:'disabled',
+      limits:{cpus:1,memoryBytes:1,pids:8,tmpfsBytes:1,logSize:'1m',logFiles:1},
+    });
+    const recovered=new NativeAttemptExecutionBackend(state);
+    expect(await recovered.inspect(created.containerId)).toMatchObject({status:'missing'});
+    await backend.start(created.containerId);
+    await backend.wait(created.containerId);
+    expect(await readFile(join(root,'launched'),'utf8').catch(()=>null)).toBeNull();
+    await writeFile(join(root,'sentinel'),'preserved');
+  },20_000);
+
 });

@@ -3,7 +3,7 @@ import type { CompletionHandoffV4 } from '../execution/completion-protocol.js';
 import type { ResultReferenceRecord } from './result-object-repo.js';
 
 export type PersistedSubtaskHandoffItem =
-  | CompletionHandoffV4['items'][number]
+  | (CompletionHandoffV4['items'][number] & { versions?: Array<{ path: string; artifactVersionId: string }> })
   | {
       key: string;
       type: 'result_reference';

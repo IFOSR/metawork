@@ -1,7 +1,7 @@
 export type ExecutionMountMode = 'ro' | 'rw';
 
 /** Execution backends supported by the Runtime. */
-export type AttemptExecutionBackendKind = 'container' | 'in_place' | 'worktree';
+export type AttemptExecutionBackendKind = 'container' | 'native' | 'in_place' | 'worktree';
 
 /** Whether Executor prompts use container aliases or native Runtime paths. */
 export type AttemptExecutionPathMode = 'container' | 'native';

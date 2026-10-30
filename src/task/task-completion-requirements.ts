@@ -26,6 +26,7 @@ export function compileCompletionRequirements(input: {
   readonly subtasks: readonly CompletionRequirementSubtask[];
   /** A published public project needs durable file delivery per subtask. */
   readonly publicProject: boolean;
+  readonly conversationGit?: boolean;
   /** The user explicitly asked to start a local service after publish. */
   readonly startServiceAfterPublish: boolean;
   readonly serviceId?: string | null;
@@ -60,6 +61,7 @@ export function compileCompletionRequirements(input: {
       });
     }
   }
+  if(input.conversationGit)requirements.push({key:'workspace_delivery',kind:'workspace_delivery',label:'合并并写回 Workspace',subtaskId:null,serviceId:null});
   if (input.startServiceAfterPublish) {
     requirements.push({
       key: 'service',

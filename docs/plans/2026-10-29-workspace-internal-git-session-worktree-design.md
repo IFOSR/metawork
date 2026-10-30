@@ -1,352 +1,251 @@
-# Workspace 内部版本库与会话 Worktree 并行模型
+# Workspace 内部 Git 与会话 Worktree 并行模型
 
 - 日期：2026-10-29
-- 状态：提议，待评审；本文件不表示已经实施
-- 适用范围：Workspace 写入、跨会话并行、办公文件、网站生成、服务预览和后续交付
-- 相关公开实现：[dsh-git-worktree](https://github.com/wloops/dsh-git-worktree)、[dsh-worktrees](https://github.com/Luck9Star/dsh-worktrees)
-- 相关当前契约：[ADR-0050](../adr/0050-planner-owned-workspace-execution-mode.md)、[ADR-0037](../adr/0037-multi-conversation-task-parallelism.md)
+- 状态：实现已落地，正在进行最终验证（代码尚未提交）
+- 技术方案：[详细技术设计与实施步骤](2026-10-29-workspace-internal-git-session-worktree-technical-design.md)
+- 本次修订：删除快照后端、Copy-on-Write、文件认领、只读特殊后端和延迟物化等备选路径
+- 范围：代码、网站、调研、PPT、日常文档、普通问答统一采用本模型
+- 运行实现已接入私有 Git、会话 Worktree、Workspace FIFO 合并与固定服务 Worktree；ADR 与部署切换仍需最终验收后更新
 
-## 1. 决策摘要
+## 1. 唯一方案
 
-MetaWork 为每个用户 Workspace 建立一个内部版本库。用户 Workspace 是否已经是 Git 仓库，不影响 MetaWork 的执行模型；MetaWork 的内部版本库由系统自己维护，不要求用户学习 Git，也不应把 MetaWork 的提交混入用户已有的 Git 历史。
+**一个 Workspace 对应一个私有 Git 仓库；一个会话对应一个真实 Git Worktree；会话并行执行；成果通过该 Workspace 的串行合并队列写回用户目录。**
 
-所有可能写入 Workspace 的 Session 默认使用独立的 Task Worktree：
+无论用户选择的目录有没有 `.git`，MetaWork 都执行相同流程。Git 是唯一版本管理实现，`git worktree` 是唯一会话目录实现。没有文件认领模式、快照模式和 In-place 模式选择，Planner 不负责判断用哪一种。
 
-```text
-Workspace 主干
-  -> Session A Worktree
-  -> Session B Worktree
-  -> Session C Worktree
-```
-
-多个 Session 在各自 Worktree 中并行执行。Session 完成后进入 Workspace 级串行 Merge Queue：
+普通问答也使用相同的会话 Worktree。没有文件变化时不产生提交、不进入合并队列。首版接受这部分目录开销，不增加延迟物化分支。
 
 ```text
-Worktree 完成
-  -> 基于当前主干合并
-  -> 无冲突：主干前进，记录新的 Revision
-  -> 有冲突：保留冲突现场，等待用户处理
-  -> 合并完成且没有服务依赖：清理 Worktree
+用户 Workspace 目录（最终成果）
+              ↕ 串行同步变更
+私有 Git 仓库的 main 分支
+    ├── 会话 A 分支 / Worktree A ──┐
+    ├── 会话 B 分支 / Worktree B ──┼── 串行合并队列 → main
+    └── 会话 C 分支 / Worktree C ──┘
+             并行工作
 ```
 
-该方案将 Worktree 从“某一种 Executor 后端”提升为 Workspace Session 的统一工作目标。普通问答和纯只读任务可以只创建延迟物化的只读 Worktree 绑定，不产生物理写目录，也不进入合并队列；一旦任务需要读取或生成 Workspace 文件，再物化对应的隔离目录。
+“主干”固定指私有仓库的 `main` 分支。用户 Workspace 是主干成果的可见目录，不是执行器的工作目录。用户原有 Git 仓库的分支不叫本方案的主干。
 
-## 2. 解决的问题
+## 2. 固定目录和 Git 归属
 
-当前 In-place 模型把用户 Workspace 根目录作为写租约边界。同一 Workspace 下的两个任务即使修改完全不同的文件，也会因为祖先路径冲突进入 `resource_waits`。当前规则实际形成了：
+所有内部数据放在 MetaWork 的账户数据目录，位于用户 Workspace 外：
 
 ```text
-逻辑 Workspace = 物理写锁边界 = 单一写者
+<accountData>/workspace-git/<workspaceId>/
+  repository.git/                 私有 bare Git 仓库
+  integration/                    检出 main 的真实 Git Worktree
+  sessions/<conversationId>/      当前会话的真实 Git Worktree
+  services/<serviceId>/<revision>/ 服务使用的固定提交 Worktree
 ```
 
-本方案改为：
+会话身份固定使用仓库现有的 `conversationId`。Task、Subtask、Attempt 记录所属会话，不再分别创建自己的 Git 仓库和 Worktree。内部目录不是新的用户 Workspace，不出现在 Workspace 选择列表。
+
+### 2.1 非 Git 目录初始化
+
+Workspace 创建时执行以下唯一流程：
+
+1. 规范化用户目录，登记现有 Workspace 身份。
+2. 在上述位置执行 `git init --bare`。
+3. 创建 integration Worktree，将用户文件按原相对路径导入。
+4. 提交初始文件树并建立 `main`；空目录也建立空初始提交。
+5. 保存 `workspaceId → 私有仓库 → main commit → 用户目录` 的映射。
+6. Workspace 进入可执行状态。
+
+用户目录不创建 `.git`；不使用内容寻址快照作为第二后端，不按平台选择 reflink。导入使用普通文件复制，后续会话目录由 `git worktree add` 创建。
+
+Git 作为 MetaWork 必备运行依赖随安装检查。初始化失败时显示真实错误并支持重试，不静默退回共享目录执行，不把空基线当成成功。
+
+### 2.2 已有 Git 目录初始化
+
+与非 Git 目录执行相同流程，额外跳过用户的 `.git` 文件和目录。导入用户磁盘上的当前内容，包括未提交的业务文件修改；不从用户 HEAD 克隆基线。
+
+MetaWork 不操作用户 Git 的 refs、index、hooks、remotes，不替用户提交和推送。合并交付之后，用户自己的 Git 会正常看到工作目录变化；这是用户文件更新的结果，不是内部提交混入用户历史。
+
+### 2.3 文件范围
+
+规则由 Runtime 统一实现，不让 Planner 为每个会话重新选择导入范围：
+
+- 基线覆盖 Workspace 的业务文件，保留相对路径；选中 Git 子目录时不提升到其父仓库根。
+- `.git` 元数据始终排除。内部仓库禁用外部 hooks、filter 和自定义 merge driver；不执行用户仓库的 Git 配置。
+- 新文件遵循 Workspace 的 `.gitignore`；用户明确指定的输入文件和声明交付文件优先于 ignore 规则，按精确路径纳入。已经纳入主干的文件继续追踪。
+- 固定排除任意层级的 `node_modules/`、`.venv/`、`venv/`、`__pycache__/`、`.cache/` 和会话根 `.metawork-tmp/`。依赖在各自会话目录安装；禁止共享可写依赖目录。`dist/`、图片、PDF 不按名字一律排除。明确输入及交付文件仍按上一条精确纳入；`.git` 元数据不能被该规则重新纳入。文件超过实现支持范围时显示具体失败，不静默截断后交付。
+- PPT、Word、Excel、图片作为完整文件存入 Git。首版不引入 LFS 和第二套大文件存储后端。
+- Git 不管理空目录和完整文件系统元数据；本方案保证业务文件内容、相对路径及 Git 支持的执行位，不宣称目录镜像备份。链接保留链接本身，不跟随到 Workspace 外复制数据。
+
+同一物理目录只能登记为一个活动 Workspace；重叠父子目录不能建立两个独立主干并同时交付。复用已有 Workspace 身份，不能通过路径别名绕过合并队列。
+
+## 3. 会话与多轮任务
+
+### 3.1 创建和执行
+
+新会话创建时，从当前已交付的 `main` 提交建立 `sessions/<conversationId>` 分支及真实 Worktree。Planner 的目录观察和 Executor 的文件操作指向这个会话目录，避免 Planner 读主干、Executor 读旧分支造成上下文错位。规划侧现有只读职责保持不变。
+
+同一会话内所有轮次、Task 和重试复用该 Worktree。不同会话的 Worktree 并行运行，不申请用户 Workspace 根目录的全程写锁。
+
+**并行边界固定在会话之间。** 同一会话内写入 Worktree 的 Executor 串行执行，避免多个 Subtask 在同一目录互相覆盖。首版不再为 Subtask 增建 Worktree；这明确收缩了同会话的多写者并行能力。普通问答不凭空生成执行 Task，已有问答流程仅关联会话 Worktree。
+
+### 3.2 合并时机
+
+会话可以长期存在，不能等用户关闭整个会话后才交付。规则固定如下：
+
+1. 每个 Task 完成工作并验证产物后，停止该任务的文件写入，形成固定提交。
+2. 有文件变化，自动进入合并队列；用户原请求已授权正常交付，不再强制增加“确认发布”。
+3. 没有文件变化，直接交付文本和操作结果，不创建空的合并工作项。
+4. 用户明确要求“只预览，先不要写回”时保留提交，等待其后续发布指令；仍使用同一套合并队列。
+5. 合并等待期间可查看成果；同会话下一个写任务等待当前交付结束。不同会话继续执行。
+6. 合并成功后，在会话无写进程时将其分支快进到已合并提交，继续下一轮。
+7. 下一轮开始前，把最新 `main` 合入会话分支；有冲突就保留现场请求用户决策，不悄悄覆盖会话未发布的工作。
+
+每个会话只有一个当前活动 Worktree。已经清理的会话重新收到消息时，从最新已交付主干重建；历史提交保留为来源，不能把旧 Task 改回运行中。
+
+### 3.3 清理时机
+
+单轮回答完成不表示会话结束。清理触发点固定为用户结束、归档、删除会话。关闭客户端窗口不是清理触发点。
+
+触发清理后，必须同时满足：没有运行进程、没有未交付变化、没有冲突、没有未完成恢复和交付。未交付变化需先发布；用户明确选择放弃时才删除这部分工作。不能按“Task succeeded”直接删除目录。
+
+历史产物使用 Git 提交加相对路径引用，清理会话目录不删除历史提交。Git 对象回收只删除不再被历史产物、会话和服务引用的对象。
+
+## 4. 串行合并与用户目录写回
+
+### 4.1 唯一交付链
+
+每个 Workspace 使用一个持久化 FIFO 合并队列和一个跨进程集成锁。创建基线、吸收用户外部编辑、合并提交和写回用户目录都由这一入口协调；模型执行期间不持有它。
+
+每个队列项固定来源提交，不合并一个还在变化的会话目录：
 
 ```text
-逻辑 Workspace = 一个集成主干
-每个写入 Session = 一个独立 Worktree
-主干更新 = 一个串行合并点
+排队
+  → 读取已交付主干和用户目录变化
+  → 吸收用户外部修改
+  → 在 integration 中执行 Git 三方合并
+  → 冲突检查
+  → 写回变更文件
+  → 记录已交付提交
+  → 完成
 ```
 
-这样可以让不同 Session 同时进行文件创建、依赖安装、构建、办公文档生成和服务预览，同时保留明确的冲突边界。
+integration Worktree 只由交付流程使用，Executor 不在这里工作。冲突标记只出现在内部 integration，不能先写进用户目录再让用户修复。
 
-## 3. 与旧 MetaWork Worktree 的区别
+### 4.2 外部修改
 
-本方案不是恢复旧的 Worktree 执行模式，也不是重新启用旧的 Candidate Publication 流程。
+用户仍能用编辑器、Office 和文件管理器修改 Workspace。每次合并前，将用户目录相对上次已交付提交的变化记录为内部 external-change commit，再合并会话提交。这样用户修改也是三方合并的一方。
 
-| 内容 | 旧 MetaWork Worktree | 本方案 |
+写回每个变更文件前再次比较预期内容；发现变化就保留结果并显示冲突。删除、同名新增、重命名和目录替换也必须比较，不能只检查修改文件。
+
+MetaWork 的队列只能串行化自身写入，无法强迫外部编辑器遵守锁。跨平台普通文件系统不存在“比较内容再替换”的通用原子事务；实现必须保留基线、写回前版本和会话结果，检测竞争后停止，不能承诺任意外部并发编辑绝对无竞争。这个限制不影响 MetaWork 会话之间的隔离保证。
+
+### 4.3 主干写回不是 Git merge 自动完成的
+
+私有仓库与用户目录分开，因此 **内部 merge 成功不等于文件已经交付**。这是方案必须实现的确定步骤，不能用“merge 回 Workspace”一句话省略。
+
+交付程序根据前后提交生成新增、修改、删除清单，只应用这些路径。使用逐文件临时文件和原子重命名写回，并记录持久化进度。Git 仅提供文件树和合并结果；不能把多个文件的写回描述成一个原子文件系统事务。
+
+写回中断后根据清单和当前内容恢复，不重新执行 Executor。交付未完成前，队列不推进下一项，Task 不显示“已完成”；界面显示“正在写回”及真实失败原因。内部已合并提交和已交付提交分别记录，只有写回结束后两者才对齐。
+
+### 4.4 冲突规则
+
+文本使用 Git 三方合并。无冲突自动继续；有冲突保留 base、main、session 三方版本，由用户决定。PPT、Word、Excel、图片按二进制处理；双方内容相同直接接收，双方发生不同修改则展示版本选择，不尝试合并压缩包中的 XML。
+
+用户操作固定为：保留主干、采用会话、另存会话版本、提交手工解决结果、取消本次合并。取消只退出队列，保留会话工作；不等于删除成果。
+
+发生冲突后，该 Workspace 的合并队列暂停，其他会话继续工作，其他 Workspace 正常交付。用户完成决策后继续队列。首版不实现跳过冲突项的调度策略。
+
+## 5. 服务运行采用固定提交目录
+
+服务统一从 `services/<serviceId>/<revision>/` 的 detached Git Worktree 启动。`revision` 固定为 Git commit；不从持续变化的主干目录启动，不长期占用会话 Worktree，不在会话清理时迁移进程。
+
+流程固定为：
+
+1. 从用户明确指向的会话成果解析项目相对路径和提交。
+2. 创建该提交的服务 Worktree；在其中准备依赖和构建。
+3. 记录服务命令、参数、目录、端口、环境引用和进程身份。
+4. 启动并记录运行结果；失败反馈给执行器处理，不改写原生成 Task。
+5. 用户要求运行修改后的版本时创建对应 revision 目录，按请求重启服务；源码合并本身不自动重启。
+6. 服务停止且进程退出后清理运行目录；运行期间禁止清理。
+
+预览使用会话的固定提交，正式运行使用已交付提交，两者都走上述服务目录创建和启动链。服务运行目录允许缓存和运行数据写入，因此 commit 只标识源码基线，不宣称整个运行目录字节不可变；有需保留的运行数据时，停止服务先保留该目录，用户明确删除数据后才能清理。
+
+服务沿用现有 service identity，增加固定 commit 和项目路径绑定即可，不要求为所有办公任务增加 Application 层级。源 Task 仅记录来源，新一轮启动请求属于新的操作，旧 Task 的终态不构成拒绝原因。
+
+`.metawork-service.json` 是可读取的配置输入，不是执行前提。缺少文件时由 Planner/Executor 按用户请求确定启动规格，Runtime 持久化这些事实；目标歧义才由 Planner 追问。
+
+## 6. 办公与问答统一行为
+
+| 场景 | 工作目录 | 交付 |
 | --- | --- | --- |
-| 管理范围 | Subtask/Generation 的内部 managed workspace | Workspace 级内部版本库和 Session Worktree |
-| 产品定位 | Executor 的一种执行后端 | 所有 Workspace 写入 Session 的统一隔离方式 |
-| 主干 | 内部 Generation 或 integration workspace | 用户 Workspace 对应的内部集成主干 |
-| 默认关系 | 曾与 In-place 并存，之后被 ADR-0050 收缩为 In-place 主路径 | 写入任务统一从主干创建 Worktree |
-| 结果交付 | Candidate Commit、Publication Worker、候选目录 | Worktree 分支进入 Workspace Merge Queue |
-| 发布方式 | 可能复制或发布到 `publicTaskDirectory` | 只合并授权变更，不复制整个执行目录 |
-| 非 Git Workspace | 先导入内部 Git，再继续旧生命周期 | Workspace 创建时直接建立内部版本化层 |
-| 服务归属 | 容易沿用 Task、Generation 或旧发布目录 | 服务绑定 ApplicationRevision 和明确运行目录 |
-| 清理条件 | 容易跟随 Task 终态清理 | 合并完成且没有服务、冲突或恢复依赖后清理 |
-| 用户可见对象 | 容易出现候选工作区和发布中间态 | 用户看到 Workspace、Session、Revision 和合并状态 |
+| 代码开发、网站、安装依赖、构建 | 会话 Git Worktree | 业务变更经串行队列进入 Workspace |
+| 调研报告、方案文档、PPT、Word、Excel | 会话 Git Worktree | 文件经同一队列写回指定路径 |
+| 修改已有文档 | 会话 Git Worktree | 同一合并规则；二进制冲突交给用户 |
+| 纯阅读和普通问答 | 同一会话 Git Worktree | 没有文件变化，不提交、不合并 |
+| 启动网站 | 固定提交的服务 Git Worktree | 服务运行结果和访问地址 |
 
-旧的 `ManagedGitWorkspaceService` 可以作为 Git Worktree 后端的实现参考，但不能直接作为本方案的产品生命周期。尤其不能把旧的 `publicTaskDirectory`、自动复制整棵目录和旧 publication 恢复逻辑重新作为新任务主路径。
+用户看到的组织结构始终是 Workspace → 会话 → 成果。临时工作尚未合并时标为“未写回”；合并后链接指向 Workspace 内目标文件，不生成 `metaclaw-tasks/<task>` 交付副本。历史附件读取提交中的固定内容，不用当前路径冒充历史版本。
 
-## 4. Workspace 内部版本库
+## 7. 与旧 Worktree 的真实区别
 
-### 4.1 用户已有 Git Workspace
+隔离目录、Git 提交和三方合并确实复用了旧方案的技术思想。不能仅靠改名宣称这是完全不同的技术。区别是归属和生命周期：
 
-如果用户 Workspace 已经是 Git 仓库，MetaWork 默认不直接使用用户的当前分支、用户的提交历史或用户的远端配置。系统先读取当前 Workspace 的精确文件状态，建立自己的内部基线。
+| 维度 | 旧 managed Worktree 链路 | 本方案确定规则 |
+| --- | --- | --- |
+| 仓库归属 | Task/Generation 内部仓库 | Workspace 一个长期私有仓库 |
+| 执行目录 | Subtask 对应 Worktree | Conversation 对应一个 Worktree |
+| 并行边界 | 同 Task 的多个隔离 Subtask | 不同 Conversation 并行；同会话写者串行 |
+| 多轮 | 容易随 Task/Generation 重建 | 同会话复用；清理后从已交付主干重建 |
+| 发布顺序 | Task/Generation publication 顺序 | Workspace 级 FIFO 队列 |
+| 成果位置 | 历史路径包含任务交付副本 | 用户 Workspace 原定相对路径 |
+| 普通问答 | 旧执行链存在不同模式 | 同一 Worktree，无变化就无合并 |
+| 非 Git | 曾导入内部 Git | 仍导入 Git；这不是新能力，变化在长期仓库归属 |
+| 服务目录 | 关联 Task 和历史发布目录 | 独立固定提交服务 Worktree |
+| Kernel | 旧设计包含授权和策略决策 | 只保留 ADR-0053 的持久协调职责 |
 
-这样可以避免：
+不恢复旧的 `METACLAW_EXECUTOR_BACKEND=worktree` 开关，不重新增加 Planner 模式选择，不复活被停放的历史 publication 来运行新任务。Git 操作代码可以复用，但要按新归属重接调用链。
 
-- MetaWork 修改用户当前分支；
-- MetaWork 的内部提交污染用户提交历史；
-- 用户的未提交修改被错误地当成某个旧 Task 的基线；
-- 合并队列操作用户远端或执行 push。
+## 8. 最少持久化事实与职责
 
-### 4.2 非 Git Workspace
+只在现有领域内增加所需事实，不新增通用隔离后端框架：
 
-如果用户 Workspace 不是 Git 目录，MetaWork 在内部运行目录建立私有仓库或等价的内容寻址快照。用户目录不需要出现 `.git`，也不需要用户执行 `git init`。
+- Workspace：私有仓库位置、main commit、已交付 commit。
+- Conversation：分支、Worktree 路径、基线提交、目录生命周期状态。
+- Task：所属 Conversation、结果提交、本轮合并工作项。
+- 合并工作项：FIFO 序号、来源提交、目标提交、冲突、写回清单及恢复进度。
+- Service：serviceId、来源提交、项目相对路径、运行目录、进程和端口。
 
-内部仓库只需要记录：
+Planner 负责理解用户目标和处理歧义；Executor 负责工具循环；Runtime 负责 Git、目录、进程、交付及恢复；现有 Coordinator 负责持久化协调和状态。Kernel 不新增模式判断、工具审批和服务授权决策。UI 只展示同一 TaskView 事实，不能一处“已完成”、另一处“排队”。
 
-```text
-Workspace 当前文件树
-文件内容和路径
-基线 Revision
-每次 Session 的变更 Revision
-```
+## 9. 实施顺序与切换
 
-隔离目录的实现可以按平台能力选择：
+1. 实现私有仓库初始化、会话真实 Worktree、路径归属和固定文件范围；先不切换生产任务。
+2. 实现 Workspace 持久化 FIFO、外部变更导入、冲突交互、逐文件写回和崩溃恢复。
+3. 接通多轮会话、同会话写者串行、结果状态、历史附件和会话清理。
+4. 接通固定提交服务 Worktree，验证生成网站 → 启动 → 修改 → 重启。
+5. 完成验收后统一切换新会话，停用新任务 In-place 根目录写锁和旧 publication 主路径。
 
-1. 优先使用 Copy-on-Write 或 reflink；
-2. 不支持时使用受控目录复制；
-3. 大文件使用内容寻址对象或受控文件快照；
-4. 只复制 Planner 授权的 Workspace 范围；
-5. 目录超出大小或文件数量上限时，进入明确的用户确认或受控等待。
+切换前必须等待活动执行及写回结束；有未决工作则暂停升级，不在运行中替换 cwd。历史 Task 和旧 Worktree 停放记录继续只读展示，不能复活。已有会话第一次继续时从用户 Workspace 已交付内容创建新会话 Worktree，保留历史引用。
 
-这仍然对用户表现为 Worktree：每个 Session 有自己的工作目录、基线、变更和合并结果；底层不要求用户项目本身是 Git 项目。
+迁移期间双代码存在仅用于实施，产品不提供两种模式选择。落地同时修订 ADR-0050、ADR-0037、ADR-0025、CONTEXT 和技术总览；本次只修订设计文档，不提前改写当前运行契约。
 
-### 4.3 主干的定义
+## 10. 必须通过的验收
 
-“主干”是 MetaWork 的逻辑集成分支。它可以由真实 Git worktree 表示，也可以由内部仓库加用户 Workspace 根目录表示。用户不需要看到或操作分支名称。
+1. 空目录、非 Git 办公目录、已有 Git 项目均走同一初始化流程；用户 Git 元数据不变。
+2. 两个会话同时写不同文件，执行时间重叠，交付串行且均成功。
+3. 同一会话两轮继续编辑复用目录；合并等待期间不启动下一个写者。
+4. 普通问答有会话 Worktree，无改动不创建提交和合并项。
+5. 文本冲突、同名新增、删除对修改、二进制冲突保留双方内容，用户决策后继续。
+6. 冲突只阻塞当前 Workspace 的交付，不阻塞其他会话执行和其他 Workspace。
+7. 用户外部修改进入合并基线，交付时再次变化能检测并保留恢复材料。
+8. 服务从固定提交目录运行，会话归档清理后服务仍然可用。
+9. 未提交输入、ignored 的明确输入与交付物、依赖缓存、嵌套 Git 和链接按第 2 节规则处理。
+10. 崩溃发生在合并前、合并后、写回一半、状态提交前，恢复均不重跑 Executor、不重复交付、不误报成功。
+11. 合并队列跨进程互斥；别名和重叠 Workspace 不形成两个写回者。
+12. 会话清理后重开、历史产物下载、取消合并、放弃成果都不误删用户 Workspace。
 
-主干必须满足：
+实施完成后须补充完成日期、交付行为、验证结果和 closing commit。当前只完成设计修订，未完成这些运行验收。
 
-- 同一 Workspace 只有一个当前集成 Revision；
-- 所有合并都针对当前主干执行；
-- 合并不自动 push、fetch 或修改用户远端；
-- 合并失败时不覆盖主干；
-- 主干的每个 Revision 都可以被服务和后续 Session 精确引用。
+## 11. 公开实现参考
 
-## 5. Session Worktree 生命周期
+- [dsh-git-worktree](https://github.com/wloops/dsh-git-worktree)：借鉴会话隔离、多轮继续、串行验收写回和冲突保留。本方案不照搬其强制预览确认流程。
+- [dsh-worktrees](https://github.com/Luck9Star/dsh-worktrees)：借鉴分支隔离和合并现场保留。本方案使用持久化跨进程队列，不使用它的进程内队列。
 
-```text
-创建写入 Session
-  -> 读取 Workspace 当前主干 Revision
-  -> 创建 Session Worktree
-  -> 固定 task/session/baseRevision/worktreePath
-  -> Executor 在 Worktree 中执行
-  -> 捕获变更并生成 candidateRevision
-  -> 进入 Workspace Merge Queue
-  -> 基于最新主干尝试合并
-```
-
-Session 的多轮继续编辑复用同一个 Worktree，直到该 Session 的工作被合并、放弃或转为需要长期保留的服务 Revision。新的独立 Session 从当时的最新主干创建新的 Worktree，不通过“最近一个 succeeded Task”猜测执行目录。
-
-每个 Worktree 至少固定以下事实：
-
-```text
-workspaceId
-sessionId
-taskId
-baseRevision
-worktreePath
-candidateRevision
-targetPaths
-status
-```
-
-恢复时只使用这些持久化事实，不重新从当前 Workspace、环境变量或最近任务推导目录。
-
-## 6. Merge Queue
-
-Workspace 级 Merge Queue 是唯一写入主干的入口。
-
-### 6.1 合并规则
-
-1. 合并任务按持久化顺序串行执行；
-2. 每个任务开始合并时重新读取当前主干 Revision；
-3. 合并成功后生成新的 Workspace Revision；
-4. 不自动 rebase 到用户未授权的分支；
-5. 不 force push；
-6. 不自动选择冲突一方；
-7. 冲突现场、冲突文件和基线 Revision 必须保留；
-8. 用户解决冲突后才能继续、重试或取消合并。
-
-### 6.2 冲突处理
-
-文本文件可以使用三方合并。合并失败时保留：
-
-```text
-当前主干版本
-Session 版本
-共同基线
-冲突文件清单
-```
-
-Word、PPT、Excel、图片和其他二进制文件默认不做字节级自动合并。两个 Session 同时修改同一二进制文件时，向用户展示两个版本，由用户选择保留、另存或取消。
-
-### 6.3 持久化和恢复
-
-Merge Queue 不能只存在于进程内。它必须持久化：
-
-- queue item；
-- source Worktree；
-- base Revision；
-- current target Revision；
-- merge status；
-- conflict files；
-- user resolution action；
-- retry/cancel history。
-
-Server 重启后可以继续等待、重试或恢复冲突现场。不同 Server 进程不能同时合并同一 Workspace 主干。
-
-## 7. 办公和综合场景
-
-统一的是 Workspace 写入模型，任务内容仍然可以不同。
-
-| 任务 | 执行方式 |
-| --- | --- |
-| 代码、网站、重构 | 独立 Worktree |
-| 安装依赖、构建、运行测试 | 独立 Worktree |
-| 调研并生成报告 | 独立 Worktree 或新文件交付 |
-| 生成 PPT、Word、Excel | 独立 Worktree |
-| 修改一份明确的文档 | 仍然使用独立 Worktree，保持统一模型 |
-| 多份文档批量整理 | 独立 Worktree |
-| 纯阅读、普通问答 | 延迟物化的只读 Worktree 绑定 |
-| 只读分析 Workspace | 只读快照或受控 scratch，必要时物化 Worktree |
-
-对用户而言，报告、PPT、代码和网站都属于同一个 Workspace，只是每个 Session 在独立目录里完成，然后统一合并到 Workspace 主干。
-
-新文件通常可以无冲突合并。已有二进制办公文件的并发修改必须保留两个版本，不能因为 Git 存储成功就假设内容可以安全自动合并。
-
-## 8. 服务和 Revision
-
-服务不能只绑定 Task，也不能在 Workspace 根目录扫描最近的服务规格。
-
-建议关系如下：
-
-```text
-Workspace
-  └── Application
-        └── ApplicationRevision
-              ├── source Revision
-              ├── working directory
-              ├── service specification
-              └── ServiceInstance
-```
-
-网站生成 Session 完成后：
-
-```text
-Session A Worktree
-  -> candidateRevision
-  -> merge 到 Workspace 主干
-  -> 形成 ApplicationRevision
-  -> service-operation 指向 ApplicationRevision
-```
-
-启动服务时，系统读取明确的：
-
-```text
-applicationRevisionId
-workingDirectory
-command
-arguments
-environment references
-port
-health check
-```
-
-服务启动操作可以是一个新的 operation Task，但它引用的是 ApplicationRevision，不是把 `service_start` 重新绑定到已经 `succeeded` 的旧 Task。
-
-`.metawork-service.json` 可以作为受管服务的规格文件，但不是所有 Workspace 程序都必须拥有的文件。用户明确要求启动一个应用时，Planner 可以直接生成受控的 service specification；系统把它登记为 ServiceInstance 的版本化事实。
-
-### 8.1 Worktree 清理条件
-
-Session 完成不等于 Worktree 立即可删除。只有同时满足以下条件才能清理：
-
-- Worktree 已经成功合并或被用户明确放弃；
-- 没有未处理的合并冲突；
-- 没有未决恢复事实；
-- 没有 ServiceInstance 仍然使用该 Worktree；
-- 没有后续 Session 或 Artifact 引用它。
-
-如果服务仍然运行在 Session Worktree 中，系统必须保留它，或者先把服务切换到已合并的主干 Revision，再清理旧 Worktree。
-
-## 9. 最小运行规则
-
-本方案不再需要同时维护 `in_place`、`worktree`、`file claim`、`publication candidate` 多套 Workspace 写入路径。对新任务只保留以下规则：
-
-```text
-1. Workspace 创建时建立内部版本库
-2. 所有可能写入 Workspace 的 Session 使用独立 Worktree
-3. 不同 Worktree 可以并行执行
-4. 主干合并必须串行
-5. 冲突不自动覆盖，交给用户决策
-6. 服务绑定 ApplicationRevision，不绑定旧 Task
-7. 有服务依赖的 Worktree 不能提前清理
-8. 纯只读任务可以保持延迟物化，不进入 Workspace 合并生命周期
-```
-
-文件 Claim 不再作为主要 Workspace 并发机制。它最多可以作为未来对单文件低成本操作的优化，但不能成为网站、PPT、批量办公和依赖安装任务的基础路径。
-
-## 10. 迁移边界
-
-### P0：建立 Workspace 内部版本库
-
-- 定义 Workspace 内部 repository/integration branch；
-- 支持已有 Git 和非 Git Workspace；
-- 捕获创建时的精确基线；
-- 明确内部目录、临时目录和用户文件的清理边界；
-- 不改变现有任务执行路径。
-
-### P1：引入 Session Worktree
-
-- 新的写入 Session 从当前 Workspace Revision 创建 Worktree；
-- 执行、重试和继续编辑固定 Worktree identity；
-- 同一 Workspace 的不同 Session 可以并行；
-- 旧 In-place 新任务停止接收；
-- 不删除历史 Task 的旧 binding。
-
-### P2：引入持久化 Merge Queue
-
-- 将候选变更合并到 Workspace 主干；
-- 冲突现场可恢复；
-- 不自动覆盖用户文件；
-- 提供继续、重试、取消和人工解决入口；
-- 合并成功后生成 Workspace Revision。
-
-### P3：服务绑定 Revision
-
-- ServiceInstance 绑定 ApplicationRevision；
-- 启动、停止、重启使用 service identity；
-- 启动服务不再扫描 Workspace 选择旧 Task；
-- 有运行服务的 Worktree 延迟清理；
-- 补齐生成网站、启动网站、继续修改和重启新 Revision 的验收。
-
-### P4：关闭旧路径
-
-- 停用新任务的根 Workspace In-place 写租约；
-- 停用旧的整树复制和 `publicTaskDirectory` 主路径；
-- 历史 publication、旧 binding 和旧 artifact 继续只读可恢复；
-- 更新 ADR-0050、ADR-0037、ADR-0025、`CONTEXT.md` 和技术总览。
-
-## 11. 验收标准
-
-- 非 Git Workspace 可以创建内部基线和多个 Session Worktree；
-- 已有 Git Workspace 不修改用户分支和远端；
-- 两个 Session 可以在同一 Workspace 并行创建和修改文件；
-- 两个 Session 修改不同文件时都能顺利合并；
-- 两个 Session 修改同一文本文件时不发生静默覆盖；
-- 两个 Session 修改同一 PPT、Word 或 Excel 时保留两个版本并要求用户决策；
-- 合并队列在 Server 重启后仍可恢复；
-- 用户直接修改主干后，后续合并能检测基线变化；
-- 网站服务启动操作引用 ApplicationRevision，不引用已完成旧 Task；
-- 运行中的服务不会因 Session 结束而丢失工作目录；
-- 服务切换到新 Revision 后，旧 Worktree 才能清理；
-- 纯问答不会创建无意义的 Workspace 写入和合并记录；
-- 取消、崩溃、冲突和未决服务状态不会被当成普通成功完成。
-
-## 12. 结论
-
-本方案采用 `dsh-git-worktree` 的核心思想，但把它提升为 MetaWork 的 Workspace 级基础设施：
-
-```text
-内部版本库
-  + Session Worktree
-  + 并行执行
-  + 串行 Merge Queue
-  + 用户处理冲突
-  + Revision 绑定服务
-```
-
-它不要求用户 Workspace 是 Git 项目，也不把 MetaWork 退回到旧的 Subtask Candidate Publication 模型。对用户来说，代码、网站、调研、方案文档、PPT 和日常文件仍然属于同一个 Workspace；对系统来说，每个可写 Session 都有自己的执行现场，最终通过唯一主干合并。
+统一私有 Git、非 Git Workspace 导入、用户目录写回和服务固定提交目录是 MetaWork 本方案的具体设计，不把这些能力归因于插件已经完整实现。

@@ -626,6 +626,9 @@ export interface KernelExecutionRuntimeDeps {
   generationReplanRepo: GenerationReplanRequestRepo;
   retryWakeRepo: RetryWakeRepo;
   resourceLeaseService?: import('./resource-lease-service.js').ResourceLeaseService;
+  conversationWorktrees?: import('./conversation-worktree-service.js').ConversationWorktreeService;
+  serviceWorktrees?: import('./service-worktree-service.js').ServiceWorktreeService;
+  workspaceMergeWorker?: import('./workspace-merge-worker.js').WorkspaceMergeWorker;
   workspaceExecutionBindingRepo?: import('../storage/workspace-execution-binding-repo.js').WorkspaceExecutionBindingRepo;
   workspaceStore?: import('./workspace-store.js').WorkspaceStore;
   /**
@@ -1234,7 +1237,20 @@ export class KernelExecutionRuntime {
     taskId: string,
     generationId: string,
     workspaceIdHint?: string | null,
-  ): Promise<import('../storage/workspace-execution-binding-repo.js').WorkspaceExecutionBinding | null> {
+  ): Promise<import('../storage/workspace-execution-binding-repo.js').WorkspaceExecutionBinding | import('../workspace/workspace-git-contracts.js').ConversationExecutionBinding | null> {
+    const conversations = this.deps.conversationWorktrees;
+    if (conversations) {
+      const existing = conversations.repo.binding(taskId, generationId);
+      if (existing) return existing;
+      const legacy = this.deps.workspaceExecutionBindingRepo?.find(taskId, generationId);
+      if (legacy) throw new Error('legacy_execution_requires_replan');
+      const task = this.deps.taskRuntimeService.findTask(taskId);
+      const userRoot = await this.deps.resolveWorkspacePath?.(taskId);
+      const workspaceId = workspaceIdHint ?? task?.workspaceId;
+      if (!task?.conversationId || !workspaceId || !userRoot) throw new Error('conversation_workspace_binding_required');
+      return conversations.bind({accountId: task.accountId ?? 'local-default', workspaceId,
+        conversationId: task.conversationId, userRoot, taskId, generationId});
+    }
     const repo = this.deps.workspaceExecutionBindingRepo;
     if (!repo) return null;
     const task = this.deps.taskRuntimeService.findTask(taskId);
@@ -1410,6 +1426,7 @@ export class KernelExecutionRuntime {
               return null;
             }
             const result = this.deps.workGraphRuntimeService.apply({
+        conversationGit: Boolean(this.deps.conversationWorktrees),
               task: currentTask,
               userPrompt: currentRequest.deferredPlan?.requestText ?? currentTask.goal,
               sessionId: this.sessionId,
@@ -2486,7 +2503,7 @@ export class KernelExecutionRuntime {
         ?? `generation_${action.taskId}_1`;
       const executionBinding = await this.bindWorkspaceExecution(action.taskId, generationId);
       const executionBindingFingerprint = executionBinding
-        ? workspaceExecutionBindingFingerprint(executionBinding)
+        ? ('bindingVersion' in executionBinding ? executionBinding.bindingFingerprint : workspaceExecutionBindingFingerprint(executionBinding))
         : null;
       const sourceEvent = this.deps.kernelWorkflowStore?.findEvent?.(decision.eventId);
       const retryWake = sourceEvent?.type === 'timer_tick' && sourceEvent.wakeKind === 'retry'
@@ -2998,6 +3015,7 @@ export class KernelExecutionRuntime {
       const task = this.deps.taskRuntimeService.findTask(action.taskId);
       if (!task) throw new Error(`replan Task not found: ${action.taskId}`);
       const result = this.deps.workGraphRuntimeService.apply({
+        conversationGit: Boolean(this.deps.conversationWorktrees),
         task,
         userPrompt: input.request.userPrompt,
         sessionId: this.sessionId,
@@ -3058,7 +3076,7 @@ export class KernelExecutionRuntime {
     let request = input.request;
     const binding = await this.bindWorkspaceExecution(item.taskId, item.generationId);
     if (binding) {
-      request = { ...request, workspacePath: binding.canonicalPath };
+      request = { ...request, workspacePath: 'bindingVersion' in binding ? binding.executionRoot : binding.canonicalPath };
     }
     if (!request.workspacePath && this.deps.resolveWorkspacePath) {
       // Recovery/timer requests do not carry the conversation workspace;
@@ -3711,6 +3729,7 @@ export class KernelExecutionRuntime {
     const task = this.deps.taskRuntimeService.findTask(input.taskId);
     if (!task) throw new Error(`task not found: ${input.taskId}`);
     const graph = this.deps.workGraphRuntimeService.apply({
+        conversationGit: Boolean(this.deps.conversationWorktrees),
       task,
       userPrompt: input.request.userPrompt,
       sessionId: this.sessionId,
@@ -3987,14 +4006,108 @@ export class KernelExecutionRuntime {
     }
   }
 
+  private convergeWorkspaceDelivery(taskId:string, identity:string, resumeAuthorized=false):void {
+    let task=this.deps.taskRuntimeService.findTask(taskId);
+    const staleSystemBlock=task?.status==='needs_action' && task.stateDetail.pendingActions.length===0
+      && ['no_authorized_driver','system_anomaly'].includes(task.stateDetail.reason.code);
+    for(let step=0;step<3;step++) {
+      const before=task?.status;
+      this.reconcileTaskState(taskId,{decisionId:identity,operationKey:`${identity}:${step}`,
+        reason:'Workspace delivery facts updated',resumeAuthorized:resumeAuthorized||staleSystemBlock});
+      task=this.deps.taskRuntimeService.findTask(taskId);
+      if(before===task?.status)break;
+    }
+  }
+
+  private registerMergedWorkspace(job:import('../workspace/workspace-git-contracts.js').WorkspaceMergeJob,generationId:string):void {
+    const conversations=this.deps.conversationWorktrees!;
+    const root=conversations.repo.root(job.workspaceId)!;
+    const artifacts=this.deps.userArtifactPublication?.taskArtifactRepo;
+    if(!artifacts)return;
+    const now=new Date().toISOString();
+    for(const file of conversations.repo.files(job.jobId)) {
+      artifacts.publicFiles.invalidatePath(root.accountId,resolve(root.userRoot,file.relativePath));
+      if(!file.after) { artifacts.publicFiles.remove(root.accountId,job.taskId,file.relativePath);continue; }
+      artifacts.publicFiles.record({accountId:root.accountId,taskId:job.taskId,relativePath:file.relativePath,
+        generationId,subtaskId:null,publicationId:job.jobId,publishedPath:resolve(root.userRoot,file.relativePath),
+        contentHash:`sha256:${file.afterSha256}`,updatedAt:now});
+    }
+    for(const artifact of artifacts.listByTask(job.taskId)) {
+      if(artifact.generationId!==generationId)continue;
+      const file=conversations.repo.files(job.jobId).find(f=>f.relativePath===artifact.relativePath);
+      if(file?.after && file.afterSha256===artifact.contentHash.replace(/^sha256:/u,''))
+        artifacts.markPublished(artifact.artifactId,resolve(root.userRoot,artifact.relativePath),now);
+    }
+  }
+
+  private async finishDeliveredWorkspaceTask(taskId:string,identity:string):Promise<void> {
+    const task=this.deps.taskRuntimeService.findTask(taskId);
+    if(task?.status!=='succeeded')return;
+    const revision=this.deps.workGraphRevisionRepo.findActive(taskId)??this.deps.workGraphRevisionRepo.findLatest(taskId);
+    if(!revision?.authorizedDecisionId)return;
+    // Outbox rows must reference a real originating decision, never a synthetic observation ID.
+    await this.completeTask({taskId,decisionId:revision.authorizedDecisionId,executionId:identity,
+      request:{userPrompt:task.goal,contextTaskId:task.id,executionMode:'fresh',origin:'system'},
+      subtasks:this.deps.subtaskRepo.listByTask(taskId).filter(subtask=>subtask.generationId===revision.generationId&&subtask.status==='done'),
+      revisionCompletion:{revision:revision.revision,completionKind:'full'},finishExecution:async()=>{}});
+  }
+
+  /** Project only this durable delivery identity; never re-run business work. */
+  async onWorkspaceMergeChanged(job: import('../workspace/workspace-git-contracts.js').WorkspaceMergeJob): Promise<void> {
+    const conversations = this.deps.conversationWorktrees;
+    const current = conversations?.repo.job(job.jobId);
+    const revision = this.deps.workGraphRevisionRepo.findActive(job.taskId)
+      ?? this.deps.workGraphRevisionRepo.findLatest(job.taskId);
+    const binding = revision && conversations?.repo.binding(job.taskId, revision.generationId);
+    if (!current || !binding || binding.workspaceId !== current.workspaceId
+      || conversations?.repo.summary(job.taskId, revision!.generationId)?.jobId !== current.jobId) return;
+    let task = this.deps.taskRuntimeService.findTask(job.taskId);
+    const pending = task?.stateDetail.pendingActions ?? [];
+    const resumeAuthorized = task?.status === 'needs_action' && pending.length > 0
+      && pending.every(action => action.workspaceMerge?.jobId === current.jobId)
+      && !['conflicted', 'recovering'].includes(current.state);
+    if(current.state==='delivered') this.registerMergedWorkspace(current,revision!.generationId);
+    this.convergeWorkspaceDelivery(job.taskId,`workspace_merge:${current.jobId}:${current.rowVersion}`,resumeAuthorized);
+    if(current.state==='delivered') {
+      await this.startRequestedPublishedService(job.taskId);
+      this.convergeWorkspaceDelivery(job.taskId,`workspace_merge_service:${current.jobId}:${current.rowVersion}`,resumeAuthorized);
+      await this.finishDeliveredWorkspaceTask(job.taskId,`workspace_merge:${current.jobId}`);
+    }
+    task=this.deps.taskRuntimeService.findTask(job.taskId);
+    this.deps.callbacks.refreshRuntimeState();
+    if (task && TERMINAL_TASK_STATUSES.includes(task.status as 'succeeded')) {
+      await this.deps.onTaskTerminal?.(job.taskId);
+    }
+  }
+
   private async drainPublications(input: {
     taskId: string;
     executionId: string;
     workflow: KernelWorkflow;
   }): Promise<void> {
     while (true) {
-      const activeRevision = this.deps.workGraphRevisionRepo.findActive(input.taskId);
+      const activeRevision = this.deps.workGraphRevisionRepo.findActive(input.taskId)
+        ?? this.deps.workGraphRevisionRepo.findLatest(input.taskId);
       if (!activeRevision) return;
+      const conversations = this.deps.conversationWorktrees;
+      const binding = conversations?.repo.binding(input.taskId, activeRevision.generationId);
+      if (binding && conversations && this.deps.workspaceMergeWorker) {
+        const subtasks = this.deps.subtaskRepo.listByTask(input.taskId).filter(item=>item.graphRevision===activeRevision.revision);
+        if (!subtasks.length || !subtasks.every(item => item.status === 'done' || item.status === 'cancelled')) return;
+        const task=this.deps.taskRuntimeService.findTask(input.taskId)!;
+        const held=task.workspaceDeliveryPolicy==='await_acceptance';
+        const sealed = await conversations.sealTask(input.taskId, activeRevision.generationId,held);
+        if (sealed.changeId && !held) conversations.repo.enqueue(sealed.changeId, `task_delivery:${sealed.changeId}`);
+        else if(!sealed.hasChanges) conversations.markNoChanges(input.taskId, activeRevision.generationId);
+        await this.deps.workspaceMergeWorker.drain(binding.workspaceId);
+        this.convergeWorkspaceDelivery(input.taskId,`workspace_delivery:${input.taskId}:${activeRevision.generationId}:${conversations.repo.summary(input.taskId,activeRevision.generationId)?.rowVersion??'none'}`);
+        if (held || !sealed.hasChanges || conversations.repo.summary(input.taskId,activeRevision.generationId)?.state === 'delivered') {
+          if (!held) await this.startRequestedPublishedService(input.taskId, input.workflow);
+          this.convergeWorkspaceDelivery(input.taskId,`workspace_service_settled:${input.taskId}:${activeRevision.generationId}`);
+          await this.finishDeliveredWorkspaceTask(input.taskId,`workspace_settled:${input.taskId}:${activeRevision.generationId}`);
+        }
+        return;
+      }
       const outcomes = await this.deps.publicationWorker.drain(
         input.taskId,
         activeRevision.generationId,
@@ -4221,6 +4334,11 @@ export class KernelExecutionRuntime {
     }
     const workspaceId = await manager.resolveServiceWorkspaceId(resourceTaskId);
     if (revisionDrifted) {
+      // Preparation must finish while the old service is still available.
+      // A repair Attempt receives this diagnostic and prepares the pinned root.
+      if (await manager.prepareVersion(spec)) {
+        return { view: {serviceId: spec.serviceId, taskId: resourceTaskId, state: 'failed', url: '', message: 'service_preparation_required：新版本准备完成后才能更新服务'}, spec, workspaceId };
+      }
       if (await this.serviceProcessAlive(spec.serviceId, workspaceId)) {
         await this.manageLocalService(taskId, 'stop', spec.serviceId, undefined, false);
       }
@@ -4473,7 +4591,9 @@ export class KernelExecutionRuntime {
     const configurationRevision = this.configurationRevisionForTask(input.taskId);
     const activeRevision = this.deps.workGraphRevisionRepo.findActive(input.taskId);
     const generationId = activeRevision?.generationId ?? `generation_${input.taskId}_1`;
-    const nativeContinuation = this.buildDispatchStableFacts(configurationRevision)
+    const serviceSource=this.deps.conversationWorktrees?.repo.sourceForTask(input.taskId);
+    const serviceCheckout=serviceSource ? this.deps.conversationWorktrees!.repo.serviceWorktree(input.workspaceId,input.spec.serviceId,serviceSource.commit) : null;
+    const nativeContinuation = !serviceCheckout && this.buildDispatchStableFacts(configurationRevision)
       .nativeContinuationAgentClasses
       .includes(input.target.authorizedBinding.agentClassRef);
     return {
@@ -4504,6 +4624,7 @@ export class KernelExecutionRuntime {
         ),
         attemptPayload: {
           protocol: 'metawork:service-repair:v1',
+          ...(serviceCheckout ? {servicePreparation:{serviceWorktreeId:serviceCheckout.serviceWorktreeId,sourceCommit:serviceCheckout.sourceCommit,projectPath:serviceCheckout.projectPath}} : {}),
           serviceId: input.spec.serviceId,
           workspaceId: input.workspaceId || null,
           specificationRevision: input.failure.specificationRevision,
@@ -5364,14 +5485,36 @@ export class KernelExecutionRuntime {
     const cleanAggregate = aggregateParts(persistedSummary);
     const displayAggregate = aggregateParts(displaySummary);
 
-    const effectId = `effect_${input.decisionId}_task_completion`;
+    const graph=this.deps.workGraphRevisionRepo.findActive(input.taskId)??this.deps.workGraphRevisionRepo.findLatest(input.taskId);
+    const conversationBinding=graph&&this.deps.conversationWorktrees?.repo.binding(input.taskId,graph.generationId);
+    const effectId = conversationBinding ? `workspace_completion:${input.taskId}:${graph!.generationId}` : `effect_${input.decisionId}_task_completion`;
+    if (this.deps.effectOutboxRepo.find(effectId)) {
+      // The notification may have committed before the caller observed graph
+      // closure. Repair graph state without emitting a second interaction.
+      if (input.revisionCompletion && task.status === 'succeeded') {
+        this.deps.workGraphRevisionRepo.complete(input.taskId, input.revisionCompletion.revision,
+          new Date().toISOString(), input.revisionCompletion.completionKind);
+      }
+      return;
+    }
     const effectPayload = {
       taskId: input.taskId,
       title: task.title,
       summary: cleanAggregate,
       output: cleanAggregate,
       artifactPaths: artifacts,
-      durationMs: 0,
+      durationMs: (() => {
+        const attempts=this.deps.dispatchItemRepo.listByTask(input.taskId).filter(item=>item.generationId===graph?.generationId);
+        const durations=attempts.flatMap(item=>{
+          const runtime=this.deps.attemptRuntimeRepo?.find(item.attemptId);
+          const start=runtime?.writeStartedAt??item.launchStartedAt;
+          const end=runtime?.writeFinishedAt??item.terminalAt;
+          if(!start||!end)return [];
+          const ms=Date.parse(end)-Date.parse(start);
+          return Number.isFinite(ms)&&ms>=0?[ms]:[];
+        });
+        return durations.length?durations.reduce((a,b)=>a+b,0):null;
+      })(),
       executionMode: input.request.executionMode,
       origin: input.request.origin ?? 'user',
       recoveryTrigger: input.request.recoveryTrigger,

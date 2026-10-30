@@ -6,7 +6,7 @@ export interface TaskCompletedNotification {
   summary: string;
   output: string;
   artifactPaths: string[];
-  durationMs: number;
+  durationMs: number | null;
   executionMode: 'fresh' | 'resume-parked' | 'resume-blocked' | 'follow-up';
   origin: 'user' | 'system';
   recoveryTrigger?: TaskRecoveryTrigger;

@@ -1,3 +1,4 @@
+import { WorkspaceMergeCard } from '../components/WorkspaceMergeCard';
 import { TaskResultActions } from '../components/TaskResultActions';
 import { BlockedActions } from '../components/BlockedActions';
 import { WorkspaceChangesCard } from '../components/WorkspaceChangesCard';
@@ -448,6 +449,8 @@ const ObservedTurn = memo(function ObservedTurn({ store, conversationId, id, htt
       blockedActions={<BlockedActions ws={ws} http={http} conversationId={conversationId} taskId={turn.taskId ?? null}
         fallbackStatus={projection.status === 'blocked' || projection.status === 'failed' ? projection.status : null}
         lifecycle={details.taskLifecycle} permission={details.pendingPermission} refresh={details.refresh} />} />
+    {details.workspaceMerge && details.workspaceId && <WorkspaceMergeCard ws={ws} workspaceId={details.workspaceId}
+      summary={details.workspaceMerge} refresh={details.refresh} />}
     <TaskResultActions delivery={details.publicDelivery} workspaceChanges={details.workspaceChanges} />
     {details.workspaceChanges && (
       <WorkspaceChangesCard changes={details.workspaceChanges} delivered={details.publicDelivery?.files ?? []} />

@@ -6,18 +6,21 @@ type WorkspaceGatewayCommand = Extract<GatewayCommand, {
   kind: 'select_workspace'
     | 'list_workspace_conversations'
     | 'create_conversation'
-    | 'archive_conversation';
+    | 'archive_conversation'
+    | import('./client-protocol.js').GatewayWorkspaceMergeCommand['kind'];
 }>;
 
 export interface WorkspaceGatewayRuntimeResult {
   readonly status: 'accepted' | 'rejected';
   readonly workspaceId?: string;
+  readonly workspaceMerge?:import('./command-admission.js').CommandReceipt['workspaceMerge'];
   readonly directory?: import('./command-admission.js').CommandReceipt['directory'];
   readonly conversationId?: string;
   readonly reason?: string;
 }
 
 export interface WorkspaceGatewayRuntimeOptions {
+  readonly merge?:import('../execution/workspace-merge-worker.js').WorkspaceMergeWorker;
   readonly publish?: (
     kind: 'workspace_directory_snapshot'
       | 'workspace_conversation_upserted'
@@ -124,6 +127,26 @@ export class WorkspaceGatewayRuntime {
       }
       if ('workspaceId' in command && command.workspaceId !== activeWorkspaceId) {
         return { status: 'rejected', reason: 'workspace_not_selected' };
+      }
+      if(command.kind==='get_workspace_conflict_versions'||command.kind==='get_workspace_merge_queue'||command.kind==='get_workspace_merge_conflict'||command.kind==='resolve_workspace_merge_conflict'||command.kind==='retry_workspace_merge'||command.kind==='cancel_workspace_merge') {
+        // Authorization precedes every lookup: a bare jobId never grants access.
+        await this.directory.getWorkspace(activeWorkspaceId,context.principalId);
+        const merge=this.options.merge;if(!merge)throw new Error('workspace_merge_unavailable');
+        if(command.kind==='get_workspace_merge_queue')return {status:'accepted',workspaceId:activeWorkspaceId,workspaceMerge:{jobs:merge.repo.queue(activeWorkspaceId,command.afterSequence)}};
+        const job=merge.repo.job(command.jobId);if(!job||job.workspaceId!==activeWorkspaceId)throw new Error('merge_job_not_found');
+        if(command.kind==='get_workspace_conflict_versions') return {status:'accepted',workspaceId:activeWorkspaceId,
+          workspaceMerge:{versions:await merge.conflictVersions(job.jobId,command.conflictVersion,command.path,command.offset)}};
+        if(command.kind==='get_workspace_merge_conflict') {
+          const result=await merge.conflicts(job.jobId);const offset=command.offset??0;
+          return {status:'accepted',workspaceId:activeWorkspaceId,workspaceMerge:{job,paths:result.paths.slice(offset,offset+100),nextOffset:offset+100<result.paths.length?offset+100:null}};
+        }
+        if(!context.requestId)throw new Error('request_id_required');
+        if(command.kind==='resolve_workspace_merge_conflict') {
+          await merge.resolve({jobId:job.jobId,requestId:context.requestId,expectedConflictVersion:command.conflictVersion,expectedRowVersion:command.rowVersion,
+            actions:command.actions.map(a=>({path:a.path,action:a.action,newPath:a.newPath,content:a.contentBase64!==undefined?Buffer.from(a.contentBase64,'base64'):undefined}))});
+        } else if(command.kind==='retry_workspace_merge')await merge.retry(job.jobId,command.rowVersion);
+        else await merge.cancel(job.jobId,command.rowVersion,command.partialDecision,context.requestId);
+        return {status:'accepted',workspaceId:activeWorkspaceId,workspaceMerge:{job:merge.repo.job(job.jobId)!}};
       }
       if (command.kind === 'list_workspace_conversations') {
         const workspace = await this.directory.getWorkspace(activeWorkspaceId, context.principalId);

@@ -1,3 +1,4 @@
+import { readGitArtifact, readGitArtifactAsync } from './git-artifact-reader.js';
 import { createHash } from 'node:crypto';
 import { lstatSync, readFileSync, realpathSync } from 'node:fs';
 import { lstat, readFile } from 'node:fs/promises';
@@ -96,6 +97,12 @@ export async function resolveArtifactContent(input: {
           'artifact_version_scope_mismatch',
           `artifact version ${version.artifactVersionId} belongs to another account or Workspace`,
         );
+      }
+      if(version.gitCommit) {
+        let bytes:Buffer;
+        try { bytes=await readGitArtifactAsync(version,input.objectRoot,input.maxBytes); }
+        catch(error) { throw new ArtifactContentError('artifact_object_corrupt',String(error)); }
+        return {bytes,contentHash:hashBytes(bytes),source:'artifact_version',immutable:true};
       }
       const objectPath = join(input.objectRoot, version.contentHash);
       await assertBoundedSize(objectPath, input.maxBytes);
@@ -225,7 +232,9 @@ export function resolveArtifactContentSync(input: {
         `artifact version ${version.artifactVersionId} belongs to another account or Workspace`,
       );
     }
-    const bytes = readFileOrNullSync(join(input.objectRoot, version.contentHash));
+    let bytes:Buffer|null;
+    try { bytes=version.gitCommit?readGitArtifact(version,input.objectRoot):readFileOrNullSync(join(input.objectRoot, version.contentHash)); }
+    catch(error) { throw new ArtifactContentError('artifact_object_corrupt',String(error)); }
     if (!bytes) {
       throw new ArtifactContentError('artifact_object_missing', `artifact object is missing: ${version.contentHash}`);
     }

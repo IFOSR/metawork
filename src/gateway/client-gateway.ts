@@ -53,7 +53,8 @@ export interface ClientGatewayDeps {
       kind: 'select_workspace'
         | 'list_workspace_conversations'
         | 'create_conversation'
-        | 'archive_conversation';
+        | 'archive_conversation'
+        | import('./client-protocol.js').GatewayWorkspaceMergeCommand['kind'];
     }>,
     context: {
       accountId: string;
@@ -65,6 +66,7 @@ export interface ClientGatewayDeps {
     status: 'accepted' | 'rejected';
     workspaceId?: string;
     directory?: CommandReceipt['directory'];
+    workspaceMerge?:CommandReceipt['workspaceMerge'];
     conversationId?: string;
     reason?: string;
   }>;
@@ -442,6 +444,7 @@ export class ClientGateway {
           status: result.status,
           conversationId: result.conversationId ?? null,
           workspaceId: result.workspaceId ?? null,
+          ...(result.workspaceMerge ? {workspaceMerge:result.workspaceMerge}:{}),
           ...(result.directory ? { directory: result.directory } : {}),
           ...(result.reason ? { reason: result.reason } : {}),
         });
@@ -563,13 +566,15 @@ function isWorkspaceCommand(command: GatewayCommand): command is Extract<Gateway
   kind: 'select_workspace'
     | 'list_workspace_conversations'
     | 'create_conversation'
-    | 'archive_conversation';
+    | 'archive_conversation'
+        | import('./client-protocol.js').GatewayWorkspaceMergeCommand['kind'];
 }> {
   return [
     'select_workspace',
     'list_workspace_conversations',
     'create_conversation',
     'archive_conversation',
+    'get_workspace_conflict_versions','get_workspace_merge_queue','get_workspace_merge_conflict','resolve_workspace_merge_conflict','retry_workspace_merge','cancel_workspace_merge',
   ].includes(command.kind);
 }
 

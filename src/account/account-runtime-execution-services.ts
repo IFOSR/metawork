@@ -46,6 +46,9 @@ export interface AccountRuntimeExecutionServices {
 }
 
 export function buildAccountRuntimeExecutionServices(deps: {
+  conversationWorktrees?: import('../execution/conversation-worktree-service.js').ConversationWorktreeService;
+  serviceWorktrees?: import('../execution/service-worktree-service.js').ServiceWorktreeService;
+  workspaceMergeWorker?: import('../execution/workspace-merge-worker.js').WorkspaceMergeWorker;
   db: Database.Database;
   sessionId: string;
   getSessionId?: () => string;
@@ -123,6 +126,8 @@ export function buildAccountRuntimeExecutionServices(deps: {
     attemptExecutionBackend: deps.attemptExecutionBackend,
     resourceLeaseService,
     workspaceExecutionBindingRepo,
+    conversationWorktrees: deps.conversationWorktrees,
+    serviceWorktrees: deps.serviceWorktrees,
     permissionRepository: deps.permissionRepository,
     kernelWorkflowStore: deps.kernelWorkflowRepo,
     workspaceRepository: deps.workspaceRepository,

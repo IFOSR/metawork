@@ -1,6 +1,6 @@
 // Session facade that wires MetaClaw's task OS modules and exposes the user-facing session snapshot.
 import type Database from 'better-sqlite3';
-import { resolve } from 'node:path';
+import { join, resolve } from 'node:path';
 import type {
   Config,
   GuidanceProposal,
@@ -30,7 +30,7 @@ import { WorkspaceStore } from '../execution/workspace-store.js';
 import { canonicalizeWorkspacePath } from '../workspace/workspace-path.js';
 import { WorkspaceRetentionService } from '../execution/workspace-retention-service.js';
 import { DockerCliAttemptExecutionBackend } from '../execution/docker-cli-attempt-execution-backend.js';
-import { InPlaceAttemptExecutionBackend } from '../execution/in-place-attempt-execution-backend.js';
+import { NativeAttemptExecutionBackend } from '../execution/native-attempt-execution-backend.js';
 import type { AttemptExecutionBackend } from '../execution/attempt-execution-backend.js';
 import { ResourceLeaseService } from '../execution/resource-lease-service.js';
 import { WorkspacePublicationWorker } from '../execution/workspace-publication-worker.js';
@@ -339,8 +339,8 @@ const DEFAULT_PLANNER_TIMEOUT_MS = 180_000;
 function createDefaultAttemptExecutionBackend(): AttemptExecutionBackend {
   const backend = (process.env.METACLAW_EXECUTOR_BACKEND ?? 'in_place').trim().toLowerCase();
   if (backend === 'docker' || backend === 'container') return new DockerCliAttemptExecutionBackend();
-  if (backend === 'in_place' || backend === 'native' || backend === '') return new InPlaceAttemptExecutionBackend();
-  if (backend === 'worktree') throw new Error('METACLAW_EXECUTOR_BACKEND=worktree has been retired; use in_place');
+  if (backend === 'in_place' || backend === 'native' || backend === '') return new NativeAttemptExecutionBackend();
+  if (backend === 'worktree') throw new Error('METACLAW_EXECUTOR_BACKEND=worktree has been retired; use native');
   throw new Error(`Unsupported METACLAW_EXECUTOR_BACKEND: ${backend}`);
 }
 
@@ -461,6 +461,7 @@ export class MetaclawSession {
     this.taskLifecyclePort = deps.taskLifecyclePort ?? createSessionTaskLifecyclePort(deps.db);
     this.taskOperationResults = new TaskOperationResultRepo(deps.db);
     const taskServices = deps.accountTaskServices ?? buildAccountTaskServices({
+      nativeStateRoot: join(resolveMetaclawDir(), 'native-processes'),
       taskEngine: deps.taskEngine,
       lifecyclePort: this.taskLifecyclePort,
       agentClasses: stagedConfiguration.snapshot.config.agentClasses,

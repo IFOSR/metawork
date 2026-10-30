@@ -118,6 +118,7 @@ const REASON_TEXT: Readonly<Record<TaskReasonCode, string>> = Object.freeze({
   service_start_failed: '本地服务启动失败',
   service_health_timeout: '本地服务健康检查超时',
   delivery_failed: '文件交付失败',
+  workspace_merge_conflict: 'Workspace 合并冲突',
   execution_failed: '执行失败',
   retry_exhausted: '自动重试次数已用完',
   requirements_incomplete: '必需的工作还没全部完成',

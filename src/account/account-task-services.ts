@@ -11,7 +11,7 @@ import type { TaskLifecyclePort } from '../task/task-lifecycle-transition-port.j
 import { AgentClassService } from '../executor/agent-class-service.js';
 import type { AttemptExecutionBackend } from '../execution/attempt-execution-backend.js';
 import { DockerCliAttemptExecutionBackend } from '../execution/docker-cli-attempt-execution-backend.js';
-import { InPlaceAttemptExecutionBackend } from '../execution/in-place-attempt-execution-backend.js';
+import { NativeAttemptExecutionBackend } from '../execution/native-attempt-execution-backend.js';
 
 export interface AccountTaskServices {
   readonly taskRuntimeService: TaskRuntimeService;
@@ -26,6 +26,7 @@ export function buildAccountTaskServices(deps: {
   agentClasses?: ConstructorParameters<typeof AgentClassService>[0]['agentClasses'];
   getAgentClasses?: ConstructorParameters<typeof AgentClassService>[0]['getAgentClasses'];
   attemptExecutionBackend?: AttemptExecutionBackend;
+  nativeStateRoot?: string;
 }): AccountTaskServices {
   return {
     taskRuntimeService: new TaskRuntimeService({
@@ -37,14 +38,14 @@ export function buildAccountTaskServices(deps: {
       agentClasses: deps.agentClasses,
       getAgentClasses: deps.getAgentClasses,
     }),
-    attemptExecutionBackend: deps.attemptExecutionBackend ?? createDefaultAttemptExecutionBackend(),
+    attemptExecutionBackend: deps.attemptExecutionBackend ?? createDefaultAttemptExecutionBackend(deps.nativeStateRoot),
   };
 }
 
-function createDefaultAttemptExecutionBackend(): AttemptExecutionBackend {
+function createDefaultAttemptExecutionBackend(stateRoot?: string): AttemptExecutionBackend {
   const backend = (process.env.METACLAW_EXECUTOR_BACKEND ?? 'in_place').trim().toLowerCase();
   if (backend === 'docker' || backend === 'container') return new DockerCliAttemptExecutionBackend();
-  if (backend === 'in_place' || backend === 'native' || backend === '') return new InPlaceAttemptExecutionBackend();
-  if (backend === 'worktree') throw new Error('METACLAW_EXECUTOR_BACKEND=worktree has been retired; use in_place');
+  if (backend === 'in_place' || backend === 'native' || backend === '') return new NativeAttemptExecutionBackend(stateRoot);
+  if (backend === 'worktree') throw new Error('METACLAW_EXECUTOR_BACKEND=worktree has been retired; use native');
   throw new Error(`Unsupported METACLAW_EXECUTOR_BACKEND: ${backend}`);
 }

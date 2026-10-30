@@ -41,7 +41,21 @@ export type GatewayScope =
   | { readonly kind: 'workspace' }
   | { readonly kind: 'conversation'; readonly selection: ConversationSelection };
 
+export interface GatewayMergeConflictAction {
+  readonly path:string;readonly action:'keep_main'|'take_session'|'save_as'|'resolved_file';
+  readonly newPath?:string;readonly contentBase64?:string;
+}
+export type GatewayWorkspaceMergeCommand =
+  | {readonly kind:'get_workspace_conflict_versions';readonly workspaceId:string;readonly jobId:string;readonly conflictVersion:number;readonly path:string;readonly offset?:number}
+  | {readonly kind:'get_workspace_merge_queue';readonly workspaceId:string;readonly afterSequence?:number}
+  | {readonly kind:'get_workspace_merge_conflict';readonly workspaceId:string;readonly jobId:string;readonly offset?:number}
+  | {readonly kind:'resolve_workspace_merge_conflict';readonly workspaceId:string;readonly jobId:string;readonly conflictVersion:number;readonly rowVersion:number;readonly actions:GatewayMergeConflictAction[]}
+  | {readonly kind:'retry_workspace_merge';readonly workspaceId:string;readonly jobId:string;readonly rowVersion:number}
+  | {readonly kind:'cancel_workspace_merge';readonly workspaceId:string;readonly jobId:string;readonly rowVersion:number;readonly partialDecision?:'keep_partial'};
+export const WORKSPACE_MERGE_COMMANDS = ['get_workspace_conflict_versions','get_workspace_merge_queue','get_workspace_merge_conflict','resolve_workspace_merge_conflict','retry_workspace_merge','cancel_workspace_merge'] as const;
+
 export type GatewayCommand =
+  | GatewayWorkspaceMergeCommand
   | { readonly kind: 'get_conversation_resource'; readonly conversationId: string;
       readonly resource: 'turns' | 'activity' | 'metadata' | 'content' | 'trace' | 'locate'; readonly cursor?: string;
       readonly pendingCursor?: string; readonly hash?: string; readonly offset?: number; readonly turnId?: string; readonly beforeTurnId?: string; readonly taskId?: string }
@@ -192,6 +206,41 @@ function parseCommand(value: unknown): GatewayCommand | null {
     } else if (value.resource !== 'metadata' || !hasOnlyKeys(value, keys)) return null;
     if (value.cursor !== undefined && !isGatewayOpaqueCursor(value.cursor)) return null;
     return value as unknown as Extract<GatewayCommand, { kind: 'get_conversation_resource' }>;
+  }
+  if ((WORKSPACE_MERGE_COMMANDS as readonly string[]).includes(value.kind as string)) {
+    if(!isGatewayIdentifier(value.workspaceId))return null;
+    const natural=(n:unknown):boolean=>typeof n==='number'&&Number.isSafeInteger(n)&&n>=0;
+    const path=(p:unknown):boolean=>typeof p==='string'&&Buffer.byteLength(p,'utf8')<=4096&&p.length>0&&!p.includes('\\')&&!p.includes('\0')&&!p.startsWith('/')&&!p.split('/').some(x=>!x||x==='.'||x==='..'||x.toLowerCase()==='.git');
+    if(value.kind==='get_workspace_merge_queue') {
+      if(!hasOnlyKeys(value,['kind','workspaceId','afterSequence'])||(value.afterSequence!==undefined&&!natural(value.afterSequence)))return null;
+    } else {
+      if(!isGatewayIdentifier(value.jobId))return null;
+      if(value.kind==='get_workspace_conflict_versions') {
+        if(!hasOnlyKeys(value,['kind','workspaceId','jobId','conflictVersion','path','offset'])||!natural(value.conflictVersion)||!path(value.path)||(value.offset!==undefined&&!natural(value.offset)))return null;
+      } else if(value.kind==='get_workspace_merge_conflict') {
+        if(!hasOnlyKeys(value,['kind','workspaceId','jobId','offset'])||(value.offset!==undefined&&!natural(value.offset)))return null;
+      } else {
+        if(!natural(value.rowVersion))return null;
+        if(value.kind==='resolve_workspace_merge_conflict') {
+          if(!hasOnlyKeys(value,['kind','workspaceId','jobId','conflictVersion','rowVersion','actions'])||!natural(value.conflictVersion)
+            ||!Array.isArray(value.actions)||value.actions.length<1||value.actions.length>100)return null;
+          let bytes=0;
+          for(const action of value.actions) {
+            if(!isRecord(action)||!hasOnlyKeys(action,['path','action','newPath','contentBase64'])||!path(action.path))return null;
+            if(!['keep_main','take_session','save_as','resolved_file'].includes(action.action as string))return null;
+            if(action.action==='save_as') { if(!path(action.newPath)||action.contentBase64!==undefined)return null; }
+            else if(action.action==='resolved_file') {
+              if(action.newPath!==undefined||typeof action.contentBase64!=='string'||! /^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/u.test(action.contentBase64))return null;
+              bytes+=action.contentBase64.length;
+            } else if(action.newPath!==undefined||action.contentBase64!==undefined)return null;
+          }
+          if(bytes>MAX_GATEWAY_COMMAND_TEXT_BYTES)return null;
+        } else if(value.kind==='retry_workspace_merge') {
+          if(!hasOnlyKeys(value,['kind','workspaceId','jobId','rowVersion']))return null;
+        } else if(!hasOnlyKeys(value,['kind','workspaceId','jobId','rowVersion','partialDecision'])||(value.partialDecision!==undefined&&value.partialDecision!=='keep_partial'))return null;
+      }
+    }
+    return value as unknown as GatewayWorkspaceMergeCommand;
   }
   if (value.kind === 'select_workspace') {
     return hasOnlyKeys(value, ['kind', 'path']) && isGatewayCommandText(value.path)
@@ -346,7 +395,7 @@ function parseCommand(value: unknown): GatewayCommand | null {
 }
 
 function matchesScope(scope: GatewayScope, command: GatewayCommand): boolean {
-  const workspace = ['select_workspace', 'list_workspace_conversations', 'create_conversation', 'archive_conversation']
+  const workspace = [...WORKSPACE_MERGE_COMMANDS, 'select_workspace', 'list_workspace_conversations', 'create_conversation', 'archive_conversation']
     .includes(command.kind);
   if (workspace) return scope.kind === 'workspace';
   // 只读补全允许 Workspace scope（仅该范围合法的导航/只读候选）；

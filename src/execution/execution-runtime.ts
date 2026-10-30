@@ -508,6 +508,9 @@ export class ExecutionRuntime implements ActiveExecutionControl {
             ),
           }
         : null,
+      serviceIntent: input.input.executorInput.context.workspaceContext?.service
+        ? { requested: true, ...input.input.executorInput.context.workspaceContext.service }
+        : undefined,
     });
     return {
       taskId: input.input.taskId,

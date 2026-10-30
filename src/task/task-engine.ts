@@ -97,7 +97,7 @@ export class TaskEngine {
       publicDeliveryBaseline: input.publicDeliveryBaseline ?? {},
       publicProject: input.publicTaskDirectory !== undefined,
       startServiceAfterPublish: input.startServiceAfterPublish ?? false,
-      executionMode: input.executionMode ?? 'in_place',
+      ...(input.executionMode ? { executionMode: input.executionMode } : {}),
       ...(input.workspaceExecutionSource
         ? { workspaceExecutionSource: input.workspaceExecutionSource } : {}),
       ...(input.workspaceDeliveryPolicy

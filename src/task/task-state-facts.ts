@@ -105,6 +105,7 @@ export interface TaskRawServiceFact {
 
 export interface TaskStateRawFacts {
   readonly task: Task;
+  readonly workspaceDelivery?: {readonly summary: import('../workspace/workspace-git-contracts.js').WorkspaceMergeSummary|null;readonly noChanges:boolean;readonly held?:boolean};
   readonly activeGraph: { readonly generationId: string; readonly revision: number } | null;
   readonly subtasks: readonly TaskRawSubtaskFact[];
   readonly dispatches: readonly TaskRawDispatchFact[];
@@ -291,6 +292,12 @@ export function readTaskEvaluationInput(raw: TaskStateRawFacts): TaskEvaluationI
     });
   }
 
+  const merge = raw.workspaceDelivery?.summary;
+  if(merge && ['conflicted','recovering'].includes(merge.state))pendingActions.push({
+    actionId:`workspace_merge:${merge.jobId}:${merge.conflictVersion}`,kind:'resolve_recovery',label:merge.state==='conflicted'?'解决 Workspace 合并冲突':'重试 Workspace 写回',
+    reason:createTaskReason(merge.state==='conflicted'?'workspace_merge_conflict':'delivery_failed',merge.error??'Workspace 交付需要处理。',[`workspace_merge:${merge.jobId}`]),result:null,
+    workspaceMerge:{jobId:merge.jobId,conflictVersion:merge.conflictVersion,rowVersion:merge.rowVersion},
+  });
   const requiredWork: TaskRequiredWorkFact[] = [];
   const failureReasons: TaskReason[] = [];
   for (const requirement of raw.completionRequirements) {
@@ -324,6 +331,8 @@ export function readTaskEvaluationInput(raw: TaskStateRawFacts): TaskEvaluationI
   const serviceRepairPending = latestServiceOperation(raw)?.outcome === 'repair_pending';
   const activeOperation = raw.externalOutcomeUnknown ? null : activeDispatch
     ? { phase: 'executing' as const, reason: null }
+    : merge && ['queued','preparing','merging','writing'].includes(merge.state)
+      ? {phase: merge.state==='writing' ? 'delivering' as const : 'publishing' as const,reason:null}
     : publishing
       ? { phase: 'publishing' as const, reason: null }
       : delivering
@@ -429,6 +438,14 @@ function resolveRequiredWork(input: {
 }): { fact: TaskRequiredWorkFact; failureReason: TaskReason | null } {
   const { requirement } = input;
   const base = { key: requirement.key, kind: requirement.kind, label: requirement.label };
+  if(requirement.kind==='workspace_delivery') {
+    const delivery=input.raw.workspaceDelivery;
+    if(delivery?.summary?.state==='cancelled') return {fact:{...base,state:'failed',reason:createTaskReason('delivery_failed','Workspace 交付已取消，成果保留。')},failureReason:createTaskReason('delivery_failed','Workspace 交付已取消，成果保留。')};
+    const state=(delivery?.noChanges||delivery?.held)||delivery?.summary?.state==='delivered'?'completed'
+      :delivery?.summary && ['conflicted','recovering'].includes(delivery.summary.state)?'waiting_for_user'
+      :delivery?.summary && ['preparing','merging','writing'].includes(delivery.summary.state)?'running':'pending';
+    return {fact:{...base,state,reason:null},failureReason:null};
+  }
   if (requirement.kind === 'service') {
     const service = input.raw.service;
     // Service operations are keyed per source Attempt, revision and repair

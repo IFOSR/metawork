@@ -59,7 +59,7 @@ export interface GatewayTaskViewSnapshot {
   readonly publicDelivery?: {
     workspace: string;
     taskDirectory: string | null;
-    mode: 'in_place';
+    mode: 'in_place' | 'worktree';
     /** Admission fact that authorized the mode. */
     modeSource: 'explicit_user' | 'planner' | 'fallback' | 'kernel_safety' | null;
     deliveryPolicy: 'none' | 'auto_publish' | 'await_acceptance' | null;
@@ -71,6 +71,8 @@ export interface GatewayTaskViewSnapshot {
     stateLabel: string;
   } | null;
   /** Latest observed round changes (bounded); never a completion certification. */
+  readonly workspaceId?: string | null;
+  readonly workspaceMerge?: import('../workspace/workspace-git-contracts.js').WorkspaceMergeSummary | null;
   readonly workspaceChanges?: {
     recordId: string;
     coverage: 'complete' | 'partial' | 'unavailable';

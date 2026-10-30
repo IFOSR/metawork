@@ -144,6 +144,7 @@ export interface PlannerProcessSupervisorDeps {
   authorizedWorkspace?: string;
   /** Conversation-scoped Workspace authority. */
   resolveAuthorizedWorkspace?: (conversationId: string) => string | Promise<string | null> | null;
+  beginWorkspaceObservation?: (conversationId: string) => Promise<{release(): Promise<void>}>;
   envFile?: string;
   sessionDir?: string;
   args?: string[];
@@ -299,17 +300,20 @@ export class PlannerProcessSupervisor implements PlannerProcessController {
     this.sessionQueues.set(sessionId, tail);
     await previous.catch(() => undefined);
 
+    let observation: {release(): Promise<void>} | undefined;
     try {
       this.assertSessionOpen(sessionId);
       if (!allowsProduction(this.deps.productionAuthorization?.())) throw new Error('请先在 Web / Desktop 登录 MetaWork 官方账号并核验权益。');
+      observation = await this.deps.beginWorkspaceObservation?.(input.context.request.conversationId ?? sessionId);
       return await this.runRpc(input.prompt, {
         ...input.context,
         request: { ...input.context.request, sessionId: input.sessionId },
       }, input.purpose, input.cwd, input.onProgress, input.onUsage);
     } finally {
-      release();
-      if (this.sessionQueues.get(sessionId) === tail) {
-        this.sessionQueues.delete(sessionId);
+      try { await observation?.release(); }
+      finally {
+        release();
+        if (this.sessionQueues.get(sessionId) === tail) this.sessionQueues.delete(sessionId);
       }
     }
   }

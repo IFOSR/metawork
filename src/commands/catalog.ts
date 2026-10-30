@@ -793,18 +793,6 @@ export class CommandCatalog {
     };
   }
 
-  private findGroup(path: string[]): CommandGroup | null {
-    let nodes = this.roots;
-    let group: CommandGroup | null = null;
-    for (const segment of path) {
-      const node = nodes.find(candidate => candidate.name === segment);
-      if (!node || node.kind !== 'group') return null;
-      group = node;
-      nodes = node.children;
-    }
-    return group;
-  }
-
   private commandEntries(): CommandEntry[] {
     const entries: CommandEntry[] = [];
     const visit = (

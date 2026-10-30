@@ -88,7 +88,7 @@ export class ConversationInputMailbox {
   private readonly maxQueueSize: number;
   private execute: ConversationInputMailboxDeps['execute'];
 
-  constructor(private readonly deps: ConversationInputMailboxDeps) {
+  constructor(deps: ConversationInputMailboxDeps) {
     this.maxQueueSize = deps.maxQueueSize ?? DEFAULT_MAX_QUEUE_SIZE;
     this.execute = deps.execute;
   }

@@ -1,13 +1,14 @@
 import { resolveSafeResult, type PendingResultIdentity } from '../task/safe-result-identity.js';
 import { readPendingTaskResult } from '../storage/pending-task-result.js';
 import { ExecutorProbeError } from './work-unit-claim-service.js';
+import { partitionCovers } from '../resource/partition.js';
 import { workspaceRootClaim } from '../resource/workspace-claim.js';
 import { buildWorkspaceChangeRecord } from './workspace-change-recorder.js';
 import { WorkspaceChangeRecordRepo } from '../storage/workspace-change-record-repo.js';
 import { TaskEventRepo } from '../storage/task-event-repo.js';
 import { createHash } from 'node:crypto';
 import { canonicalizeWorkspacePath, isWithin, isWorkspaceRelativePath } from '../workspace/workspace-path.js';
-import { basename, extname, join, relative, resolve, sep } from 'node:path';
+import { basename, extname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { chmod, copyFile, lstat, mkdir } from 'node:fs/promises';
 import { mkdtempSync, readFileSync, rmSync, statSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -37,6 +38,7 @@ import type { ExecutionMode } from './types.js';
 import type { WorkspaceExecutionBindingRepo } from '../storage/workspace-execution-binding-repo.js';
 import {
   executionContextFromBinding,
+  executionContextFromConversation,
   workspaceExecutionBindingFingerprint,
 } from './execution-context.js';
 import { InPlaceWriteUncertaintyError } from './in-place-uncertainty.js';
@@ -181,6 +183,8 @@ export interface SubtaskAttemptRunnerDeps {
   attemptExecutionBackend: AttemptExecutionBackend;
   resourceLeaseService: ResourceLeaseService;
   /** Immutable per-generation Workspace facts; absent only in focused tests. */
+  conversationWorktrees?: import('./conversation-worktree-service.js').ConversationWorktreeService;
+  serviceWorktrees?: import('./service-worktree-service.js').ServiceWorktreeService;
   workspaceExecutionBindingRepo?: WorkspaceExecutionBindingRepo;
   /** `<objectsPath>/artifacts`: content-addressed store for fixed ArtifactVersions. */
   artifactObjectRoot?: string;
@@ -331,7 +335,15 @@ export class SubtaskAttemptRunner {
     }
     const sourceRuntime = this.attemptRuntimeRepo.find(pair.resultOwnerAttemptId);
     const subtask = this.deps.subtaskRepo.findById(expected.subtaskId)!;
-    const inPlace = this.deps.taskRuntimeService.findTask(expected.taskId)?.executionMode === 'in_place';
+    const acceptedTask = this.deps.taskRuntimeService.findTask(expected.taskId);
+    const acceptedBinding = this.deps.conversationWorktrees?.repo.binding(expected.taskId, expected.generationId) ?? null;
+    // Historical Tasks have no execution_mode. They were always authored
+    // directly in the Workspace; retain that interpretation for acceptance,
+    // while a conversation binding selects the immutable Git path.
+    const acceptedMode = acceptedTask?.executionMode as string | undefined;
+    const inPlace = !acceptedBinding
+      && acceptedMode !== 'conversation_git'
+      && acceptedMode !== 'service_git';
     let rootPath: string;
     let delta = parseWorkspaceDelta(sourceRuntime?.workspaceDelta);
     if (inPlace) {
@@ -497,16 +509,16 @@ export class SubtaskAttemptRunner {
         `attempt ${attemptId} has no workspace source: dispatch payload is missing its workspacePath`,
       );
     }
-    const subtask = this.deps.subtaskRepo.findById(input.subtaskId);
+    const originalSubtask = this.deps.subtaskRepo.findById(input.subtaskId);
     const attemptKind = dispatch.attemptKind;
     const sourceAttemptId = dispatch.sourceAttemptId;
     const expectedStatus = attemptKind === 'primary' ? 'ready' : 'awaiting_decision';
     if (
       !task
       || !['running', 'queued', 'needs_action'].includes(task.status)
-      || !subtask
-      || subtask.taskId !== input.taskId
-      || subtask.status !== expectedStatus
+      || !originalSubtask
+      || originalSubtask.taskId !== input.taskId
+      || originalSubtask.status !== expectedStatus
     ) {
       return {
         outcome: 'cancelled_or_stale',
@@ -514,7 +526,17 @@ export class SubtaskAttemptRunner {
         reason: `Task or ${expectedStatus} Subtask no longer matches the authorized ${attemptKind} attempt`,
       };
     }
-    const readOnlyExecution = Boolean(
+    const conversationBinding = this.deps.conversationWorktrees?.repo.binding(input.taskId, originalSubtask.generationId) ?? null;
+    const serviceRepair = dispatch.attemptPayload?.protocol === 'metawork:service-repair:v1'
+      ? dispatch.attemptPayload
+      : null;
+    const servicePreparation = serviceRepair?.servicePreparation ?? null;
+    const subtask = servicePreparation
+      ? {...originalSubtask, deliveryKind: 'report' as const, fileOutputs: [], acceptance: [],
+        goal: `Prepare service ${serviceRepair!.serviceId}. Install dependencies and build required runtime outputs in the assigned service worktree. Keep tracked source files unchanged. Do not repeat the original task or its handoffs. Report preparation results.`}
+      : originalSubtask;
+    if (this.deps.conversationWorktrees && !conversationBinding) throw new Error('legacy_execution_requires_replan');
+    const readOnlyExecution = !conversationBinding && Boolean(
       task.workspaceIntent?.operation === 'read_only'
       && subtask.deliveryKind === 'report'
       && (subtask.fileOutputs?.length ?? 0) === 0,
@@ -523,7 +545,7 @@ export class SubtaskAttemptRunner {
     // It must use the canonical Workspace as cwd while keeping the Workspace
     // itself read-only. Treating it as `read_only` removes the shell tool and
     // turns an explicit run request into an uncertified report.
-    const commandOnlyExecution = Boolean(
+    const commandOnlyExecution = !conversationBinding && Boolean(
       task.workspaceIntent?.operation === 'run_in_target'
       && subtask.deliveryKind === 'report'
       && (subtask.fileOutputs?.length ?? 0) === 0,
@@ -560,7 +582,8 @@ export class SubtaskAttemptRunner {
       input.taskId,
       subtask.generationId,
     ) ?? null;
-    if (workspaceBinding
+    if (conversationBinding && dispatch.executionBindingFingerprint !== conversationBinding.bindingFingerprint) return {outcome: 'cancelled_or_stale', attemptId, reason: 'conversation binding fingerprint mismatch'};
+    if (!conversationBinding && workspaceBinding
       && dispatch.executionBindingFingerprint
         !== workspaceExecutionBindingFingerprint(workspaceBinding)) {
       return {
@@ -575,7 +598,7 @@ export class SubtaskAttemptRunner {
     // and working directory. When the Runtime is configured with a binding
     // repository, a missing binding fails closed instead of falling back to the
     // current Task row or to the ambient source root.
-    if (!workspaceBinding && this.deps.workspaceExecutionBindingRepo && !nonWritingExecution) {
+    if (!conversationBinding && !workspaceBinding && this.deps.workspaceExecutionBindingRepo && !nonWritingExecution) {
       throw new Error(
         `attempt ${attemptId} has no durable Workspace binding for ${input.taskId}/${subtask.generationId}`,
       );
@@ -603,7 +626,22 @@ export class SubtaskAttemptRunner {
     if (resolvedBinding.executionMode === 'worktree') {
       throw new Error(`attempt ${attemptId} targets a retired Worktree binding`);
     }
-    const executionContext = executionContextFromBinding({
+    if(conversationBinding)await this.deps.conversationWorktrees!.validateBinding(conversationBinding);
+    const serviceCheckout = servicePreparation
+      ? await this.deps.serviceWorktrees?.resolvePreparation(input.taskId, serviceRepair!.serviceId, servicePreparation)
+      : null;
+    if (servicePreparation && !serviceCheckout) throw new Error('service_worktree_runtime_unavailable');
+    const executionContext = serviceCheckout && conversationBinding
+      ? {
+          ...executionContextFromConversation({binding:conversationBinding,
+            subtaskId:subtask.id,attemptId,configurationRevision:dispatch.configurationRevision}),
+          executionMode: 'service_git' as const,
+          authorizedWorkingDirectory: serviceCheckout.rootPath,
+          conversation: undefined,
+          service: {serviceWorktreeId:serviceCheckout.serviceWorktreeId,sourceCommit:serviceCheckout.sourceCommit,projectPath:serviceCheckout.projectPath},
+        }
+      : conversationBinding ? executionContextFromConversation({binding:conversationBinding,
+      subtaskId:subtask.id,attemptId,configurationRevision:dispatch.configurationRevision}) : executionContextFromBinding({
       binding: resolvedBinding,
       taskId: input.taskId,
       generationId: subtask.generationId,
@@ -619,8 +657,10 @@ export class SubtaskAttemptRunner {
     if (attemptKind === 'merge_repair') {
       throw new Error('merge-repair Worktree attempts are retired; re-plan the edit in the target Workspace');
     }
+    const conversationExecution = Boolean(conversationBinding && !serviceCheckout);
+    const serviceExecution = Boolean(serviceCheckout);
     const inPlaceExecution = !nonWritingExecution;
-    const directCompletion = inPlaceExecution || nonWritingExecution;
+    const directCompletion = conversationExecution || serviceExecution || inPlaceExecution || nonWritingExecution;
     if (inPlaceExecution && !workspaceId) {
       throw new Error(`in-place attempt requires a Workspace identity: ${task.id}`);
     }
@@ -628,7 +668,7 @@ export class SubtaskAttemptRunner {
     // claim, so it must be built from `realpath`, not from the raw source root or
     // the Workspace id. Two Workspace records that alias or nest the same
     // directory therefore conflict instead of writing in parallel.
-    const authorizedSourceRoot = executionContext.canonicalWorkspacePath;
+    const authorizedSourceRoot = conversationExecution || serviceExecution ? executionContext.authorizedWorkingDirectory : executionContext.canonicalWorkspacePath;
     const inPlaceCanonicalRoot = inPlaceExecution
       ? (await canonicalizeWorkspacePath(authorizedSourceRoot)).canonicalPath
       : null;
@@ -672,7 +712,13 @@ export class SubtaskAttemptRunner {
     if (!claim) return { outcome: 'capacity_unavailable', attemptId, agentClassName };
 
     const leaseToken = `attempt_lease_${randomUUID()}`;
-    const claims = inPlaceExecution
+    const claims = conversationExecution
+      ? [...input.defaultResourceGrant.filter(grant=>!partitionCovers(workspaceRootClaim(conversationBinding!.userRoot).partition,grant.partition)
+        && !partitionCovers(grant.partition,workspaceRootClaim(conversationBinding!.userRoot).partition)),workspaceRootClaim(conversationBinding!.executionRoot, 'write')]
+      : serviceExecution
+      ? [...input.defaultResourceGrant.filter(grant=>!partitionCovers(workspaceRootClaim(conversationBinding!.userRoot).partition,grant.partition)
+        && !partitionCovers(grant.partition,workspaceRootClaim(conversationBinding!.userRoot).partition)),workspaceRootClaim(serviceCheckout!.rootPath, 'write')]
+      : inPlaceExecution
       ? [...input.defaultResourceGrant, workspaceRootClaim(inPlaceCanonicalRoot!, 'write')]
       : input.defaultResourceGrant;
     const resourceClaim = this.deps.resourceLeaseService.claim({
@@ -694,6 +740,10 @@ export class SubtaskAttemptRunner {
       };
     }
 
+    if (conversationExecution && !this.deps.conversationWorktrees!.repo.claimConversation(conversationBinding!.conversationId, task.id, leaseToken)) {
+      this.deps.resourceLeaseService.release(attemptId, leaseToken); claim.release();
+      return {outcome: 'partition_conflict', attemptId, claims, conflictingLeaseIds: []};
+    }
     const startedAt = new Date().toISOString();
     let rawResponse = '';
     const rawResultWriter = this.resultObjectRepo.createWriter({
@@ -738,7 +788,7 @@ export class SubtaskAttemptRunner {
     let finalCheckpointReason: 'success' | 'failure' | 'cancelled' = 'failure';
     let executionDiagnostics: Record<string, unknown> | undefined;
     let declaredTargetPaths: string[] = [];
-    let observationRoot = executionContext.canonicalWorkspacePath;
+    let observationRoot = executionContext.executionMode === 'service_git' ? executionContext.authorizedWorkingDirectory : executionContext.canonicalWorkspacePath;
     const heartbeat = setInterval(() => {
       claim.heartbeat();
       this.deps.resourceLeaseService.heartbeat(attemptId, leaseToken);
@@ -776,7 +826,9 @@ export class SubtaskAttemptRunner {
         generationId: subtask.generationId,
         subtaskId: subtask.id,
       };
-      if (nonWritingExecution) {
+      if (conversationExecution || serviceExecution) {
+        workspace = await this.deps.workspaceStore.bindConversationWorkspace(workspaceIdentity, executionContext.authorizedWorkingDirectory, attemptId);
+      } else if (nonWritingExecution) {
         workspace = await this.deps.workspaceStore.bindReadOnlyWorkspace(
           workspaceIdentity,
           attemptId,
@@ -795,13 +847,10 @@ export class SubtaskAttemptRunner {
       // The authorized working directory is a hard invariant, not a hint: an
       // Attempt whose real directory falls outside it must not run.
       if (inPlaceExecution) {
-        if (workspace.filesPath !== executionContext.canonicalWorkspacePath) {
+        if (workspace.filesPath !== executionContext.authorizedWorkingDirectory) {
           throw new Error('in-place working directory does not match its authorized Workspace');
         }
       }
-      const serviceRepair = dispatch.attemptPayload?.protocol === 'metawork:service-repair:v1'
-        ? dispatch.attemptPayload
-        : null;
       if (serviceRepair) {
         // The Kernel authorized exactly one repair round; the Attempt must not
         // run with a payload whose ordinal or service identity changed.
@@ -852,7 +901,7 @@ export class SubtaskAttemptRunner {
         taskId: task.id,
         generationId: subtask.generationId,
         subtaskId: subtask.id,
-        kind: workspace.kind,
+        kind: conversationBinding ? 'git' : workspace.kind,
         rootUri: pathToFileURL(workspace.rootPath).href,
         baseline: gitWorkspace ? {
           sourceCommit: gitWorkspace.sourceCommit,
@@ -910,7 +959,9 @@ export class SubtaskAttemptRunner {
       // Generation binding. The Executor context must receive those paths
       // resolved against the actual execution root; passing the whole root as
       // the only target silently widened the model's declared scope.
-      declaredTargetPaths = task.workspaceTargetPaths
+      declaredTargetPaths = serviceExecution
+        ? []
+        : task.workspaceTargetPaths
         ?? workspaceBinding?.targetPaths
         ?? [];
       const executorTargetPaths = readOnlyExecution
@@ -950,7 +1001,7 @@ export class SubtaskAttemptRunner {
             })
           : null
       ) ?? currentWorkspaceBaseline;
-      const recoveryMode: KernelRecoveryMode = dispatch.recoveryMode === 'native_session' && !sourceRuntime?.continuationToken
+      const recoveryMode: KernelRecoveryMode = serviceExecution ? 'recovery_packet' : dispatch.recoveryMode === 'native_session' && !sourceRuntime?.continuationToken
         ? 'recovery_packet'
         : dispatch.recoveryMode;
       this.attemptRuntimeRepo.start({
@@ -987,7 +1038,16 @@ export class SubtaskAttemptRunner {
           workingDirectory: workspace.filesPath,
           targetPaths: executorTargetPaths,
           ...(workspaceId ? { workspaceId } : {}),
-          executionMode: inPlaceExecution || nonWritingExecution ? 'in_place' : 'worktree',
+        executionMode: serviceExecution ? 'service_git' : conversationExecution ? 'conversation_git' : inPlaceExecution || nonWritingExecution ? 'in_place' : 'worktree',
+          ...(serviceExecution && serviceCheckout ? { service: {
+            serviceId: serviceRepair?.serviceId,
+            sourceTaskId: serviceCheckout.sourceTaskId,
+            operationTaskId: task.id,
+            sourceCommit: serviceCheckout.sourceCommit,
+            serviceWorktreeId: serviceCheckout.serviceWorktreeId,
+            projectPath: serviceCheckout.projectPath,
+            specificationRevision: serviceRepair?.specificationRevision ?? null,
+          } } : {}),
           // This is a Runtime filesystem/prompt boundary. Executor/Harness
           // chooses its tool registry independently; in particular, `read`
           // does not mean that a normal Attempt loses its shell tool.
@@ -1004,7 +1064,14 @@ export class SubtaskAttemptRunner {
         },
         inputFilesPath: inputsPath,
         evidenceToolsAvailable,
-        currentSubtaskOverride: mergeRepair ? {
+        servicePreparation: serviceExecution,
+        currentSubtaskOverride: serviceExecution ? {
+          title: `Prepare service ${serviceRepair!.serviceId}`,
+          goal: `Prepare the service worktree at ${serviceCheckout!.rootPath}${serviceCheckout!.projectPath ? `/${serviceCheckout!.projectPath}` : ''} for source commit ${serviceCheckout!.sourceCommit}. Install dependencies and build runtime outputs as required by the existing project. Keep every tracked source file unchanged. Do not edit or generate deliverables for the original task. Report exact commands and results.`,
+          deliveryKind: 'report',
+          fileOutputs: [],
+          acceptance: [],
+        } : mergeRepair ? {
           title: `Repair merge conflicts for ${subtask.title}`,
           goal: buildMergeRepairGoal(
             subtask.goal,
@@ -1180,7 +1247,7 @@ export class SubtaskAttemptRunner {
           },
           recovery: {
             mode: recoveryMode,
-            continuationToken: sourceRuntime?.continuationToken ?? null,
+            continuationToken: serviceExecution ? null : sourceRuntime?.continuationToken ?? null,
             onContinuationToken: token => this.attemptRuntimeRepo.recordContinuationToken(
               attemptId, token, new Date().toISOString(),
             ),
@@ -1475,7 +1542,7 @@ export class SubtaskAttemptRunner {
         };
       }
 
-      const outgoingHandoffs = allSubtasks.flatMap(candidate => {
+      const outgoingHandoffs = serviceExecution ? [] : allSubtasks.flatMap(candidate => {
         const dependency = candidate.dependencies.find(item => item.fromSubtaskId === subtask.id);
         return dependency ? [{ toSubtaskId: candidate.id, requiredItems: dependency.requiredItems }] : [];
       });
@@ -1600,6 +1667,18 @@ export class SubtaskAttemptRunner {
       const completedAt = new Date().toISOString();
       // An in-place Attempt has no candidate commit: the deliverable already
       // lives in the user's Workspace and lands directly in the Subtask.
+      if (serviceExecution) await this.deps.serviceWorktrees!.markPrepared(serviceCheckout!);
+      const conversationCommit = conversationExecution
+        ? await this.deps.conversationWorktrees!.sealAttempt(conversationBinding!, attemptId, [...completion.normalizedArtifacts,...completedEnvelope.handoffs.flatMap(h=>h.items.flatMap(item=>item.type==='text'?[]:item.paths))].map(path=>isAbsolute(path)?relative(conversationBinding!.executionRoot,path):path))
+        : null;
+      const fixedArtifacts = conversationCommit && conversationBinding && this.deps.userArtifactPublication
+        ? await this.deps.userArtifactPublication.prepareGitArtifacts({
+          git:this.deps.conversationWorktrees!.git,repositoryPath:this.deps.conversationWorktrees!.repo.root(conversationBinding.workspaceId)!.repositoryPath,
+          commit:conversationCommit.commit,accountId:this.deps.accountId??'local-default',workspaceId:conversationBinding.workspaceId,
+          taskId:task.id,attemptId,generationId:subtask.generationId,subtaskId:subtask.id,
+          relativePaths:[...completion.normalizedArtifacts,...completedEnvelope.handoffs.flatMap(h=>h.items.flatMap(item=>item.type==='text'?[]:item.paths))]
+            .map(path=>isAbsolute(path)?relative(conversationBinding!.executionRoot,path):path),
+        }):null;
       const managedCommit = directCompletion ? null : await this.managedGitWorkspace.commit(
         gitWorkspace!,
         `feat: capture ${subtask.id} result`,
@@ -1612,7 +1691,7 @@ export class SubtaskAttemptRunner {
         handoffs: completedEnvelope.handoffs,
         completionSchemaVersion: 4,
       };
-      if (inPlaceExecution
+      if (!conversationBinding && inPlaceExecution
         && this.deps.userArtifactPublication
         && typeof this.deps.userArtifactPublication.registerLiveWorkspaceReferences === 'function'
         && workspace
@@ -1637,11 +1716,20 @@ export class SubtaskAttemptRunner {
       // A completion that owes an outgoing edge must be able to hand its result
       // downstream. Failing here keeps the Subtask out of `done` instead of
       // stranding the dependent node with `missing_handoff` forever.
-      const edgeHandoffInput = directCompletion
+      const edgeHandoffInput = directCompletion && !serviceExecution
         ? {
             generationId: subtask.generationId,
             completionSchemaVersion: 4 as const,
             declaredHandoffs: completedEnvelope.handoffs,
+            ...(fixedArtifacts && conversationBinding ? {
+              artifactVersions: Object.fromEntries(completedEnvelope.handoffs.flatMap(h => h.items.flatMap(item =>
+                item.type === 'text' ? [] : item.paths.map(path => {
+                  const relativePath = isAbsolute(path) ? relative(conversationBinding.executionRoot, path) : path;
+                  const version = fixedArtifacts.versions.find(v => v.relativePath === relativePath);
+                  if (!version) throw new Error(`handoff_artifact_version_missing:${path}`);
+                  return [path, version.artifactVersionId];
+                })))),
+            } : {}),
             safeProjection: safeProjectionForEdgeHandoffs(
               this.resultObjectRepo,
               resultObjects.safeProjectionId,
@@ -1657,6 +1745,7 @@ export class SubtaskAttemptRunner {
         );
       }
       const landing = this.terminalService.land({
+        commitFacts:fixedArtifacts?.commit,
         receipt: buildReceipt({
           attemptId,
           executionId: input.executionId,
@@ -1675,7 +1764,7 @@ export class SubtaskAttemptRunner {
         expectedSubtaskStatus: 'running',
         nextSubtaskStatus: 'awaiting_integration',
         subtaskError: null,
-        ...(directCompletion ? {
+        ...(directCompletion && !serviceExecution ? {
           subtaskResult: safeBody ?? '',
           subtaskArtifacts: completion.normalizedArtifacts,
           subtaskVerification: {
@@ -1733,7 +1822,7 @@ export class SubtaskAttemptRunner {
           taskId: task.id,
           generationId: subtask.generationId,
           subtaskId: subtask.id,
-          kind: inPlaceExecution ? 'in_place' : 'git',
+          kind: conversationBinding ? 'git' : inPlaceExecution ? 'in_place' : 'git',
           rootUri: pathToFileURL(workspace.rootPath).href,
           baseline: gitWorkspace ? {
             sourceCommit: gitWorkspace.sourceCommit,
@@ -1742,7 +1831,7 @@ export class SubtaskAttemptRunner {
           } : {},
           managedRepositoryUri: gitWorkspace ? pathToFileURL(gitWorkspace.repositoryPath).href : null,
           managedBranch: managedCommit?.branch ?? null,
-          headCommit: managedCommit?.commit ?? null,
+          headCommit: conversationCommit?.commit ?? managedCommit?.commit ?? null,
           currentCheckpointId: null,
           status: 'active',
           cleanupAfter: null,
@@ -1916,10 +2005,18 @@ export class SubtaskAttemptRunner {
       resultReferenceCapability?.revoke();
       await evidenceToolServer?.close();
       await capabilityToolServer?.close();
-      if (this.hasSealedTerminal(attemptId)) {
+      let workspaceSealed = true;
+      if (conversationExecution && this.hasSealedTerminal(attemptId) && this.deps.conversationWorktrees!.repo.operationRecord(`seal_${attemptId}`)?.state !== 'applied') {
+        try { await this.deps.conversationWorktrees!.sealAttempt(conversationBinding!, attemptId); }
+        catch { workspaceSealed = false; }
+      }
+      if (this.hasSealedTerminal(attemptId) && workspaceSealed) {
+        if (conversationExecution) this.deps.conversationWorktrees!.repo.releaseConversation(conversationBinding!.conversationId, leaseToken);
         this.deps.resourceLeaseService.release(attemptId, leaseToken);
         claim.release();
-        if (workspace && (inPlaceExecution || nonWritingExecution)) {
+        if (workspace && (conversationExecution || serviceExecution)) {
+          await this.deps.workspaceStore.removeConversationScratch(workspace,executionContext.authorizedWorkingDirectory);
+        } else if (workspace && (inPlaceExecution || nonWritingExecution)) {
           // Inputs, handoffs and result staging belong to this Attempt, not to
           // the user's Workspace. Once the terminal receipt is sealed they no
           // longer participate in recovery and can be retired safely. An
@@ -2083,7 +2180,14 @@ export class SubtaskAttemptRunner {
         subtask.generationId,
         subtask.id,
       );
-      const correctionInPlace = task.executionMode === 'in_place';
+      const correctionConversationBinding = this.deps.conversationWorktrees?.repo.binding(
+        task.id,
+        subtask.generationId,
+      ) ?? null;
+      const correctionMode = task.executionMode as string | undefined;
+      const correctionInPlace = !correctionConversationBinding
+        && correctionMode !== 'conversation_git'
+        && correctionMode !== 'service_git';
       // An in-place correction validates against the real Workspace: the private
       // `files/` directory only exists for managed worktrees.
       const correctionBinding = this.deps.workspaceExecutionBindingRepo?.find(

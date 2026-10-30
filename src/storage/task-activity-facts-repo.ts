@@ -1,3 +1,4 @@
+import { WorkspaceGitRepo } from './workspace-git-repo.js';
 import { deriveRecoverySafety } from '../routing/types.js';
 import { readPendingTaskResult } from './pending-task-result.js';
 import type Database from 'better-sqlite3';
@@ -44,7 +45,7 @@ export class SqliteTaskActivityFacts implements TaskActivityFactsReader {
     const expectedResult = readPendingTaskResult(this.db, task.id);
     const capabilities = expectedResult ? this.db.prepare('SELECT required_capabilities_json FROM subtasks WHERE id = ?').get(expectedResult.subtaskId) as { required_capabilities_json: string } | undefined : undefined;
     const retrySafe = capabilities && deriveRecoverySafety(JSON.parse(capabilities.required_capabilities_json)) !== 'external_non_idempotent';
-    return { pendingDecision: expectedResult ? { owner: 'user', reason: 'uncertified_result',
+    return { workspaceMerge:new WorkspaceGitRepo(this.db).summary(task.id, (this.db.prepare("SELECT generation_id FROM work_graph_revisions WHERE task_id=? ORDER BY revision DESC LIMIT 1").get(task.id) as {generation_id:string}|undefined)?.generation_id),pendingDecision: expectedResult ? { owner: 'user', reason: 'uncertified_result',
       resultId: expectedResult.resultId, attemptId: expectedResult.attemptId, expectedResult,
       actions: retrySafe ? ['accept_result', 'retry_attempt'] : ['accept_result'] } : null, task, pendingPermission, capacityWaiting, deliveryState, serviceState, dispatches: dispatch ? [dispatch] : [], replanJobs: replan ? [replan] : [],
       uncertainApplications: recovery ? [recovery] : [], publications: publication ? [publication] : [],

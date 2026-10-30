@@ -19,7 +19,6 @@ import { TaskSearchIndexRepo } from '../storage/task-search-index-repo.js';
 import {
   formatBlockedTaskRecoveryAction,
   formatBlockedTaskNextStep,
-  formatBlockedTaskReason,
   isUnknownTaskBlocker,
 } from '../task/task-blocker-guidance.js';
 
@@ -155,9 +154,6 @@ function buildRecoveryAction(task: {
 
 export async function listTasks(args: ResolvedCommandArgs, context: CommandContext): Promise<CommandResult> {
   const scope = optionalStringArg(args, 'scope');
-  const legacyStatus = scope === 'active' ? 'active'
-    : scope === 'ready' || scope === 'parked' || scope === 'blocked' || scope === 'done' ? scope
-      : undefined;
   // Scope names map onto the six states directly. Legacy names stay accepted so
   // an old client cannot silently show an empty list.
   const filter: TaskStatus | 'active' | 'finished' | undefined =

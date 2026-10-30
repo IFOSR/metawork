@@ -498,20 +498,29 @@ export class SessionKernelRuntime {
     // is the Planner/runtime process identity and may be different from the
     // Conversation that owns this plan.
     const ownerConversationId = conversationId ?? decision.action.owner.conversationId;
-    // The Kernel-authorized decision is the only source of the execution mode
-    // and delivery policy for a new Task; the Runtime never reads the
-    // environment or the current settings to reinterpret it. A Decision
-    // persisted before this contract existed cannot be re-derived, so it falls
-    // back to the isolated backend instead of guessing a user Workspace.
-    const workspaceExecution = decision.action.workspaceExecution;
-    if (!workspaceExecution) {
-      throw new Error('legacy Kernel decision has no Workspace admission and cannot be dispatched');
+    // Retain delivery intent from the proposal. Execution is always bound to
+    // the owning Conversation by the execution runtime; the historical mode
+    // field must not label a new Task as an in-place execution.
+    let workspaceExecution = decision.action.workspaceExecution;
+    // Persisted automatic replans from the pre-admission protocol do not carry
+    // the newer decision payload. Reuse the owning Task's already-authorized
+    // Workspace facts to finish that replan; the Runtime still creates and
+    // validates the immutable Conversation Git binding before any Attempt.
+    if (!workspaceExecution && command.taskId) {
+      const existing = this.deps.taskRuntimeService.findTask(command.taskId);
+      if (existing?.workspaceId) {
+        workspaceExecution = {
+          executionMode: 'in_place', source: 'planner', reason: 'recover persisted replan admission',
+          deliveryPolicy: 'none',
+          targetPaths: existing.workspaceTargetPaths ?? [],
+        };
+      }
     }
+    if (!workspaceExecution) throw new Error('legacy Kernel decision has no Workspace admission and cannot be dispatched');
     const workspaceRoot = await this.deps.resolveUserWorkspaceRoot?.(ownerConversationId) ?? null;
     const publicWorkspace = command.publicProjectDirectory ? workspaceRoot : null;
     if (command.publicProjectDirectory && !publicWorkspace) throw new Error('无法确认现有项目的 Workspace');
-    // In-place execution observes the target Workspace directly. A baseline is
-    // only retained for the legacy public-project delivery projection.
+    // Retained only for the legacy public-project delivery projection.
     const publicBaseline = command.publicProjectDirectory && publicWorkspace
       ? await capturePublicProjectBaseline(publicWorkspace, command.publicProjectDirectory)
       : {};
@@ -522,7 +531,6 @@ export class SessionKernelRuntime {
           publicTaskDirectory: command.publicProjectDirectory ?? undefined,
           publicDeliveryBaseline: publicBaseline,
           startServiceAfterPublish: command.startServiceAfterPublish ?? false,
-          executionMode: workspaceExecution.executionMode,
           workspaceExecutionSource: workspaceExecution.source,
           workspaceDeliveryPolicy: workspaceExecution.deliveryPolicy,
           workspaceTargetPaths: workspaceExecution.targetPaths,

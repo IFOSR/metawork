@@ -892,7 +892,19 @@ export async function main(cliCommand = parseCliArgs(process.argv.slice(2))) {
     ),
     onActivity: (conversationId, activity) => publishWorkspaceActivity(conversationId, activity),
   });
+  const workspaceGitServices = () => {
+    if (!accountRuntimeComposition) throw new Error('account_runtime_unavailable');
+    return accountRuntimeComposition.accountRuntime.workspaceServices;
+  };
   const workspaceDirectory = new WorkspaceDirectoryService({
+    gitLifecycle: {
+      initialize: input => workspaceGitServices().conversationWorktrees.initialize(input),
+      prepareConversation: async input => {
+        const service = workspaceGitServices().conversationWorktrees;
+        return service.prepareTurn(await service.initialize(input), input.conversationId);
+      },
+      requestCleanup: id => workspaceGitServices().conversationWorktrees.requestCleanup(id),
+    },
     accountId: LOCAL_DEFAULT_ACCOUNT_ID,
     workspaceCatalog: workspaceCatalogStore,
     conversationStore,
@@ -933,13 +945,26 @@ export async function main(cliCommand = parseCliArgs(process.argv.slice(2))) {
     // workspace rather than the shell directory used to launch `metawork`.
     cwd: accountPaths.workspaceStore,
     authorizedWorkspace: accountPaths.workspaceStore,
+    beginWorkspaceObservation: async conversationId => {
+      const metadata = await conversationStore.readMetadata(conversationId);
+      const workspaceId = metadata?.workspaceBinding?.workspaceId;
+      if (!workspaceId) return {release: async () => undefined};
+      const workspace = await workspaceCatalogStore.findById(workspaceId);
+      if (!workspace || workspace.accountId !== LOCAL_DEFAULT_ACCOUNT_ID || metadata?.archived) throw new Error('conversation_workspace_unavailable');
+      const service = workspaceGitServices().conversationWorktrees;
+      const root = await service.initialize({accountId: LOCAL_DEFAULT_ACCOUNT_ID, workspaceId, userRoot: workspace.canonicalPath});
+      return service.observe(root, conversationId);
+    },
     resolveAuthorizedWorkspace: async conversationId => {
       const metadata = await conversationStore.readMetadata(conversationId);
       const workspaceId = metadata?.workspaceBinding?.workspaceId;
       if (!workspaceId) return accountPaths.workspaceStore;
       const catalog = await workspaceCatalogStore.readCatalog();
-      return catalog.workspaces.find(item => item.id === workspaceId && !item.archived)?.canonicalPath
-        ?? accountPaths.workspaceStore;
+      const workspace = catalog.workspaces.find(item => item.id === workspaceId && item.accountId === LOCAL_DEFAULT_ACCOUNT_ID && !item.archived);
+      if (!workspace || metadata?.accountId !== LOCAL_DEFAULT_ACCOUNT_ID || metadata.archived) throw new Error('conversation_workspace_unavailable');
+      const service = workspaceGitServices().conversationWorktrees;
+      const root = await service.initialize({accountId: LOCAL_DEFAULT_ACCOUNT_ID, workspaceId, userRoot: workspace.canonicalPath});
+      return (await service.prepareTurn(root, conversationId)).rootPath;
     },
     configurationRevision: stagedConfiguration.snapshot.revisionId,
     bindingFingerprint: stagedConfiguration.plannerBindingFingerprint,
@@ -1043,6 +1068,11 @@ export async function main(cliCommand = parseCliArgs(process.argv.slice(2))) {
       try { assertSecretReference(reference); return await secretStore.get(reference); } catch { return null; }
     },
     isPublishedServiceSpecification: async (taskId, root, relativePath) => {
+      const source=workspaceGitServices().workspaceGitRepo.sourceForTask(taskId);
+      if(source) {
+        const checkout=await workspaceGitServices().serviceWorktrees.prepare(taskId,`discovery_${taskId}`);
+        return root===checkout.rootPath && (await workspaceGitServices().conversationWorktrees.git.entries(workspaceGitServices().workspaceGitRepo.root(source.workspaceId)!.repositoryPath,source.commit)).some(entry=>entry.path===relativePath && entry.kind==='file');
+      }
       const published = taskArtifactRepo.publicFiles.list(LOCAL_DEFAULT_ACCOUNT_ID, taskId)
         .some(item => item.status === 'published' && item.relativePath === relativePath
           && item.publishedPath === join(root, relativePath));
@@ -1070,9 +1100,18 @@ export async function main(cliCommand = parseCliArgs(process.argv.slice(2))) {
       .filter(item => item.status === 'published')
       .map(item => item.relativePath),
     listTaskTargetPaths: async taskId => taskEngine.getTaskRepo().findById(taskId)?.workspaceTargetPaths ?? [],
+    prepareServiceDirectory: async (taskId,serviceId,projectPath) => {
+      const services=workspaceGitServices().serviceWorktrees;
+      const record=await services.prepare(taskId,serviceId,projectPath);
+      return {...record,needsPreparation:!services.isPrepared(record)};
+    },
+    onServiceChanged: async record => workspaceGitServices().serviceWorktrees.observe(record),
     resolvePublishedDirectory: async taskId => {
       const task = taskEngine.getTaskRepo().findById(taskId);
       if (!task || task.accountId !== LOCAL_DEFAULT_ACCOUNT_ID) return null;
+      if(workspaceGitServices().workspaceGitRepo.sourceForTask(taskId)) {
+        return (await workspaceGitServices().serviceWorktrees.prepare(taskId,`discovery_${taskId}`)).rootPath;
+      }
       const workspace = await resolveTaskWorkspacePath(taskId);
       if (!workspace) return null;
       const canonicalWorkspace = await realpath(workspace);
@@ -1991,6 +2030,7 @@ export async function main(cliCommand = parseCliArgs(process.argv.slice(2))) {
     });
   }
   const workspaceGatewayRuntime = new WorkspaceGatewayRuntime(workspaceDirectory, {
+    merge:workspaceGitServices().workspaceMergeWorker,
     publish: async (kind, workspaceId, payload) => {
       const event = await eventJournal.append({
         protocolVersion: 2,
@@ -2168,8 +2208,16 @@ export async function main(cliCommand = parseCliArgs(process.argv.slice(2))) {
           subtask.executor = publicExecutors.get(subtask.id) ?? undefined;
         }
       }
+      const workspaceMerge = accountRuntimeComposition?.accountRuntime?.workspaceServices?.workspaceGitRepo
+        ?.summary(taskId, activeGraph?.generationId) ?? null;
       return {
-        publicDelivery,
+        publicDelivery: publicDelivery?.mode === 'worktree'
+          ? ({ workspace: publicDelivery.workspace, taskDirectory: publicDelivery.taskDirectory,
+              mode: publicDelivery.mode, state: publicDelivery.state, stateLabel: publicDelivery.stateLabel,
+              files: publicDelivery.files, conflicts: publicDelivery.conflicts } as typeof publicDelivery)
+          : publicDelivery,
+        workspaceId: task.workspaceId ?? null,
+        workspaceMerge,
         queryVersion: GATEWAY_TASK_VIEW_QUERY_VERSION,
         requestId,
         targetConversationId: conversationId,

@@ -63,6 +63,9 @@ export interface AccountKernelExecutionServices {
 }
 
 export function buildAccountKernelExecutionServices(deps: {
+  conversationWorktrees?: import('../execution/conversation-worktree-service.js').ConversationWorktreeService;
+  serviceWorktrees?: import('../execution/service-worktree-service.js').ServiceWorktreeService;
+  workspaceMergeWorker?: import('../execution/workspace-merge-worker.js').WorkspaceMergeWorker;
   db: Database.Database;
   sessionId: string;
   legacyCompatibility?: boolean;
@@ -184,6 +187,9 @@ export function buildAccountKernelExecutionServices(deps: {
     retryWakeRepo: deps.retryWakeRepo,
     resourceLeaseService: deps.resourceLeaseService,
     workspaceExecutionBindingRepo: new WorkspaceExecutionBindingRepo(deps.db),
+    conversationWorktrees: deps.conversationWorktrees,
+    serviceWorktrees: deps.serviceWorktrees,
+    workspaceMergeWorker: deps.workspaceMergeWorker,
     workspaceStore: deps.workspaceStore,
     runInTransaction: <T>(operation: () => T) => deps.db.transaction(operation).immediate(),
     cancellationCoordinator: deps.cancellationCoordinator,

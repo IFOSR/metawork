@@ -123,6 +123,8 @@ export class ManagedLocalServices {
     workspaceId?: string;
     store: LocalServiceStore;
     logRoot: string;
+    prepareServiceDirectory?(taskId:string,serviceId:string,projectPath:string):Promise<{rootPath:string;sourceCommit:string;serviceWorktreeId:string;projectPath:string;needsPreparation?:boolean}>;
+    onServiceChanged?(record:LocalServiceRecord):Promise<void>;
     resolvePublishedDirectory(taskId: string): Promise<string | null>;
     /** Workspace identity the service belongs to, for (account, workspace, service) keys. */
     resolveWorkspaceId?(taskId: string): Promise<string | null> | string | null;
@@ -506,6 +508,7 @@ export class ManagedLocalServices {
 
   applyAuthorizedOperation(input: {
     decisionId: string;
+    taskId: string;
     operation: LocalServiceOperation;
     serviceId: string;
     specification?: LocalServiceSpecification;
@@ -540,6 +543,9 @@ export class ManagedLocalServices {
           // cleared so the next start cannot reuse the previous launch.
           const current = scoped(input.serviceId);
           if (!current) throw new Error('服务不存在，无法更新授权规格');
+          const nextSpec = input.specification ?? current.specification;
+          const prepared = await this.deps.prepareServiceDirectory?.(nextSpec.taskId, nextSpec.serviceId, nextSpec.directory ?? '');
+          if (prepared?.needsPreparation) throw new Error('service_preparation_required：新版本准备完成后才能更新服务');
           if (await this.ownedProcess(current)) throw new Error('请先停止服务再更新授权规格');
           const nextRevision = input.specification
             ? localServiceSpecificationRevision(input.specification)
@@ -562,6 +568,11 @@ export class ManagedLocalServices {
           return effect;
         }
         if (effect.phase === 'stopping') {
+          if (input.operation === 'restart') {
+            const spec = input.specification ?? this.requireScoped(input.serviceId, workspaceSegment).specification;
+            const prepared = await this.deps.prepareServiceDirectory?.(spec.taskId, spec.serviceId, spec.directory ?? '');
+            if (prepared?.needsPreparation) throw new Error('service_preparation_required：新版本准备完成后才能重启服务');
+          }
           effect.result = await this.stopNow(input.serviceId, workspaceSegment);
           effect.phase = input.operation === 'stop' ? 'completed' : 'starting';
           effect.initialToken = null;
@@ -574,7 +585,7 @@ export class ManagedLocalServices {
           effect.result = record?.processToken && record.processToken !== effect.initialToken
             ? await this.check(record)
             : await this.startNow(input.specification
-              ?? this.requireScoped(input.serviceId, workspaceSegment).specification);
+              ?? this.requireScoped(input.serviceId, workspaceSegment).specification, false, input.taskId);
           effect.phase = 'completed';
         }
       } catch (error) {
@@ -584,6 +595,12 @@ export class ManagedLocalServices {
       store.saveOperation(effect);
       return effect;
     });
+  }
+
+  /** Returns true when the fixed source directory still needs an Executor build. */
+  async prepareVersion(spec: LocalServiceSpecification): Promise<boolean> {
+    const prepared = await this.deps.prepareServiceDirectory?.(spec.taskId, spec.serviceId, spec.directory ?? '');
+    return prepared?.needsPreparation === true;
   }
 
   async start(specification: LocalServiceSpecification): Promise<LocalServiceView> {
@@ -602,7 +619,7 @@ export class ManagedLocalServices {
     return workspaceId === '' ? null : scoped.call(this.deps.store, '', serviceId);
   }
 
-  private async startNow(spec: LocalServiceSpecification): Promise<LocalServiceView> {
+  private async startNow(spec: LocalServiceSpecification, forceRestart = false, operationTaskId: string | null = null): Promise<LocalServiceView> {
       // A manifest-sourced contract must still match the manifest in the
       // published directory: the authorized operation supplies the exact
       // specification it may execute, and a rewritten file is not a new
@@ -629,9 +646,14 @@ export class ManagedLocalServices {
       if (previous && previous.specificationRevision !== requestedRevision) {
         throw new Error('服务标识已绑定其他启动规格');
       }
+      const prepared = await this.deps.prepareServiceDirectory?.(spec.taskId,spec.serviceId,spec.directory??'');
+      if(prepared?.needsPreparation) {
+        return {serviceId:spec.serviceId,taskId:spec.taskId,state:'failed',url:'',message:'service_preparation_required：请在固定提交服务目录准备依赖及构建，保持已追踪源码不变。'};
+      }
+      const sameSource=!prepared || previous?.sourceCommit===prepared.sourceCommit;
       // Same launch contract: a process that is still running is observed, and
       // one that already exited is started again for the current Task.
-      if (previous && await this.ownedProcess(previous)) {
+      if (previous && sameSource && !forceRestart && await this.ownedProcess(previous)) {
         const observed = await this.check(previous);
         if (previous.specification.taskId !== spec.taskId) {
           // The live process now belongs to this Task's service specification;
@@ -644,6 +666,7 @@ export class ManagedLocalServices {
         }
         return observed;
       }
+      if(previous && await this.ownedProcess(previous))await this.stopNow(spec.serviceId,workspaceId);
       if (spec.port !== null) {
         const port = spec.port;
         await new Promise<void>((accept, reject) => {
@@ -652,7 +675,7 @@ export class ManagedLocalServices {
           probe.listen(port, spec.host, () => probe.close(error => error ? reject(error) : accept()));
         });
       }
-      const root = await this.deps.resolvePublishedDirectory(spec.taskId);
+      const root = prepared?.rootPath ?? await this.deps.resolvePublishedDirectory(spec.taskId);
       if (!root) throw new Error('代码尚未发布到用户任务目录，不能启动服务');
       const canonicalRoot = await realpath(root);
       const cwd = resolve(canonicalRoot, spec.directory ?? '.');
@@ -679,6 +702,9 @@ export class ManagedLocalServices {
       const storageToken = this.storageToken(spec.serviceId, workspaceId);
       const token = `metawork-service-${randomUUID()}`;
       const record: LocalServiceRecord = {
+        sourceCommit:prepared?.sourceCommit??null,projectPath:prepared?.projectPath??null,serviceWorktreeId:prepared?.serviceWorktreeId??null,
+        sourceTaskId: spec.taskId,
+        operationTaskId: operationTaskId ?? spec.taskId,
         accountId: this.deps.accountId,
         workspaceId: workspaceId || null,
         specificationRevision: requestedRevision,
@@ -698,6 +724,7 @@ export class ManagedLocalServices {
         record.processId = child.pid!;
         child.unref();
         this.deps.store.save(record);
+        await this.deps.onServiceChanged?.(record);
       } catch {
         record.state = 'failed'; record.healthMessage = '启动进程失败'; this.deps.store.save(record);
         this.lastDiagnostics.set(this.diagnosticsKey(record.specification.serviceId, record.workspaceId), {
@@ -775,9 +802,13 @@ export class ManagedLocalServices {
         const deadline = Date.now() + 3_000;
         while (groupAlive() && Date.now() < deadline) await new Promise(accept => setTimeout(accept, 50));
         if (groupAlive()) { try { process.kill(group, 'SIGKILL'); } catch { /* Group exited. */ } }
+        const killDeadline=Date.now()+3_000;
+        while(groupAlive() && Date.now()<killDeadline)await new Promise(accept=>setTimeout(accept,50));
+        if(groupAlive())throw new Error('service_process_exit_unconfirmed');
       }
       record.state = 'stopped'; record.healthMessage = '服务已停止，代码交付保留'; record.processId = null;
       record.processToken = null; record.updatedAt = new Date().toISOString(); this.deps.store.save(record);
+      await this.deps.onServiceChanged?.(record);
       return this.view(record);
   }
 
@@ -785,8 +816,7 @@ export class ManagedLocalServices {
     const scope = this.operationWorkspace(serviceId, workspaceId);
     return this.serialize(serviceId, scope, async () => {
       const spec = this.requireScoped(serviceId, scope).specification;
-      await this.stopNow(serviceId, scope);
-      return this.startNow(spec);
+      return this.startNow(spec, true);
     });
   }
 

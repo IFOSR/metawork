@@ -58,6 +58,11 @@ export interface WorkspaceConversationPage {
 }
 
 export interface WorkspaceDirectoryServiceDeps {
+  readonly gitLifecycle?: {
+    initialize(input: { accountId: string; workspaceId: string; userRoot: string }): Promise<unknown>;
+    prepareConversation(input: { accountId: string; workspaceId: string; userRoot: string; conversationId: string }): Promise<unknown>;
+    requestCleanup(conversationId: string): Promise<void>;
+  };
   readonly accountId: string;
   readonly workspaceCatalog: WorkspaceCatalogStore;
   readonly conversationStore: ConversationStore;
@@ -105,7 +110,12 @@ export class WorkspaceDirectoryService {
         if (existing.archived || existing.availability !== 'available') {
           throw new Error('workspace_unavailable');
         }
+        await this.deps.gitLifecycle?.initialize({accountId: this.deps.accountId, workspaceId: existing.id, userRoot: canonicalPath});
         return { workspace: existing, created: false };
+      }
+      const registered = (await this.deps.workspaceCatalog.readCatalog()).workspaces;
+      if (registered.some(item => item.accountId === this.deps.accountId && item.canonicalPath !== canonicalPath && pathsOverlap(item.canonicalPath, canonicalPath))) {
+        throw new Error('workspace_path_overlap');
       }
       const now = this.deps.now?.() ?? new Date().toISOString();
       const workspace: WorkspaceRecord = {
@@ -124,6 +134,7 @@ export class WorkspaceDirectoryService {
         ...catalog,
         workspaces: [...catalog.workspaces, workspace],
       });
+      await this.deps.gitLifecycle?.initialize({accountId: this.deps.accountId, workspaceId: workspace.id, userRoot: canonicalPath});
       return { workspace, created: true };
     });
   }
@@ -246,6 +257,7 @@ export class WorkspaceDirectoryService {
       ...catalog,
       conversations: [...catalog.conversations, metadata],
     }));
+    await this.deps.gitLifecycle?.prepareConversation({accountId: this.deps.accountId, workspaceId, userRoot: workspace.canonicalPath, conversationId: id});
     return metadata;
   }
 
@@ -313,6 +325,7 @@ export class WorkspaceDirectoryService {
         item.id === conversationId ? metadata : item
       )),
     }));
+      await this.deps.gitLifecycle?.requestCleanup(conversationId);
   }
 
   private async mutate<T>(operation: () => Promise<T>): Promise<T> {

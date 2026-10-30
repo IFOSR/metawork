@@ -1,9 +1,10 @@
+import { installWorkspaceGitSchema } from './workspace-git-schema.js';
 import { publicTaskRelativeDirectory } from '../task/public-task-directory.js';
 import type Database from 'better-sqlite3';
 import { BILLING_SCHEMA_VERSION, createBillingSchema } from './billing-schema.js';
 import { installObservationSchema } from './observation-schema.js';
 
-export const CURRENT_SCHEMA_VERSION = 61;
+export const CURRENT_SCHEMA_VERSION = 62;
 
 /**
  * Local memory index (design §4.2).
@@ -95,6 +96,8 @@ const MANAGED_SERVICES_SQL = `
     state TEXT NOT NULL,
     process_id INTEGER,
     process_token TEXT,
+    source_task_id TEXT,
+    operation_task_id TEXT,
     health_message TEXT,
     updated_at TEXT NOT NULL,
     PRIMARY KEY (account_id, workspace_id, service_id)
@@ -1926,6 +1929,10 @@ export function runMigrations(
     })();
     version = 61;
   }
+  if (version === 61) {
+    migrateSchema61To62(db);
+    version = 62;
+  }
   // Current-schema databases may have been created before a new projection
   // invalidation trigger was introduced. Reinstalling the idempotent trigger
   // set on every open upgrades those databases without requiring a rebuild.
@@ -1941,7 +1948,10 @@ export function runMigrations(
  */
 function applyWorkspaceExecutionDdl(db: Database.Database): void {
   if (!columnsOf(db, 'tasks').includes('execution_mode')) {
-    db.exec("ALTER TABLE tasks ADD COLUMN execution_mode TEXT NOT NULL DEFAULT 'in_place'");
+    // Legacy rows may legitimately have no recorded mode. Runtime compatibility
+    // treats null as the historical in-place path; new conversation executions
+    // are authorized by their immutable Git binding.
+    db.exec('ALTER TABLE tasks ADD COLUMN execution_mode TEXT');
   }
   const artifactColumns = tableExists(db, 'task_artifacts') ? columnsOf(db, 'task_artifacts') : [];
   if (artifactColumns.length > 0 && !artifactColumns.includes('reference_kind')) {
@@ -2077,6 +2087,8 @@ function applySchema55Ddl(db: Database.Database): void {
     if (!serviceColumns.includes('specification_revision')) {
       db.exec("ALTER TABLE managed_local_services ADD COLUMN specification_revision TEXT NOT NULL DEFAULT ''");
     }
+    if (!serviceColumns.includes('source_task_id')) db.exec('ALTER TABLE managed_local_services ADD COLUMN source_task_id TEXT');
+    if (!serviceColumns.includes('operation_task_id')) db.exec('ALTER TABLE managed_local_services ADD COLUMN operation_task_id TEXT');
   }
   const runtimeColumns = tableExists(db, 'executor_attempt_runtime')
     ? columnsOf(db, 'executor_attempt_runtime')
@@ -2847,15 +2859,15 @@ function runBaseMigrations(
     const versions = db.prepare(
       'SELECT version FROM schema_version ORDER BY version',
     ).all() as Array<{ version: number }>;
-    if (versions.length === 1 && [42, 43, 44, 45, 46, 47, 48, 49, 50, 51, 52, 53, 54, 55, 56, 57, 58, 59, 60, CURRENT_SCHEMA_VERSION].includes(versions[0]!.version)) {
+    if (versions.length === 1 && [42, 43, 44, 45, 46, 47, 48, 49, 50, 51, 52, 53, 54, 55, 56, 57, 58, 59, 60, 61, CURRENT_SCHEMA_VERSION].includes(versions[0]!.version)) {
       // A short-lived release stamped some pre-six-state databases as the
       // current version before rebuilding `tasks`. Treat that shape as the
       // genuine 51 baseline and run the authoritative six-state migration;
       // otherwise the runtime fails later on missing state_version columns.
-      if (versions[0]!.version === CURRENT_SCHEMA_VERSION
+      if ([61, CURRENT_SCHEMA_VERSION].includes(versions[0]!.version)
         && tableExists(db, 'tasks')
         && !columnsOf(db, 'tasks').includes('state_version')) {
-        db.prepare('UPDATE schema_version SET version = 51 WHERE version = ?').run(CURRENT_SCHEMA_VERSION);
+        db.prepare('UPDATE schema_version SET version = 51 WHERE version = ?').run(versions[0]!.version);
         migrateSchema51To52(db);
       }
       return;
@@ -3005,7 +3017,7 @@ function runBaseMigrations(
     db.exec("ALTER TABLE tasks ADD COLUMN public_delivery_baseline_json TEXT NOT NULL DEFAULT '{}'");
     db.exec('ALTER TABLE tasks ADD COLUMN start_service_after_publish INTEGER NOT NULL DEFAULT 0');
     db.exec('ALTER TABLE tasks ADD COLUMN public_project INTEGER NOT NULL DEFAULT 0');
-    db.exec("ALTER TABLE tasks ADD COLUMN execution_mode TEXT NOT NULL DEFAULT 'in_place'");
+    db.exec('ALTER TABLE tasks ADD COLUMN execution_mode TEXT');
     db.exec("ALTER TABLE task_artifacts ADD COLUMN reference_kind TEXT NOT NULL DEFAULT 'legacy_published_copy'");
     db.exec('ALTER TABLE task_artifacts ADD COLUMN workspace_id TEXT');
     db.exec('ALTER TABLE task_artifacts ADD COLUMN artifact_version_id TEXT');
@@ -3030,6 +3042,7 @@ function runBaseMigrations(
     db.exec(GATEWAY_COMMAND_ADMISSION_SQL);
     installDirectoryInvalidationTriggers(db);
     createBillingSchema(db);
+    installWorkspaceGitSchema(db);
     db.prepare('INSERT INTO schema_version (version) VALUES (?)')
       .run(CURRENT_SCHEMA_VERSION);
   })();
@@ -4385,4 +4398,39 @@ function isWorkGraphV6(value: Record<string, unknown>): boolean {
   return value.subtasks.every(subtask =>
     isRecord(subtask)
     && Object.hasOwn(subtask, 'preferredAgentClassList'));
+}
+
+/** Nullable legacy mode; new generations use conversation_execution_bindings. */
+function migrateSchema61To62(db: Database.Database): void {
+  const foreignKeys = db.pragma('foreign_keys', { simple: true }) === 1;
+  const before = new Set((db.pragma('foreign_key_check') as unknown[]).map(row => JSON.stringify(row)));
+  if (foreignKeys) db.pragma('foreign_keys = OFF');
+  try {
+    db.transaction(() => {
+      const column = (db.pragma('table_info(tasks)') as Array<{ name: string; notnull: number }>).find(row => row.name === 'execution_mode');
+      if (column?.notnull) {
+        const original = db.prepare("SELECT sql FROM sqlite_master WHERE type='table' AND name='tasks'").get() as { sql: string };
+        const triggers = db.prepare("SELECT name,sql FROM sqlite_master WHERE type='trigger' AND sql IS NOT NULL").all() as Array<{ name: string; sql: string }>;
+        const indexes = db.prepare("SELECT sql FROM sqlite_master WHERE type='index' AND tbl_name='tasks' AND sql IS NOT NULL").all() as Array<{ sql: string }>;
+        const quote = (value: string) => '"' + value.replaceAll('"', '""') + '"';
+        for (const trigger of triggers) db.exec(`DROP TRIGGER ${quote(trigger.name)}`);
+        const create = original.sql.replace(/^(CREATE TABLE\s+)(?:"tasks"|tasks)/iu, '$1tasks_v62')
+          .replace(/execution_mode\s+TEXT\s+NOT NULL(?:\s+DEFAULT\s+'in_place')?/iu, 'execution_mode TEXT');
+        if (create === original.sql || /execution_mode\s+TEXT\s+NOT NULL/iu.test(create)) throw new Error('tasks_mode_migration_shape');
+        db.exec(create);
+        const columns = (db.pragma('table_info(tasks)') as Array<{ name: string }>).map(row => quote(row.name)).join(',');
+        db.exec(`INSERT INTO tasks_v62 (${columns}) SELECT ${columns} FROM tasks`);
+        db.exec('DROP TABLE tasks');
+        db.exec('ALTER TABLE tasks_v62 RENAME TO tasks');
+        for (const index of indexes) db.exec(index.sql);
+        for (const trigger of triggers) db.exec(trigger.sql);
+      }
+      installWorkspaceGitSchema(db);
+      const violations = (db.pragma('foreign_key_check') as unknown[]).filter(row => !before.has(JSON.stringify(row)));
+      if (violations.length) throw new Error('workspace_git_migration_foreign_key_violation');
+      bumpSchemaVersion(db, 61, 62, '61 to 62');
+    })();
+  } finally {
+    if (foreignKeys) db.pragma('foreign_keys = ON');
+  }
 }

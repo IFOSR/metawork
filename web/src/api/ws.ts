@@ -1,3 +1,5 @@
+import type { GatewayWorkspaceMergeCommand } from '../../../src/gateway/client-protocol';
+import type { CommandReceipt } from '../../../src/gateway/command-admission';
 import type { PendingResultIdentity } from '../../../src/task/safe-result-identity';
 import type {
   ClientMessage,
@@ -116,8 +118,12 @@ export class WsClient {
         return;
       }
       if ((message as { type: string }).type === 'receipt') {
-        const { receipt } = message as unknown as { receipt: { requestId: string; status?: string; reason?: string; message?: string; code?: string } };
+        const { receipt } = message as unknown as { receipt: { requestId: string; status?: string; reason?: string; message?: string; code?: string; workspaceMerge?: CommandReceipt['workspaceMerge'] } };
         this.unconfirmedInputs.delete(receipt.requestId);
+        if (receipt.workspaceMerge && (receipt.status === 'accepted' || receipt.status === 'duplicate')) {
+          const pending = this.queries.get(receipt.requestId);
+          if (pending) { window.clearTimeout(pending.timer); this.queries.delete(receipt.requestId); pending.resolve(receipt.workspaceMerge); }
+        }
         if (receipt.status === 'accepted' || receipt.status === 'duplicate') {
           this.controls.get(receipt.requestId)?.accepted();
           this.handlers.onReceipt?.({ ...receipt, status: receipt.status });
@@ -262,6 +268,19 @@ export class WsClient {
       this.queries.set(id, { resolve: value => resolve(value as T), reject, timer });
       if (!this.sendCommand(conversationId, command, id)) {
         window.clearTimeout(timer); this.queries.delete(id); reject(new Error('disconnected'));
+      }
+    });
+  }
+
+  workspaceCommand(command: GatewayWorkspaceMergeCommand): Promise<NonNullable<CommandReceipt['workspaceMerge']>> {
+    if (this.queries.size >= 16) return Promise.reject(new Error('query_limit'));
+    const requestId = `workspace_${crypto.randomUUID()}`;
+    return new Promise((resolve, reject) => {
+      const timer = window.setTimeout(() => { this.queries.delete(requestId); reject(new Error('command_status_unknown')); }, 30_000);
+      this.queries.set(requestId, {resolve: value => resolve(value as NonNullable<CommandReceipt['workspaceMerge']>), reject, timer});
+      if (!this.sendMessage({type: 'command', envelope: {protocolVersion: 2, requestId, idempotencyKey: requestId,
+        connectionId: 'web', scope: {kind: 'workspace'}, command, clientCapabilities: ['task_view_v2']}})) {
+        window.clearTimeout(timer); this.queries.delete(requestId); reject(new Error('disconnected'));
       }
     });
   }

@@ -114,6 +114,7 @@ export const TASK_REASON_CODES = [
   'service_start_failed',
   'service_health_timeout',
   'delivery_failed',
+  'workspace_merge_conflict',
   'execution_failed',
   'retry_exhausted',
   'requirements_incomplete',
@@ -183,6 +184,7 @@ export interface TaskPendingAction {
   readonly result: TaskPendingResultIdentity | null;
   /** Isolated Workspace publication that this action accepts. */
   readonly publicationId?: string;
+  readonly workspaceMerge?: { readonly jobId:string; readonly conflictVersion:number; readonly rowVersion:number };
 }
 
 export type TaskCleanupState = 'none' | 'pending' | 'blocked';
@@ -203,6 +205,7 @@ export const NO_TASK_CLEANUP: TaskCleanupSummary = Object.freeze({
 export const TASK_REQUIRED_WORK_KINDS = [
   'execution',
   'integration',
+  'workspace_delivery',
   'delivery',
   'safety_report',
   'service',

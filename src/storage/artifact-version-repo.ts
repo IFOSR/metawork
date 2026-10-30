@@ -12,6 +12,8 @@ export interface ArtifactVersion {
   byteLength: number;
   /** Content-addressed object location owned by the Runtime, never a user Workspace path. */
   objectUri: string;
+  gitCommit?:string|null;
+  gitRelativePath?:string|null;
   mediaType: string;
   createdAt: string;
 }
@@ -26,6 +28,8 @@ interface ArtifactVersionRow {
   content_hash: string;
   byte_length: number;
   object_uri: string;
+  git_commit:string|null;
+  git_relative_path:string|null;
   media_type: string;
   created_at: string;
 }
@@ -41,6 +45,7 @@ function versionFromRow(row: ArtifactVersionRow): ArtifactVersion {
     contentHash: row.content_hash,
     byteLength: row.byte_length,
     objectUri: row.object_uri,
+    gitCommit:row.git_commit,gitRelativePath:row.git_relative_path,
     mediaType: row.media_type,
     createdAt: row.created_at,
   };
@@ -64,8 +69,8 @@ export class ArtifactVersionRepo {
     this.db.prepare(`
       INSERT INTO artifact_versions (
         artifact_version_id, account_id, workspace_id, source_task_id, source_attempt_id,
-        relative_path, content_hash, byte_length, object_uri, media_type, created_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        relative_path, content_hash, byte_length, object_uri, media_type, created_at,git_commit,git_relative_path
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `).run(
       artifactVersionId,
       input.accountId,
@@ -77,7 +82,7 @@ export class ArtifactVersionRepo {
       input.byteLength,
       input.objectUri,
       input.mediaType,
-      createdAt,
+      createdAt,input.gitCommit??null,input.gitRelativePath??null,
     );
     return this.find(artifactVersionId) ?? {
       ...input,

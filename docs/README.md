@@ -26,7 +26,8 @@ This directory contains both current technical documentation and historical plan
 - [Executor Pi 打包入口修复](plans/2026-10-23-executor-pi-packaging-fix.md)：修正本地 DMG 将 Executor 指向定制 Planner 的错误，增加打包与安装参数校验，修复包已完成本地自动验收。
 
 - [单一 In-place Workspace 技术实施方案](plans/2026-10-25-in-place-only-workspace-execution-implementation-plan.md)：已于 2026-10-25 实施。新任务直接在 Conversation 绑定 Workspace 执行；只读任务使用受控 scratch，不申请写租约，不创建 publication；旧 Worktree 事实只停放并拒绝恢复（ADR-0050）。
-- [Workspace 内部版本库与会话 Worktree 并行模型](plans/2026-10-29-workspace-internal-git-session-worktree-design.md)：待评审方案。为 Git 与非 Git Workspace 建立统一内部版本库，让可写 Session 使用独立 Worktree 并行执行，通过持久化 Merge Queue 串行合并，并将受管服务绑定到 Application Revision。
+- [Workspace 内部 Git 与会话 Worktree 并行模型](plans/2026-10-29-workspace-internal-git-session-worktree-design.md)：方向已确认、尚未实施。所有 Workspace 统一使用私有 Git 仓库，每个会话使用真实 Git Worktree；每轮成果经持久化 FIFO 串行合并并写回用户目录，服务从固定提交的独立 Worktree 运行。无快照后端、文件认领和执行模式选择。
+- [会话 Worktree 详细技术方案](plans/2026-10-29-workspace-internal-git-session-worktree-technical-design.md)：待实施。明确源码改造入口、账户数据库迁移、会话绑定、Subtask handoff 与 Task 交付分离、FIFO 合并、逐文件写回恢复、冲突 API、固定提交服务、清理和验收矩阵。
 - [被取代的 Planner Workspace 模式设计](plans/2026-10-25-planner-owned-workspace-mode-design.md)：历史方案，仅用于理解迁移背景。
 - [Executor 工具能力与 Kernel 边界（ADR-0052）](adr/0052-executor-owned-tool-capabilities-and-kernel-boundary.md)：Planner 的 Workspace effect 只用于 admission 与验收；Harness 自己拥有工具注册和内部执行循环，Kernel 保留持久化协调与恢复，不再把 `read_only` 转成工具 allowlist。
 - [Planner、持久协调与 Executor 权责（ADR-0053）](adr/0053-planner-graph-coordinator-and-executor-authority.md)：重新审查 Kernel 边界；Planner 只负责语义和 Work Graph，Executor/Host 负责工具与 capability policy，剩余 Kernel 仅作为迁移期的 durable Task Coordinator。

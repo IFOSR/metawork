@@ -72,14 +72,14 @@ export class SqliteWorkspaceRepository implements WorkspaceRepositoryPort {
     return this.db.prepare(`
       UPDATE workspace_records
       SET status = ?, cleanup_after = COALESCE(cleanup_after, ?), updated_at = ?
-      WHERE task_id = ? AND status <> 'archived'
+      WHERE task_id = ? AND status <> 'archived' AND id NOT GLOB 'conversation_*'
     `).run(status, cleanupAfter, updatedAt, taskId).changes;
   }
 
   listCleanupDue(now: string): WorkspacePersistenceRecord[] {
     return (this.db.prepare(`
       SELECT * FROM workspace_records
-      WHERE status IN ('archived', 'cancelled')
+      WHERE status IN ('archived', 'cancelled') AND id NOT GLOB 'conversation_*'
         AND cleanup_after IS NOT NULL AND cleanup_after <= ?
       ORDER BY cleanup_after, id
     `).all(now) as Row[]).map(fromRow);

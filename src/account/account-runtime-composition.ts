@@ -154,6 +154,7 @@ export function buildAccountRuntimeComposition(deps: {
   let startupRecovery!: AccountStartupRecoveryService;
   const taskLifecyclePort = createTaskLifecyclePort(deps.db);
   const taskServices = buildAccountTaskServices({
+    nativeStateRoot: join(deps.attemptsRoot, 'native-processes'),
     taskEngine: deps.taskEngine,
     lifecyclePort: taskLifecyclePort,
     getAgentClasses: () => deps.stagedConfiguration.snapshot.config.agentClasses,
@@ -205,6 +206,9 @@ export function buildAccountRuntimeComposition(deps: {
     : null;
 
   const runtimeExecutionServices = buildAccountRuntimeExecutionServices({
+    conversationWorktrees: workspaceServices.conversationWorktrees,
+    serviceWorktrees: workspaceServices.serviceWorktrees,
+    workspaceMergeWorker: workspaceServices.workspaceMergeWorker,
     db: deps.db,
     sessionId: deps.sessionId,
     getSessionId: () => conversationExecutionBinder.currentSessionId() ?? deps.sessionId,
@@ -256,6 +260,9 @@ export function buildAccountRuntimeComposition(deps: {
   // 用户可见 Workspace（进程启动目录）与内部 workspaceStore 是不同依赖；
   // 未提供时（如测试组合）不启用用户产物发布。
   const kernelExecutionServices = buildAccountKernelExecutionServices({
+    conversationWorktrees: workspaceServices.conversationWorktrees,
+    serviceWorktrees: workspaceServices.serviceWorktrees,
+    workspaceMergeWorker: workspaceServices.workspaceMergeWorker,
     managedLocalServices: deps.managedLocalServices,
     db: deps.db,
     sessionId: deps.sessionId,
@@ -368,6 +375,8 @@ export function buildAccountRuntimeComposition(deps: {
     onSystemResultDelivery: deps.onSystemResultDelivery,
     appendExecutionTrace: deps.appendExecutionTrace,
   });
+
+  workspaceServices.workspaceMergeWorker.setObserver(job => startupRecovery.observeWorkspaceMerge(job));
 
   const factory = new AccountRuntimeFactory({
     buildKernelCoordinator: () => kernelCoordinator,

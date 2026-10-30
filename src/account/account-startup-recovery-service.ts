@@ -1,3 +1,4 @@
+import { WorkspaceGitRecovery } from '../execution/workspace-git-recovery.js';
 import type Database from 'better-sqlite3';
 import { AttemptExecutionBackendReconciler } from '../execution/attempt-execution-backend-reconciler.js';
 import type { VerificationAndDeliveryService } from '../delivery/verification-and-delivery-service.js';
@@ -113,6 +114,19 @@ export class AccountStartupRecoveryService {
       input: ExecutionTraceAppendInput,
     ) => void;
   }) {}
+
+  async observeWorkspaceMerge(job: import('../workspace/workspace-git-contracts.js').WorkspaceMergeJob): Promise<void> {
+    const sessionId = this.originForTask(job.taskId);
+    if (!sessionId) return;
+    await this.withSystemBinding(sessionId, () =>
+      this.deps.kernelExecutionServices.kernelExecutionRuntime.onWorkspaceMergeChanged(job));
+  }
+
+  private async recoverWorkspaceGit(): Promise<void> {
+    const {workspaceMergeWorker, conversationWorktrees} = this.deps.workspaceServices;
+    await new WorkspaceGitRecovery(conversationWorktrees, workspaceMergeWorker)
+      .recover(job => this.observeWorkspaceMerge(job));
+  }
 
   async onTaskTerminal(taskId: string): Promise<void> {
     const task = this.deps.taskServices.taskRuntimeService.findTask(taskId);
@@ -280,6 +294,12 @@ export class AccountStartupRecoveryService {
         this.deps.workspaceServices.attemptExecutionRepository,
       ).reconcile({
         checkpoint: async record => {
+          // Conversation files are already retained in their registered worktree.
+          // Never create a legacy Task directory to checkpoint a Git Attempt.
+          if (this.deps.workspaceServices.workspaceGitRepo.binding(record.taskId, record.generationId)) {
+            checkpointIds.set(record.attemptId, null);
+            return;
+          }
           const persisted = this.deps.workspaceServices.workspaceRepository.find(record.workspaceId);
           if (!persisted) {
             checkpointIds.set(record.attemptId, null);
@@ -348,6 +368,8 @@ export class AccountStartupRecoveryService {
         });
       }
     }
+
+    await this.recoverWorkspaceGit();
 
     // §5.3.5: reconcile uncertain cancellation applications FIRST, so a
     // re-applied cancellation becomes a durable cancelled Task before the
@@ -814,6 +836,7 @@ export class AccountStartupRecoveryService {
   }
 
   async recoverPeriodic(nowMs = Date.now()): Promise<boolean> {
+    await this.recoverWorkspaceGit();
     const now = new Date(nowMs).toISOString();
     // Durable Replan Jobs are consumed first: they are the account-scoped
     // replacement for the foreground Conversation replan callback, so they must

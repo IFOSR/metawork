@@ -1,7 +1,6 @@
 import {
   closeSync,
-  copyFileSync,
-  constants,
+  chmodSync,
   existsSync,
   lstatSync,
   mkdirSync,
@@ -12,7 +11,8 @@ import {
   writeFileSync,
 } from 'node:fs';
 import { createHash } from 'node:crypto';
-import { basename, extname, isAbsolute, join } from 'node:path';
+import { readGitArtifact } from '../delivery/git-artifact-reader.js';
+import { basename, extname, join } from 'node:path';
 import type Database from 'better-sqlite3';
 import type { Subtask, Task, WorkspaceContext } from '../core/types.js';
 import { ArtifactVersionRepo } from '../storage/artifact-version-repo.js';
@@ -160,14 +160,12 @@ export class SubtaskExecutionContextBuilder {
     this.attachmentStore = options.attachmentStore;
     this.artifactObjectRoot = options.artifactObjectRoot;
     this.artifactVersionRepo = new ArtifactVersionRepo(db);
-    this.resolveWorkspaceRoot = options.resolveWorkspaceRoot;
   }
 
   private readonly accountId: string;
   private readonly attachmentStore?: GatewayAttachmentStore;
   private readonly artifactObjectRoot?: string;
   private readonly artifactVersionRepo: ArtifactVersionRepo;
-  private readonly resolveWorkspaceRoot?: () => Promise<string | null> | string | null;
 
   build(input: {
     executionId: string;
@@ -184,13 +182,14 @@ export class SubtaskExecutionContextBuilder {
     completionContractOverride?: SubtaskExecutionContext['completionContract'];
     recovery?: SubtaskExecutionContext['recovery'];
     evidenceToolBinding?: ExecutionEvidenceToolBinding;
+    servicePreparation?: boolean;
   }): {
     context: SubtaskExecutionContext;
     evidenceCapability: ScopedExecutionEvidencePort;
     resultReferenceCapability: ScopedExecutionResultReferencePort;
   } {
     this.syncTaskEvidenceCatalog(input.task);
-    const incomingHandoffs = this.handoffRepo.listIncoming(input.task.id, input.subtask.id);
+    let incomingHandoffs = this.handoffRepo.listIncoming(input.task.id, input.subtask.id);
     assertIncomingHandoffsComplete(input.subtask, incomingHandoffs);
     assertIncomingHandoffMaterialization(
       this.resultObjectRepo,
@@ -198,7 +197,30 @@ export class SubtaskExecutionContextBuilder {
       input.subtask,
       incomingHandoffs,
     );
-    const outgoingHandoffRequirements = input.allSubtasks.flatMap(candidate => {
+    // Persisted edges retain fixed references; only this Attempt receives local input paths.
+    incomingHandoffs = incomingHandoffs.map(handoff => ({...handoff, items: handoff.items.map(item => {
+      if (item.type !== 'artifact' || !item.versions) return item;
+      if (!input.inputFilesPath || !this.artifactObjectRoot) throw new Error('handoff_materialization_root_missing');
+      const paths = item.versions.map((ref, index) => {
+        const version = this.artifactVersionRepo.find(ref.artifactVersionId);
+        const linked = this.artifactRepo.listByTask(input.task.id).some(artifact =>
+          artifact.artifactVersionId === ref.artifactVersionId && artifact.generationId === input.subtask.generationId
+          && artifact.relativePath === ref.path);
+        if (!version || version.accountId !== this.accountId || version.workspaceId !== input.task.workspaceId || !linked) {
+          throw new Error('handoff_artifact_identity_mismatch');
+        }
+        const bytes = version.gitCommit ? readGitArtifact(version, this.artifactObjectRoot!, 64 * 1024 * 1024)
+          : readFileSync(join(this.artifactObjectRoot!,version.contentHash));
+        if(bytes.length>64*1024*1024)throw new Error('handoff_artifact_too_large');
+        mkdirSync(input.inputFilesPath!, {recursive:true});
+        const destination = join(input.inputFilesPath!, `edge-${createHash('sha256').update(handoff.fromSubtaskId + ref.artifactVersionId).digest('hex').slice(0, 20)}-${safeInputAttachmentName(version.relativePath, index)}`);
+        materializeArtifactBytes(bytes, destination, `sha256:${version.contentHash.replace(/^sha256:/u, '')}`);
+        chmodSync(destination,0o400);
+        return destination;
+      });
+      return {...item, paths};
+    })}));
+    const outgoingHandoffRequirements = input.servicePreparation ? [] : input.allSubtasks.flatMap(candidate => {
       const dependency = candidate.dependencies.find(item => item.fromSubtaskId === input.subtask.id);
       return dependency ? [{ toSubtaskId: candidate.id, requiredItems: dependency.requiredItems }] : [];
     });
@@ -559,7 +581,6 @@ export class SubtaskExecutionContextBuilder {
     let evidenceId: string;
     let title: string;
     let content: string;
-    let exactOnly = false;
     if (ref.kind === 'current_user_input') {
       evidenceId = createEvidenceId('current_user_input', task.id);
       const row = this.evidenceRepo.findForTask(task.id, evidenceId);
@@ -600,7 +621,6 @@ export class SubtaskExecutionContextBuilder {
       const materialized = this.evidenceRepo.findForTask(task.id, evidenceId)!;
       title = materialized.title;
       content = materialized.content;
-      exactOnly = ref.side === 'assistant';
     } else {
       throw new Error(`context_ref_not_supported: ${ref.kind}`);
     }

@@ -53,6 +53,7 @@ export class WorkGraphRuntimeService {
 
   apply(input: {
     task: Task;
+    conversationGit?: boolean;
     userPrompt: string;
     sessionId?: string;
     authorizedWorkGraph?: WorkGraphProposal | null;
@@ -133,6 +134,7 @@ export class WorkGraphRuntimeService {
               ...(subtask.fileOutputs ? { fileOutputs: subtask.fileOutputs } : {}),
             })),
             publicProject: input.task.publicProject === true,
+            conversationGit: input.conversationGit,
             startServiceAfterPublish: input.task.startServiceAfterPublish === true,
           }),
         );

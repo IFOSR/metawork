@@ -41,6 +41,9 @@ export class AttemptExecutionBackendReconciler {
         lostAttempts.push(record);
         continue;
       }
+      // File capture must observe a stopped writer, including residual children.
+      // stop() is required to confirm the whole owned process group has exited.
+      await this.backend.stop(container.containerId);
       await input.checkpoint(record);
       if (container.status === 'exited') {
         const now = new Date().toISOString();
@@ -51,7 +54,6 @@ export class AttemptExecutionBackendReconciler {
       } else {
         lostAttempts.push(record);
       }
-      await this.backend.stop(container.containerId);
       await this.backend.remove(container.containerId);
       this.repository.update(record.attemptId, {
         status: 'removed', cleanupStatus: 'removed', updatedAt: new Date().toISOString(),

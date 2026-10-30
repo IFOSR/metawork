@@ -12,7 +12,10 @@ export type ExecutionMode = 'worktree' | 'in_place';
 export interface ExecutionContext {
   workspaceId: string;
   canonicalWorkspacePath: string;
-  executionMode: ExecutionMode;
+  executionMode: ExecutionMode | 'conversation_git' | 'service_git';
+  /** Fixed Conversation identity; absent only for historical bindings. */
+  conversation?: { conversationId:string; worktreeId:string; incarnation:number; taskBaseCommit:string };
+  service?: { serviceWorktreeId:string; sourceCommit:string; projectPath:string };
   /** Directory the Executor runs in: the Workspace itself (in_place) or its managed worktree. */
   authorizedWorkingDirectory: string;
   /** ResourceLease id that carries the Workspace write claim, when one was claimed. */
@@ -90,6 +93,12 @@ export function assertExecutionContext(context: ExecutionContext): ExecutionCont
   if (!isAbsolute(context.authorizedWorkingDirectory)) {
     throw new ExecutionContextError('authorizedWorkingDirectory', 'authorized working directory must be absolute');
   }
+  if (context.executionMode === 'conversation_git' && (!context.conversation || !/^[a-f0-9]{40}$/u.test(context.conversation.taskBaseCommit))) {
+    throw new ExecutionContextError('conversation', 'Conversation Git identity is required');
+  }
+  if (context.executionMode === 'service_git' && (!context.service || !/^[a-f0-9]{40}$/u.test(context.service.sourceCommit))) {
+    throw new ExecutionContextError('service', 'Service Git identity is required');
+  }
   if (context.executionMode === 'worktree') {
     throw new ExecutionContextError('executionMode', 'worktree execution bindings are retired');
   }
@@ -142,4 +151,17 @@ export function executionContextFromBinding(input: {
     configurationRevision: input.configurationRevision,
     bindingFingerprint: workspaceExecutionBindingFingerprint(input.binding),
   });
+}
+
+/** Projects the unified protocol without confusing the user root with the execution root. */
+export function executionContextFromConversation(input: {
+  binding: import('../workspace/workspace-git-contracts.js').ConversationExecutionBinding;
+  subtaskId:string; attemptId:string; configurationRevision:string;
+}):ExecutionContext {
+  const b=input.binding;
+  return assertExecutionContext({workspaceId:b.workspaceId,canonicalWorkspacePath:b.userRoot,
+    authorizedWorkingDirectory:b.executionRoot,executionMode:'conversation_git',resourceLeaseId:null,
+    taskId:b.taskId,generationId:b.generationId,subtaskId:input.subtaskId,attemptId:input.attemptId,
+    configurationRevision:input.configurationRevision,bindingFingerprint:b.bindingFingerprint,
+    conversation:{conversationId:b.conversationId,worktreeId:b.worktreeId,incarnation:b.incarnation,taskBaseCommit:b.taskBaseCommit}});
 }

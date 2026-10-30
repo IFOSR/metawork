@@ -24,10 +24,6 @@ const MISSING_REASON_NOTE: Record<string, string> = {
  */
 export function WorkspaceChangesCard({ changes, delivered }: { changes: Changes; delivered: readonly string[] }) {
   const deliveredSet = new Set(delivered);
-  // In-place Workspace execution updates the user's files directly. An empty
-  // public-delivery list therefore does not mean the observed files were not
-  // delivered; it means there is no separate publication receipt to compare.
-  const hasDeliveryReceipt = delivered.length > 0;
   return (
     <section className="workspace-changes-card" aria-label="本轮改动">
       <header className="workspace-changes-head">
@@ -41,11 +37,11 @@ export function WorkspaceChangesCard({ changes, delivered }: { changes: Changes;
         <ul className="workspace-changes-list">
           {changes.files.map(file => (
             <li key={file.path} data-scratch={file.scratch === true}
-              data-delivered={hasDeliveryReceipt ? deliveredSet.has(file.path) : undefined}>
+              data-delivered={deliveredSet.has(file.path)}>
               <code>{file.path}</code>
               {file.scratch && <span className="workspace-changes-badge">临时</span>}
-              {hasDeliveryReceipt && !file.scratch && !deliveredSet.has(file.path)
-                && <span className="workspace-changes-badge">未登记</span>}
+              {!file.scratch && !deliveredSet.has(file.path)
+                && <span className="workspace-changes-badge">尚未写回</span>}
             </li>
           ))}
         </ul>
