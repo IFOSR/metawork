@@ -12,6 +12,7 @@ import { spawnSync } from 'node:child_process';
 import { existsSync, mkdirSync, readFileSync, rmSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { build } from 'esbuild';
 
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const lock = JSON.parse(readFileSync(join(repoRoot, 'memory', 'engine.lock.json'), 'utf8'));
@@ -107,15 +108,14 @@ if (!gatewayServerSource.includes('ftsAvailable: this.core.getVectorStore()?.isF
   }
 }
 mkdirSync(dirname(gatewayOutput), { recursive: true });
-run(process.execPath, [
-  join(repoRoot, 'node_modules', 'esbuild', 'bin', 'esbuild'),
-  gatewayEntry,
-  '--bundle',
-  '--platform=node',
-  '--format=esm',
-  '--packages=external',
-  `--outfile=${gatewayOutput}`,
-], repoRoot);
+await build({
+  entryPoints: [gatewayEntry],
+  bundle: true,
+  platform: 'node',
+  format: 'esm',
+  packages: 'external',
+  outfile: gatewayOutput,
+});
 
 if (!existsSync(join(target, lock.entry))) {
   throw new Error(
