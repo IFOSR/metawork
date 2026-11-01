@@ -282,10 +282,10 @@ export function isCurrentConversationRecordRequest(input: {
   requestId: number;
   latestRequestId: number;
   requestedSessionId: string;
-  browsedSessionId: string | null;
+  currentSessionId: string | null;
 }): boolean {
   return input.requestId === input.latestRequestId
-    && input.requestedSessionId === input.browsedSessionId;
+    && input.requestedSessionId === input.currentSessionId;
 }
 
 export function retainTerminalLiveTurnInRecord(

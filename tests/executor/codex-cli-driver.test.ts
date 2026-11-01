@@ -144,18 +144,15 @@ describe('CodexCliDriver', () => {
         item: { type: 'agent_message', text: 'Implemented safely' },
       }),
     })).toBe('Implemented safely');
-    // 隐藏思维链内容不透出，但"正在推理"里程碑会流出。
+    // 隐藏思维链内容不透出，也不制造抽象的推理进度。
     expect(driver.parseProgressLine?.({
       stream: 'stdout',
       line: JSON.stringify({
         type: 'item.started',
         item: { type: 'reasoning', text: 'must not appear' },
       }),
-    })).toEqual({
-      kind: 'status',
-      text: 'Executor is reasoning through the next step',
-    });
-    // 工作区命令带脱敏后的命令摘录。
+    })).toBeNull();
+    // 工作区命令和真实返回结果直接流出。
     expect(driver.parseProgressLine?.({
       stream: 'stdout',
       line: JSON.stringify({
@@ -164,9 +161,9 @@ describe('CodexCliDriver', () => {
       }),
     })).toEqual({
       kind: 'status',
-      text: 'Executor started workspace command: cat secret.txt',
+      text: 'Executor started workspace command\nCommand: cat secret.txt',
     });
-    // MCP 工具带工具名与白名单参数摘要。
+    // MCP 工具带工具名与实际输入。
     expect(driver.parseProgressLine?.({
       stream: 'stdout',
       line: JSON.stringify({
@@ -175,7 +172,7 @@ describe('CodexCliDriver', () => {
       }),
     })).toEqual({
       kind: 'skill',
-      text: 'Executor started MCP tool: fetch_page — https://example.test/report',
+      text: 'Executor started MCP tool: fetch_page\nInput: https://example.test/report',
     });
     // 助手叙述脱敏后流出。
     expect(driver.parseProgressLine?.({

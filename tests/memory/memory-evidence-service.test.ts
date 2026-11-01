@@ -3,6 +3,7 @@ import Database from 'better-sqlite3';
 import { runMigrations } from '../../src/storage/migrations.js';
 import { MemoryEvidenceService } from '../../src/memory/memory-evidence-service.js';
 import { MemoryService } from '../../src/memory/memory-service.js';
+import { MemoryRecallRepo } from '../../src/storage/memory-recall-repo.js';
 import { MemoryBindingsRepo } from '../../src/storage/memory-bindings-repo.js';
 import { MemoryFlushCursorRepo } from '../../src/storage/memory-flush-cursor-repo.js';
 import { SqliteMemoryTurnSource } from '../../src/storage/memory-turn-source.js';
@@ -37,6 +38,7 @@ class StubPort implements MemoryPort {
     return {
       id: 'tdai-1', type: 'instruction', content: this.body, background: null,
       createdAt: '2026-10-22T00:00:00.000Z', updatedAt: '2026-10-22T00:00:00.000Z',
+      revision: 'rev-1', layer: 'l1',
     };
   }
   async listAssets() { return { items: [], total: 0 }; }
@@ -53,12 +55,14 @@ function buildService(db: Database.Database, port: MemoryPort) {
     cursors: new MemoryFlushCursorRepo(db),
     turns: new SqliteMemoryTurnSource(db),
   });
+  const recallRepo = new MemoryRecallRepo(db);
   const evidence = new MemoryEvidenceService({
     resolveService: () => service,
     evidenceRepo: new TaskExecutionEvidenceRepo(db),
+    recallRepo,
     maxStoredChars: 8_192,
   });
-  return { bindings, service, evidence };
+  return { bindings, service, recallRepo, evidence };
 }
 
 describe('MemoryEvidenceService', () => {
@@ -77,12 +81,14 @@ describe('MemoryEvidenceService', () => {
       { kind: 'memory', memoryId: 'mem-1' },
       { kind: 'memory', memoryId: 'mem-2' },
     ];
-    expect(MemoryEvidenceService.collectMemoryRefs(refs)).toEqual(['mem-1', 'mem-2']);
+    expect(MemoryEvidenceService.collectMemoryRefs(refs)).toEqual([
+      { memoryId: 'mem-1' }, { memoryId: 'mem-2' },
+    ]);
   });
 
   it('materializes a referenced memory into the task evidence catalog', async () => {
     const { bindings, evidence } = buildService(db, port);
-    const binding = bindings.upsert({ tdaiMemoryId: 'tdai-1', accountId: ACCOUNT });
+    const binding = bindings.upsert({ tdaiMemoryId: 'tdai-1', accountId: ACCOUNT, revision: 'rev-1' });
     const result = await evidence.materialize({
       accountId: ACCOUNT,
       taskId: 'task-1',
@@ -93,7 +99,7 @@ describe('MemoryEvidenceService', () => {
     const row = db.prepare('SELECT kind, source_id, content FROM task_execution_evidence WHERE task_id = ?')
       .get('task-1') as { kind: string; source_id: string; content: string };
     expect(row.kind).toBe('long_term_memory');
-    expect(row.source_id).toBe(binding.memoryId);
+    expect(row.source_id).toBe('l1:tdai-1');
     expect(row.content).toBe('用户偏好中文表格输出。');
   });
 
@@ -139,12 +145,38 @@ describe('MemoryEvidenceService', () => {
       .toEqual({ total: 0 });
   });
 
-  it('reuses an already materialized evidence row', async () => {
+  it('refuses materialization when the body changed after the recalled revision', async () => {
+    const { bindings, recallRepo, evidence } = buildService(db, port);
+    const binding = bindings.upsert({ tdaiMemoryId: 'tdai-1', accountId: ACCOUNT, revision: 'rev-old' });
+    recallRepo.replace({ accountId: ACCOUNT, conversationId: 'conv-1', candidates: [
+      { memoryId: binding.memoryId, type: 'instruction', preview: '偏好', score: 1, revision: 'rev-old' },
+    ] });
+    const result = await evidence.materialize({
+      accountId: ACCOUNT, taskId: 'task-1', conversationId: 'conv-1',
+      memoryIds: [{ memoryId: binding.memoryId, revision: 'rev-old' }],
+    });
+    expect(result.materialized).toEqual([]);
+    expect(result.failed[0]?.reason).toContain('memory_revision_changed');
+    expect(db.prepare('SELECT COUNT(*) AS total FROM task_execution_evidence').get()).toEqual({ total: 0 });
+  });
+
+  it('requires a versioned reference to belong to the current conversation recall snapshot', async () => {
+    const { bindings, evidence } = buildService(db, port);
+    const binding = bindings.upsert({ tdaiMemoryId: 'tdai-1', accountId: ACCOUNT, revision: 'rev-1' });
+    const result = await evidence.materialize({
+      accountId: ACCOUNT, taskId: 'task-1', conversationId: 'conv-1',
+      memoryIds: [{ memoryId: binding.memoryId, revision: 'rev-1' }],
+    });
+    expect(result.failed[0]?.reason).toContain('memory_not_in_recall_snapshot');
+    expect(port.fetchCount).toBe(0);
+  });
+
+  it('revalidates the pinned body before reusing an already materialized evidence row', async () => {
     const { bindings, evidence } = buildService(db, port);
     const binding = bindings.upsert({ tdaiMemoryId: 'tdai-1', accountId: ACCOUNT });
     await evidence.materialize({ accountId: ACCOUNT, taskId: 'task-1', memoryIds: [binding.memoryId] });
     await evidence.materialize({ accountId: ACCOUNT, taskId: 'task-1', memoryIds: [binding.memoryId] });
-    expect(port.fetchCount).toBe(1);
+    expect(port.fetchCount).toBe(2);
   });
 
   it('truncates the body to the per-memory budget', async () => {

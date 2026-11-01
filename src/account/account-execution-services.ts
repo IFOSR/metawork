@@ -60,7 +60,16 @@ export function buildAccountExecutionServices(deps: {
 
   const registerLocalDriver = (driver: CodexCliDriver | PiCliDriver) => {
     driverRegistry.register(driver, input => {
-      if ((deps.attemptExecutionBackend.kind ?? 'container') === 'in_place') {
+      // The Executor adapter follows the backend's path semantics. Conversation
+      // Git worktrees are still executed by a host CLI, so their backend is
+      // `worktree`/`native` with `pathMode: 'native'`; routing them through the
+      // retained container compatibility adapter makes it fail at dispatch
+      // with "requires a container execution backend".
+      const nativeExecution = deps.attemptExecutionBackend.pathMode === 'native'
+        || deps.attemptExecutionBackend.kind === 'in_place'
+        || deps.attemptExecutionBackend.kind === 'native'
+        || deps.attemptExecutionBackend.kind === 'worktree';
+      if (nativeExecution) {
         const command = resolveExecutorTool(input.harness.transport === 'local-cli'
           ? input.harness.command : driver.id === 'pi-cli' ? 'pi' : 'codex');
         const boundDriver = driver.id === 'pi-cli'

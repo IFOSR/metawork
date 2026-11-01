@@ -43,7 +43,7 @@ function deferred<T>() {
 function row(id: string, title = id): WebSessionMetadata {
   return {
     id, title, workspaceId: 'workspace_a', createdAt: '2026-09-26T00:00:00Z',
-    updatedAt: '2026-09-26T00:00:00Z', active: false, archived: false, preview: title,
+    updatedAt: '2026-09-26T00:00:00Z', archived: false, preview: title,
     activity: { state: 'idle', taskId: null, updatedAt: '2026-09-26T00:00:00Z' },
     workspace: null,
   };
@@ -52,7 +52,7 @@ const workspace = { id: 'workspace_a', canonicalPath: '/a' };
 const config = { revisionId: 'revision_a' };
 const firstPage = Array.from({ length: 50 }, (_, n) => row(`conversation_${n}`));
 const page = (conversations: WebSessionMetadata[], nextCursor: string | null = null) => ({
-  activeWorkspaceId: workspace.id, activeConversationId: null as string | null, conversations, nextCursor,
+  activeWorkspaceId: workspace.id, currentConversationId: null as string | null, conversations, nextCursor,
 });
 const cleanups: Array<() => void> = [];
 
@@ -82,7 +82,7 @@ function fixture() {
     })),
     selectWorkspace: vi.fn(async () => ({
       selection: { status: 'accepted', workspace, conversations: [], nextCursor: null },
-      activeWorkspaceId: workspace.id, activeSessionId: null,
+      activeWorkspaceId: workspace.id, currentSessionId: null,
     })),
   };
   const state: Record<string, unknown> = {
@@ -93,7 +93,6 @@ function fixture() {
   let ws!: {
     onWorkspaceDirectory: (id: string, active: null, rows: WebSessionMetadata[], cursor: string | null) => void;
     onHello: (id: string | null) => void;
-    onActiveSessionChanged: (id: string) => void;
   };
   const scope = {
     ...requests, NavigationDirectoryChanges, selectInitialSessionId,
@@ -103,9 +102,9 @@ function fixture() {
     authenticated: true, startupLaunchSuggestion: null as { workspaceHint: string } | null,
     activeWorkspaceId: null as string | null, search: '',
     httpRef: ref<unknown>(null), wsRef: ref<unknown>(null),
-    activeConversationRef: ref<string | null>(null), activeWorkspaceRef: ref<string | null>(null),
+    activeWorkspaceRef: ref<string | null>(null),
     startupLaunchAppliedRef: ref(false),
-    browsedConversationRef: ref<string | null>(null), liveTurnRef: ref(null),
+    currentConversationRef: ref<string | null>(null), liveTurnRef: ref(null),
     recordCacheRef: ref(new Map()), drafts: ref(new Map()), pendingInputsRef: ref(new Map()),
     viewportMemory: ref({ anchors: new Map(), heights: new Map() }),
     loadRecordRef: ref<unknown>(null), recordRequestRef: ref(0), conversationRequestRef: ref(0),
@@ -122,7 +121,7 @@ function fixture() {
   };
   const setters = Object.fromEntries([
     'workspaces', 'sessions', 'activeWorkspaceId', 'configurationRuntime', 'directoryCursor',
-    'selectedRecord', 'activeSessionId', 'browsedSessionId', 'activationNotice',
+    'selectedRecord', 'currentSessionId', 'activationNotice', 'route',
     'agentReadiness', 'connected', 'authenticated', 'authError',
     'liveTurn', 'previewState', 'executionDetail', 'observationClient', 'draft', 'pendingAttachments', 'pendingInputRevision',
   ].map(key => [`set${key[0]!.toUpperCase()}${key.slice(1)}`, (value: unknown) => {
@@ -139,10 +138,18 @@ function fixture() {
     start: () => run('new WsClient'),
     directoryEffect: () => run('const requestedWorkspaceId'),
     selectFromSocket(rows: WebSessionMetadata[] = firstPage, cursor: string | null = 'initial_more') {
+      // Workspace selection is owned by navigation, not a socket directory event.
+      scope.activeWorkspaceRef.current = workspace.id;
+      scope.activeWorkspaceId = workspace.id;
+      state.activeWorkspaceId = workspace.id;
       ws.onWorkspaceDirectory(workspace.id, null, rows, cursor);
     },
     hello: (id: string | null) => ws.onHello(id),
-    activate: (id: string) => ws.onActiveSessionChanged(id),
+    activate: (id: string) => {
+      scope.conversationNavigationRef.current.generation += 1;
+      scope.currentConversationRef.current = id;
+      state.currentSessionId = id;
+    },
     search(query: string) {
       scope.search = scope.searchRef.current = query;
       return run('const requestedWorkspaceId');
@@ -151,6 +158,22 @@ function fixture() {
 }
 
 describe('App startup navigation effects', () => {
+  it('does not choose a default from hello or directory recency and retains off-page user selection', async () => {
+    const f = fixture();
+    f.start();
+    f.hello('conversation_1');
+    f.catalog.resolve({ activeWorkspaceId: workspace.id, workspaces: [workspace] });
+    f.initial.resolve(page(firstPage));
+    await vi.advanceTimersByTimeAsync(0);
+    expect(f.state.currentSessionId).toBeNull();
+    f.activate('conversation_51');
+    f.selectFromSocket(firstPage, 'more');
+    f.hello('conversation_1');
+    expect(f.state.currentSessionId).toBe('conversation_51');
+    expect(f.scope.currentConversationRef.current).toBe('conversation_51');
+    expect(f.http.attachConversation).not.toHaveBeenCalled();
+  });
+
   it('ignores a deferred search result after clearing back to the cached unfiltered page', async () => {
     const f = fixture();
     f.start();
@@ -174,7 +197,7 @@ describe('App startup navigation effects', () => {
   it('clears inaccessible cached rows when both authenticated effects execute with retained React state', async () => {
     const f = fixture();
     f.scope.activeWorkspaceRef.current = f.scope.activeWorkspaceId = workspace.id;
-    f.scope.browsedConversationRef.current = 'old_conversation';
+    f.scope.currentConversationRef.current = 'old_conversation';
     f.scope.directoryLoadedRef.current = { workspaceId: workspace.id, query: '' };
     f.state.sessions = [row('old_conversation')];
     f.start();
@@ -203,7 +226,7 @@ describe('App startup navigation effects', () => {
     expect(f.http.selectWorkspace).not.toHaveBeenCalledWith('/original-launch');
   });
 
-  it('does not overwrite a newer off-page socket activation with a delayed startup page', async () => {
+  it('does not overwrite a newer off-page user selection with a delayed startup page', async () => {
     const f = fixture();
     f.scope.activeWorkspaceRef.current = workspace.id;
     f.start();
@@ -213,8 +236,7 @@ describe('App startup navigation effects', () => {
     f.initial.resolve(page(firstPage));
     await vi.advanceTimersByTimeAsync(0);
     expect(f.http.attachConversation).not.toHaveBeenCalled();
-    expect(f.state.activeSessionId).toBe('conversation_51');
-    expect(f.state.browsedSessionId).toBe('conversation_51');
+    expect(f.state.currentSessionId).toBe('conversation_51');
     expect(f.http.getConversation).not.toHaveBeenCalled();
   });
 
@@ -223,7 +245,7 @@ describe('App startup navigation effects', () => {
     f.start();
     if (timing === 'before') f.hello('conversation_1');
     f.catalog.resolve({ activeWorkspaceId: workspace.id, workspaces: [workspace] });
-    f.initial.resolve({ ...page([row('conversation_1')]), activeConversationId: 'conversation_1' });
+    f.initial.resolve({ ...page([row('conversation_1')]), currentConversationId: 'conversation_1' });
     await vi.advanceTimersByTimeAsync(0);
     if (timing === 'after') f.hello('conversation_1');
     await vi.advanceTimersByTimeAsync(0);
@@ -233,11 +255,10 @@ describe('App startup navigation effects', () => {
   it('restores the prior authorized Workspace and Conversation after Server restart and reauthentication', async () => {
     const f = fixture();
     f.scope.activeWorkspaceRef.current = workspace.id;
-    f.scope.browsedConversationRef.current = 'conversation_5';
-    f.scope.activeConversationRef.current = 'conversation_5';
+    f.scope.currentConversationRef.current = 'conversation_5';
     f.http.selectWorkspace.mockResolvedValue({
       selection: { status: 'accepted', workspace, conversations: firstPage, nextCursor: null },
-      activeWorkspaceId: workspace.id, activeSessionId: null,
+      activeWorkspaceId: workspace.id, currentSessionId: null,
     });
     f.start();
     f.hello(null);
@@ -246,15 +267,14 @@ describe('App startup navigation effects', () => {
     expect(f.http.selectWorkspace).toHaveBeenCalledWith('/a');
     expect(f.http.attachConversation).not.toHaveBeenCalled();
     expect(f.state.activeWorkspaceId).toBe(workspace.id);
-    expect(f.state.activeSessionId).toBe('conversation_5');
-    expect(f.state.browsedSessionId).toBe('conversation_5');
+    expect(f.state.currentSessionId).toBe('conversation_5');
     expect(f.http.getConversation).not.toHaveBeenCalled();
   });
 
   it('restores an off-page selection with metadata only and no execution attachment', async () => {
     const f = fixture();
     f.scope.activeWorkspaceRef.current = workspace.id;
-    f.scope.browsedConversationRef.current = 'conversation_51';
+    f.scope.currentConversationRef.current = 'conversation_51';
     let attached = false;
     f.http.attachConversation.mockImplementation(async sessionId => {
       attached = true;
@@ -266,7 +286,7 @@ describe('App startup navigation effects', () => {
     });
     f.http.selectWorkspace.mockResolvedValue({
       selection: { status: 'accepted', workspace, conversations: firstPage, nextCursor: 'more' },
-      activeWorkspaceId: workspace.id, activeSessionId: null,
+      activeWorkspaceId: workspace.id, currentSessionId: null,
     });
     f.start();
     f.catalog.resolve({ activeWorkspaceId: null, workspaces: [workspace] });
@@ -274,7 +294,7 @@ describe('App startup navigation effects', () => {
     expect(f.http.getConversationMetadata).toHaveBeenCalledWith('conversation_51');
     expect(f.http.attachConversation).not.toHaveBeenCalled();
     expect(f.http.getConversation).not.toHaveBeenCalled();
-    expect(f.state.browsedSessionId).toBe('conversation_51');
+    expect(f.state.currentSessionId).toBe('conversation_51');
     expect(f.http.getConversation).not.toHaveBeenCalled();
     expect(f.state.sessions).toHaveLength(firstPage.length);
     expect(f.state.sessions).toEqual(expect.arrayContaining(firstPage));
@@ -283,7 +303,7 @@ describe('App startup navigation effects', () => {
   it('does not attach a remembered off-page Conversation belonging to another Workspace', async () => {
     const f = fixture();
     f.scope.activeWorkspaceRef.current = workspace.id;
-    f.scope.browsedConversationRef.current = 'conversation_moved';
+    f.scope.currentConversationRef.current = 'conversation_moved';
     f.http.getConversationMetadata.mockResolvedValue({ id: 'conversation_moved', workspaceId: 'workspace_b', title: 'moved' });
     f.start();
     f.catalog.resolve({ activeWorkspaceId: null, workspaces: [workspace] });
@@ -291,32 +311,31 @@ describe('App startup navigation effects', () => {
     expect(f.http.getConversationMetadata).toHaveBeenCalledWith('conversation_moved');
     expect(f.http.attachConversation).not.toHaveBeenCalled();
     expect(f.http.getConversation).not.toHaveBeenCalled();
-    expect(f.state.browsedSessionId).toBeNull();
+    expect(f.state.currentSessionId).toBeNull();
     expect(f.state.selectedRecord).toBeNull();
   });
 
   it('does not restore an off-page Conversation after newer navigation wins', async () => {
     const f = fixture();
     f.scope.activeWorkspaceRef.current = workspace.id;
-    f.scope.browsedConversationRef.current = 'conversation_51';
+    f.scope.currentConversationRef.current = 'conversation_51';
     const pending = deferred<Awaited<ReturnType<typeof f.http.getConversationMetadata>>>();
     f.http.getConversationMetadata.mockReturnValueOnce(pending.promise);
     f.start();
     f.catalog.resolve({ activeWorkspaceId: null, workspaces: [workspace] });
     await vi.advanceTimersByTimeAsync(0);
     f.scope.conversationNavigationRef.current.generation += 1;
-    f.scope.browsedConversationRef.current = 'newer_conversation';
+    f.scope.currentConversationRef.current = 'newer_conversation';
     pending.resolve({ id: 'conversation_51', workspaceId: workspace.id, title: 'restored' });
     await vi.advanceTimersByTimeAsync(0);
     expect(f.http.getConversation).not.toHaveBeenCalled();
-    expect(f.scope.browsedConversationRef.current).toBe('newer_conversation');
+    expect(f.scope.currentConversationRef.current).toBe('newer_conversation');
   });
 
   it('does not restore inaccessible Workspace hints or leave their stale directory and content visible', async () => {
     const f = fixture();
     f.scope.activeWorkspaceRef.current = 'unavailable_workspace';
-    f.scope.browsedConversationRef.current = 'old_conversation';
-    f.scope.activeConversationRef.current = 'old_conversation';
+    f.scope.currentConversationRef.current = 'old_conversation';
     f.state.sessions = [row('old_conversation')];
     f.state.selectedRecord = { session: row('old_conversation'), turns: [] };
     f.start();
@@ -324,8 +343,7 @@ describe('App startup navigation effects', () => {
     await vi.advanceTimersByTimeAsync(0);
     expect(f.http.selectWorkspace).not.toHaveBeenCalled();
     expect(f.http.attachConversation).not.toHaveBeenCalled();
-    expect(f.state.activeSessionId).toBeNull();
-    expect(f.state.browsedSessionId).toBeNull();
+    expect(f.state.currentSessionId).toBeNull();
     expect(f.state.selectedRecord).toBeNull();
     expect(f.state.sessions).toEqual([]);
   });

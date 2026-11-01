@@ -20,7 +20,7 @@ export const MAX_WEB_SESSION_TURNS = 100;
 export const MAX_WEB_SESSION_EVENTS_PER_TURN = 10_000;
 
 export type WebSessionAvailability = 'active' | 'browsable' | 'activation_blocked';
-export type ConversationTurnStatus = Exclude<InteractionTraceStatus, 'running'>;
+export type ConversationTurnStatus = InteractionTraceStatus;
 
 /** Independent delivery state for answers that arrive after execution facts. */
 export type ResultDeliveryStatus = 'none' | 'streaming' | 'verifying' | 'ready' | 'failed';
@@ -35,7 +35,6 @@ export interface WebSessionMetadata {
   title: string;
   createdAt: string;
   updatedAt: string;
-  active: boolean;
   archived: boolean;
 }
 

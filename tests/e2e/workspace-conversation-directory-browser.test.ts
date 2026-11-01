@@ -26,6 +26,78 @@ const runBrowserE2e = process.env.RUN_BROWSER_E2E === '1';
 const e2e = runBrowserE2e ? describe : describe.skip;
 
 e2e('Workspace Conversation directory browser flow', () => {
+  it('keeps one current conversation across create, switch, reconnect, send, stop and delete', async () => {
+    const server = await startObservationFixture(resolve('web/dist'));
+    const browser = await launchBrowser(server.port, 'current-session');
+    const current = `document.querySelectorAll('.session-row[data-current="true"]').length`;
+    const currentTitle = `document.querySelector('.session-row[data-current="true"] strong')?.textContent`;
+    const select = async (label: string) => {
+      await browser.cdp.evaluate(`[...document.querySelectorAll('.session-row')].find(row => row.innerText.includes('${label}')).click()`);
+      await waitForExpression(browser.cdp, `${currentTitle} === '${label}'`);
+      expect(await browser.cdp.evaluate(current)).toBe(1);
+    };
+    const remove = async (label: string) => {
+      await browser.cdp.evaluate(`[...document.querySelectorAll('.session-row')].find(row => row.innerText.includes('${label}')).querySelector('.delete-session').click()`);
+    };
+    try {
+      await waitForExpression(browser.cdp, `document.querySelector('.new-session-button')?.disabled === false`);
+      await browser.cdp.evaluate(`document.querySelector('.new-session-button').click()`);
+      await waitForExpression(browser.cdp, `${currentTitle} === 'Shared workspace task'`);
+      await browser.cdp.evaluate(`document.querySelector('.new-session-button').click()`);
+      await waitForExpression(browser.cdp, `${currentTitle} === 'Other running task'`);
+      expect(await browser.cdp.evaluate(current)).toBe(1);
+      await select('Shared workspace task');
+      server.sendStaleSelection();
+      server.reconnect();
+      await delay(1500);
+      await waitForExpression(browser.cdp, `document.querySelector('.new-session-button')?.disabled === false`);
+      expect(await browser.cdp.evaluate(currentTitle)).toBe('Shared workspace task');
+      expect(await browser.cdp.evaluate(current)).toBe(1);
+      await browser.cdp.evaluate(`(() => {
+        const input = document.querySelector('textarea');
+        Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value').set.call(input, 'message to A');
+        input.dispatchEvent(new Event('input', { bubbles: true }));
+      })()`);
+      await waitForExpression(browser.cdp, `document.querySelector('.composer button[type="submit"]')?.disabled === false`);
+      await browser.cdp.evaluate(`document.querySelector('.composer button[type="submit"]').click()`);
+      await delay(100);
+      expect(server.commands).toContainEqual({ conversationId: 'conv-shared',
+        command: { kind: 'user_message', text: 'message to A', attachments: [] } });
+      // A late delete response for B must not clear a newer selection of A.
+      await select('Other running task');
+      const releaseDelete = server.pauseNextDelete();
+      await remove('Other running task');
+      await select('Shared workspace task');
+      releaseDelete();
+      await waitForExpression(browser.cdp, `document.querySelectorAll('.session-row').length === 1`);
+      expect(await browser.cdp.evaluate(currentTitle)).toBe('Shared workspace task');
+      await browser.cdp.evaluate(`document.querySelector('.new-session-button').click()`);
+      await waitForExpression(browser.cdp, `${currentTitle} === 'Other running task'`);
+      server.setRunning();
+      await waitForExpression(browser.cdp, `document.querySelector('.session-row[data-current="true"]')?.dataset.activity === 'executing'`);
+      await remove('Other running task');
+      await waitForExpression(browser.cdp, `document.body.innerText.includes('请先停止后再删除')`);
+      expect(await browser.cdp.evaluate(`document.querySelectorAll('.session-row').length`)).toBe(2);
+      // Refresh observation activity after the fixture starts its task.
+      server.reconnect();
+      await delay(1500);
+      await waitForExpression(browser.cdp, `document.querySelector('.stop-button')?.disabled === false`);
+      await browser.cdp.evaluate(`document.querySelector('.stop-button').click()`);
+      await waitForExpression(browser.cdp, `document.body.innerText.includes('已请求停止')`);
+      expect(server.commands).toContainEqual({ conversationId: 'conv-other', command: {
+        kind: 'cancel_task', taskId: 'task-conv-other', expectedExecutionGeneration: 'generation',
+      } });
+      await remove('Other running task');
+      await waitForExpression(browser.cdp, `document.querySelectorAll('.session-row').length === 1`);
+      expect(await browser.cdp.evaluate(current)).toBe(0);
+      expect(await browser.cdp.evaluate(`location.hash.includes('conversation=')`)).toBe(false);
+      await select('Shared workspace task');
+      await remove('Shared workspace task');
+      await waitForExpression(browser.cdp, `document.querySelectorAll('.session-row').length === 0`);
+      expect(await browser.cdp.evaluate(current)).toBe(0);
+    } finally { await browser.close(); await server.close(); }
+  }, 45_000);
+
   it('shares summaries and switches cached observations without attaching or replaying execution', async () => {
     const root = resolve(fileURLToPath(new URL('../../', import.meta.url)));
     const webDist = join(root, 'web', 'dist');
@@ -98,9 +170,10 @@ e2e('Workspace Conversation directory browser flow', () => {
         `document.body.innerText.includes('DETAIL_RESULT')`,
       );
 
-      server.activateOtherConversationForSecondBrowser();
+      await second.cdp.evaluate(`document.querySelector('.new-session-button').click()`);
       await waitForExpression(second.cdp, `[...document.querySelectorAll('.session-row')].some(row => row.innerText.includes('Other running task'))`);
-      await second.cdp.evaluate(`[...document.querySelectorAll('.session-row')].find(row => row.innerText.includes('Other running task')).click()`);
+      await waitForExpression(second.cdp, `document.querySelector('.session-row[data-current="true"] strong')?.textContent === 'Other running task'`);
+      await second.cdp.evaluate(`document.querySelector('.back-to-latest')?.click()`);
       await waitForExpression(
         second.cdp,
         `document.body.innerText.includes('OTHER_RUNNING_TASK')`,
@@ -109,6 +182,7 @@ e2e('Workspace Conversation directory browser flow', () => {
         [...document.querySelectorAll('.session-row')]
           .find(row => row.innerText.includes('Shared workspace task')).click()
       `);
+      await second.cdp.evaluate(`document.querySelector('.back-to-latest')?.click()`);
       await waitForExpression(
         second.cdp,
         `document.body.innerText.includes('ORIGINAL_RUNNING_STEP')`,
@@ -174,19 +248,26 @@ e2e('Workspace Conversation directory browser flow', () => {
 async function startObservationFixture(webDist: string): Promise<{
   port: number;
   legacyReads(): number;
-  setRunning(): void;
-  activateOtherConversationForSecondBrowser(): void;
+  setRunning(value?: boolean): void;
+  reconnect(): void;
+  pauseNextDelete(): () => void;
+  sendStaleSelection(): void;
+  commands: Array<{ conversationId: string; command: { kind: string; text?: string; taskId?: string; expectedExecutionGeneration?: string } }>;
+
   close(): Promise<void>;
 }> {
   const sockets = new Map<Socket, string>();
   const clientState = new Map<string, {
     activeWorkspaceId: string;
-    activeConversationId: string | null;
+    currentConversationId: string | null;
   }>();
   let nextClientId = 0;
   let conversationCreated = false;
   let otherConversationCreated = false;
   let running = false;
+  let deleteGate: Promise<void> | null = null;
+  const commands: Array<{ conversationId: string; command: { kind: string; text?: string; taskId?: string; expectedExecutionGeneration?: string } }> = [];
+
   let legacyReads = 0;
   const dataRoot = await mkdtemp(join(tmpdir(), 'observation-browser-db-'));
   const db = new Database(join(dataRoot, 'account.db'));
@@ -208,7 +289,8 @@ async function startObservationFixture(webDist: string): Promise<{
     sourceSequence: journal.sourceSequence, authorize: async (_account, id) => ['conv-shared', 'conv-other'].includes(id),
     onError: error => { throw error; }, activity: async (_account, id) => ({ tasks: running ? [{
       taskId: `task-${id}`, title: id === 'conv-shared' ? 'ORIGINAL_RUNNING_STEP' : 'OTHER_RUNNING_TASK',
-      executionGeneration: 'generation', phase: 'executing', explanation: '正在执行', canCancel: true,
+      executionGeneration: 'generation', status: 'running', statusLabel: '执行中', stateVersion: 1,
+      reason: { code: 'running', message: '正在执行' }, pendingActions: [], phase: null, explanation: '正在执行', canCancel: true,
     }] : [], nextCursor: null, pendingInteractions: [] }),
   });
 
@@ -230,6 +312,21 @@ async function startObservationFixture(webDist: string): Promise<{
       onMessage: text => {
         const message = JSON.parse(text);
         if (message.type === 'unobserve') { handles.get(message.observationId)?.handle?.close(); handles.delete(message.observationId); }
+        if (message.type === 'command') {
+          const { requestId, scope, command } = message.envelope;
+          const conversationId = scope.selection.conversationId;
+          commands.push({ conversationId, command });
+          ws.send(JSON.stringify({ type: 'receipt', receipt: { requestId, status: 'accepted', conversationId } }));
+          if (command.kind === 'get_query_bill_for_turn') ws.send(JSON.stringify({ type: 'gateway_reply',
+            event: { requestId, kind: 'query_bill', payload: { turnId: command.turnId, turnBill: null } } }));
+          if (command.kind === 'cancel_task' || command.kind === 'cancel_turn') {
+            running = false;
+            broadcastDirectory();
+            ws.send(JSON.stringify({ type: 'gateway_reply', event: { requestId, kind: 'command_result',
+              payload: { targetConversationId: conversationId, status: 'completed' } } }));
+          }
+          return;
+        }
         if (message.type !== 'observe') return;
         const entry: { handle?: ConversationObservationHandle } = {};
         handles.set(message.observationId, entry);
@@ -239,8 +336,8 @@ async function startObservationFixture(webDist: string): Promise<{
         }).then(handle => { if (handles.get(message.observationId) === entry) entry.handle = handle; else handle.close(); });
       },
     });
-    ws.send(JSON.stringify({ type: 'hello', sessionId: clientState.get(clientId)?.activeConversationId ?? null,
-      capabilities: ['conversation_observation_v1', 'conversation_resources_v1', 'multi_client_control_v1'],
+    ws.send(JSON.stringify({ type: 'hello', currentSessionId: clientState.get(clientId)?.currentConversationId ?? null,
+      capabilities: ['task_view_v2', 'conversation_observation_v1', 'conversation_resources_v1', 'multi_client_control_v1'],
       identity: { serverId: 'browser-fixture', accountId: 'local-default' } }));
   });
 
@@ -252,12 +349,16 @@ async function startObservationFixture(webDist: string): Promise<{
         clientId = `browser-${nextClientId += 1}`;
         clientState.set(clientId, {
           activeWorkspaceId: 'workspace-a',
-          activeConversationId: null,
+          currentConversationId: null,
         });
         response.setHeader('Set-Cookie', `browser_client=${clientId}; Path=/; SameSite=Strict`);
       }
       json(response, { authenticated: true, launchContext: null });
       return;
+    }
+    if (url.pathname === '/api/official-auth/status') {
+      json(response, { state: 'active', account: { email: 'browser@example.test' },
+        entitlement: { plan: 'internal_perpetual', expiresAt: null } }); return;
     }
     if (url.pathname === '/api/ws/diagnostics') {
       json(response, { ok: true });
@@ -310,7 +411,7 @@ async function startObservationFixture(webDist: string): Promise<{
       json(response, {
         selection: { status: 'accepted' },
         activeWorkspaceId: state.activeWorkspaceId,
-        activeSessionId: state.activeConversationId,
+        currentSessionId: state.currentConversationId,
       });
       return;
     }
@@ -320,12 +421,12 @@ async function startObservationFixture(webDist: string): Promise<{
       const workspaceId = decodeURIComponent(workspaceConversations[1]!);
       json(response, {
         activeWorkspaceId: workspaceId,
-        activeConversationId: state.activeConversationId,
+        currentConversationId: state.currentConversationId,
         conversations: workspaceId === 'workspace-a' && conversationCreated
           ? [
-            conversationSummary(state.activeConversationId === 'conv-shared', running),
+            conversationSummary(state.currentConversationId === 'conv-shared', running),
             ...(otherConversationCreated
-              ? [otherConversationSummary(state.activeConversationId === 'conv-other')]
+              ? [otherConversationSummary(running)]
               : []),
           ]
           : [],
@@ -333,20 +434,34 @@ async function startObservationFixture(webDist: string): Promise<{
       return;
     }
     if (workspaceConversations && request.method === 'POST') {
+      const second = conversationCreated;
+      if (second) otherConversationCreated = true;
       conversationCreated = true;
       state.activeWorkspaceId = 'workspace-a';
-      state.activeConversationId = 'conv-shared';
+      state.currentConversationId = second ? 'conv-other' : 'conv-shared';
       broadcastDirectory();
       json(response, {
-        session: conversationRecord(true),
-        activation: { state: 'active', sessionId: 'conv-shared' },
+        session: second ? otherConversationRecord(true) : conversationRecord(true),
+        activation: { state: 'active', sessionId: state.currentConversationId },
       }, 201);
       return;
+    }
+    const deleting = /^\/api\/conversations\/([^/]+)$/u.exec(url.pathname);
+    if (deleting && request.method === 'DELETE') {
+      if (deleteGate) { await deleteGate; deleteGate = null; }
+      if (running) { json(response, { error: '会话仍有未停止的任务，请先停止后再删除。' }, 409); return; }
+      const id = deleting[1]!;
+      if (id === 'conv-shared') conversationCreated = false;
+      else otherConversationCreated = false;
+      for (const socket of sockets.keys()) send(socket, { type: 'workspace_conversation_changed',
+        workspaceId: 'workspace-a', conversationId: id, removed: true });
+      response.writeHead(204); response.end(); return;
     }
     const resource = /^\/api\/conversations\/([^/]+)\/view(?:\/(.*))?$/u.exec(url.pathname);
     if (resource) {
       const id = resource[1]!;
       if (resource[2] === 'metadata') json(response, { id, workspaceId: 'workspace-a', title: id === 'conv-shared' ? 'Shared workspace task' : 'Other running task' });
+      else if (resource[2]?.startsWith('trace/')) json(response, { events: [], nextCursor: null });
       else if (resource[2] === 'activity') json(response, await observation.activity('local-default', id));
       else if (resource[2]?.startsWith('content/')) json(response, await observation.content('local-default', id, resource[2].slice(8), Number(url.searchParams.get('offset')), 32768));
       else json(response, await observation.page('local-default', id, url.searchParams.get('cursor') ?? undefined, undefined, url.searchParams.get('beforeTurn') ?? undefined));
@@ -379,22 +494,16 @@ async function startObservationFixture(webDist: string): Promise<{
       send(socket, {
         type: 'workspace_directory',
         activeWorkspaceId: 'workspace-a',
-        activeSessionId: state.activeConversationId,
+        currentSessionId: state.currentConversationId,
         sessions: conversationCreated
           ? [
-            conversationSummary(state.activeConversationId === 'conv-shared', running),
+            conversationSummary(state.currentConversationId === 'conv-shared', running),
             ...(otherConversationCreated
-              ? [otherConversationSummary(state.activeConversationId === 'conv-other')]
+              ? [otherConversationSummary(running)]
               : []),
           ]
           : [],
       });
-    }
-  }
-
-  function sendClient(clientId: string, message: unknown): void {
-    for (const [socket, socketClientId] of sockets) {
-      if (socketClientId === clientId) send(socket, message);
     }
   }
 
@@ -404,25 +513,16 @@ async function startObservationFixture(webDist: string): Promise<{
   return {
     port: address.port,
     legacyReads: () => legacyReads,
-    setRunning() {
-      running = true;
-      broadcastDirectory();
+    commands,
+    pauseNextDelete() {
+      let release!: () => void;
+      deleteGate = new Promise<void>(resolve => { release = resolve; });
+      return release;
     },
-    activateOtherConversationForSecondBrowser() {
-      otherConversationCreated = true;
-      const clientId = 'browser-2';
-      const state = clientState.get(clientId);
-      if (!state) throw new Error('second browser is not connected');
-      state.activeWorkspaceId = 'workspace-a';
-      state.activeConversationId = 'conv-other';
-
-      sendClient(clientId, {
-        type: 'turn_started',
-        requestId: 'req-other-running',
-        turnId: 'turn-other-running',
-        userInput: 'OTHER_RUNNING_TASK',
-        startedAt: '2026-08-27T08:02:00.000Z',
-      });
+    setRunning(value = true) { running = value; broadcastDirectory(); },
+    reconnect() { for (const socket of sockets.keys()) socket.destroy(); },
+    sendStaleSelection() {
+      for (const socket of sockets.keys()) send(socket, { type: 'current_session_changed', sessionId: 'conv-other' });
       broadcastDirectory();
     },
     async close() {
@@ -465,7 +565,6 @@ function conversationSummary(active: boolean, executing: boolean) {
     title: 'Shared workspace task',
     createdAt: '2026-08-27T08:00:00.000Z',
     updatedAt: '2026-08-27T08:01:00.000Z',
-    active,
     archived: false,
     preview: 'Shared workspace task',
     activity: {
@@ -504,19 +603,18 @@ function conversationRecord(active: boolean) {
   };
 }
 
-function otherConversationSummary(active: boolean) {
+function otherConversationSummary(executing: boolean) {
   return {
     id: 'conv-other',
     workspaceId: 'workspace-a',
     title: 'Other running task',
     createdAt: '2026-08-27T08:02:00.000Z',
     updatedAt: '2026-08-27T08:02:00.000Z',
-    active,
     archived: false,
     preview: 'OTHER_RUNNING_TASK',
     activity: {
-      state: 'executing',
-      taskId: 'task-other',
+      state: executing ? 'executing' : 'idle',
+      taskId: executing ? 'task-other' : null,
       updatedAt: '2026-08-27T08:02:00.000Z',
     },
     workspace: null,
@@ -652,6 +750,7 @@ async function waitForExit(process: ChildProcess): Promise<void> {
 }
 
 class CdpClient {
+  readonly errors: unknown[] = [];
   private nextId = 1;
   private readonly pending = new Map<number, {
     resolve(value: unknown): void;
@@ -662,9 +761,12 @@ class CdpClient {
     socket.addEventListener('message', event => {
       const message = JSON.parse(String(event.data)) as {
         id?: number;
+        method?: string;
+        params?: unknown;
         result?: unknown;
         error?: { message: string };
       };
+      if (message.method === 'Runtime.exceptionThrown') this.errors.push(message.params);
       if (!message.id) return;
       const pending = this.pending.get(message.id);
       if (!pending) return;
@@ -719,9 +821,9 @@ async function waitForExpression(cdp: CdpClient, expression: string): Promise<vo
     await delay(50);
   }
   const state = await cdp.evaluate(`(() => ({
-    text: document.body?.innerText ?? '',
+    text: document.body?.innerText.split('历史内容代码🙂').join('').slice(-5000) ?? '',
     html: document.body?.innerHTML?.slice(0, 1200) ?? '',
     url: location.href,
   }))()`);
-  throw new Error(`browser condition timed out: ${expression}\n${JSON.stringify(state)}`);
+  throw new Error(`browser condition timed out: ${expression}\n${JSON.stringify(state)}\nErrors: ${JSON.stringify(cdp.errors)}`);
 }

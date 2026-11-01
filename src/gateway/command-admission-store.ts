@@ -346,6 +346,14 @@ export class FileCommandAdmissionStore implements CommandAdmissionStore {
     ));
   }
 
+  async eraseConversation(accountId: string, conversationId: string): Promise<void> {
+    await this.serial(accountId, async () => {
+      const file = await this.read(accountId);
+      const admissions = file.admissions.filter(item => item.conversationId !== conversationId);
+      if (admissions.length !== file.admissions.length) await this.write(accountId, { ...file, admissions });
+    });
+  }
+
   private transition(
     accountId: string,
     idempotencyKey: string,

@@ -27,13 +27,13 @@ describe('Workspace navigation request budget', () => {
     const http = {
       selectWorkspace: vi.fn(async () => ({
         selection: { status: 'accepted', workspace: { id: 'workspace_a' }, conversations: [], nextCursor: 'more' },
-        activeWorkspaceId: 'workspace_a', activeSessionId: null,
+        activeWorkspaceId: 'workspace_a', currentSessionId: null,
       })),
       getWorkspaces: vi.fn(() => { throw new Error('redundant workspaces'); }),
       getConversations: vi.fn(() => { throw new Error('redundant directory'); }),
     };
     const result = await loadStartupWorkspace(http as never, { activeWorkspaceId: null, workspaces: [] }, '/a');
-    expect(result.directory).toEqual({ conversations: [], nextCursor: 'more', activeConversationId: null });
+    expect(result.directory).toEqual({ conversations: [], nextCursor: 'more' });
     expect(result.workspaces).toEqual([{ id: 'workspace_a' }]);
     expect(http.getConversations).not.toHaveBeenCalled();
     expect(http.getWorkspaces).not.toHaveBeenCalled();
@@ -51,7 +51,7 @@ describe('Workspace navigation request budget', () => {
     const http = {
       selectWorkspace: vi.fn(async () => ({
         selection: { status: 'accepted', workspace, conversations: [], nextCursor: 'next' },
-        activeWorkspaceId: 'workspace_a', activeSessionId: null,
+        activeWorkspaceId: 'workspace_a', currentSessionId: null,
       })),
       getWorkspaces: vi.fn(() => { throw new Error('redundant workspace fetch'); }),
       getConversations: vi.fn(() => { throw new Error('redundant directory fetch'); }),

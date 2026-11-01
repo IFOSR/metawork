@@ -108,7 +108,7 @@ describe('trace page cursors', () => {
     const { journal, db } = await segmentedFixture();
     await journal.append(traceDelta(1));
     db.exec(`DROP TABLE gateway_trace_read_events; DROP TABLE gateway_trace_read_heads;
-      UPDATE schema_version SET version = 46;`);
+      DROP VIEW IF EXISTS conversation_memory_turns; UPDATE schema_version SET version = 46;`);
     runMigrations(db);
     const initial = await journal.readTracePage('local-default', 'conv_trace', 'turn_trace');
     expect(initial.events).toEqual([]);

@@ -143,10 +143,61 @@ describe('Planner memory tools', () => {
     expect(reader.searchMemory({}).count).toBe(0);
   });
 
-  it('lists the account assets the Planner may reference', () => {
+  it('returns only the bounded per-layer candidates and preview budgets', () => {
+    const bindings = new MemoryBindingsRepo(db);
+    const candidates = [...Array.from({ length: 6 }, (_, index) => ({ layer: 'l1' as const, id: `l1-${index}`, chars: 400 })),
+      ...Array.from({ length: 4 }, (_, index) => ({ layer: 'l2' as const, id: `l2-${index}`, chars: 500 })),
+      { layer: 'l3' as const, id: 'l3-0', chars: 1_500 }, { layer: 'l3' as const, id: 'l3-1', chars: 1_500 }];
+    const recall = new MemoryRecallRepo(db);
+    const items = candidates.map(candidate => {
+      const binding = bindings.upsert({
+        tdaiMemoryId: candidate.id, accountId: ACCOUNT, layer: candidate.layer,
+        revision: `revision-${candidate.id}`, title: candidate.id,
+      });
+      return {
+        memoryId: binding.memoryId, layer: candidate.layer, title: candidate.id,
+        preview: 'x'.repeat(candidate.chars), revision: `revision-${candidate.id}`,
+        score: 1, updatedAt: null, source: 'profile' as const,
+      };
+    });
+    recall.replaceLayered({
+      accountId: ACCOUNT, conversationId: CONVERSATION,
+      recall: {
+        l1: { status: 'available', durationMs: 11, candidateCount: 5, items: items.filter(item => item.layer === 'l1') },
+        l2: { status: 'available', durationMs: 22, candidateCount: 3, items: items.filter(item => item.layer === 'l2') },
+        l3: { status: 'available', durationMs: 33, candidateCount: 1, items: items.filter(item => item.layer === 'l3') },
+      },
+    });
+    const result = reader.getMemoryContext({ limit: 10 }) as { layers: Record<string, {
+      status: string;
+      durationMs: number;
+      candidateCount: number;
+      items: Array<{ preview: string }>;
+    }> };
+    expect(result.layers.l1!.items).toHaveLength(5);
+    expect(result.layers.l1).toMatchObject({ status: 'available', durationMs: 11, candidateCount: 5 });
+    expect(result.layers.l1!.items[0]!.preview).toHaveLength(240);
+    expect(result.layers.l2!.items).toHaveLength(3);
+    expect(result.layers.l2).toMatchObject({ status: 'available', durationMs: 22, candidateCount: 3 });
+    expect(result.layers.l2!.items[0]!.preview).toHaveLength(320);
+    expect(result.layers.l3!.items).toHaveLength(1);
+    expect(result.layers.l3).toMatchObject({ status: 'available', durationMs: 33, candidateCount: 1 });
+    expect(result.layers.l3!.items[0]!.preview).toHaveLength(1_200);
+
+    const filtered = reader.getMemoryContext({ limit: 10, query: 'l2-1' }) as {
+      layers: Record<string, { items: Array<{ title: string }> }>;
+    };
+    expect(filtered.layers.l2!.items.map(item => item.title)).toEqual(['l2-1']);
+    expect(filtered.layers.l1!.items).toEqual([]);
+  });
+
+  it('lists account asset inventory without making it a recall snapshot', () => {
     const bindings = new MemoryBindingsRepo(db);
     const first = bindings.upsert({ tdaiMemoryId: 'tdai-1', accountId: ACCOUNT });
-    const second = bindings.upsert({ tdaiMemoryId: 'tdai-2', accountId: ACCOUNT });
+    const second = bindings.upsert({
+      tdaiMemoryId: 'tdai-2', accountId: ACCOUNT, layer: 'l2',
+      title: 'weekly-report.md', revision: 'scene-revision',
+    });
     bindings.setEnabled(second.memoryId, ACCOUNT, false);
     bindings.upsert({ tdaiMemoryId: 'tdai-3', accountId: 'account-b' });
 
@@ -155,10 +206,30 @@ describe('Planner memory tools', () => {
     expect(assets.items.map(item => item.memoryId).sort())
       .toEqual([first.memoryId, second.memoryId].sort());
     expect(assets.items.find(item => item.memoryId === second.memoryId)?.enabled).toBe(false);
+    expect(assets.items.find(item => item.memoryId === second.memoryId)).toMatchObject({
+      type: 'scene', layer: 'l2', title: 'weekly-report.md', revision: 'scene-revision',
+    });
+    expect(reader.getMemoryContext().layers.l2?.items).toEqual([]);
   });
 
   it('returns an empty result when memory was never used', () => {
     expect(reader.searchMemory({}).count).toBe(0);
     expect(reader.listMemoryAssets().count).toBe(0);
+  });
+
+  it('marks the whole context degraded only when every layer is unavailable', () => {
+    const recall = new MemoryRecallRepo(db);
+    recall.replaceLayered({
+      accountId: ACCOUNT,
+      conversationId: CONVERSATION,
+      recall: {
+        l1: { status: 'degraded', reason: 'l1 down', durationMs: 20, candidateCount: 0, items: [] },
+        l2: { status: 'degraded', reason: 'l2 down', durationMs: 21, candidateCount: 0, items: [] },
+        l3: { status: 'degraded', reason: 'l3 down', durationMs: 22, candidateCount: 0, items: [] },
+      },
+    });
+    const result = reader.getMemoryContext() as { degraded: boolean; advice?: string };
+    expect(result.degraded).toBe(true);
+    expect(result.advice).toContain('暂不可用');
   });
 });

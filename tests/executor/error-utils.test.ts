@@ -257,18 +257,18 @@ describe('formatExecutorProgress', () => {
     expect(formatExecutorProgress('[codex-cli] 正在检索相关任务')).toBe('正在检索相关任务');
   });
 
-  it('keeps tool activity while removing unrestricted command and tool arguments', () => {
+  it('keeps the actual command and tool arguments in user-visible progress', () => {
     expect(formatExecutorProgress(
       'Executor started workspace command: /bin/zsh -lc "cat /tmp/private.txt"',
-    )).toBe('Executor started a workspace command');
+    )).toBe('Executor started workspace command: /bin/zsh -lc "cat /tmp/private.txt"');
     expect(formatExecutorProgress(
       'Executor completed workspace command: rg -n "secret" /workspace',
-    )).toBe('Executor completed a workspace command');
+    )).toBe('Executor completed workspace command: rg -n "secret" /workspace');
     expect(formatExecutorProgress(
       'Executor started tool: web_search — 智谱 股价 下跌 原因',
-    )).toBe('Executor started tool: web_search');
+    )).toBe('Executor started tool: web_search — 智谱 股价 下跌 原因');
     expect(formatExecutorProgress(
       'Executor started MCP tool: fetch_page — https://example.test/private',
-    )).toBe('Executor started MCP tool: fetch_page');
+    )).toBe('Executor started MCP tool: fetch_page — https://example.test/private');
   });
 });

@@ -174,7 +174,7 @@ describe('schema43 Turn Task observation projection', () => {
     const f = await fixture();
     expect(f.db.prepare('PRAGMA table_info(gateway_turn_task_observations)').all()).not.toEqual([]);
     f.db.exec(`DROP TABLE gateway_turn_task_observations;
-      UPDATE schema_version SET version = 42;
+      DROP VIEW IF EXISTS conversation_memory_turns; UPDATE schema_version SET version = 42;
       CREATE TEMP TRIGGER fail_migration BEFORE UPDATE ON schema_version
       BEGIN SELECT RAISE(ABORT, 'injected migration failure'); END`);
     await expect(async () => runMigrations(f.db)).rejects.toThrow('injected migration failure');

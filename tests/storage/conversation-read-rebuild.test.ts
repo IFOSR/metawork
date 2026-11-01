@@ -59,13 +59,14 @@ describe('atomic staging read-model rebuild', () => {
   it('keeps the published epoch visible, resumes after restart and invalidates old cursors on promotion', async () => {
     const { live, store, source, turn, rebuilder, notified } = fixture();
     const before = live.head('a', 'c')!;
-    source.upsert('c', { ...turn, userInput: 'replacement' });
+    source.upsert('c', { ...turn, userInput: 'replacement', status: 'failed' });
     store.begin('a', 'c');
     expect(await rebuilder().maintain('a', 'c')).toBe(false);
     expect(live.findTurn('a', 'c', 'one')?.userInput).toBe('original');
-    expect(store.pending('a', 'c')?.view.findTurn('a', 'c', 'one')?.userInput).toBe('replacement');
+    expect(store.pending('a', 'c')?.view.findTurn('a', 'c', 'one')?.userInput).toBe('original');
     expect(await rebuilder().maintain('a', 'c')).toBe(true);
-    expect(live.findTurn('a', 'c', 'one')?.userInput).toBe('replacement');
+    expect(live.findTurn('a', 'c', 'one')?.userInput).toBe('original');
+    expect(live.findTurn('a', 'c', 'one')?.status).toBe('failed');
     expect(live.head('a', 'c')?.epoch).not.toBe(before.epoch);
     expect(live.changes('a', 'c', before).reset).toBe(true);
     expect(store.pending('a', 'c')).toBeNull();

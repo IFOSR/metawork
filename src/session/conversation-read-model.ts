@@ -7,6 +7,11 @@ import { CONVERSATION_PREVIEW_BYTES,
 } from './conversation-read-types.js';
 
 export interface ConversationReadModel {
+  authoritativeTurn?(accountId: string, conversationId: string, turnId: string): {
+    sequence: number;
+    userInput: string; inputRef: ConversationContentReference;
+    answer: string | null; answerRef: ConversationContentReference | null;
+  } | null;
   isRemoved(accountId: string, conversationId: string, turnId: string): boolean;
   remove(accountId: string, conversationId: string, turnId: string): void;
   putContent(accountId: string, conversationId: string, value: string): ConversationContentReference;
@@ -62,8 +67,9 @@ export function projectConversationTurn(
     startedAt: event.occurredAt, completedAt: null, interactionKind: 'ai_turn',
   };
   turn.lastSequence = event.sequence;
+  turn.requestId ??= event.requestId;
   if (typeof value.taskId === 'string' && turn.taskId && value.taskId !== turn.taskId) return previous;
-  if (event.kind === 'final_answer' && typeof value.resultId === 'string' && turn.resultId && value.resultId !== turn.resultId) return previous;
+  if (event.kind === 'final_answer' && typeof value.answerRevision !== 'number' && typeof value.resultId === 'string' && turn.resultId && value.resultId !== turn.resultId) return previous;
   if (event.kind === 'turn_started') {
     if (typeof value.userInput === 'string') turn.userInput = conversationPreview(value.userInput);
     if (Array.isArray(value.attachments)) {
@@ -117,6 +123,7 @@ export function projectConversationTurn(
     turn.deliveryStatus = value.status;
   }
   if (event.kind === 'final_answer') {
+    if (typeof value.answerRevision === 'number' && typeof value.resultId === 'string') turn.resultId = value.resultId;
     const lines = Array.isArray(value.lines) ? value.lines.filter((line): line is string => typeof line === 'string') : [];
     if (!turn.resultId && lines.length) { turn.answer = conversationPreview(lines.join('\n')); turn.deliveryStatus = 'ready'; }
     if (value.backgroundWorkPending !== true) {

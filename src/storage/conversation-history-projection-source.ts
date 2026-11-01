@@ -1,3 +1,4 @@
+import { SqliteConversationTurnStore } from './conversation-turn-repo.js';
 import type Database from 'better-sqlite3';
 import type { ConversationTurn } from '../session/conversation-store.js';
 import type { ConversationHistoryProjectionSource } from '../session/conversation-history-projection-source.js';
@@ -18,7 +19,7 @@ export class SqliteConversationHistoryProjectionSource implements ConversationHi
       const source = this.db.prepare(`SELECT body_json FROM conversation_history_turns
         WHERE account_id = ? AND conversation_id = ? AND kind = 'conversation' AND turn_id = ?`)
         .get(accountId, conversationId, next.turn_id) as { body_json: string };
-      project(JSON.parse(source.body_json) as ConversationTurn, next.sequence);
+      project(new SqliteConversationTurnStore(this.db).hydrateHistory(accountId, conversationId, JSON.parse(source.body_json) as ConversationTurn), next.sequence);
       return true;
     }).immediate();
   }
@@ -33,7 +34,7 @@ export class SqliteConversationHistoryProjectionSource implements ConversationHi
         WHERE dirty.account_id = ? AND dirty.conversation_id = ? ORDER BY dirty.rowid LIMIT 1`)
         .get(accountId, conversationId) as { turn_id: string; version: number; sequence: number | null; body_json: string | null } | undefined;
       if (!row) return false;
-      if (row.body_json !== null) upsert(JSON.parse(row.body_json) as ConversationTurn, row.sequence!);
+      if (row.body_json !== null) upsert(new SqliteConversationTurnStore(this.db).hydrateHistory(accountId, conversationId, JSON.parse(row.body_json) as ConversationTurn), row.sequence!);
       else remove(row.turn_id);
       this.db.prepare(`DELETE FROM conversation_read_history_dirty WHERE account_id = ? AND conversation_id = ? AND turn_id = ? AND version = ?`)
         .run(accountId, conversationId, row.turn_id, row.version);
@@ -58,7 +59,7 @@ export class SqliteConversationHistoryProjectionSource implements ConversationHi
         WHERE account_id = ? AND conversation_id = ?), 0)
       ORDER BY sequence LIMIT 1`).get(accountId, conversationId, accountId, conversationId) as
       { sequence: number; body_json: string } | undefined;
-    return row ? { sequence: row.sequence, turn: JSON.parse(row.body_json) as ConversationTurn } : null;
+    return row ? { sequence: row.sequence, turn: new SqliteConversationTurnStore(this.db).hydrateHistory(accountId, conversationId, JSON.parse(row.body_json) as ConversationTurn) } : null;
   }
 
   commit(accountId: string, conversationId: string, sequence: number, project: () => void): void {

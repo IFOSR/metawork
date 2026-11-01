@@ -305,7 +305,7 @@ export class TaskSearchIndexRepo {
 
       const interactions = this.db.prepare(`
         SELECT id, task_id, user_input, system_output, created_at
-        FROM interactions
+        FROM interaction_contents
         WHERE task_id IS NOT NULL
         ORDER BY created_at DESC
       `).all() as Array<{

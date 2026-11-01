@@ -349,6 +349,7 @@ export function buildAccountRuntimeComposition(deps: {
         acceptedActions: ACCOUNT_KERNEL_ACCEPTED_ACTIONS,
       });
   startupRecovery = new AccountStartupRecoveryService({
+    accountId: deps.accountId,
     productionAuthorization: deps.productionAuthorization,
     recoveryReplan: deps.recoveryReplan,
     recoveryPlan: deps.recoveryPlan,

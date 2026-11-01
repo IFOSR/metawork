@@ -80,9 +80,17 @@ export function BlockedActions({ ws, http, conversationId, taskId, fallbackStatu
   // A pending result decision *is* the blocker: resume/recovery would only add
   // noise next to accept/retry.
   const canAcceptCandidate = Boolean(taskId) && Boolean(candidateAction);
-  const canResume = Boolean(taskId) && !pendingDecision && !canAcceptCandidate && needsAction;
+  // A Task may briefly carry a stale system block after its final delivery has
+  // already settled. The authoritative view marks that state with
+  // `nextAuthorizedAction: none`; offering resume here only sends a command
+  // that the Kernel must reject because there is no recoverable Subtask.
+  const canResume = Boolean(taskId) && !pendingDecision && !canAcceptCandidate && needsAction
+    && (!lifecycle || lifecycle.nextAuthorizedAction !== 'none');
   const canRetryRemaining = Boolean(taskId) && !pendingDecision && failed;
   const canResolveRecovery = Boolean(taskId) && (Boolean(recoveryAction) || Boolean(legacy?.recoveryDiagnosis));
+  const actionableNeedsAction = needsAction && (
+    pendingActions.length > 0 || canResume || canResolveRecovery || canRetryRemaining
+  );
   const primaryAction = primaryActionFor(lifecycle?.nextAuthorizedAction, {
     canAcceptCandidate,
     canAcceptResult,
@@ -184,7 +192,7 @@ export function BlockedActions({ ws, http, conversationId, taskId, fallbackStatu
     }
   };
 
-  if (!hasPermission && !pendingDecision && !needsAction && !canRetryRemaining) return null;
+  if (!hasPermission && !pendingDecision && !actionableNeedsAction && !canRetryRemaining) return null;
 
   return (
     <section className="blocked-actions" data-kind={hasPermission ? 'permission' : pendingDecision ? 'decision' : 'recovery'}>
@@ -208,7 +216,7 @@ export function BlockedActions({ ws, http, conversationId, taskId, fallbackStatu
           )}
         </>
       )}
-      {!hasPermission && (pendingDecision || needsAction || canRetryRemaining) && (
+      {!hasPermission && (pendingDecision || actionableNeedsAction || canRetryRemaining) && (
         <>
           <p className="blocked-actions-title">{failed ? '任务失败，需要处理' : '需要你的处理才能继续'}</p>
           {reason && <p className="blocked-actions-hint">{reason}</p>}

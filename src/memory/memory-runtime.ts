@@ -34,7 +34,7 @@ import { renderMemorySidecarConfig, KERNEL_AUTH_TOKEN_ENV_VAR } from './memory-s
 import { TdaiMemoryAdapter } from './tdai-memory-adapter.js';
 import { resolveMemoryRuntimePolicy, type MemoryRuntimePolicy } from './memory-runtime-policy.js';
 import type { AnyFusionConfigurationV2 } from '../configuration/types.js';
-import type { MemorySearchCandidate } from './memory-types.js';
+import type { LayeredMemoryRecall, MemoryLayer, MemoryRecallItem, MemorySearchCandidate } from './memory-types.js';
 
 export interface MemorySidecarCommand {
   command: string;
@@ -68,7 +68,12 @@ export interface MemoryRuntimeStatus {
   modelRef: string | null;
 }
 
-const RECALL_PREVIEW_CHARS = 240;
+const LAYERED_RECALL_BUDGET = {
+  l1: { limit: 5, itemChars: 240, totalChars: 1_200 },
+  l2: { limit: 3, itemChars: 320, totalChars: 960 },
+  l3: { limit: 1, itemChars: 1_200, totalChars: 1_200 },
+} as const;
+const PROFILE_RECALL_TIMEOUT_MS = 2_000;
 
 /** Secret reference that holds the memory engine Bearer gate. */
 export const MEMORY_KERNEL_AUTH_SECRET_REFERENCE = 'file-secret:anyfusion/internal/memory-kernel-auth-token' as const;
@@ -213,6 +218,7 @@ export class MemoryRuntime {
     const evidence = new MemoryEvidenceService({
       resolveService: () => service,
       evidenceRepo: new TaskExecutionEvidenceRepo(options.db),
+      recallRepo,
       // `retrieval.maxChars` bounds what the evidence catalog stores; the 4k
       // prompt budget is applied later, so the Executor can still page the rest.
       maxStoredChars: Math.max(4_000, policy.maxChars),
@@ -282,73 +288,158 @@ export class MemoryRuntime {
       // Disabled, needs-model and degraded runtimes own no asset. A candidate
       // projected by a previous runtime must never stay readable by the
       // Planner, and the state must say why the list is empty.
-      this.recall.clear(input.accountId, input.conversationId);
+      const reason = this.detail ?? this.status.mode;
+      this.recall.replaceLayered({
+        accountId: input.accountId,
+        conversationId: input.conversationId,
+        recall: {
+          l1: { status: 'degraded', reason, durationMs: 0, candidateCount: 0, items: [] },
+          l2: { status: 'degraded', reason, durationMs: 0, candidateCount: 0, items: [] },
+          l3: { status: 'degraded', reason, durationMs: 0, candidateCount: 0, items: [] },
+        },
+      });
       this.recall.recordDegraded({
         accountId: input.accountId,
         conversationId: input.conversationId,
         degraded: true,
-        reason: this.detail ?? this.status.mode,
+        reason,
       });
       return;
     }
     try {
-      const result = await this.service.search({
-        accountId: input.accountId,
-        query: input.query,
-        limit: this.policy.maxResults,
-      });
-      // Design §6.1/§6.6: a degraded engine must be visible to the Planner, so
-      // it can distinguish "no matching memory" from "the engine is down".
-      this.recall.recordDegraded({
-        accountId: input.accountId,
-        conversationId: input.conversationId,
-        degraded: result.degraded,
-        ...(result.degradedReason ? { reason: result.degradedReason } : {}),
-      });
-      if (result.degraded) {
-        // An unavailable engine owns no valid candidate set either; keeping the
-        // previous projection would offer assets the Runtime cannot materialize.
-        this.recall.clear(input.accountId, input.conversationId);
-        return;
-      }
-      if (!result.items.length) {
-        this.recall.replace({
-          accountId: input.accountId,
-          conversationId: input.conversationId,
-          candidates: [],
-        });
-        return;
-      }
-      // Bind every candidate so the Planner sees the same ids the Runtime will
-      // validate, and so a recalled asset becomes governable.
-      const candidates = result.items.map((item: MemorySearchCandidate) => {
-        const binding = this.service!.bind({
-          accountId: input.accountId,
-          tdaiMemoryId: item.id,
-          workspaceId: input.workspaceId ?? null,
-          content: item.content,
-        });
-        return {
-          memoryId: binding.memoryId,
-          type: item.type,
-          preview: item.content.slice(0, RECALL_PREVIEW_CHARS),
-          score: item.score,
+      const [l1Result, l2Result, l3Result] = await Promise.allSettled([
+        measureRecall(() => this.service!.search({ accountId: input.accountId, query: input.query, limit: LAYERED_RECALL_BUDGET.l1.limit })),
+        measureRecall(() => withTimeout(
+          this.service!.searchScenarios({ accountId: input.accountId, query: input.query, limit: LAYERED_RECALL_BUDGET.l2.limit }),
+          PROFILE_RECALL_TIMEOUT_MS,
+          'memory_l2_timeout',
+        )),
+        measureRecall(() => withTimeout(
+          this.service!.readPersona({ accountId: input.accountId }),
+          PROFILE_RECALL_TIMEOUT_MS,
+          'memory_l3_timeout',
+        )),
+      ]);
+      const recall: LayeredMemoryRecall = {
+        l1: { status: 'empty', items: [] },
+        l2: { status: 'empty', items: [] },
+        l3: { status: 'empty', items: [] },
+      };
+      if (l1Result.status === 'fulfilled' && l1Result.value.ok && !l1Result.value.value.degraded) {
+        const items = bindL1Items(this.service, l1Result.value.value.items, input, LAYERED_RECALL_BUDGET.l1.itemChars);
+        recall.l1 = {
+          status: items.length ? 'available' : 'empty',
+          durationMs: l1Result.value.durationMs,
+          candidateCount: items.length,
+          items,
         };
-      });
-      this.recall.replace({
-        accountId: input.accountId,
-        conversationId: input.conversationId,
-        candidates,
+      } else {
+        recall.l1 = {
+          status: 'degraded',
+          reason: l1Result.status === 'rejected' ? String(l1Result.reason)
+            : !l1Result.value.ok ? String(l1Result.value.error) : l1Result.value.value.degradedReason,
+          durationMs: l1Result.status === 'fulfilled' ? l1Result.value.durationMs : 0,
+          candidateCount: 0,
+          items: [],
+        };
+      }
+      if (l2Result.status === 'fulfilled' && l2Result.value.ok && !l2Result.value.value.degraded) {
+        const items = l2Result.value.value.items.flatMap(item => {
+          const binding = this.service!.bind({
+            accountId: input.accountId, tdaiMemoryId: item.id, layer: 'l2',
+            workspaceId: input.workspaceId ?? null, revision: item.revision, title: item.title,
+          });
+          if (!binding.enabled) return [];
+          return [{
+            memoryId: binding.memoryId, layer: 'l2' as const, title: item.title,
+            preview: truncateCodePoints(item.preview, LAYERED_RECALL_BUDGET.l2.itemChars),
+            revision: item.revision, score: item.score, updatedAt: item.updatedAt, source: 'profile' as const,
+          }];
+        });
+        recall.l2 = {
+          status: items.length ? 'available' : 'empty',
+          durationMs: l2Result.value.durationMs,
+          candidateCount: items.length,
+          items: items satisfies MemoryRecallItem[],
+        };
+      } else {
+        recall.l2 = {
+          status: 'degraded',
+          reason: l2Result.status === 'rejected' ? String(l2Result.reason)
+            : !l2Result.value.ok ? String(l2Result.value.error) : l2Result.value.value.degradedReason,
+          durationMs: l2Result.status === 'fulfilled' ? l2Result.value.durationMs : 0,
+          candidateCount: 0,
+          items: [],
+        };
+      }
+      if (l3Result.status === 'fulfilled' && l3Result.value.ok && l3Result.value.value.content && l3Result.value.value.id) {
+        const binding = this.service.bind({
+          accountId: input.accountId, tdaiMemoryId: l3Result.value.value.id, layer: 'l3',
+          workspaceId: input.workspaceId ?? null, content: l3Result.value.value.content,
+          revision: l3Result.value.value.revision, title: 'User persona', source: 'profile',
+        });
+        const items = binding.enabled ? [{
+          memoryId: binding.memoryId, layer: 'l3' as const, title: 'User persona',
+          preview: truncateCodePoints(l3Result.value.value.content, LAYERED_RECALL_BUDGET.l3.itemChars),
+          revision: l3Result.value.value.revision ?? '', score: 1,
+          updatedAt: l3Result.value.value.updatedAt, source: 'profile' as const,
+        }] : [];
+        recall.l3 = {
+          status: items.length ? 'available' : 'empty',
+          durationMs: l3Result.value.durationMs,
+          candidateCount: items.length,
+          items,
+        };
+      } else if (l3Result.status === 'rejected' || !l3Result.value.ok) {
+        recall.l3 = {
+          status: 'degraded',
+          reason: l3Result.status === 'rejected' ? String(l3Result.reason)
+            : l3Result.value.ok ? 'memory_persona_read_failed' : String(l3Result.value.error),
+          durationMs: l3Result.status === 'fulfilled' ? l3Result.value.durationMs : 0,
+          candidateCount: 0,
+          items: [],
+        };
+      } else {
+        recall.l3 = { status: 'empty', durationMs: l3Result.value.durationMs, candidateCount: 0, items: [] };
+      }
+      this.recall.replaceLayered({ accountId: input.accountId, conversationId: input.conversationId, recall });
+      const allDegraded = [recall.l1, recall.l2, recall.l3].every(layer => layer.status === 'degraded');
+      this.recall.recordDegraded({
+        accountId: input.accountId, conversationId: input.conversationId, degraded: allDegraded,
+        ...(allDegraded ? { reason: 'memory_all_layers_unavailable' } : {}),
       });
     } catch (error) {
       this.logger(`memory recall refresh failed: ${(error as Error).message}`);
-      this.recall.clear(input.accountId, input.conversationId);
-      this.recall.recordDegraded({
-        accountId: input.accountId,
-        conversationId: input.conversationId,
-        degraded: true,
-        reason: (error as Error).message,
-      });
+      try {
+        this.recall.replaceLayered({
+          accountId: input.accountId,
+          conversationId: input.conversationId,
+          recall: {
+            l1: { status: 'degraded', reason: (error as Error).message, durationMs: 0, candidateCount: 0, items: [] },
+            l2: { status: 'degraded', reason: (error as Error).message, durationMs: 0, candidateCount: 0, items: [] },
+            l3: { status: 'degraded', reason: (error as Error).message, durationMs: 0, candidateCount: 0, items: [] },
+          },
+        });
+      } catch {
+        // A storage failure must not escape the best-effort recall path. Clear
+        // is retained as the last-resort cleanup for partially written rows.
+        try {
+          this.recall.clear(input.accountId, input.conversationId);
+        } catch {
+          // The database itself is unavailable; there is no safe projection to
+          // repair in this process.
+        }
+      }
+      try {
+        this.recall.recordDegraded({
+          accountId: input.accountId,
+          conversationId: input.conversationId,
+          degraded: true,
+          reason: (error as Error).message,
+        });
+      } catch {
+        // Keep Planner preparation independent from memory projection storage.
+      }
     }
   }
 
@@ -384,6 +475,63 @@ export class MemoryRuntime {
     this.scheduler = null;
     await this.stopSidecar();
   }
+}
+
+function bindL1Items(
+  service: MemoryService,
+  items: readonly MemorySearchCandidate[],
+  input: { accountId: string; workspaceId?: string | null },
+  maxChars: number,
+): MemoryRecallItem[] {
+  return items.slice(0, LAYERED_RECALL_BUDGET.l1.limit).map(item => {
+    const binding = service.bind({
+      accountId: input.accountId, tdaiMemoryId: item.id, layer: 'l1',
+      workspaceId: input.workspaceId ?? null, content: item.content,
+      revision: item.revision, title: item.type,
+    });
+    return {
+      memoryId: binding.memoryId, layer: 'l1' as const, title: item.type,
+      preview: truncateCodePoints(item.content, maxChars), revision: item.revision ?? '',
+      score: item.score, updatedAt: item.updatedAt, source: binding.source,
+    };
+  }).filter(item => service.bindingFor({ accountId: input.accountId, memoryId: item.memoryId }) !== null);
+}
+
+function truncateCodePoints(value: string, maxChars: number): string {
+  return [...value].slice(0, maxChars).join('');
+}
+
+type MeasuredRecall<T> =
+  | { ok: true; value: T; durationMs: number }
+  | { ok: false; error: unknown; durationMs: number };
+
+async function measureRecall<T>(operation: () => Promise<T>): Promise<MeasuredRecall<T>> {
+  const startedAt = Date.now();
+  try {
+    return {
+      ok: true,
+      value: await operation(),
+      durationMs: Math.max(0, Date.now() - startedAt),
+    };
+  } catch (error) {
+    return {
+      ok: false,
+      error,
+      durationMs: Math.max(0, Date.now() - startedAt),
+    };
+  }
+}
+
+function withTimeout<T>(promise: Promise<T>, timeoutMs: number, code: string): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  return Promise.race([
+    promise,
+    new Promise<T>((_, reject) => {
+      timer = setTimeout(() => reject(new Error(code)), timeoutMs);
+    }),
+  ]).finally(() => {
+    if (timer) clearTimeout(timer);
+  });
 }
 
 /** Apply `memory.sidecar.dataDir` when configured, else the account default. */

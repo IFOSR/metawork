@@ -91,6 +91,11 @@ export function captureGitSnapshot(input: {
   const git = (args: readonly string[], stdin?: string): GitRun => {
     const result = spawnSync('git', [
       '-c', `safe.directory=${workspaceRoot}`,
+      // Git's default C-style quoting turns UTF-8 filenames into octal byte
+      // escapes (for example `"\\345\\214...pptx"`). The snapshot is a
+      // user-facing fact, so ask Git for the actual UTF-8 path instead of
+      // persisting an undecodable pseudo-path.
+      '-c', 'core.quotePath=false',
       ...args,
     ], {
       cwd: workspaceRoot,

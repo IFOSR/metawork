@@ -38,7 +38,7 @@ describe('Workspace directory rebuild bookkeeping migration', () => {
     const db = database();
     db.prepare(`INSERT INTO workspace_directory_revisions VALUES ('local-default', 'workspace_one', 12)`).run();
     for (const table of tables) db.exec(`DROP TABLE IF EXISTS ${table}`);
-    db.exec('UPDATE schema_version SET version = 42');
+    db.exec('DROP VIEW IF EXISTS conversation_memory_turns; UPDATE schema_version SET version = 42');
 
     runMigrations(db);
 
@@ -49,7 +49,7 @@ describe('Workspace directory rebuild bookkeeping migration', () => {
   it('rolls back bookkeeping DDL with a failed version transition and can retry', () => {
     const db = database();
     for (const table of tables) db.exec(`DROP TABLE IF EXISTS ${table}`);
-    db.exec(`UPDATE schema_version SET version = 42;
+    db.exec(`DROP VIEW IF EXISTS conversation_memory_turns; UPDATE schema_version SET version = 42;
       CREATE TEMP TRIGGER fail_directory_migration BEFORE UPDATE ON schema_version
       BEGIN SELECT RAISE(ABORT, 'injected migration failure'); END`);
 

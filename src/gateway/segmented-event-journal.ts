@@ -1,6 +1,6 @@
 import { recordNavigationRead } from '../utils/navigation-diagnostics.js';
 import { randomUUID } from 'node:crypto';
-import { mkdir, open, opendir, readFile, rename, unlink } from 'node:fs/promises';
+import { mkdir, open, opendir, readFile, rename, unlink, rm } from 'node:fs/promises';
 import type { Dir } from 'node:fs';
 import { resolve } from 'node:path';
 import { isValidAccountId } from '../account/account-id.js';
@@ -43,6 +43,16 @@ export class SegmentedEventJournal implements EventJournal {
     private readonly onProjectionError: (error: unknown) => void = () => undefined,
   ) {}
 
+  async deleteConversation(accountId: string, conversationId: string): Promise<void> {
+    await this.serialized(accountId, conversationId, async () => {
+      const dir = this.directory(accountId, conversationId);
+      if (!this.index.purge || !this.index.isDeleted?.(accountId, conversationId)) throw new Error('deletion_not_fenced');
+      await rm(dir, { recursive: true, force: true });
+      await rm(resolve(this.root, accountId, `${conversationId}.json`), { force: true });
+      this.index.purge(accountId, conversationId);
+    });
+  }
+
   append(event: GatewayEventEnvelope): Promise<GatewayEventEnvelope> {
     return this.appendBatch([event]).then(events => events[0]!);
   }
@@ -56,6 +66,7 @@ export class SegmentedEventJournal implements EventJournal {
       if (gatewayEventPayloadBytes(event.payload) > MAX_GATEWAY_EVENT_PAYLOAD_BYTES) throw new Error('Gateway event payload exceeds limit');
     }
     return this.serialized(first.accountId, first.conversationId, async () => {
+      if (this.index.isDeleted?.(first.accountId, first.conversationId)) throw new Error('conversation_deleted');
       const state = await this.ensureStream(first.accountId, first.conversationId);
       let sequence = state.lastSequence;
       const fresh: GatewayEventEnvelope[] = [];
@@ -90,6 +101,7 @@ export class SegmentedEventJournal implements EventJournal {
 
   snapshot(accountId: string, conversationId: string): Promise<ConversationSnapshot> {
     return this.serialized(accountId, conversationId, async () => {
+      if (this.index.isDeleted?.(accountId, conversationId)) throw new Error('conversation_deleted');
       const state = await this.ensureStream(accountId, conversationId);
       return { ...state, snapshotVersion: 1, deltas: [] };
     });
@@ -99,6 +111,7 @@ export class SegmentedEventJournal implements EventJournal {
     lastSequence: number; observation: TurnTaskObservation | null;
   }> {
     return this.serialized(accountId, conversationId, async () => {
+      if (this.index.isDeleted?.(accountId, conversationId)) throw new Error('conversation_deleted');
       const state = await this.ensureStream(accountId, conversationId);
       return {
         lastSequence: state.lastSequence,
@@ -110,6 +123,7 @@ export class SegmentedEventJournal implements EventJournal {
   replay(accountId: string, conversationId: string, afterSequence = 0): Promise<GatewayReplay> {
     if (!Number.isSafeInteger(afterSequence) || afterSequence < 0) return Promise.reject(new Error('invalid_journal_cursor'));
     return this.serialized(accountId, conversationId, async () => {
+      if (this.index.isDeleted?.(accountId, conversationId)) throw new Error('conversation_deleted');
       const state = await this.ensureStream(accountId, conversationId);
       const deltas: GatewayEventEnvelope[] = [];
       for (const segment of this.index.segments(accountId, conversationId, afterSequence)) {
@@ -148,6 +162,7 @@ export class SegmentedEventJournal implements EventJournal {
   resume(accountId: string, conversationId: string, afterSequence: number): Promise<GatewayReplay> {
     if (!Number.isSafeInteger(afterSequence) || afterSequence < 0) return Promise.reject(new Error('invalid_journal_cursor'));
     return this.serialized(accountId, conversationId, async () => {
+      if (this.index.isDeleted?.(accountId, conversationId)) throw new Error('conversation_deleted');
       const state = await this.ensureStream(accountId, conversationId);
       const reset = (reason: NonNullable<GatewayReplay['cursorReset']>['reason']): GatewayReplay => ({
         ...state, deltas: [], cursorReset: { reason, sequence: state.lastSequence },
@@ -175,6 +190,7 @@ export class SegmentedEventJournal implements EventJournal {
 
   reserveSequence(accountId: string, conversationId: string): Promise<number> {
     return this.serialized(accountId, conversationId, async () => {
+      if (this.index.isDeleted?.(accountId, conversationId)) throw new Error('conversation_deleted');
       const state = await this.ensureStream(accountId, conversationId);
       this.index.commit(accountId, conversationId, state.lastSequence, [], {
         ...state, lastSequence: state.lastSequence + 1,
@@ -195,6 +211,7 @@ export class SegmentedEventJournal implements EventJournal {
   /** One maintenance pass bounds both metadata/body work and directory entries. */
   maintain(accountId: string, conversationId: string): Promise<{ done: boolean; didWork: boolean }> {
     return this.serialized(accountId, conversationId, async () => {
+      if (this.index.isDeleted?.(accountId, conversationId)) throw new Error('conversation_deleted');
       const state = await this.ensureStream(accountId, conversationId);
       // `done` alone cannot tell an idle pass from the batch that finally
       // converges a stream, so the pass reports the durable progress it made.
@@ -247,6 +264,7 @@ export class SegmentedEventJournal implements EventJournal {
   /** Bounded source read for an invisible staging epoch; serialized with appends. */
   projectReadBatch(accountId: string, conversationId: string, view: ConversationReadModel): Promise<boolean> {
     return this.serialized(accountId, conversationId, async () => {
+      if (this.index.isDeleted?.(accountId, conversationId)) throw new Error('conversation_deleted');
       const state = await this.ensureStream(accountId, conversationId);
       return this.rebuildViewBatch(accountId, conversationId, state.lastSequence, view);
     });

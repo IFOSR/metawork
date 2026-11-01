@@ -1,3 +1,4 @@
+import { SqliteConversationTurnStore } from './conversation-turn-repo.js';
 import type Database from 'better-sqlite3';
 import type {
   ConversationHistoryPage, ConversationHistoryRequest, ConversationHistoryStore,
@@ -38,6 +39,12 @@ implements ConversationHistoryStore<T> {
 
   upsert(conversationId: string, turn: T): void {
     this.db.transaction(() => {
+      const authoritative = new SqliteConversationTurnStore(this.db);
+      if (!authoritative.find({ accountId: this.accountId, conversationId, turnId: turn.id })
+        && this.db.prepare('SELECT 1 FROM conversation_turns WHERE account_id = ? AND conversation_id = ? LIMIT 1')
+          .get(this.accountId, conversationId)
+        && !this.db.prepare('SELECT 1 FROM conversation_history_turns WHERE account_id = ? AND conversation_id = ? AND kind = ? AND turn_id = ?')
+          .get(this.accountId, conversationId, this.kind, turn.id)) throw new Error('history_turn_not_accepted');
       if (!this.isImported(conversationId)) throw new Error('history_not_imported');
       this.write(conversationId, turn);
     }).immediate();
@@ -69,7 +76,15 @@ implements ConversationHistoryStore<T> {
   }
 
   private write(conversationId: string, turn: T): void {
-    const body = JSON.stringify(turn);
+    if (new SqliteConversationTurnStore(this.db).deletionState(this.accountId, conversationId)) throw new Error('conversation_deleted');
+    const previous = this.db.prepare(`SELECT body_json FROM conversation_history_turns
+      WHERE account_id = ? AND conversation_id = ? AND kind = ? AND turn_id = ?`)
+      .get(this.accountId, conversationId, this.kind, turn.id) as { body_json: string } | undefined;
+    const legacy = previous ? JSON.parse(previous.body_json) as Record<string, unknown> : null;
+    const authoritative = new SqliteConversationTurnStore(this.db).find({ accountId: this.accountId, conversationId, turnId: turn.id });
+    const metadata = legacy ? { ...legacy, ...turn,
+      ...(!authoritative ? { userInput: legacy.userInput, finalAnswer: legacy.finalAnswer } : {}) } as T : turn;
+    const body = JSON.stringify(new SqliteConversationTurnStore(this.db).encodeHistory(this.accountId, conversationId, metadata));
     const bytes = Buffer.byteLength(body);
     const existing = this.db.prepare(`UPDATE conversation_history_turns SET body_json = ?, byte_length = ?
       WHERE account_id = ? AND conversation_id = ? AND kind = ? AND turn_id = ?`)
@@ -95,7 +110,7 @@ implements ConversationHistoryStore<T> {
     const row = this.db.prepare(`SELECT body_json FROM conversation_history_turns
       WHERE account_id = ? AND conversation_id = ? AND kind = ? AND turn_id = ?`)
       .get(this.accountId, conversationId, this.kind, turnId) as { body_json: string } | undefined;
-    return row ? JSON.parse(row.body_json) as T : null;
+    return row ? new SqliteConversationTurnStore(this.db).hydrateHistory(this.accountId, conversationId, JSON.parse(row.body_json) as T) : null;
   }
 
   findMany(conversationId: string, turnIds: readonly string[]): ReadonlyMap<string, T> {
@@ -105,7 +120,7 @@ implements ConversationHistoryStore<T> {
       WHERE account_id = ? AND conversation_id = ? AND kind = ?
       AND turn_id IN (${turnIds.map(() => '?').join(',')})`)
       .all(this.accountId, conversationId, this.kind, ...turnIds) as { turn_id: string; body_json: string }[];
-    return new Map(rows.map(row => [row.turn_id, JSON.parse(row.body_json) as T]));
+    return new Map(rows.map(row => [row.turn_id, new SqliteConversationTurnStore(this.db).hydrateHistory(this.accountId, conversationId, JSON.parse(row.body_json) as T)]));
   }
 
   page(conversationId: string, request: ConversationHistoryRequest): ConversationHistoryPage<T> {
@@ -134,7 +149,7 @@ implements ConversationHistoryStore<T> {
     const nextCursor = rows.length > count
       ? Buffer.from(JSON.stringify([1, this.accountId, conversationId, this.kind, oldest])).toString('base64url')
       : null;
-    return { turns: selected.map(row => JSON.parse(row.body_json) as T), nextCursor };
+    return { turns: selected.map(row => new SqliteConversationTurnStore(this.db).hydrateHistory(this.accountId, conversationId, JSON.parse(row.body_json) as T)), nextCursor };
   }
 
   private decodeCursor(conversationId: string, cursor: string): number {

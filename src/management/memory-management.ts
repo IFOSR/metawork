@@ -67,6 +67,8 @@ export interface MemoryAssetView {
   memoryId: string;
   tdaiMemoryId: string;
   type: string;
+  layer: 'l1' | 'l2' | 'l3';
+  title: string;
   preview: string;
   source: string;
   workspaceId: string | null;
@@ -78,6 +80,7 @@ export interface MemoryAssetView {
 export interface MemoryAssetListView {
   items: MemoryAssetView[];
   total: number;
+  unfilteredTotal?: number;
   /** Runtime mode that produced this list. */
   mode: MemoryStatusView['mode'];
   /** True when the engine is unavailable, so an empty list is not "no assets". */
@@ -87,7 +90,8 @@ export interface MemoryAssetListView {
 
 export interface MemoryManagementQuery {
   status(): Promise<MemoryStatusView>;
-  listAssets(input: { limit: number; offset: number }): Promise<MemoryAssetListView>;
+  listAssets(input: { limit: number; offset: number; query?: string; type?: string; layer?: 'l1' | 'l2' | 'l3'; enabled?: boolean }): Promise<MemoryAssetListView>;
+  getAsset(input: { memoryId: string }): Promise<(MemoryAssetView & { content: string }) | null>;
   setEnabled(input: { memoryId: string; enabled: boolean }): Promise<MemoryAssetSummary | null>;
   deleteAsset(input: { memoryId: string }): Promise<boolean>;
 }
@@ -214,7 +218,7 @@ export function createMemoryManagementQuery(options: MemoryManagementOptions): M
       };
     },
 
-    async listAssets(input: { limit: number; offset: number }) {
+    async listAssets(input: { limit: number; offset: number; query?: string; type?: string; layer?: 'l1' | 'l2' | 'l3'; enabled?: boolean }) {
       const runtime = currentRuntime();
       const service = runtime?.service ?? null;
       if (!service) {
@@ -233,8 +237,7 @@ export function createMemoryManagementQuery(options: MemoryManagementOptions): M
       }
       const page = await service.listAssets({
         accountId,
-        limit: input.limit,
-        offset: input.offset,
+        ...input,
         includeDisabled: true,
       });
       return {
@@ -242,6 +245,8 @@ export function createMemoryManagementQuery(options: MemoryManagementOptions): M
           memoryId: asset.memoryId,
           tdaiMemoryId: asset.id,
           type: asset.type,
+          layer: asset.layer ?? 'l1',
+          title: asset.title ?? asset.type,
           preview: asset.content.slice(0, 240),
           source: asset.source,
           workspaceId: asset.workspaceId,
@@ -250,8 +255,23 @@ export function createMemoryManagementQuery(options: MemoryManagementOptions): M
           updatedAt: asset.updatedAt,
         })),
         total: page.total,
+        unfilteredTotal: page.unfilteredTotal,
         mode: 'enabled',
         degraded: false,
+      };
+    },
+
+    async getAsset(input: { memoryId: string }) {
+      const service = currentRuntime()?.service;
+      if (!service) throw new Error('memory_engine_unavailable');
+      const asset = await service.getAsset({ accountId, memoryId: input.memoryId });
+      if (!asset) return null;
+      return {
+        memoryId: asset.memoryId, tdaiMemoryId: asset.id, type: asset.type,
+        layer: asset.layer ?? 'l1', title: asset.title ?? asset.type,
+        content: asset.content, preview: asset.content.slice(0, 240),
+        source: asset.source, workspaceId: asset.workspaceId, enabled: asset.enabled,
+        createdAt: asset.createdAt, updatedAt: asset.updatedAt,
       };
     },
 

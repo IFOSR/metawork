@@ -71,6 +71,23 @@ describe('inline blocked actions', () => {
     expect(html).not.toContain('blocked-actions');
   });
 
+  it('does not offer resume for a settled system block with no authorized action', () => {
+    const html = renderToStaticMarkup(createElement(BlockedActions, {
+      ws,
+      conversationId: 'conv_1',
+      taskId: 'task_1',
+      lifecycle: {
+        status: 'needs_action',
+        reason: { code: 'no_authorized_driver', message: '没有可继续的授权工作，也没有明确的用户事项。', evidenceRefs: [] },
+        pendingActions: [],
+        nextAuthorizedAction: 'none',
+      },
+      permission: null,
+    } as never));
+    expect(html).not.toContain('继续未完成部分');
+    expect(html).not.toContain('blocked-actions');
+  });
+
   it('offers the isolated candidate acceptance action', () => {
     const html = renderToStaticMarkup(createElement(BlockedActions, {
       ws,

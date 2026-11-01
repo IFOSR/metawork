@@ -33,7 +33,8 @@ describe('Web workspace shell', () => {
     expect(sidebar).not.toContain('继续此会话');
     expect(app).not.toContain('conversation-attach-prompt');
     expect(app).not.toContain('历史只读视图');
-    expect(sidebar).toContain('runningSessionId');
+    expect(sidebar).not.toContain('runningSessionId');
+    expect(sidebar).toContain('data-current={current}');
     expect(sidebar).toContain('activityLabel');
     expect(sidebar).toContain('session.activity?.updatedAt');
     expect(sidebar).not.toContain("active ? ' · 运行中' : ''");
@@ -43,10 +44,10 @@ describe('Web workspace shell', () => {
     expect(header).toContain('workspacePath');
     expect(header).toContain('点击左侧 ＋ 添加本机目录');
     expect(composer).toContain('<textarea');
-    expect(app).toContain('activeSessionId');
+    expect(app).toContain('currentSessionId');
     expect(app).toContain('activeWorkspaceId');
     expect(app).toContain('workspaces');
-    expect(app).toContain('browsedSessionId');
+    expect(app).toContain('currentSessionId');
     expect(app).toContain('workspaceSwitching');
     expect(app).toContain('conversationRequestRef');
     expect(app).toContain('useConversationTurn');
@@ -145,9 +146,9 @@ describe('Web workspace shell', () => {
 
     expect(start).toBeGreaterThanOrEqual(0);
     expect(end).toBeGreaterThan(start);
-    expect(catalogHandler).toContain('browsedConversationRef.current');
+    expect(catalogHandler).toContain('currentConversationRef.current');
     expect(catalogHandler).toContain('loadRecord');
-    expect(loadRecord).toContain('browsedConversationRef.current !== sessionId');
+    expect(loadRecord).toContain('currentConversationRef.current !== sessionId');
   });
 
   it('captures navigation immediately without requiring execution attachment', async () => {
@@ -156,9 +157,11 @@ describe('Web workspace shell', () => {
     const end = app.indexOf('const handleNewSession', start);
     const handler = app.slice(start, end);
 
-    expect(handler).toContain('browsedConversationRef.current = sessionId');
+    expect(handler).toContain('currentConversationRef.current = sessionId');
     expect(handler).not.toContain('attachConversation');
     expect(handler).not.toContain('sessionId === activeSessionId');
+    expect(handler).not.toContain('activeConversationRef.current = sessionId');
+    expect(handler).not.toContain('setActiveSessionId(sessionId)');
   });
 
   it('uses the shared entity projection for both historical and running Turns', async () => {
@@ -206,7 +209,7 @@ describe('Web workspace shell', () => {
     expect(app).toContain('getArtifactPreview');
     // Escape 关闭与切换会话清空预览。
     expect(app).toContain("event.key === 'Escape'");
-    expect(app).toContain('旧会话的预览与执行详情不得残留');
+    expect(app).toContain("setPreviewState({ status: 'closed' }); setExecutionDetail(null)");
 
     // 三列桌面布局：抽屉打开时主画布收窄。
     expect(shell).toContain('data-preview-open');

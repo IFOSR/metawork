@@ -445,6 +445,7 @@ export class ManagementServer {
           type?: string;
           requestId?: string;
           text?: string;
+          conversationId?: string;
           turnId?: string;
           attachments?: Array<{ attachmentId?: unknown }>;
         };
@@ -508,8 +509,12 @@ export class ManagementServer {
           return;
         }
         if (message.type === 'cancel') {
+          if (typeof message.conversationId !== 'string' || !message.conversationId.trim() || typeof message.turnId !== 'string' || !message.turnId.trim()) {
+            ws.send(JSON.stringify({ type: 'error', message: 'conversationId and turnId are required' }));
+            return;
+          }
           void this.deps.sessionRuntime
-            .cancelTurn(clientId, typeof message.turnId === 'string' ? message.turnId : '')
+            .cancelTurn(clientId, message.conversationId, message.turnId)
             .catch(error => {
               ws.send(JSON.stringify({
                 type: 'error',
@@ -519,11 +524,16 @@ export class ManagementServer {
           return;
         }
         if (message.type === 'input' && message.text) {
+          if (typeof message.conversationId !== 'string' || !message.conversationId.trim()) {
+            ws.send(JSON.stringify({ type: 'error', message: 'conversationId is required' }));
+            return;
+          }
           const attachments = (message.attachments ?? [])
             .filter(entry => typeof entry?.attachmentId === 'string')
             .map(entry => ({ attachmentId: entry.attachmentId as string, kind: 'file' }));
           void this.deps.sessionRuntime.submit(
             clientId,
+            message.conversationId,
             message.text,
             attachments,
             message.requestId,
@@ -559,7 +569,7 @@ export class ManagementServer {
     this.wsConnectionsByClient.set(clientId, clientConnections);
     ws.send(JSON.stringify({
       type: 'hello',
-      sessionId: this.deps.sessionRuntime.getClientState(clientId).activeSessionId,
+      currentSessionId: this.deps.sessionRuntime.getClientState(clientId).currentSessionId,
       identity: gateway?.observation.identity,
       capabilities: gateway ? [...GATEWAY_SERVER_CAPABILITIES] : [],
     }));
@@ -593,7 +603,6 @@ export class ManagementServer {
     }
     const conversationId = url.searchParams.get('sessionId') ?? '';
     const name = url.searchParams.get('name') ?? '';
-    const state = this.deps.sessionRuntime.getClientState(clientId);
     if (!conversationId || !name) {
       this.sendJson(response, 400, { error: 'sessionId and name query parameters are required' });
       return;
@@ -602,7 +611,7 @@ export class ManagementServer {
       const gateway = this.deps.conversationGateway;
       const workspaceId = gateway
         ? (await gateway.observation.metadata(gateway.accountId, conversationId))?.workspaceId
-        : conversationId === state.activeSessionId ? state.activeWorkspaceId : null;
+        : (await this.deps.sessionRuntime.readBrowsableSession(clientId, conversationId))?.session.workspaceId;
       if (!workspaceId) { this.sendJson(response, 403, { error: 'conversation_denied' }); return; }
       const metadata = await store.saveAttachmentStream({
         conversationId,
@@ -633,17 +642,12 @@ export class ManagementServer {
       this.sendJson(response, 404, { error: 'attachment_not_found' });
       return;
     }
-    const state = this.deps.sessionRuntime.getClientState(clientId);
-    if (conversationId !== state.activeSessionId && !this.deps.conversationGateway) {
-      this.sendJson(response, 403, { error: 'conversation_denied' });
-      return;
-    }
     try {
       const gateway = this.deps.conversationGateway;
       const metadata = gateway
         ? await gateway.observation.metadata(gateway.accountId, conversationId)
-        : null;
-      if (!metadata && conversationId !== state.activeSessionId) {
+        : (await this.deps.sessionRuntime.readBrowsableSession(clientId, conversationId))?.session;
+      if (!metadata) {
         this.sendJson(response, 403, { error: 'conversation_denied' });
         return;
       }
@@ -1082,9 +1086,10 @@ export class ManagementServer {
         return;
       }
       const selection = await this.deps.sessionRuntime.selectWorkspace(clientId, body.path);
+      const state = this.deps.sessionRuntime.getClientState(clientId);
       this.sendJson(response, selection.status === 'failed' ? 400 : 200, {
         selection,
-        ...this.deps.sessionRuntime.getClientState(clientId),
+        ...state,
       });
       return;
     }
@@ -1107,7 +1112,7 @@ export class ManagementServer {
           : { items: await this.deps.sessionRuntime.listSessions(clientId, query), nextCursor: null };
         this.sendJson(response, 200, {
           activeWorkspaceId: state.activeWorkspaceId,
-          activeConversationId: state.activeSessionId,
+          currentConversationId: state.currentSessionId,
           conversations: page.items, nextCursor: page.nextCursor,
           projectionVersion: page.projectionVersion,
         });
@@ -1202,12 +1207,16 @@ export class ManagementServer {
         clientId,
         decodeURIComponent(conversationMatch[1]!),
       );
-      if (outcome === 'active') {
-        this.sendJson(response, 409, { error: 'session is active; switch away before deleting' });
+      if (outcome === 'running') {
+        this.sendJson(response, 409, { error: '会话仍有未停止的任务，请先停止后再删除。' });
         return;
       }
       if (outcome === 'not_found') {
         this.sendJson(response, 404, { error: 'session not found' });
+        return;
+      }
+      if (outcome === 'deletion_pending') {
+        this.sendJson(response, 202, { status: 'deletion_pending' });
         return;
       }
       response.writeHead(204);
@@ -1292,7 +1301,25 @@ export class ManagementServer {
       }
       const limit = boundedQueryInt(url.searchParams.get('limit'), 50, 1, 200);
       const offset = boundedQueryInt(url.searchParams.get('offset'), 0, 0, 100_000);
-      this.sendJson(response, 200, await this.deps.memoryQuery.listAssets({ limit, offset }));
+      this.sendJson(response, 200, await this.deps.memoryQuery.listAssets({ limit, offset,
+        ...(url.searchParams.get('q')?.trim() ? { query: url.searchParams.get('q')!.trim() } : {}),
+        ...(url.searchParams.get('type') ? { type: url.searchParams.get('type')! } : {}),
+        ...(['l1', 'l2', 'l3'].includes(url.searchParams.get('layer') ?? '')
+          ? { layer: url.searchParams.get('layer') as 'l1' | 'l2' | 'l3' } : {}),
+        ...(['true', 'false'].includes(url.searchParams.get('enabled') ?? '')
+          ? { enabled: url.searchParams.get('enabled') === 'true' } : {}),
+      }));
+      return;
+    }
+
+    if (request.method === 'GET' && url.pathname.startsWith('/api/memory/assets/')) {
+      if (!this.deps.memoryQuery) {
+        this.sendJson(response, 503, { error: 'memory management unavailable' });
+        return;
+      }
+      const memoryId = decodeURIComponent(url.pathname.slice('/api/memory/assets/'.length)).trim();
+      const asset = await this.deps.memoryQuery.getAsset({ memoryId });
+      this.sendJson(response, asset ? 200 : 404, asset ?? { error: 'memory asset not found' });
       return;
     }
 
@@ -2132,6 +2159,7 @@ interface WebSocketDiagnostic {
 
 /** Bounded integer query parameter with a safe default. */
 function boundedQueryInt(raw: string | null, fallback: number, min: number, max: number): number {
+  if (raw === null || raw.trim() === '') return fallback;
   const value = Number(raw);
   if (!Number.isSafeInteger(value)) return fallback;
   return Math.max(min, Math.min(max, value));

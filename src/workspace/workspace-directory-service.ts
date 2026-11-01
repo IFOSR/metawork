@@ -102,6 +102,11 @@ export class WorkspaceDirectoryService {
     );
   }
 
+  getConversationActivity(conversationId: string, fallbackUpdatedAt: string): ConversationActivityProjection {
+    return this.deps.getConversationActivity?.(conversationId, fallbackUpdatedAt)
+      ?? { state: 'idle', taskId: null, updatedAt: fallbackUpdatedAt };
+  }
+
   async selectByPath(path: string, principalId: string): Promise<WorkspaceSelectionResult> {
     const canonicalPath = await this.preflightPath(path);
     if (!(await this.deps.authorize(canonicalPath, principalId))) {
@@ -327,7 +332,7 @@ export class WorkspaceDirectoryService {
     ) {
       throw new Error('conversation_not_in_workspace');
     }
-    if (record.turns.some(turn => turn.status === 'blocked')) {
+    if (this.getConversationActivity(conversationId, record.conversation.updatedAt).state !== 'idle') {
       throw new Error('workspace_busy');
     }
     const updatedAt = this.deps.now?.() ?? new Date().toISOString();

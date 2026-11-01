@@ -83,7 +83,7 @@ describe('Detailed conversation view', () => {
     expect(app).toContain("useConversationTurn(observationClient?.conversations, observedId, selectedTrajectoryTurnId ?? '')");
     expect(app).toContain('onOpenTrajectory={openTrajectory}');
     expect(app).toContain(
-      'useEffect(() => setSelectedTrajectoryTurnId(null), [activeWorkspaceId, browsedSessionId])',
+      'useEffect(() => setSelectedTrajectoryTurnId(null), [activeWorkspaceId, currentSessionId])',
     );
   });
 });

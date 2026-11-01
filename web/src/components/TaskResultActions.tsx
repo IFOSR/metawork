@@ -19,7 +19,7 @@ export function TaskResultActions({ delivery, workspaceChanges }: {
       {delivery.taskDirectory && (
         <p><span className="fact-key">目标项目目录</span>{delivery.taskDirectory}</p>
       )}
-      <p><span className="fact-key">执行方式</span>目标 Workspace 就地执行（{sourceLabel(delivery.modeSource)}）</p>
+      <p><span className="fact-key">执行方式</span>{delivery.mode === 'worktree' ? 'Conversation Worktree 执行' : '目标 Workspace 就地执行'}（{sourceLabel(delivery.modeSource)}）</p>
       <p data-state={delivery.state}>
         <span className="fact-key">工作区文件</span>
         {stateLabel}

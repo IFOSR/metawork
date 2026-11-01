@@ -2,7 +2,7 @@ import { createHash } from 'node:crypto';
 import { isAbsolute } from 'node:path';
 import { isWithin } from '../workspace/workspace-path.js';
 
-export type ExecutionMode = 'worktree' | 'in_place';
+export type ExecutionMode = 'conversation_git' | 'service_git' | 'worktree' | 'in_place';
 
 /**
  * Immutable facts fixed before an Attempt starts. Kernel produces them from the
@@ -36,7 +36,8 @@ export interface WorkspaceExecutionBindingFacts {
   authorizedWorkingDirectory: string;
 }
 
-export const DEFAULT_EXECUTION_MODE: ExecutionMode = 'in_place';
+/** New admissions have no in-place default; this parser is legacy-only. */
+export const DEFAULT_EXECUTION_MODE: ExecutionMode = 'conversation_git';
 /**
  * Migration-compatibility input only. Since the Planner-owned Workspace mode
  * contract, the Kernel-authorized decision is the sole source of the mode for a
@@ -63,6 +64,7 @@ export function resolveExecutionModeFromEnvironment(
 
 export function parseExecutionMode(value: string | undefined): ExecutionMode {
   if (value === undefined || value === '') return DEFAULT_EXECUTION_MODE;
+  if (value === 'conversation_git') return value;
   if (value === 'in_place') return value;
   if (value === 'worktree') {
     throw new ExecutionContextError(
@@ -72,7 +74,7 @@ export function parseExecutionMode(value: string | undefined): ExecutionMode {
   }
   throw new ExecutionContextError(
     'executionMode',
-    `${EXECUTION_MODE_ENVIRONMENT} must be in_place`,
+    `${EXECUTION_MODE_ENVIRONMENT} must be conversation_git`,
   );
 }
 

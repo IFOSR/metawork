@@ -93,7 +93,7 @@ describe('memory evidence delivery end to end', () => {
       targetTask: task,
       userInput: '整理销售数据',
     });
-    expect(eligible).toEqual([`memory:${binding.memoryId}`]);
+    expect(eligible).toEqual([`memory:${binding.memoryId}:legacy`]);
 
     const materialized = await evidence.materialize({
       accountId: ACCOUNT,

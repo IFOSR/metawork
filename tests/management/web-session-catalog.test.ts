@@ -174,10 +174,10 @@ describe('WebSessionCatalog', () => {
       turns: Array.from({ length: 25 }, (_, index) => makeTurn(created.session.id, index)),
     });
     const aggregate = vi.spyOn(fixture.presentationStore, 'read');
-    const first = await fixture.catalog.readPage(created.session.id, created.session.id, { limit: 10 });
+    const first = await fixture.catalog.readPage(created.session.id, { limit: 10 });
     expect(first?.turns.map(turn => turn.id)).toEqual(Array.from({ length: 10 }, (_, i) => `turn_${i + 15}`));
     expect(first?.historyCursor).toBeTruthy();
-    const older = await fixture.catalog.readPage(created.session.id, created.session.id, { cursor: first!.historyCursor! });
+    const older = await fixture.catalog.readPage(created.session.id, { cursor: first!.historyCursor! });
     expect(older?.turns.map(turn => turn.id)).toEqual(Array.from({ length: 10 }, (_, i) => `turn_${i + 5}`));
     expect(aggregate).not.toHaveBeenCalled();
   });
@@ -199,12 +199,11 @@ describe('WebSessionCatalog', () => {
     expect(await fixture.catalog.list({
       workspaceId: fixture.workspaceId,
       principalId: PRINCIPAL,
-      activeConversationId: created.session.id,
     })).toMatchObject([{
       id: created.session.id,
       title: '分析 Workspace Conversation 目录',
-      active: true,
     }]);
+    expect((await fixture.catalog.list({ workspaceId: fixture.workspaceId, principalId: PRINCIPAL }))[0]).not.toHaveProperty('active');
     expect((await fixture.conversationStore.readConversation(created.session.id))?.conversation)
       .not.toHaveProperty('active');
     expect(await fixture.presentationStore.read(created.session.id)).toMatchObject({

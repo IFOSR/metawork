@@ -15,6 +15,7 @@ describe('current SQLite baseline', () => {
         DROP TABLE workspace_directory_projection;
         DROP TABLE workspace_directory_rebuilds;
         DROP TABLE workspace_directory_revisions;
+        DROP VIEW IF EXISTS conversation_memory_turns;
         UPDATE schema_version SET version = 42;
       `);
       const before = db.prepare('SELECT COUNT(*) AS count FROM kernel_decisions').get();
@@ -31,6 +32,7 @@ describe('current SQLite baseline', () => {
     const db = new Database(':memory:');
     try {
       runMigrations(db);
+      db.exec('DROP VIEW IF EXISTS conversation_memory_turns');
       db.prepare('UPDATE schema_version SET version = 44').run();
       db.exec('DROP TABLE retry_wakes');
       runMigrations(db);
@@ -244,7 +246,36 @@ describe('current SQLite baseline', () => {
     expectSchema31Contracts(db);
     expect(db.prepare('PRAGMA foreign_key_check').all()).toEqual([]);
   });
-
+  it('upgrades schema 62 with the layered memory projection and measurements', () => {
+    const db = new Database(':memory:');
+    try {
+      runMigrations(db);
+      db.exec(`
+        DROP INDEX IF EXISTS idx_memory_bindings_account_layer_tdai;
+        DROP INDEX IF EXISTS idx_memory_recall_candidates_layer;
+        DROP TABLE memory_recall_layers;
+        ALTER TABLE memory_bindings DROP COLUMN layer;
+        ALTER TABLE memory_bindings DROP COLUMN tdai_revision;
+        ALTER TABLE memory_bindings DROP COLUMN tdai_title;
+        ALTER TABLE memory_recall_candidates DROP COLUMN layer;
+        ALTER TABLE memory_recall_candidates DROP COLUMN revision;
+        ALTER TABLE memory_recall_candidates DROP COLUMN title;
+        ALTER TABLE memory_recall_candidates DROP COLUMN source;
+        CREATE UNIQUE INDEX idx_memory_bindings_tdai ON memory_bindings(tdai_memory_id);
+        UPDATE schema_version SET version = 62;
+      `);
+      runMigrations(db);
+      expect(db.prepare('SELECT version FROM schema_version').get()).toEqual({ version: CURRENT_SCHEMA_VERSION });
+      expect(db.prepare('PRAGMA table_info(memory_recall_candidates)').all())
+        .toEqual(expect.arrayContaining([expect.objectContaining({ name: 'layer' }), expect.objectContaining({ name: 'revision' })]));
+      expect(db.prepare('PRAGMA table_info(memory_recall_layers)').all()).toEqual(expect.arrayContaining([
+        expect.objectContaining({ name: 'duration_ms' }),
+        expect.objectContaining({ name: 'candidate_count' }),
+      ]));
+    } finally {
+      db.close();
+    }
+  });
   it('migrates an existing schema 41 database to 42 without losing replan data', () => {
     const db = new Database(':memory:');
     runMigrations(db);
@@ -304,6 +335,7 @@ describe('current SQLite baseline', () => {
       DROP TABLE generation_replan_requests_v42;
       CREATE INDEX idx_generation_replan_requests_revision
         ON generation_replan_requests(configuration_revision);
+      DROP VIEW IF EXISTS conversation_memory_turns;
       UPDATE schema_version SET version = 41;
     `);
 
@@ -740,7 +772,7 @@ function schema30Fixture(): Database.Database {
   for (const [table, columns] of Object.entries(V31_ADDED_COLUMNS)) {
     restoreWithoutColumns(db, table, columns);
   }
-  db.exec('UPDATE schema_version SET version = 30');
+  db.exec('DROP VIEW IF EXISTS conversation_memory_turns; UPDATE schema_version SET version = 30');
   db.pragma('foreign_keys = ON');
   return db;
 }

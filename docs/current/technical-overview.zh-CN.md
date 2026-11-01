@@ -1,6 +1,20 @@
-> 当前 Workspace 执行模型（ADR-0050）：新任务统一在 Conversation 绑定 Workspace 内就地执行。写入 Attempt 启动前申请物理路径 ResourceLease，成功后直接完成 Subtask；只读 Attempt 使用受控 scratch 和只读源边界，不申请 Workspace write lease、不创建候选 publication。历史 Worktree binding 只停放并拒绝重新 dispatch。
+> 当前 Workspace 执行模型（Workspace 内部 Git / Session Worktree 方案）：所有新任务统一在 Conversation 的 Git Worktree 中执行。Worktree 变更封存后进入 Workspace FIFO 合并队列，未产生变更的问答或报告不创建合并项。历史 `in_place` 记录仅用于迁移和恢复读取，新任务不会再选择该模式。
 
 # MetaWork
+
+对话正文单一权威源（2026-11-02，ADR-0054）：账户 SQLite schema 64 的
+Turn Store 保存原始输入、不可变正文及答案版本；Planner JSONL 是运行副本，
+历史/展示/检索通过引用读取。Gateway 在 Planner 前提交输入，通过事务 outbox
+投递答案。Memory 从全文分段沉淀，并以 Turn/input hash/answer hash 记录回执。
+删除先落 tombstone、关闭空闲 Planner、清理本地副本，外部 L0 未确认前保持
+`deletion_pending`。迁移无法证明来源的历史保留诊断，不进入 Memory；已验证
+副本保留 7 天后再次校验并回收。专项测试和原生冒烟已通过，全仓剩余失败见
+[实施与验证记录](../plans/2026-11-01-conversation-turn-single-source-design.md)。
+
+新建 Workspace 任务的唯一准入模式是 `conversation_git`。Executor 只接收
+Conversation Worktree 路径，完成后将变更封存到 Workspace 私有 Git，再由
+Workspace 合并队列写回用户目录。`in_place` 仅作为历史存储和恢复读取值，
+Planner/Kernel 不会为新任务发出该模式。
 
 [English Technical Overview](technical-overview.md) | [中文首页](../../README.zh-CN.md)
 

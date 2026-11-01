@@ -1,3 +1,4 @@
+import { SqliteConversationTurnStore } from './conversation-turn-repo.js';
 import { createHash } from 'node:crypto';
 import {
   closeSync,
@@ -78,6 +79,7 @@ export interface ResultObjectWriter {
 export class ResultObjectRepo {
   private readonly objectRoot: string;
   private readonly stagingRoot: string;
+  private collectedThrough = '';
 
   constructor(
     private readonly db: Database.Database,
@@ -102,6 +104,7 @@ export class ResultObjectRepo {
     retentionClass: string;
     createdAt?: string;
   }): ResultObjectWriter {
+    this.assertTaskContentAvailable(input.taskId);
     const existing = this.findObject(input.resultId);
     if (existing) {
       return completedWriter(existing);
@@ -178,6 +181,7 @@ export class ResultObjectRepo {
   }): ResultObjectRecord {
     const bytes = Buffer.from(input.content, 'utf8');
     const contentHash = `sha256:${createHash('sha256').update(bytes).digest('hex')}`;
+    this.assertTaskContentAvailable(input.taskId);
     const existing = this.findObject(input.resultId);
     if (existing) {
       if (existing.contentHash === contentHash && existing.byteLength === bytes.byteLength) {
@@ -267,7 +271,11 @@ export class ResultObjectRepo {
     if (!Number.isInteger(offset) || offset < 0 || !Number.isInteger(length) || length < 0) {
       throw new Error('result range must use non-negative integer offset and length');
     }
-    const bytes = readFileSync(this.pathFor(object));
+    this.assertTaskContentAvailable(object.taskId);
+    const reference = this.db.prepare('SELECT account_id, body_hash FROM conversation_result_content_refs WHERE result_id = ?')
+      .get(resultId) as { account_id: string; body_hash: string } | undefined;
+    const bytes = reference ? Buffer.from(new SqliteConversationTurnStore(this.db).readBody(reference.account_id, reference.body_hash).text)
+      : readFileSync(this.pathFor(object));
     const slice = bytes.subarray(offset, Math.min(offset + length, bytes.byteLength));
     let content: string;
     try {
@@ -411,6 +419,42 @@ export class ResultObjectRepo {
     return this.readRange(reference.resultId, input.offset, input.length);
   }
 
+  collectReferencedContent(): void {
+    const rows = this.db.prepare(`SELECT DISTINCT o.storage_uri FROM result_objects o JOIN conversation_result_content_refs r
+      ON r.result_id = o.result_id WHERE NOT EXISTS (SELECT 1 FROM result_objects other
+        WHERE other.storage_uri = o.storage_uri AND NOT EXISTS (SELECT 1 FROM conversation_result_content_refs ref
+          WHERE ref.result_id = other.result_id)) AND o.storage_uri > ?
+      ORDER BY o.storage_uri LIMIT 100`).all(this.collectedThrough) as { storage_uri: string }[];
+    for (const row of rows) {
+      if (!/^objects\/[a-f0-9]{64}$/.test(row.storage_uri)) throw new Error('invalid_result_storage_uri');
+      const path = join(this.objectRoot, row.storage_uri.slice('objects/'.length));
+      if (existsSync(path)) unlinkSync(path);
+      this.collectedThrough = row.storage_uri;
+    }
+    if (rows.length < 100) this.collectedThrough = '';
+  }
+
+  eraseConversationContent(accountId: string, conversationId: string): void {
+    const rows = this.db.prepare(`SELECT DISTINCT r.storage_uri FROM result_objects r JOIN tasks t ON t.id = r.task_id
+      WHERE t.account_id = ? AND t.conversation_id = ?`).all(accountId, conversationId) as { storage_uri: string }[];
+    for (const row of rows) {
+      const shared = this.db.prepare(`SELECT 1 FROM result_objects r JOIN tasks t ON t.id = r.task_id
+        WHERE r.storage_uri = ? AND NOT EXISTS (SELECT 1 FROM conversation_deletions d
+          WHERE d.account_id = t.account_id AND d.conversation_id = t.conversation_id) LIMIT 1`).get(row.storage_uri);
+      if (shared) continue;
+      if (!/^objects\/[a-f0-9]{64}$/.test(row.storage_uri)) throw new Error('invalid_result_storage_uri');
+      const path = join(this.objectRoot, row.storage_uri.slice('objects/'.length));
+      if (existsSync(path)) unlinkSync(path);
+    }
+  }
+
+  private assertTaskContentAvailable(taskId: string): void {
+    if (this.db.prepare(`SELECT 1 FROM tasks t JOIN conversation_deletions d
+      ON d.account_id = t.account_id AND d.conversation_id = t.conversation_id WHERE t.id = ?`).get(taskId)) {
+      throw new Error('conversation_deleted');
+    }
+  }
+
   private pathFor(object: ResultObjectRecord): string {
     const path = join(this.objectRoot, object.storageUri.slice('objects/'.length));
     const stat = statSync(path);
@@ -435,6 +479,7 @@ export class ResultObjectRepo {
     temporaryPath: string;
     metadataPath?: string;
   }): ResultObjectRecord {
+    this.assertTaskContentAvailable(input.taskId);
     const existing = this.findObject(input.resultId);
     if (existing) {
       if (

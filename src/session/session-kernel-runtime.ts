@@ -510,13 +510,17 @@ export class SessionKernelRuntime {
       const existing = this.deps.taskRuntimeService.findTask(command.taskId);
       if (existing?.workspaceId) {
         workspaceExecution = {
-          executionMode: 'in_place', source: 'planner', reason: 'recover persisted replan admission',
+          executionMode: 'conversation_git', source: 'planner', reason: 'recover persisted replan admission',
           deliveryPolicy: 'none',
           targetPaths: existing.workspaceTargetPaths ?? [],
         };
       }
     }
     if (!workspaceExecution) throw new Error('legacy Kernel decision has no Workspace admission and cannot be dispatched');
+    const admittedWorkspaceId = decision.action.owner.workspaceId
+      ?? (decision.action.workspaceAdmission?.kind === 'write' || decision.action.workspaceAdmission?.kind === 'read'
+        ? decision.action.workspaceAdmission.workspaceId
+        : null);
     const workspaceRoot = await this.deps.resolveUserWorkspaceRoot?.(ownerConversationId) ?? null;
     const publicWorkspace = command.publicProjectDirectory ? workspaceRoot : null;
     if (command.publicProjectDirectory && !publicWorkspace) throw new Error('无法确认现有项目的 Workspace');
@@ -528,6 +532,7 @@ export class SessionKernelRuntime {
       ? this.deps.taskRuntimeService.findTask(command.taskId)
       : this.deps.taskRuntimeService.createTask({
           id: decision.action.taskId,
+          executionMode: workspaceExecution.executionMode,
           publicTaskDirectory: command.publicProjectDirectory ?? undefined,
           publicDeliveryBaseline: publicBaseline,
           startServiceAfterPublish: command.startServiceAfterPublish ?? false,
@@ -540,7 +545,7 @@ export class SessionKernelRuntime {
           resources: inline.resources,
           accountId: this.deps.accountId,
           conversationId: decision.action.owner.conversationId,
-          workspaceId: decision.action.owner.workspaceId ?? undefined,
+          workspaceId: admittedWorkspaceId ?? undefined,
           ownerPlannerSessionId: decision.action.owner.plannerSessionId,
         });
     if (!task) throw new Error(`task not found: ${command.taskId}`);
@@ -563,7 +568,7 @@ export class SessionKernelRuntime {
         graphRevision: decision.action.graphRevision,
         workGraph: decision.action.workGraph,
         authorizedBindingsBySubtask: decision.action.authorizedBindingsBySubtask,
-        workspaceId: owner.workspaceId,
+        workspaceId: admittedWorkspaceId,
         plannerSessionId: owner.plannerSessionId,
         kernelDecisionId: decision.id,
         proposalSource: decision.action.proposalSource,

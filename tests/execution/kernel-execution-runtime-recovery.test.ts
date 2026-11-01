@@ -1,7 +1,11 @@
 import Database from 'better-sqlite3';
 import { pathToFileURL } from 'node:url';
+import { mkdir, mkdtemp, realpath, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { WorkspaceDirectoryService } from '../../src/workspace/workspace-directory-service.js';
 import { recordingTaskStateAuthority, recordingTaskLifecyclePort } from '../support/task-state-fixture.js';
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   authorizedExecutorBindingFingerprint,
   type AuthorizedExecutorBinding,
@@ -12,6 +16,11 @@ import type { KernelDecision, KernelEvent } from '../../src/kernel/control-kerne
 import { InteractionTraceStream } from '../../src/session/interaction-trace-stream.js';
 import { KernelWorkflowRepo } from '../../src/storage/kernel-workflow-repo.js';
 import { runMigrations } from '../../src/storage/migrations.js';
+
+const workspaceFixtures: string[] = [];
+afterEach(async () => {
+  await Promise.all(workspaceFixtures.splice(0).map(path => rm(path, { recursive: true, force: true })));
+});
 
 const NOW = '2026-08-13T00:00:00.000Z';
 const AGENT_CLASS = 'codex-engineering';
@@ -161,7 +170,81 @@ describe('KernelExecutionRuntime executor recovery', () => {
     expect(decision.action).toEqual({ type: 'no_op' });
   });
 
-  it('preserves an Executor timeout as a failed execution outcome for Kernel recovery', async () => {
+  it('re-dispatches the graph after an accepted result completes its continuation', async () => {
+    vi.useFakeTimers();
+    try {
+      const effect = {
+        id: 'effect-accepted-result',
+        decisionId: 'decision-accept',
+        status: 'pending',
+        payload: {
+          action: {
+            type: 'accept_uncertified_result',
+            taskId: 'task-accepted',
+            generationId: 'generation-accepted',
+            graphRevision: 1,
+            resultId: 'result-accepted',
+            attemptId: 'attempt-accepted',
+            subtaskId: 'source',
+          },
+        },
+      };
+      const task = { id: 'task-accepted', status: 'running', conversationId: 'conversation-accepted' };
+      const scheduler = {
+        getSlot: vi.fn().mockReturnValue({ state: 'occupied', activeTaskId: task.id }),
+        markRunning: vi.fn(),
+      };
+      const recoverDue = vi.spyOn(
+        KernelExecutionRuntime.prototype,
+        'recoverDue',
+      ).mockResolvedValue(true);
+      const runtime = new KernelExecutionRuntime({
+        ...recordingRuntimeTaskState(),
+        taskRuntimeService: { findTask: vi.fn().mockReturnValue(task) },
+        conversationTaskSchedulerRepo: scheduler,
+        effectOutboxRepo: {
+          listByTaskAndType: vi.fn().mockReturnValue([effect]),
+          deliver: vi.fn(async (_id: string, apply: () => Promise<string>) => {
+            await apply();
+            effect.status = 'sent';
+            return { ...effect, status: 'sent' };
+          }),
+        },
+        workGraphRevisionRepo: { findActive: vi.fn().mockReturnValue({ generationId: 'generation-accepted', revision: 1 }) },
+        attemptRunner: { stageAcceptedResult: vi.fn().mockResolvedValue(undefined) },
+        dispatchItemRepo: { listByTask: vi.fn().mockReturnValue([]) },
+        maxConcurrentAttempts: 4,
+      } as never);
+      (runtime as unknown as { reconcileTaskState: ReturnType<typeof vi.fn> }).reconcileTaskState = vi.fn();
+
+      const result = await (runtime as unknown as {
+        resumeResultContinuations(taskId: string): Promise<boolean>;
+      }).resumeResultContinuations(task.id);
+      expect(result).toBe(true);
+
+      await vi.runAllTimersAsync();
+      expect(recoverDue).toHaveBeenCalledWith(task.id, 'accepted result continuation completed');
+      recoverDue.mockRestore();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it.each(['user', 'conversation_git', 'unregistered_internal', 'invalid_user_root'] as const)(
+    'dispatch preflight distinguishes user and registered execution paths (%s)', async mode => {
+    const root = await realpath(await mkdtemp(join(tmpdir(), 'metawork-dispatch-')));
+    workspaceFixtures.push(root);
+    const userRoot = join(root, 'user');
+    const runtimeRoot = join(root, 'runtime');
+    const executionRoot = join(runtimeRoot, 'workspace-git', 'sessions', 'conversation-timeout');
+    await mkdir(userRoot);
+    await mkdir(executionRoot, { recursive: true });
+    const directory = new WorkspaceDirectoryService({ runtimeRoot } as never);
+    const preflightWorkspacePath = vi.fn((path: string) => directory.preflightPath(path));
+    const conversationBinding = { bindingVersion: 'conversation-git-v1', taskId: 'task-timeout',
+      generationId: 'generation-historical', workspaceId: 'workspace-timeout', conversationId: 'conversation-timeout',
+      executionRoot, userRoot: mode === 'invalid_user_root' ? runtimeRoot : userRoot };
+    const attemptRun = vi.fn();
     const timeoutFailure = {
       kind: 'timeout' as const,
       scope: 'attempt' as const,
@@ -176,7 +259,10 @@ describe('KernelExecutionRuntime executor recovery', () => {
         revisionId: 'revision-a', models: {}, providers: {}, harnesses: {},
         agentClasses: { [AGENT_CLASS]: { displayName: 'Research assistant' } },
       }),
-      resolveWorkspacePath: vi.fn().mockResolvedValue('/Users/ylfego/Program/test'),
+      resolveWorkspacePath: vi.fn().mockResolvedValue(userRoot),
+      preflightWorkspacePath,
+      ...(mode === 'conversation_git' || mode === 'invalid_user_root'
+        ? { conversationWorktrees: { repo: { binding: () => conversationBinding } } } : {}),
       attemptReceiptRepo: {
         findByAttemptId: vi.fn().mockReturnValue(null),
       },
@@ -202,7 +288,7 @@ describe('KernelExecutionRuntime executor recovery', () => {
         attachResource: vi.fn(),
       },
       attemptRunner: {
-        run: vi.fn().mockResolvedValue({
+        run: attemptRun.mockResolvedValue({
           outcome: 'executor_failed',
           attemptId: 'attempt-timeout',
           agentClassName: AGENT_CLASS,
@@ -224,7 +310,7 @@ describe('KernelExecutionRuntime executor recovery', () => {
       maxConcurrentAttempts: 4,
     } as never);
 
-    const event = await (runtime as unknown as {
+    const dispatched = (runtime as unknown as {
       runDispatchItem(input: Record<string, unknown>): Promise<KernelEvent>;
     }).runDispatchItem({
       item: {
@@ -236,10 +322,21 @@ describe('KernelExecutionRuntime executor recovery', () => {
         status: 'running',
       },
       executionId: 'execution-timeout',
-      request: { workspacePath: '/tmp/metawork-test-source' },
+      request: { workspacePath: mode === 'unregistered_internal' ? executionRoot : userRoot },
       progressTracker: { onProgress: vi.fn() },
     });
 
+    if (mode === 'unregistered_internal' || mode === 'invalid_user_root') {
+      await expect(dispatched).rejects.toMatchObject({ code: 'workspace_contains_runtime_root' });
+      expect(attemptRun).not.toHaveBeenCalled();
+      return;
+    }
+    const event = await dispatched;
+    expect(preflightWorkspacePath).toHaveBeenCalledWith(userRoot);
+    expect(preflightWorkspacePath).not.toHaveBeenCalledWith(executionRoot);
+    expect(attemptRun).toHaveBeenCalledWith(expect.objectContaining({
+      sourceRoot: mode === 'conversation_git' ? executionRoot : userRoot,
+    }));
     expect(event).toMatchObject({
       type: 'execution_outcome',
       terminalKind: 'failed',
@@ -256,7 +353,7 @@ describe('KernelExecutionRuntime executor recovery', () => {
     expect((runtime as unknown as {
       deps: { attemptRunner: { run: ReturnType<typeof vi.fn> } };
     }).deps.attemptRunner.run).toHaveBeenCalledWith(expect.objectContaining({
-      sourceRoot: '/tmp/metawork-test-source',
+      sourceRoot: mode === 'conversation_git' ? executionRoot : userRoot,
     }));
   });
 
@@ -321,7 +418,7 @@ describe('KernelExecutionRuntime executor recovery', () => {
     expect(appendOutput).toHaveBeenCalledWith('formatted executor result');
   });
 
-  it('streams presentation-only heartbeats while an Executor is silent', async () => {
+  it('keeps silent Executor heartbeats internal without streaming empty progress events', async () => {
     let reportProgress!: (event: import('../../src/executor/adapter.js').ExecutorProgressEvent, executor: { name: string }) => void;
     let releaseAttempt!: () => void;
     const attemptReleased = new Promise<void>(resolve => {
@@ -399,19 +496,10 @@ describe('KernelExecutionRuntime executor recovery', () => {
       progressTracker: { onProgress: vi.fn() },
     });
 
-    await vi.waitFor(() => {
-      expect(appendExecutionTrace).toHaveBeenCalledWith(expect.objectContaining({
-        kind: 'executor_heartbeat',
-        status: 'running',
-        details: expect.objectContaining({
-          subtaskId: 'subtask-live',
-          attemptId: 'attempt-live',
-          lastProgressKind: 'dispatch_started',
-          activityState: 'presentation_heartbeat',
-          watchdogAuthority: false,
-        }),
-      }));
-    });
+    await new Promise(resolve => setTimeout(resolve, 25));
+    expect(appendExecutionTrace.mock.calls.filter(
+      ([event]) => event.kind === 'executor_heartbeat',
+    )).toHaveLength(0);
 
     const observation = { operationId: 'quiet-tool', state: 'unknown' as const,
       lastActivityAt: '2026-10-06T09:00:00Z', observedAt: '2026-10-06T09:05:30Z', evidence: 'Process exists only' };
@@ -424,13 +512,10 @@ describe('KernelExecutionRuntime executor recovery', () => {
     expect(appendExecutionTrace.mock.calls.at(-1)?.[0].details.operationHealth).toBeNull();
     releaseAttempt();
     await running;
-    const heartbeatCount = appendExecutionTrace.mock.calls.filter(
-      ([event]) => event.kind === 'executor_heartbeat',
-    ).length;
     await new Promise(resolve => setTimeout(resolve, 20));
     expect(appendExecutionTrace.mock.calls.filter(
       ([event]) => event.kind === 'executor_heartbeat',
-    )).toHaveLength(heartbeatCount);
+    )).toHaveLength(0);
   });
 
   it('does not project a safe uncertified receipt as an Executor health failure', () => {

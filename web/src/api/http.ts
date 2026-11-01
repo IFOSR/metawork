@@ -242,7 +242,7 @@ export class HttpClient {
       }
       | { status: 'failed'; reason: string };
     activeWorkspaceId: string | null;
-    activeSessionId: string | null;
+    currentSessionId: string | null;
   }> {
     return this.request('/api/workspaces/select', {
       method: 'POST',
@@ -252,7 +252,7 @@ export class HttpClient {
 
   getConversations(workspaceId: string, query = '', cursor?: string): Promise<{
     activeWorkspaceId: string;
-    activeConversationId: string | null;
+    currentConversationId: string | null;
     conversations: WebSessionMetadata[];
     nextCursor?: string | null;
   }> {
@@ -352,13 +352,13 @@ export class HttpClient {
     });
   }
 
-  async deleteConversation(sessionId: string): Promise<void> {
-    await this.request<void>(`/api/conversations/${encodeURIComponent(sessionId)}`, {
+  async deleteConversation(sessionId: string): Promise<{ status: 'deletion_pending' } | void> {
+    return this.request<{ status: 'deletion_pending' } | void>(`/api/conversations/${encodeURIComponent(sessionId)}`, {
       method: 'DELETE',
     });
   }
 
-  clearConversations(): Promise<{ deleted: number }> {
+  clearConversations(): Promise<{ deleted: number; deletedIds: string[]; skipped: number }> {
     return this.request('/api/conversations/clear-all', { method: 'POST' });
   }
 

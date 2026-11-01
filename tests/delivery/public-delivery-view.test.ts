@@ -50,7 +50,7 @@ describe('public delivery projection', () => {
     expect(publicDeliveryLines(view).join('\n')).not.toContain('任务目录');
   });
 
-  it('projects historical Worktree rows as the single In-place Workspace view', () => {
+  it('projects Conversation Git rows as the Worktree Workspace view', () => {
     const view = projectPublicDelivery({
       task: {
         id: 'task_1',
@@ -65,16 +65,16 @@ describe('public delivery projection', () => {
       delivery: () => null,
     });
     expect(view).toMatchObject({
-      mode: 'in_place',
+      mode: 'worktree',
       taskDirectory: null,
       modeSource: 'planner',
       deliveryPolicy: 'auto_publish',
       files: ['out.pptx'],
-      stateLabel: IN_PLACE_DELIVERY_LABELS.published,
+      stateLabel: '已发布到工作区',
       candidate: 'none',
     });
     const lines = publicDeliveryLines(view).join('\n');
-    expect(lines).toContain('执行方式: 目标 Workspace 就地执行（Planner 判断）');
+    expect(lines).toContain('执行方式: Conversation Worktree 执行（Planner 判断）');
     expect(lines).toContain(`目标 Workspace: ${workspace}`);
     expect(lines).not.toContain('metaclaw-tasks');
   });

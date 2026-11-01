@@ -114,7 +114,7 @@ describe('durable Conversation read model', () => {
     });
   });
 
-  it('recovers replaced history and emits deletion tombstones without resurrecting removed Turns from the audit', () => {
+  it('preserves unresolved legacy bodies during metadata updates and emits deletion tombstones without resurrecting removed Turns from the audit', () => {
     const { db, store, projector } = fixture();
     const history = new SqliteConversationHistoryRepo<ConversationTurn>(db, 'account', 'conversation');
     const source = new SqliteConversationHistoryProjectionSource(db);
@@ -124,7 +124,7 @@ describe('durable Conversation read model', () => {
     expect(drain()).toBe(true);
     history.upsert('conv', { id: 'one', conversationId: 'conv', userInput: 'replacement', finalAnswer: 'done', status: 'completed' });
     expect(drain()).toBe(true);
-    expect(store.findTurn('account', 'conv', 'one')).toMatchObject({ userInput: 'replacement', answer: 'done' });
+    expect(store.findTurn('account', 'conv', 'one')).toMatchObject({ userInput: 'original', answer: '', status: 'completed' });
     const cursor = store.head('account', 'conv')!;
     history.replace('conv', []);
     expect(drain()).toBe(true);

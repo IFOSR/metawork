@@ -190,7 +190,7 @@ export function contextRefKey(ref: ContextRef): string {
     case 'artifact': return `${ref.kind}:${ref.artifactId}`;
     case 'task_resource': return `${ref.kind}:${ref.locator}`;
     case 'task_evidence': return `${ref.kind}:${ref.evidenceId}`;
-    case 'memory': return `${ref.kind}:${ref.memoryId}`;
+    case 'memory': return `${ref.kind}:${ref.memoryId}:${ref.revision ?? 'legacy'}`;
     default: {
       // Persisted pre-schema-59 payloads can still carry a retired kind. Fail
       // closed instead of returning an undefined key that would be treated as

@@ -25,6 +25,8 @@ export interface JournalStreamState {
 
 /** Gateway-owned persistence port. Files become visible only at index commit. */
 export interface EventJournalSegmentIndex {
+  isDeleted?(accountId: string, conversationId: string): boolean;
+  purge?(accountId: string, conversationId: string): void;
   traceCheckpoint(accountId: string, conversationId: string): number | null;
   indexTraceEvents(accountId: string, conversationId: string, events: readonly IndexedTraceEvent[], through: number): void;
   tracePage(accountId: string, conversationId: string, turnId: string, after: TracePagePosition | null,

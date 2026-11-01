@@ -35,6 +35,38 @@ async function fixture() {
 }
 
 describe('WorkspaceDirectoryService', () => {
+  it('archives from current activity rather than an old blocked turn, and checks authorization first', async () => {
+    const value = await fixture();
+    const { workspace } = await value.service.selectByPath(value.repo, 'local');
+    const conversation = await value.service.createConversation(workspace.id, 'local');
+    const record = (await value.conversationStore.readConversation(conversation.id))!;
+    await value.conversationStore.writeConversation({ ...record, turns: [{
+      id: 'old-blocked-turn', conversationId: conversation.id, userInput: 'old request', finalAnswer: null, status: 'blocked',
+    }] });
+    let busy = true;
+    let authorized = true;
+    const activity = vi.fn(() => ({
+      state: busy ? 'executing' as const : 'idle' as const,
+      taskId: busy ? 'task-running' : null, updatedAt: conversation.updatedAt,
+    }));
+    const service = new WorkspaceDirectoryService({
+      accountId: 'local-default', workspaceCatalog: value.workspaceCatalog,
+      conversationStore: value.conversationStore, authorize: () => authorized,
+      getConversationActivity: activity,
+    });
+    const write = vi.spyOn(value.conversationStore, 'writeConversation');
+    await expect(service.archiveConversation(conversation.id, workspace.id, 'local')).rejects.toThrow('workspace_busy');
+    expect(write).not.toHaveBeenCalled();
+    authorized = false;
+    activity.mockClear();
+    await expect(service.archiveConversation(conversation.id, workspace.id, 'local')).rejects.toThrow('workspace_unauthorized');
+    expect(activity).not.toHaveBeenCalled();
+    authorized = true;
+    busy = false;
+    await service.archiveConversation(conversation.id, workspace.id, 'local');
+    expect((await value.conversationStore.readConversation(conversation.id))?.conversation.archived).toBe(true);
+  });
+
   it('rejects a Workspace that contains the MetaWork runtime root before catalog mutation', async () => {
     const value = await fixture();
     const runtimeRoot = join(roots[0]!, '.metawork');

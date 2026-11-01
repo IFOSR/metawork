@@ -1,3 +1,4 @@
+import { resolveDerivedContent, storeDerivedContent } from './conversation-content-references.js';
 import type Database from 'better-sqlite3';
 import { isDeepStrictEqual } from 'node:util';
 import { isValidAccountId } from '../account/account-id.js';
@@ -58,7 +59,7 @@ export class SqliteCommandAdmissionStore implements CommandAdmissionStore {
       };
       this.db.prepare(`INSERT INTO gateway_command_admissions
         (account_id, idempotency_key, state, body_json) VALUES (?, ?, ?, ?)`)
-        .run(this.accountId, created.idempotencyKey, created.state, JSON.stringify(created));
+        .run(this.accountId, created.idempotencyKey, created.state, this.encode(created));
       return structuredClone(created);
     }).immediate();
   }
@@ -134,7 +135,7 @@ export class SqliteCommandAdmissionStore implements CommandAdmissionStore {
         if (existing) {
           if (!isDeepStrictEqual(existing, admission)) throw new Error('command admission import conflict');
         } else {
-          insert.run(this.accountId, admission.idempotencyKey, admission.state, JSON.stringify(admission));
+          insert.run(this.accountId, admission.idempotencyKey, admission.state, this.encode(admission));
         }
       }
       this.db.prepare('INSERT INTO gateway_command_admission_imports (account_id) VALUES (?)').run(this.accountId);
@@ -151,8 +152,18 @@ export class SqliteCommandAdmissionStore implements CommandAdmissionStore {
     return row ? this.decode(row) : null;
   }
 
+  private encode(admission: StoredCommandAdmission): string {
+    if (!admission.conversationId || !('text' in admission.command)) return JSON.stringify(admission);
+    const commandTextRef = storeDerivedContent(this.db, { accountId: admission.accountId,
+      conversationId: admission.conversationId, turnId: null, kind: 'gateway_admission', text: admission.command.text });
+    return JSON.stringify({ ...admission, command: { ...admission.command, text: '' }, commandTextRef });
+  }
+
   private decode(row: AdmissionRow): StoredCommandAdmission {
-    const admission: unknown = JSON.parse(row.body_json);
+    const value = JSON.parse(row.body_json) as StoredCommandAdmission & { commandTextRef?: string };
+    const { commandTextRef, ...metadata } = value;
+    const admission: unknown = commandTextRef ? { ...metadata, command: { ...value.command,
+      text: resolveDerivedContent(this.db, commandTextRef) } } : metadata;
     if (!isStoredCommandAdmission(admission, this.accountId)
       || admission.idempotencyKey !== row.idempotency_key || admission.state !== row.state) {
       throw new Error(`Invalid command admission record: ${this.accountId}/${row.idempotency_key}`);
@@ -173,7 +184,7 @@ export class SqliteCommandAdmissionStore implements CommandAdmissionStore {
       if (updated !== current) {
         this.db.prepare(`UPDATE gateway_command_admissions SET state = ?, body_json = ?
           WHERE account_id = ? AND idempotency_key = ?`)
-          .run(updated.state, JSON.stringify(updated), this.accountId, idempotencyKey);
+          .run(updated.state, this.encode(updated), this.accountId, idempotencyKey);
       }
       return structuredClone(updated);
     }).immediate();

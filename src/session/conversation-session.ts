@@ -626,6 +626,9 @@ export class ConversationSession {
       attachments: attachments ?? [],
     };
     this.plannerTurnInputRepo?.upsert({
+      accountId: this.accountId,
+      turnId: this.activeInteractionTurnId,
+      plannerSessionId: this.deps.plannerSessionId,
       conversationId: this.deps.conversationId,
       userInput,
       attachmentViews: this.activePlannerTurn.attachments,
@@ -1324,6 +1327,9 @@ export class ConversationSession {
       } as never);
       this.appendOutput(reply);
       this.deps.persistenceService?.recordInteraction({
+        turnId: this.activeInteractionTurnId,
+        conversationId: this.deps.conversationId,
+        accountId: this.accountId,
         taskId: null,
         sessionId: this.deps.plannerSessionId,
         userInput,
@@ -1859,7 +1865,7 @@ export class ConversationSession {
     }
     const repo = this.deps.plannerProposalRepo;
     if (!repo) throw new Error('Planner proposal repository is unavailable');
-    const turn = repo.ensureTurn(sessionId, turnId, userInput);
+    const turn = repo.ensureTurn(sessionId, turnId, userInput, this.activeInteractionTurnId);
     if (turn.conflict) {
       return {
         status: 'conflict',
@@ -2494,6 +2500,7 @@ export class ConversationSession {
       db: this.deps.db ?? null,
       sessionId: this.deps.plannerSessionId,
       conversationId: this.deps.conversationId,
+      accountId: this.deps.runtimePort.accountId,
       refs: (plan.workGraph?.subtasks ?? []).flatMap(subtask => subtask.contextRefs),
       attachmentIds,
       targetTask: plan.task.taskId
@@ -2530,6 +2537,7 @@ export class ConversationSession {
       schemaVersion: 5,
       configurationRevision: input.configurationRevision,
       type: 'plan_proposed',
+      ...(this.activeInteractionTurnId ? { sourceTurnId: this.activeInteractionTurnId } : {}),
       id: input.eventId,
       correlationId: input.correlationId,
       causationId: input.causationId,

@@ -1,3 +1,4 @@
+import { verifyInteractionContent } from '../storage/conversation-content-references.js';
 import type Database from 'better-sqlite3';
 import type { WorkUnitEvent } from '../core/types.js';
 import type { ExecutorRegistrationInspection } from '../execution/execution-runtime.js';
@@ -83,14 +84,14 @@ export class CommandReadServices {
     const fetchLimit = TASK_HISTORY_LIMIT + 1;
     const interactions = this.db.prepare(`
       SELECT id, user_input, system_output, executor_used, created_at
-      FROM interactions
+      FROM interaction_contents
       WHERE task_id = ?
       ORDER BY created_at DESC
       LIMIT ?
     `).all(taskId, fetchLimit) as InteractionHistoryRow[];
     const taskEvents = this.taskEvents.listRecentByTask(taskId, fetchLimit);
     const merged: TaskHistoryEntry[] = [
-      ...interactions.map(row => ({ kind: 'interaction' as const, createdAt: row.created_at, row })),
+      ...interactions.map(row => verifyInteractionContent(this.db, row)).map(row => ({ kind: 'interaction' as const, createdAt: row.created_at, row })),
       ...taskEvents.map(event => ({ kind: 'task-event' as const, createdAt: event.createdAt, event })),
     ].sort((left, right) => right.createdAt.localeCompare(left.createdAt));
 

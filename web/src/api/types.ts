@@ -417,18 +417,18 @@ import type {
 } from './session-types';
 
 export type ServerMessage =
-  | { type: 'hello'; sessionId: string | null; capabilities?: string[]; identity?: { serverId: string; accountId: string } }
+  | { type: 'hello'; currentSessionId: string | null; capabilities?: string[]; identity?: { serverId: string; accountId: string } }
   | { type: 'agent_readiness_state'; agents: AgentReadiness[] }
   | {
       type: 'session_catalog';
-      activeSessionId: string;
+      currentSessionId: string | null;
       sessions: WebSessionMetadata[];
       nextCursor?: string | null;
     }
   | {
       type: 'workspace_directory';
       activeWorkspaceId: string;
-      activeSessionId: string | null;
+      currentSessionId: string | null;
       sessions: WebSessionMetadata[];
       nextCursor?: string | null;
     }
@@ -439,7 +439,7 @@ export type ServerMessage =
       removed?: boolean;
       changes?: Partial<WebSessionMetadata>;
     }
-  | { type: 'active_session_changed'; sessionId: string }
+  | { type: 'current_session_changed'; sessionId: string }
   | {
     type: 'workspace_changed';
     sessionId: string;
@@ -549,10 +549,11 @@ export type ServerMessage =
 export type ClientMessage =
   | {
     type: 'input';
+    conversationId: string;
     text: string;
     /** 客户端生成的请求 ID；服务端用它把结果回投到发起的那条消息。 */
     requestId?: string;
     attachments?: Array<{ attachmentId: string }>;
   }
-  | { type: 'cancel'; turnId: string }
+  | { type: 'cancel'; conversationId: string; turnId: string }
   | { type: 'close' };

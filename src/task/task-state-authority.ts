@@ -148,7 +148,9 @@ export class TaskStateAuthority {
       // anomaly, or an input request that only existed to unblock work) must not
       // outlive its cause.
       const provenCompletion = raw.task.status === 'needs_action'
-        && !raw.workspaceDelivery
+        && (!raw.workspaceDelivery
+          || raw.workspaceDelivery.noChanges
+          || raw.workspaceDelivery.summary?.state === 'delivered')
         && evaluation.status === 'succeeded'
         && evaluation.detail.pendingActions.length === 0;
       if (raw.task.status === 'needs_action' && evaluation.status !== 'cancelled'

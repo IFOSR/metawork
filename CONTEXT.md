@@ -1,5 +1,21 @@
 # MetaWork Planning Agent And Work Unit Context
 
+Conversation content authority (2026-11-01, ADR-0054): account SQLite Turn Store
+owns original user input and final answer revisions. Planner JSONL is a runtime
+copy; read models and Memory consume references. Implementation and validation
+are tracked in `docs/plans/2026-11-01-conversation-turn-single-source-design.md`.
+Schema 64 uses `conversation_turns`, content-addressed UTF-8 bodies, versioned
+answers and a transactional outbox. History/read-model/search are projections;
+Planner JSONL is runtime recovery data. Memory uses per-Turn input/answer-hash
+receipts, complete chunked L0 writes and verified conversation deletion. A
+persistent deletion tombstone fences writers and projection rebuilds; pending
+cleanup is retried and exposed as HTTP 202. Legacy public/redacted bytes without
+original-input provenance stay unresolved and are not deposited as L0.
+Projector version 2 uses authoritative Turn sequence. Verified legacy copies
+retain a seven-day rollback window, then undergo hash verification and cleanup;
+unresolved conversations retain their migration evidence.
+
+
 Edge handoff completion invariant (2026-10-28): a Subtask may enter `done` only
 when every outgoing Work Graph edge already has its handoff row, written in the
 same transaction by the completion boundary. In-place execution no longer
@@ -156,7 +172,7 @@ safe text visibility, and file-delivery-only recovery retain their existing owne
 
 ## Current Implementation Notes
 
-Long-term memory (2026-10-22, amended 2026-10-26, ADR-0049): long-term memory
+Long-term memory (2026-10-22, amended 2026-10-26 and 2026-11-01, ADR-0049): long-term memory
 is an optional capability backed by one external memory engine behind a single
 Memory Port. One MetaWork installation is one local Server for one local
 customer, so `MemoryRuntimeController` is Server-owned: the Server composition
@@ -181,9 +197,12 @@ after the engine accepted the batch. A conversation with a completed turn is
 also flushed when two hours have passed since the last successful deposition;
 a failed deposition never moves that timestamp.
 
-Delivery is pull-only. The Planner references a memory with
-`ContextRef{kind:'memory', memoryId}`; the Runtime re-validates account
-ownership and the enabled state, fetches the body on the host side, and
+Delivery is pull-only. The Planner reads bounded L1 atomic memories, L2 scene
+experience and L3 Persona candidates through `get_memory_context`, each with an
+independent availability state. New Work Graphs reference a memory with
+`ContextRef{kind:'memory', memoryId, revision}`; the Runtime re-validates the
+current Conversation recall snapshot, account ownership, enabled state and
+content revision, fetches the body on the host side, and
 materializes it as `task_execution_evidence(kind='long_term_memory')`. The
 ADR-0021 budget (4,000 characters per item, 24,000 per task) and the
 `executor_evidence_accessed` audit apply unchanged. A memory is never spliced
@@ -192,10 +211,10 @@ than empty content.
 
 The Planner never reaches the engine. The Server owns the adapter and projects a
 bounded preview into the account database; the Planner reads that read model
-through the `search_memory` and `list_memory_assets` MCP tools, exactly as it
-reads tasks and interactions from the database. `search_memory` is not a
-full-text search over every asset: it reads the current turn's bounded
-candidates and returns the `memoryId` to reference. Engine credentials are read
+through `get_memory_context`, `search_memory` (L1 compatibility) and
+`list_memory_assets` MCP tools, exactly as it reads tasks and interactions from
+the database. Only candidates in the current recall snapshot may be referenced;
+the body is delivered through task execution evidence. Engine credentials are read
 from the SecretStore on demand and injected into the sidecar environment only;
 they never enter the Server `process.env`, which the Planner process tree
 inherits, and the Executor container has neither a memory credential nor a
@@ -215,6 +234,18 @@ Provider protocol must be `openai-compatible`, the Provider and Model must be
 enabled, the Model must belong to that Provider and must declare
 `structured-output`) and never recommends, downgrades or fills in a model.
 
+Memory management (2026-10-31): the Web memory panel keeps its API identity stable
+across settings status polls. User-triggered reads retain the rendered page while
+loading; no persistent browser cache is introduced. Account-scoped management
+supports full-body detail (including disabled assets), full-text substring/type/
+enabled filtering before pagination, and stable updated-time/id ordering.
+MemoryService enumerates engine pages through the existing Memory Port, overlays
+the local enabled switch, and binds newly encountered atoms so every listed item
+can be governed. This performs a fresh account-wide read per list request; it does
+not add a body cache or search index. Management detail scans independently of the
+Executor materialization budget; execution evidence still requires an enabled
+account-owned binding. No content editing or new memory write path is introduced.
+
 The pre-TDAI local memory chain is retired (schema 59). `MemoryEngine`,
 `ContextRecaller`, `MemoryContextService`, the preference repository, memory
 vault export, learning/reflection/promotion automation, `/memory`, `/learning`
@@ -224,8 +255,8 @@ tables no longer exist, and `ContextRef{kind:'preference'}` is not a supported
 reference: a persisted payload that contains one fails closed and requires a new
 plan. The only automatic deposition path is
 `MemoryFlushScheduler → MemoryService → MemoryPort → TDAI`; the only long-term
-memory planning path is
-`refreshRecall → memory_recall_candidates → search_memory → ContextRef{kind:'memory'}`.
+memory planning path is `refreshRecall → layered recall snapshot →
+get_memory_context → revision-pinned ContextRef{kind:'memory'}`.
 Extraction spend belongs to the user-selected Provider.
 
 Deposition is sanitized first: secret-like content is redacted before it
@@ -660,6 +691,20 @@ Observation distributes safe, durable Conversation facts to explicit authorized
 subscribers; command/query replies remain connection-specific. Ordinary browser
 navigation reads metadata and a bounded projection, never activates a Planner
 or replays the audit. Conversation content has one projection writer per client.
+Web session selection (2026-10-30): each client owns one `currentSessionId`.
+Directory rows have independent activity and no connection-derived `active` flag.
+Startup restores only an explicit client selection; hello, reconnect, directory
+refresh, and delayed server selection notifications never choose a default target.
+Missing or revoked selections become empty, never the newest Conversation.
+Send/read/cancel operations capture explicit Conversation/Turn/Task identities;
+Server current-view metadata is not command authority. Deleting any idle
+Conversation, including the current or newest one, is allowed. Runtime and the
+Workspace Directory archive boundary check present activity; all non-idle states
+(including unresolved blocked tasks) require stopping first. Historical blocked
+Turns do not forbid deletion. Bulk clear preserves busy Conversations and returns
+exact deleted IDs; late responses cannot clear a newly selected Conversation.
+See the 2026-10-30 session-current-state plan and ADR-0043 amendment.
+
 `cancel_turn` retains exact Turn targeting; `cancel_task` includes Task ID and
 execution generation. `permission_resolution_v2` includes request revision and
 generation, persists the first valid decision, and recovers accepted but unapplied
@@ -1037,30 +1082,26 @@ projection recorded on the Attempt, not a new scheduling authority: Harness
 turn/tool/repair loops stay inside the Harness, and Kernel authorization stays
 at dispatch, resource and verification boundaries.
 
-## 单一 In-place Workspace 执行模型（2026-10-25，ADR-0050）
+## 单一 Conversation Worktree Workspace 执行模型（2026-10-30，ADR-0050 修订）
 
-MetaWork 新任务只有一种 Workspace 写入语义：Executor 直接在 Conversation 绑定的
-Workspace 中执行。Planner 的 `workspaceIntent` 只声明读写操作、Workspace-relative
+MetaWork 新任务只有一种 Workspace 写入语义：Executor 在 Conversation 绑定的 Git
+Worktree 中执行，结果通过 Workspace FIFO 合并队列写回用户目录。Planner 的
+`workspaceIntent` 只声明读写操作、Workspace-relative
 目标路径、原文件策略、置信度和理由；Kernel 将它确定性地解析为 `read` 或 `write`
 admission。写入 Attempt 在启动 Executor 前申请物理路径 write lease，冲突任务进入
 `resource_waits`，租约释放后重新校验 binding 再执行。
 
-普通编辑、新建文件、继续编辑和目标 Workspace 命令都写入同一目录。系统不为新任务
-创建 Git worktree、复制 Workspace、候选目录或二次 publication。成功的 In-place
-Attempt 直接完成 Subtask，并保留 before/after snapshot、变更清单、receipt 和
-uncertainty 事实。
+普通编辑、新建文件、继续编辑和目标 Workspace 命令都写入当前 Conversation 的
+Worktree。成功 Attempt 封存 Git 提交并进入合并队列；未产生变更的问答或报告不创建
+合并项。用户 Workspace 只由交付队列写入，不作为 Executor 的工作目录。
 
-Before/after 观测优先使用 Git status/tree 通道。普通非 Git Workspace，或 Git 观测失败时，
-Runtime 回退到 Kernel 已授权 `targetPaths` 的有界文件系统快照；变更记录明确标记为
-`partial`，并记录 `filesystem_scope_limited`。这足以认证授权范围内的代码编辑，避免把真实
-改动误判为空 delta；快照截断或不可读时仍保持 uncertified。完成认证以 Runtime 观测到的
-delta 为准：只有确实没有变化的 edit 才要求 `noChangeReason`，模型遗留的过期说明不会再
-触发无意义的用户验收。
+Before/after 观测和提交封存使用 Conversation Worktree 的 Git 通道。用户目录的外部
+修改在合并前作为 external commit 吸收，冲突由 Workspace 合并队列保留并交给用户决策。
 
 `read_only` 是访问事实，不是第二种执行模式。只读 Attempt 通过受控只读边界读取
-Conversation Workspace，临时文件进入 Runtime scratch，不申请 Workspace write lease，
-也不创建 publication；声明 `fileOutputs` 的报告按写入 admission 处理。旧 Worktree
-binding 和未完成 publication 只停放用于审计，恢复时明确拒绝，不能静默切换目录。
+Conversation Worktree，临时文件进入该 Worktree 的 attempt-owned 目录，不单独选择
+`in_place`。历史 `in_place` 和旧 Worktree binding 只读用于审计、迁移和恢复，不能被新
+任务重新选择。
 
 ## Current Server Upgrade Baseline
 

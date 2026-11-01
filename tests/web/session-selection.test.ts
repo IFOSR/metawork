@@ -13,7 +13,6 @@ function session(
     title: id,
     createdAt: updatedAt,
     updatedAt,
-    active: false,
     archived: false,
     workspace: null,
     ...overrides,
@@ -25,27 +24,24 @@ describe('selectInitialSessionId', () => {
     expect(selectInitialSessionId(
       [session('recent', '2026-08-28T10:00:00.000Z'), session('requested', '2026-08-28T09:00:00.000Z')],
       'requested',
-      null,
     )).toBe('requested');
   });
 
-  it('keeps the server active session before falling back to recency', () => {
+  it('does not infer a target from the directory without a client selection', () => {
     expect(selectInitialSessionId(
       [session('recent', '2026-08-28T10:00:00.000Z'), session('active', '2026-08-28T08:00:00.000Z')],
       null,
-      'active',
-    )).toBe('active');
+    )).toBeNull();
   });
 
-  it('opens the most recently updated history when no session is active', () => {
+  it('does not replace a missing requested session with the newest history', () => {
     expect(selectInitialSessionId(
       [session('old', '2026-08-27T10:00:00.000Z'), session('recent', '2026-08-28T10:00:00.000Z')],
-      null,
-      null,
-    )).toBe('recent');
+      'deleted',
+    )).toBeNull();
   });
 
-  it('skips newer empty startup placeholders when substantive history exists', () => {
+  it('does not use substantive history as an implicit target', () => {
     expect(selectInitialSessionId(
       [
         session('recent-empty', '2026-08-28T10:00:00.000Z', {
@@ -57,11 +53,10 @@ describe('selectInitialSessionId', () => {
         }),
       ],
       null,
-      null,
-    )).toBe('recent-real');
+    )).toBeNull();
   });
 
   it('returns null instead of creating a session for an empty Workspace', () => {
-    expect(selectInitialSessionId([], null, null)).toBeNull();
+    expect(selectInitialSessionId([], null)).toBeNull();
   });
 });

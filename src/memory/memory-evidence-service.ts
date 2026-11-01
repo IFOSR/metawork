@@ -18,6 +18,7 @@
  */
 
 import type { MemoryService } from './memory-service.js';
+import type { MemoryRecallRepo } from '../storage/memory-recall-repo.js';
 import type { ContextRef } from '../work-graph/types.js';
 import {
   createEvidenceId,
@@ -32,6 +33,7 @@ export interface MemoryEvidenceOptions {
    */
   resolveService: () => MemoryService | null;
   evidenceRepo: TaskExecutionEvidenceRepo;
+  recallRepo?: Pick<MemoryRecallRepo, 'hasCandidate'>;
   /**
    * Storage cap for one memory body in the evidence catalog. The prompt budget
    * (4k per item, 24k per task) is applied later, when the execution context
@@ -48,6 +50,13 @@ export interface MemoryEvidenceResult {
   failed: Array<{ memoryId: string; reason: string }>;
 }
 
+export class MemoryEvidenceMaterializationError extends Error {
+  constructor(readonly code: string, readonly memoryId: string) {
+    super(`${code}: ${memoryId}`);
+    this.name = 'MemoryEvidenceMaterializationError';
+  }
+}
+
 /**
  * The narrow seam execution depends on. The Server injects a proxy that resolves
  * the live runtime, so a configuration activation that rebuilds the memory
@@ -57,7 +66,8 @@ export interface MemoryEvidencePort {
   materialize(input: {
     accountId: string;
     taskId: string;
-    memoryIds: readonly string[];
+    conversationId?: string;
+    memoryIds: readonly ({ memoryId: string; revision?: string } | string)[];
   }): Promise<MemoryEvidenceResult>;
 }
 
@@ -69,14 +79,15 @@ export class MemoryEvidenceService implements MemoryEvidencePort {
   }
 
   /** Collect the memory references of one authorized work graph. */
-  static collectMemoryRefs(refs: readonly ContextRef[]): string[] {
+  static collectMemoryRefs(refs: readonly ContextRef[]): Array<{ memoryId: string; revision?: string }> {
     const seen = new Set<string>();
-    const memoryIds: string[] = [];
+    const memoryIds: Array<{ memoryId: string; revision?: string }> = [];
     for (const ref of refs) {
       if (ref.kind !== 'memory') continue;
-      if (seen.has(ref.memoryId)) continue;
-      seen.add(ref.memoryId);
-      memoryIds.push(ref.memoryId);
+      const key = `${ref.memoryId}:${ref.revision ?? 'legacy'}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      memoryIds.push({ memoryId: ref.memoryId, ...(ref.revision ? { revision: ref.revision } : {}) });
     }
     return memoryIds;
   }
@@ -88,7 +99,8 @@ export class MemoryEvidenceService implements MemoryEvidencePort {
   async materialize(input: {
     accountId: string;
     taskId: string;
-    memoryIds: readonly string[];
+    conversationId?: string;
+    memoryIds: readonly ({ memoryId: string; revision?: string } | string)[];
   }): Promise<MemoryEvidenceResult> {
     const service = this.options.resolveService();
     if (!service) {
@@ -96,17 +108,28 @@ export class MemoryEvidenceService implements MemoryEvidencePort {
       // dropping the requirement.
       return {
         materialized: [],
-        failed: input.memoryIds.map(memoryId => ({
-          memoryId,
+        failed: input.memoryIds.map(ref => ({
+          memoryId: typeof ref === 'string' ? ref : ref.memoryId,
           reason: 'memory_unavailable',
         })),
       };
     }
     const materialized: string[] = [];
     const failed: Array<{ memoryId: string; reason: string }> = [];
-    for (const memoryId of input.memoryIds) {
-      const evidenceId = createEvidenceId('long_term_memory', memoryId);
+    for (const value of input.memoryIds) {
+      const ref = typeof value === 'string' ? { memoryId: value } : value;
+      const memoryId = ref.memoryId;
+      const evidenceId = createEvidenceId('long_term_memory', ref.revision ? `${memoryId}:${ref.revision}` : memoryId);
       try {
+        if (ref.revision && (!input.conversationId || !this.options.recallRepo?.hasCandidate({
+          accountId: input.accountId,
+          conversationId: input.conversationId,
+          memoryId,
+          revision: ref.revision,
+        }))) {
+          failed.push({ memoryId, reason: `memory_not_in_recall_snapshot: ${memoryId}` });
+          continue;
+        }
         // The binding is re-validated on every delivery: an asset the user
         // disabled after the plan was authorized must not reach an Executor.
         const binding = service.bindingFor({
@@ -117,22 +140,26 @@ export class MemoryEvidenceService implements MemoryEvidencePort {
           failed.push({ memoryId, reason: `memory_not_authorized: ${memoryId}` });
           continue;
         }
-        const existing = this.options.evidenceRepo.findForTask(input.taskId, evidenceId);
-        if (existing && existing.kind === 'long_term_memory') {
-          materialized.push(evidenceId);
-          continue;
-        }
         const asset = await service.materialize({
           accountId: input.accountId,
           memoryId,
+          revision: ref.revision,
         });
+        const existing = this.options.evidenceRepo.findForTask(input.taskId, evidenceId);
+        if (existing && existing.kind === 'long_term_memory') {
+          // The row pins the version originally delivered, but every Attempt
+          // still re-reads the engine so a changed/deleted asset cannot pass a
+          // stale authorization check merely because its evidence row exists.
+          materialized.push(evidenceId);
+          continue;
+        }
         const content = asset.content.slice(0, this.options.maxStoredChars);
         this.options.evidenceRepo.upsert({
           id: evidenceId,
           taskId: input.taskId,
           kind: 'long_term_memory',
-          sourceId: memoryId,
-          title: `Long-term memory ${memoryId}`,
+          sourceId: `${binding.layer}:${binding.tdaiMemoryId}`,
+          title: `${asset.layer ?? binding.layer}: ${asset.title ?? binding.tdaiTitle ?? memoryId}`,
           content,
           exactOnly: false,
           createdAt: asset.createdAt || new Date().toISOString(),

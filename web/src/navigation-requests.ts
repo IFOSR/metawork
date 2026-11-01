@@ -31,7 +31,6 @@ export async function loadStartupWorkspace(
         : catalog.workspaces,
       directory: {
         conversations: selected.conversations, nextCursor: selected.nextCursor,
-        activeConversationId: selected.activeSessionId,
       },
     };
   }
@@ -56,7 +55,7 @@ export async function loadWorkspaceSelection(
     ? { conversations: selection.conversations, nextCursor: selection.nextCursor ?? null }
     : await http.getConversations(result.activeWorkspaceId);
   return {
-    activeWorkspaceId: result.activeWorkspaceId, activeSessionId: result.activeSessionId,
+    activeWorkspaceId: result.activeWorkspaceId,
     workspace: selection.workspace, ...page,
   };
 }

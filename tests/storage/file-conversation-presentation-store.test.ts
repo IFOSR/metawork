@@ -85,6 +85,13 @@ describe('FileConversationPresentationStore', () => {
       .not.toMatch(/"title"|"active"|"archived"|"workspace"/u);
   });
 
+  it('permanently erases quarantined copies without touching a different conversation prefix', async () => {
+    const { root, store } = await fixture();
+    await writeFile(join(root, 'quarantine', 'conv_alpha.123.invalid.json'), 'secret');
+    await writeFile(join(root, 'quarantine', 'conv_alpha.child.123.invalid.json'), 'other conversation');
+    await store.delete('conv_alpha');
+    expect(await readdir(join(root, 'quarantine'))).toEqual(['conv_alpha.child.123.invalid.json']);
+  });
   it('quarantines malformed records and rejects traversal ids', async () => {
     const { root, store } = await fixture();
     await writeFile(join(root, 'records', 'conv_bad.json'), '{broken', 'utf8');

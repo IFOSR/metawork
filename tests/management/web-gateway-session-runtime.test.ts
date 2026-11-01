@@ -12,13 +12,77 @@ import type {
   WebSessionRuntimeCatalog,
   WebSessionRuntimeEvent,
 } from '../../src/management/web-session-runtime-types.js';
-import type { WebSessionRecord } from '../../src/management/web-session-types.js';
+import type { WebSessionDirectoryMetadata, WebSessionRecord } from '../../src/management/web-session-types.js';
 import type { ExecutionTimeline } from '../../src/management/execution-projector.js';
 
 describe('WebGatewaySessionRuntime', () => {
+  it.each(['planning', 'queued', 'executing', 'waiting', 'blocked'] as const)(
+    'protects a %s conversation and allows deleting it after stopping regardless of current view', async state => {
+      const catalog = catalogFixture();
+      const archive = vi.spyOn(catalog, 'archive');
+      const readActivity = vi.fn(async (): Promise<WebSessionDirectoryMetadata['activity']> => ({ state, taskId: 'task_b', updatedAt: '2026-10-30T00:00:00Z' }));
+      const runtime = new WebGatewaySessionRuntime({ accountId: 'local-default',
+        catalog: { ...catalog, readActivity }, gateway: gatewayFixture() });
+      try {
+        await runtime.activateSession('browser-a', 'conv_2');
+        expect(await runtime.deleteSession('browser-a', 'conv_2')).toBe('running');
+        expect(archive).not.toHaveBeenCalled();
+        readActivity.mockImplementation(async () => ({ state: 'idle', taskId: null, updatedAt: '2026-10-30T00:00:00Z' }));
+        expect(await runtime.deleteSession('browser-a', 'conv_2')).toBe('deleted');
+        expect(runtime.getClientState('browser-a').currentSessionId).toBeNull();
+        expect(archive).toHaveBeenCalledWith('conv_2', 'workspace_repo', 'web:local-web-user');
+      } finally { await runtime.dispose(); }
+    },
+  );
+
+  it('requires explicit command targets and preserves them across different clients and current views', async () => {
+    const gateway = gatewayFixture();
+    const submit = vi.spyOn(gateway, 'submit');
+    const runtime = new WebGatewaySessionRuntime({ accountId: 'local-default', catalog: catalogFixture(), gateway });
+    try {
+      await runtime.activateSession('browser-a', 'conv_1');
+      await runtime.activateSession('browser-b', 'conv_2');
+      await expect(runtime.submit('browser-a', '', 'hello')).rejects.toThrow('conversation_required');
+      await expect(runtime.cancelTurn('browser-a', '', 'turn_1')).rejects.toThrow('conversation_required');
+      expect(submit).not.toHaveBeenCalled();
+      await runtime.submit('browser-a', 'conv_2', 'hello', [], 'request_explicit');
+      expect(submit).toHaveBeenLastCalledWith(expect.objectContaining({
+        requestId: 'request_explicit', idempotencyKey: 'request_explicit',
+        scope: { kind: 'conversation', selection: { mode: 'attach', conversationId: 'conv_2' } },
+      }));
+      expect(runtime.getClientState('browser-a').currentSessionId).toBe('conv_1');
+      expect(runtime.getClientState('browser-b').currentSessionId).toBe('conv_2');
+      await runtime.cancelTurn('browser-a', 'conv_1', 'turn_exact');
+      expect(submit).toHaveBeenLastCalledWith(expect.objectContaining({
+        scope: { kind: 'conversation', selection: { mode: 'attach', conversationId: 'conv_1' } },
+        command: { kind: 'cancel_turn', turnId: 'turn_exact' },
+      }));
+    } finally { await runtime.dispose(); }
+  });
+
+  it('clears only stopped conversations and uses removal events for each target', async () => {
+    const catalog = catalogFixture();
+    const archive = vi.spyOn(catalog, 'archive');
+    const runtime = new WebGatewaySessionRuntime({ accountId: 'local-default', gateway: gatewayFixture(),
+      catalog: { ...catalog,
+        list: async () => ['conv_1', 'conv_2'].map(id => ({ ...sessionRecord(id).session,
+          workspaceId: 'workspace_repo', preview: '', activity: { state: 'idle', taskId: null, updatedAt: '' } })),
+        readActivity: async id => ({ state: id === 'conv_2' ? 'executing' : 'idle', taskId: null, updatedAt: '' }),
+      } });
+    const events: WebSessionRuntimeEvent[] = [];
+    runtime.subscribe('browser-a', event => events.push(event));
+    try {
+      await runtime.activateSession('browser-a', 'conv_1');
+      expect(await runtime.clearAllSessions('browser-a')).toEqual({ deleted: 1, deletedIds: ['conv_1'], skipped: 1 });
+      expect(archive).toHaveBeenCalledTimes(1);
+      expect(events).toContainEqual({ type: 'workspace_conversation_changed', workspaceId: 'workspace_repo', conversationId: 'conv_1', removed: true });
+      expect(runtime.getClientState('browser-a').currentSessionId).toBeNull();
+    } finally { await runtime.dispose(); }
+  });
+
   it('switches via metadata only with no execution attach, audit replay or content hydration', async () => {
     const forbidden = vi.fn(() => { throw new Error('navigation_hydrated_execution'); });
-    const readMetadata = vi.fn(async (id: string) => ({ ...sessionRecord(id, false).session, workspaceId: 'workspace_repo' }));
+    const readMetadata = vi.fn(async (id: string) => ({ ...sessionRecord(id).session, workspaceId: 'workspace_repo' }));
     const runtime = new WebGatewaySessionRuntime({ accountId: 'local-default',
       catalog: { ...catalogFixture(), read: forbidden, readPage: forbidden, readMetadata },
       gateway: gatewayFixture({ attachClient: forbidden, replay: forbidden }),
@@ -95,9 +159,9 @@ describe('WebGatewaySessionRuntime', () => {
   it('reads one bounded history page across activation and the first visible GET', async () => {
     const catalog = catalogFixture();
     const read = vi.spyOn(catalog, 'read');
-    const readPage = vi.fn(async (id: string) => sessionRecord(id, true));
+    const readPage = vi.fn(async (id: string) => sessionRecord(id));
     const readMetadata = vi.fn(async (id: string) => ({
-      ...sessionRecord(id, false).session, workspaceId: 'workspace_repo',
+      ...sessionRecord(id).session, workspaceId: 'workspace_repo',
     }));
     const runtime = new WebGatewaySessionRuntime({
       accountId: 'local-default', catalog: { ...catalog, readPage, readMetadata, readVersion: async () => 'v1' }, gateway: gatewayFixture(),
@@ -118,16 +182,16 @@ describe('WebGatewaySessionRuntime', () => {
       accountId: 'local-default',
       catalog: {
         ...catalogFixture(),
-        readPage: async (id: string) => sessionRecord(id, id === 'conv_1'),
+        readPage: async (id: string) => sessionRecord(id),
       },
       gateway: gatewayFixture(),
     });
     try {
       await runtime.selectWorkspace('browser-a', '/repo');
       await runtime.activateSession('browser-a', 'conv_1');
-      expect(await runtime.readSession('browser-a', 'conv_2')).toBeNull();
+      expect(await runtime.readSession('browser-a', 'conv_2')).toMatchObject({ session: { id: 'conv_2' } });
       expect(await runtime.readBrowsableSession('browser-a', 'conv_2')).toMatchObject({
-        session: { id: 'conv_2', active: false },
+        session: { id: 'conv_2' },
       });
     } finally { await runtime.dispose(); }
   });
@@ -135,13 +199,13 @@ describe('WebGatewaySessionRuntime', () => {
   it('reads current indexed history after metadata-only navigation', async () => {
     let version = 'v1';
     const readPage = vi.fn(async (id: string) => ({
-      ...sessionRecord(id, true), session: { ...sessionRecord(id, true).session, title: version },
+      ...sessionRecord(id), session: { ...sessionRecord(id).session, title: version },
     }));
     const runtime = new WebGatewaySessionRuntime({
       accountId: 'local-default',
       catalog: {
         ...catalogFixture(), readPage, readVersion: async () => version,
-        readMetadata: async id => ({ ...sessionRecord(id, true).session, workspaceId: 'workspace_repo' }),
+        readMetadata: async id => ({ ...sessionRecord(id).session, workspaceId: 'workspace_repo' }),
       },
       gateway: gatewayFixture(),
     });
@@ -155,13 +219,13 @@ describe('WebGatewaySessionRuntime', () => {
 
   it('consumes the empty create handoff in the creation response', async () => {
     const readPage = vi.fn(async (id: string) => ({
-      ...sessionRecord(id, true), session: { ...sessionRecord(id, true).session, title: 'External completion' },
+      ...sessionRecord(id), session: { ...sessionRecord(id).session, title: 'External completion' },
     }));
     const runtime = new WebGatewaySessionRuntime({
       accountId: 'local-default', gateway: gatewayFixture(),
       catalog: {
         ...catalogFixture(), readPage, readVersion: async () => 'v1',
-        readMetadata: async id => ({ ...sessionRecord(id, true).session, workspaceId: 'workspace_repo' }),
+        readMetadata: async id => ({ ...sessionRecord(id).session, workspaceId: 'workspace_repo' }),
       },
     });
     try {
@@ -190,6 +254,34 @@ describe('WebGatewaySessionRuntime', () => {
       expect(list).not.toHaveBeenCalled();
       expect(events).toContainEqual({
         type: 'workspace_conversation_changed', workspaceId: 'workspace_repo', conversationId: 'conv_2', removed: true,
+      });
+    } finally { await runtime.dispose(); }
+  });
+
+  it('deletes from the durable conversation binding when navigation state is empty', async () => {
+    const catalog = catalogFixture();
+    const archive = vi.spyOn(catalog, 'archive');
+    const runtime = new WebGatewaySessionRuntime({
+      accountId: 'local-default', catalog, gateway: gatewayFixture(),
+    });
+    try {
+      expect(await runtime.deleteSession('browser-a', 'conv_2')).toBe('deleted');
+      expect(archive).toHaveBeenCalledWith('conv_2', 'workspace_repo', 'web:local-web-user');
+    } finally { await runtime.dispose(); }
+  });
+
+  it('treats an already missing canonical record as an idempotent delete', async () => {
+    const catalog = { ...catalogFixture(), archive: vi.fn(async () => false) };
+    const events: WebSessionRuntimeEvent[] = [];
+    const runtime = new WebGatewaySessionRuntime({
+      accountId: 'local-default', catalog, gateway: gatewayFixture(),
+    });
+    runtime.subscribe('browser-a', event => events.push(event));
+    try {
+      expect(await runtime.deleteSession('browser-a', 'conv_2')).toBe('deleted');
+      expect(events).toContainEqual({
+        type: 'workspace_conversation_changed', workspaceId: 'workspace_repo',
+        conversationId: 'conv_2', removed: true,
       });
     } finally { await runtime.dispose(); }
   });
@@ -255,7 +347,7 @@ describe('WebGatewaySessionRuntime', () => {
     const replay = vi.fn(async () => ({ lastSequence: 0, snapshot: [], deltas: [] }));
     const catalog = catalogFixture();
     catalog.list = async () => Array.from({ length: 100 }, (_, index) => ({
-      ...sessionRecord(`conv_${index}`, false).session,
+      ...sessionRecord(`conv_${index}`).session,
       workspaceId: 'workspace_repo', preview: '',
       activity: { state: 'idle' as const, taskId: null, updatedAt: '2026-09-26T00:00:00.000Z' },
     }));
@@ -316,7 +408,7 @@ describe('WebGatewaySessionRuntime', () => {
     });
     try {
       await attachBrowser(runtime);
-      await expect(runtime.cancelTurn('browser-a', 'turn_old')).rejects.toThrow('turn_not_running');
+      await expect(runtime.cancelTurn('browser-a', 'conv_1', 'turn_old')).rejects.toThrow('turn_not_running');
     } finally { await runtime.dispose(); }
   });
 
@@ -423,7 +515,7 @@ describe('WebGatewaySessionRuntime', () => {
     });
 
     await attachBrowser(runtime);
-    const submitting = runtime.submit('browser-a', '发给 A', [{
+    const submitting = runtime.submit('browser-a', 'conv_1', '发给 A', [{
       attachmentId: 'attachment_a',
       kind: 'file',
     }]);
@@ -471,14 +563,14 @@ describe('WebGatewaySessionRuntime', () => {
 
     expect(runtime.getClientState('browser-a')).toEqual({
       activeWorkspaceId: 'workspace_repo',
-      activeSessionId: null,
+      currentSessionId: null,
     });
     expect(submitted).toEqual([{ connectionId: 'web:browser-a', kind: 'select_workspace' }]);
   });
 
   it('keeps the Web connection id separate from the Workspace authorization principal', async () => {
     const principals: string[] = [];
-    const record = sessionRecord('conv_1', false);
+    const record = sessionRecord('conv_1');
     const runtime = new WebGatewaySessionRuntime({
       accountId: 'local-default',
       catalog: {
@@ -514,13 +606,13 @@ describe('WebGatewaySessionRuntime', () => {
 
     expect(runtime.getClientState('browser-a')).toEqual({
       activeWorkspaceId: 'workspace_repo',
-      activeSessionId: 'conv_1',
+      currentSessionId: 'conv_1',
     });
   });
 
   it('fences remembered attachments to the expected Workspace before activating or exposing history', async () => {
     const runtime = new WebGatewaySessionRuntime({
-      accountId: 'local-default', catalog: catalogFixture(), gateway: gatewayFixture(),
+      accountId: 'local-default', catalog: catalogFixture(), gateway: gatewayFixture({ submit: async envelope => ({ status: 'accepted', requestId: envelope.requestId, idempotencyKey: envelope.idempotencyKey, workspaceId: 'workspace_other' }) }),
     });
     try {
       await runtime.selectWorkspace('browser-a', '/repo-other');
@@ -562,7 +654,7 @@ describe('WebGatewaySessionRuntime', () => {
 
   it('subscribes to active Workspace summaries without exposing another Conversation detail', async () => {
     const listeners = new Map<string, (event: GatewayEventEnvelope) => void>();
-    const record = sessionRecord('conv_1', false);
+    const record = sessionRecord('conv_1');
     const directoryRecord = {
       ...record.session,
       workspaceId: 'workspace_repo',
@@ -620,7 +712,7 @@ describe('WebGatewaySessionRuntime', () => {
     expect(list).not.toHaveBeenCalled();
     expect(events.some(event => event.type === 'trace_delta')).toBe(false);
     expect(events.some(event => event.type === 'final_answer')).toBe(false);
-    await expect(runtime.readSession('browser-a', 'conv_1')).resolves.toBeNull();
+    await expect(runtime.readSession('browser-a', 'conv_1')).resolves.toMatchObject({ session: { id: 'conv_1' } });
   });
 
   it('restores the target Workspace when attaching a Conversation from another Workspace', async () => {
@@ -647,7 +739,7 @@ describe('WebGatewaySessionRuntime', () => {
     });
     expect(runtime.getClientState('browser-a')).toEqual({
       activeWorkspaceId: 'workspace_other',
-      activeSessionId: 'conv_1',
+      currentSessionId: 'conv_1',
     });
     expect(restored.at(-1)).toEqual({
       connectionId: 'web:browser-a',
@@ -704,7 +796,7 @@ describe('WebGatewaySessionRuntime', () => {
       });
 
       await attachBrowser(runtime);
-      await runtime.submit('browser-a', '分析这些材料', [
+      await runtime.submit('browser-a', 'conv_1', '分析这些材料', [
         { attachmentId: image.attachmentId, kind: 'file' },
         { attachmentId: doc.attachmentId, kind: 'file' },
       ]);
@@ -762,7 +854,7 @@ describe('WebGatewaySessionRuntime', () => {
 
     await attachBrowser(runtime);
     await expect(runtime.submit(
-      'browser-a',
+      'browser-a', 'conv_1',
       '分析这六份材料',
       Array.from({ length: 6 }, (_, index) => ({
         attachmentId: `att_${index}`,
@@ -797,7 +889,7 @@ describe('WebGatewaySessionRuntime', () => {
     });
 
     await attachBrowser(runtime);
-    await expect(runtime.submit('browser-a', '看这个', [
+    await expect(runtime.submit('browser-a', 'conv_1', '看这个', [
       { attachmentId: 'att_missing', kind: 'file' },
     ])).rejects.toMatchObject({ code: 'attachment_unavailable' });
     await runtime.dispose();
@@ -825,7 +917,7 @@ describe('WebGatewaySessionRuntime', () => {
 
     await attachBrowser(runtime);
     await expect(runtime.submit(
-      'browser-a',
+      'browser-a', 'conv_1',
       '太多了',
       Array.from({ length: 33 }, (_, index) => ({ attachmentId: `att_${index}`, kind: 'file' })),
     )).rejects.toMatchObject({ code: 'attachment_count_exceeded' });
@@ -835,7 +927,7 @@ describe('WebGatewaySessionRuntime', () => {
   });
 
   it('keeps the persisted Turn Task authoritative over a mismatched historical Timeline', async () => {
-    const record = sessionRecord('conv_1', true);
+    const record = sessionRecord('conv_1');
     record.turns = [{
       id: 'turn_b',
       sessionId: 'conv_1',
@@ -901,7 +993,6 @@ describe('WebGatewaySessionRuntime', () => {
         title: 'Conversation',
         createdAt: '2026-08-19T00:00:00.000Z',
         updatedAt: '2026-08-19T00:05:00.000Z',
-        active: true,
         archived: false,
       },
       turns: [
@@ -1034,7 +1125,7 @@ describe('WebGatewaySessionRuntime', () => {
       contentHash: 'sha256:legacy-turn',
       publishedAt: '2026-09-26T06:00:00.000Z',
     };
-    const record = sessionRecord('conv_1', true);
+    const record = sessionRecord('conv_1');
     record.turns = [{
       id: 'turn_legacy_task_binding',
       sessionId: 'conv_1',
@@ -1070,7 +1161,7 @@ describe('WebGatewaySessionRuntime', () => {
   });
 
   it('rehydrates a historical retrying Task as a non-terminal turn', async () => {
-    const record = sessionRecord('conv_1', true);
+    const record = sessionRecord('conv_1');
     record.turns = [{
       id: 'turn_retrying',
       sessionId: 'conv_1',
@@ -1117,7 +1208,7 @@ describe('WebGatewaySessionRuntime', () => {
   });
 
   it('filters foreign Task events from an existing mixed historical Turn', async () => {
-    const record = sessionRecord('conv_1', true);
+    const record = sessionRecord('conv_1');
     record.turns = [{
       id: 'turn_b',
       sessionId: 'conv_1',
@@ -1211,11 +1302,11 @@ describe('WebGatewaySessionRuntime', () => {
 });
 
 function catalogFixture(): WebSessionRuntimeCatalog {
-  const record = sessionRecord('conv_1', true);
+  const record = sessionRecord('conv_1');
   return catalogForRecord(record);
 }
 
-function sessionRecord(id: string, active: boolean): WebSessionRecord {
+function sessionRecord(id: string): WebSessionRecord {
   return {
     version: 1,
     session: {
@@ -1223,7 +1314,6 @@ function sessionRecord(id: string, active: boolean): WebSessionRecord {
       title: 'Conversation',
       createdAt: '2026-08-19T00:00:00.000Z',
       updatedAt: '2026-08-19T00:00:00.000Z',
-      active,
       archived: false,
     },
     turns: [],
@@ -1239,6 +1329,7 @@ function catalogForRecord(record: WebSessionRecord): WebSessionRuntimeCatalog {
     read: async () => record,
     workspaceIdForConversation: async () => 'workspace_repo',
     listWorkspaces: async () => [],
+    readActivity: async () => ({ state: 'idle', taskId: null, updatedAt: record.session.updatedAt }),
     archive: async () => true,
     clearWorkspace: async () => 0,
     appendTurn: async () => record,
@@ -1518,7 +1609,7 @@ function persistedTurnFixture(overrides: {
 
 function billingCatalogFixture(turns: WebSessionRecord['turns']): WebSessionRuntimeCatalog {
   const record: WebSessionRecord = {
-    ...sessionRecord('conv_1', true),
+    ...sessionRecord('conv_1'),
     turns: turns.map(turn => structuredClone(turn)),
   };
   return {
@@ -1530,6 +1621,7 @@ function billingCatalogFixture(turns: WebSessionRecord['turns']): WebSessionRunt
     readTurn: async (_id, turnId) => record.turns.find(turn => turn.id === turnId) ?? null,
     workspaceIdForConversation: async () => 'workspace_repo',
     listWorkspaces: async () => [],
+    readActivity: async () => ({ state: 'idle', taskId: null, updatedAt: record.session.updatedAt }),
     archive: async () => true,
     clearWorkspace: async () => 0,
     appendTurn: async () => record,

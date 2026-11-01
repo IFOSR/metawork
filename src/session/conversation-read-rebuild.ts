@@ -2,7 +2,7 @@ import type { ConversationReadModel } from './conversation-read-model.js';
 import type { ConversationTurn } from './conversation-store.js';
 import { ConversationReadProjector } from './conversation-read-projector.js';
 
-export const CONVERSATION_PROJECTOR_VERSION = 1;
+export const CONVERSATION_PROJECTOR_VERSION = 2;
 
 /** Staging is an invisible derivative; publication switches one epoch pointer. */
 export interface ConversationReadRebuild {

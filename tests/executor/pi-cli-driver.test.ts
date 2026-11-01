@@ -371,7 +371,7 @@ describe('PiCliDriver', () => {
       stream: 'stdout',
       line: JSON.stringify({ type: 'message_update', message: { role: 'assistant' } }),
     })).toBeNull();
-    // 工具活动带白名单参数摘要，实时呈现给用户。
+    // 工具活动直接呈现实际输入，结束事件同时呈现实际返回值。
     expect(driver.parseProgressLine?.({
       stream: 'stdout',
       line: JSON.stringify({
@@ -381,7 +381,7 @@ describe('PiCliDriver', () => {
       }),
     })).toEqual({
       kind: 'skill',
-      text: 'Executor started tool: web_search — sensitive query value',
+      text: 'Executor started tool: web_search\nInput: sensitive query value',
     });
     expect(driver.parseProgressLine?.({
       stream: 'stdout',
@@ -393,9 +393,9 @@ describe('PiCliDriver', () => {
       }),
     })).toEqual({
       kind: 'skill',
-      text: 'Executor completed tool: read — /workspace/report.md',
+      text: 'Executor completed tool: read\nInput: /workspace/report.md\nReturn: no output',
     });
-    // 助手叙述（执行思路）脱敏后实时流出。
+    // 助手公开叙述脱敏后实时流出。
     expect(driver.parseProgressLine?.({
       stream: 'stdout',
       line: JSON.stringify({
@@ -426,10 +426,7 @@ describe('PiCliDriver', () => {
           content: [{ type: 'text', text: 'must not appear' }],
         },
       }),
-    })).toEqual({
-      kind: 'status',
-      text: 'Executor model response stream started',
-    });
+    })).toBeNull();
     expect(driver.parseProgressLine?.({
       stream: 'stdout',
       line: JSON.stringify({
@@ -440,17 +437,40 @@ describe('PiCliDriver', () => {
         },
         toolResults: [{ content: 'must not appear' }],
       }),
-    })).toEqual({
-      kind: 'status',
-      text: 'Executor processing cycle completed',
-    });
+    })).toBeNull();
     expect(driver.parseProgressLine?.({
       stream: 'stdout',
       line: JSON.stringify({ type: 'agent_settled', secret: 'must not appear' }),
-    })).toEqual({
-      kind: 'status',
-      text: 'Executor process settled',
+    })).toBeNull();
+  });
+
+  it('pairs tool results with their original commands and suppresses empty lifecycle events', () => {
+    const driver = new PiCliDriver({ probeCommand: vi.fn() });
+    const progress = (event: Record<string, unknown>) => driver.parseProgressLine?.({
+      stream: 'stdout', line: JSON.stringify(event),
     });
+
+    expect(progress({
+      type: 'tool_execution_start', toolCallId: 'bash-1', toolName: 'bash',
+      args: { command: 'printf "first\\nsecond"' },
+    })).toEqual({
+      kind: 'skill',
+      text: 'Executor started tool: bash\nCommand: printf "first\\nsecond"',
+    });
+    expect(progress({
+      type: 'tool_execution_end', toolCallId: 'bash-1', toolName: 'bash', isError: false,
+      result: { content: [{ type: 'text', text: 'first\nsecond' }] },
+    })).toEqual({
+      kind: 'skill',
+      text: 'Executor completed tool: bash\nCommand: printf "first\\nsecond"\nReturn: first\nsecond',
+    });
+    expect(progress({ type: 'turn_start', turnIndex: 0 })).toBeNull();
+    expect(progress({ type: 'turn_end', turnIndex: 0 })).toBeNull();
+    expect(progress({ type: 'agent_settled' })).toBeNull();
+    expect(progress({
+      type: 'tool_execution_update', toolCallId: 'bash-1',
+      partialResult: { content: [{ type: 'text', text: 'streamed output' }] },
+    })).toEqual({ kind: 'log', text: 'Executor tool progress:\nstreamed output' });
   });
 
   it('classifies Pi turn and tool lifecycle as authoritative active operations', () => {

@@ -1,3 +1,5 @@
+import { SqliteConversationDeletionStore } from '../../src/storage/conversation-deletion-repo.js';
+import { SqliteConversationTurnStore } from '../../src/storage/conversation-turn-repo.js';
 import { mkdtempSync, readdirSync, renameSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
@@ -35,6 +37,51 @@ function setup(): { db: Database.Database; repo: ResultObjectRepo; root: string 
 }
 
 describe('ResultObjectRepo', () => {
+  it('reuses an authoritative answer body and keeps immutable result facts after collecting its file', () => {
+    const { db, repo, root } = setup();
+    const identity = { accountId: 'local-default', conversationId: 'conv', turnId: 'turn' };
+    db.prepare("UPDATE tasks SET account_id = ?, conversation_id = ? WHERE id = 'task_1'").run(identity.accountId, identity.conversationId);
+    const result = repo.putObject({ resultId: 'answer-object', accountId: identity.accountId, taskId: 'task_1',
+      generationId: 'generation_1', sourceSubtaskId: 'subtask_1', attemptId: 'a', kind: 'safe_projection',
+      content: 'exact final answer', completeness: 'complete', mediaType: 'text/plain', retentionClass: 'task' });
+    const store = new SqliteConversationTurnStore(db);
+    const common = { ...identity, protocolVersion: 2 as const, sequence: 0, requestId: 'r', occurredAt: '2026-11-01', payload: {} };
+    store.accept({ ...identity, userInput: 'question', requestKey: 'r', event: { ...common, eventId: 's', kind: 'turn_started' } });
+    store.appendFinalAnswer({ ...identity, content: 'exact final answer', revisionKey: result.resultId,
+      event: { ...common, eventId: 'a', kind: 'final_answer', payload: { resultId: result.resultId } } });
+    repo.collectReferencedContent();
+    expect(readdirSync(join(root, 'objects'))).toEqual([]);
+    expect(repo.readRange(result.resultId, 0, 100).content).toBe('exact final answer');
+    expect(repo.findObject(result.resultId)).toEqual(result);
+    db.prepare("INSERT INTO conversation_deletions VALUES (?, ?, 'pending', 'now')").run(identity.accountId, identity.conversationId);
+    expect(() => repo.readRange(result.resultId, 0, 100)).toThrow('conversation_deleted');
+    new SqliteConversationDeletionStore(db).cleanLocal(identity.accountId, identity.conversationId);
+    expect(db.prepare("SELECT title FROM tasks WHERE id = 'task_1'").get()).toEqual({ title: '[deleted]' });
+    expect(repo.findObject(result.resultId)).toEqual(result);
+    db.close();
+  });
+  it('collects all referenced files across bounded maintenance pages', () => {
+    const { db, repo, root } = setup();
+    const identity = { accountId: 'local-default', conversationId: 'conv', turnId: 'turn' };
+    const store = new SqliteConversationTurnStore(db);
+    const common = { ...identity, protocolVersion: 2 as const, sequence: 0, requestId: 'r', occurredAt: '2026-11-01', payload: {} };
+    store.accept({ ...identity, userInput: 'question', requestKey: 'r', event: { ...common, eventId: 's', kind: 'turn_started' } });
+    for (let n = 0; n < 101; n++) {
+      const content = `answer ${n}`;
+      const resultId = `result-${n}`;
+      repo.putObject({ resultId, accountId: identity.accountId, taskId: 'task_1', generationId: 'generation_1',
+        sourceSubtaskId: 'subtask_1', attemptId: `a-${n}`, kind: 'safe_projection', content,
+        completeness: 'complete', mediaType: 'text/plain', retentionClass: 'task' });
+      store.appendFinalAnswer({ ...identity, content, revisionKey: resultId,
+        event: { ...common, eventId: resultId, kind: 'final_answer', payload: { resultId } } });
+    }
+    repo.collectReferencedContent();
+    expect(readdirSync(join(root, 'objects'))).toHaveLength(1);
+    repo.collectReferencedContent();
+    expect(readdirSync(join(root, 'objects'))).toHaveLength(0);
+    expect(repo.readRange('result-100', 0, 100).content).toBe('answer 100');
+    db.close();
+  });
   it('persists immutable content and supports hash-verified offset reads', () => {
     const { repo } = setup();
 

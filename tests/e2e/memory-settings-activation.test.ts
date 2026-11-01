@@ -1,3 +1,4 @@
+import { seedAuthoritativeTurn } from '../support/conversation-turn-fixture.js';
 /**
  * Configuration-activation journey for long-term memory (review P1-1).
  *
@@ -247,6 +248,7 @@ describeActivation('memory settings activation (review P1-1)', () => {
         startedAt: '2026-10-22T00:00:00.000Z', completedAt: '2026-10-22T00:01:00.000Z',
         interactionKind: 'ai_turn',
       };
+      seedAuthoritativeTurn(db, ACCOUNT, conversationId, body);
       db.prepare(`INSERT INTO conversation_read_turns
         (account_id, conversation_id, epoch, turn_id, first_sequence, revision, active, body_json, byte_length)
         VALUES (?, ?, ?, ?, ?, 1, 0, ?, 100)`)

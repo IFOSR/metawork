@@ -1,10 +1,11 @@
+import { CONVERSATION_TURN_SCHEMA_SQL, installConversationContentReferences } from './conversation-turn-schema.js';
 import { installWorkspaceGitSchema } from './workspace-git-schema.js';
 import { publicTaskRelativeDirectory } from '../task/public-task-directory.js';
 import type Database from 'better-sqlite3';
 import { BILLING_SCHEMA_VERSION, createBillingSchema } from './billing-schema.js';
 import { installObservationSchema } from './observation-schema.js';
 
-export const CURRENT_SCHEMA_VERSION = 62;
+export const CURRENT_SCHEMA_VERSION = 64;
 
 /**
  * Local memory index (design §4.2).
@@ -78,6 +79,43 @@ const MEMORY_STATE_SQL = `
     updated_at TEXT NOT NULL
   );
 `;
+
+function applyLayeredMemoryDdl(db: Database.Database): void {
+  const bindingColumns = columnsOf(db, 'memory_bindings');
+  if (!bindingColumns.includes('layer')) {
+    db.exec("ALTER TABLE memory_bindings ADD COLUMN layer TEXT NOT NULL DEFAULT 'l1' CHECK(layer IN ('l1','l2','l3'))");
+  }
+  if (!bindingColumns.includes('tdai_revision')) db.exec('ALTER TABLE memory_bindings ADD COLUMN tdai_revision TEXT');
+  if (!bindingColumns.includes('tdai_title')) db.exec("ALTER TABLE memory_bindings ADD COLUMN tdai_title TEXT NOT NULL DEFAULT ''");
+
+  const candidateColumns = columnsOf(db, 'memory_recall_candidates');
+  if (!candidateColumns.includes('layer')) {
+    db.exec("ALTER TABLE memory_recall_candidates ADD COLUMN layer TEXT NOT NULL DEFAULT 'l1' CHECK(layer IN ('l1','l2','l3'))");
+  }
+  if (!candidateColumns.includes('revision')) db.exec("ALTER TABLE memory_recall_candidates ADD COLUMN revision TEXT NOT NULL DEFAULT ''");
+  if (!candidateColumns.includes('title')) db.exec("ALTER TABLE memory_recall_candidates ADD COLUMN title TEXT NOT NULL DEFAULT ''");
+  if (!candidateColumns.includes('source')) db.exec("ALTER TABLE memory_recall_candidates ADD COLUMN source TEXT NOT NULL DEFAULT 'conversation'");
+
+  db.exec('DROP INDEX IF EXISTS idx_memory_bindings_tdai');
+  db.exec(`CREATE UNIQUE INDEX IF NOT EXISTS idx_memory_bindings_account_layer_tdai
+    ON memory_bindings(account_id, layer, tdai_memory_id)`);
+  db.exec(`CREATE TABLE IF NOT EXISTS memory_recall_layers (
+    account_id TEXT NOT NULL,
+    conversation_id TEXT NOT NULL,
+    layer TEXT NOT NULL CHECK(layer IN ('l1','l2','l3')),
+    status TEXT NOT NULL CHECK(status IN ('available','empty','degraded')),
+    reason TEXT,
+    duration_ms INTEGER NOT NULL DEFAULT 0,
+    candidate_count INTEGER NOT NULL DEFAULT 0,
+    updated_at TEXT NOT NULL,
+    PRIMARY KEY(account_id, conversation_id, layer)
+  )`);
+  const layerColumns = columnsOf(db, 'memory_recall_layers');
+  if (!layerColumns.includes('duration_ms')) db.exec('ALTER TABLE memory_recall_layers ADD COLUMN duration_ms INTEGER NOT NULL DEFAULT 0');
+  if (!layerColumns.includes('candidate_count')) db.exec('ALTER TABLE memory_recall_layers ADD COLUMN candidate_count INTEGER NOT NULL DEFAULT 0');
+  db.exec(`CREATE INDEX IF NOT EXISTS idx_memory_recall_candidates_layer
+    ON memory_recall_candidates(account_id, conversation_id, layer, score DESC)`);
+}
 
 const MANAGED_SERVICES_SQL = `
   CREATE TABLE IF NOT EXISTS public_workspace_files (
@@ -1933,6 +1971,21 @@ export function runMigrations(
     migrateSchema61To62(db);
     version = 62;
   }
+  if (version === 62) {
+    db.transaction(() => {
+      applyLayeredMemoryDdl(db);
+      bumpSchemaVersion(db, 62, 63, '62 to 63');
+    })();
+    version = 63;
+  }
+  if (version === 63) {
+    db.transaction(() => {
+      db.exec(CONVERSATION_TURN_SCHEMA_SQL);
+      installConversationContentReferences(db);
+      bumpSchemaVersion(db, 63, 64, '63 to 64');
+    })();
+    version = 64;
+  }
   // Current-schema databases may have been created before a new projection
   // invalidation trigger was introduced. Reinstalling the idempotent trigger
   // set on every open upgrades those databases without requiring a rebuild.
@@ -2859,12 +2912,12 @@ function runBaseMigrations(
     const versions = db.prepare(
       'SELECT version FROM schema_version ORDER BY version',
     ).all() as Array<{ version: number }>;
-    if (versions.length === 1 && [42, 43, 44, 45, 46, 47, 48, 49, 50, 51, 52, 53, 54, 55, 56, 57, 58, 59, 60, 61, CURRENT_SCHEMA_VERSION].includes(versions[0]!.version)) {
+    if (versions.length === 1 && [42, 43, 44, 45, 46, 47, 48, 49, 50, 51, 52, 53, 54, 55, 56, 57, 58, 59, 60, 61, 62, 63, CURRENT_SCHEMA_VERSION].includes(versions[0]!.version)) {
       // A short-lived release stamped some pre-six-state databases as the
       // current version before rebuilding `tasks`. Treat that shape as the
       // genuine 51 baseline and run the authoritative six-state migration;
       // otherwise the runtime fails later on missing state_version columns.
-      if ([61, CURRENT_SCHEMA_VERSION].includes(versions[0]!.version)
+      if ([61, 62, 63, CURRENT_SCHEMA_VERSION].includes(versions[0]!.version)
         && tableExists(db, 'tasks')
         && !columnsOf(db, 'tasks').includes('state_version')) {
         db.prepare('UPDATE schema_version SET version = 51 WHERE version = ?').run(versions[0]!.version);
@@ -3013,6 +3066,8 @@ function runBaseMigrations(
   db.transaction(() => {
     db.exec('CREATE TABLE schema_version (version INTEGER PRIMARY KEY)');
     db.exec(CURRENT_SCHEMA_SQL);
+    db.exec(CONVERSATION_TURN_SCHEMA_SQL);
+    installConversationContentReferences(db);
     db.exec('ALTER TABLE tasks ADD COLUMN public_task_directory TEXT');
     db.exec("ALTER TABLE tasks ADD COLUMN public_delivery_baseline_json TEXT NOT NULL DEFAULT '{}'");
     db.exec('ALTER TABLE tasks ADD COLUMN start_service_after_publish INTEGER NOT NULL DEFAULT 0');
@@ -3036,6 +3091,7 @@ function runBaseMigrations(
     db.exec(MANAGED_SERVICES_SQL);
     db.exec(MEMORY_BINDINGS_SQL);
     db.exec(MEMORY_STATE_SQL);
+    applyLayeredMemoryDdl(db);
     installObservationSchema(db);
     db.exec(`CREATE INDEX IF NOT EXISTS kernel_permission_resolution_request ON kernel_events
       (correlation_id) WHERE event_type = 'permission_resolution_received'`);

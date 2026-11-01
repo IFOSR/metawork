@@ -15,11 +15,14 @@ export interface MemoryAssetView {
   enabled: boolean;
   createdAt: string;
   updatedAt: string;
+  layer: 'l1' | 'l2' | 'l3';
+  title: string;
 }
 
 export interface MemoryAssetListView {
   items: MemoryAssetView[];
   total: number;
+  unfilteredTotal?: number;
   mode: 'disabled' | 'needs-model' | 'enabled' | 'degraded';
   degraded: boolean;
   degradedReason?: string;
@@ -65,9 +68,21 @@ export interface MemoryStatusView {
   }>;
 }
 
+export interface MemoryAssetQuery {
+  limit: number;
+  offset: number;
+  query?: string;
+  type?: string;
+  layer?: 'l1' | 'l2' | 'l3';
+  enabled?: boolean;
+}
+
+export interface MemoryAssetDetail extends MemoryAssetView { content: string }
+
 export interface MemoryApiClient {
-  status(): Promise<MemoryStatusView>;
-  listAssets(): Promise<MemoryAssetListView>;
+  status(signal?: AbortSignal): Promise<MemoryStatusView>;
+  listAssets(input?: MemoryAssetQuery, signal?: AbortSignal): Promise<MemoryAssetListView>;
+  getAsset(memoryId: string, signal?: AbortSignal): Promise<MemoryAssetDetail>;
   setAssetEnabled(memoryId: string, enabled: boolean): Promise<unknown>;
   deleteAsset(memoryId: string): Promise<unknown>;
 }
@@ -93,8 +108,17 @@ export function memoryAssetViewState(view: MemoryAssetListView | null):
 
 export function createMemoryApiClient(request: (path: string, init?: RequestInit) => Promise<unknown>): MemoryApiClient {
   return {
-    status: () => request('/api/memory/status') as Promise<MemoryStatusView>,
-    listAssets: () => request('/api/memory/assets') as Promise<MemoryAssetListView>,
+    status: signal => request('/api/memory/status', signal ? { signal } : undefined) as Promise<MemoryStatusView>,
+    listAssets: (input = { limit: 50, offset: 0 }, signal) => {
+      const params = new URLSearchParams({ limit: String(input.limit), offset: String(input.offset) });
+      if (input.query) params.set('q', input.query);
+      if (input.type) params.set('type', input.type);
+      if (input.layer) params.set('layer', input.layer);
+      if (input.enabled !== undefined) params.set('enabled', String(input.enabled));
+      return request(`/api/memory/assets?${params}`, signal ? { signal } : undefined) as Promise<MemoryAssetListView>;
+    },
+    getAsset: (memoryId, signal) => request(`/api/memory/assets/${encodeURIComponent(memoryId)}`,
+      signal ? { signal } : undefined) as Promise<MemoryAssetDetail>,
     setAssetEnabled: (memoryId, enabled) => request('/api/memory/assets/enabled', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },

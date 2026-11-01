@@ -9,6 +9,17 @@ import type { TracePagePosition } from '../gateway/trace-page-cursor.js';
 export class SqliteEventJournalSegmentIndex implements EventJournalSegmentIndex {
   constructor(private readonly db: Database.Database) {}
 
+  isDeleted(accountId: string, conversationId: string): boolean {
+    return Boolean(this.db.prepare('SELECT 1 FROM conversation_deletions WHERE account_id = ? AND conversation_id = ?').get(accountId, conversationId));
+  }
+  purge(accountId: string, conversationId: string): void {
+    this.db.transaction(() => {
+      for (const table of ['gateway_journal_event_index', 'gateway_journal_segments', 'gateway_journal_streams']) {
+        this.db.prepare(`DELETE FROM ${table} WHERE account_id = ? AND conversation_id = ?`).run(accountId, conversationId);
+      }
+    }).immediate();
+  }
+
   headSequence(accountId: string, conversationId: string): number | null {
     const row = this.db.prepare(`SELECT last_sequence FROM gateway_journal_streams
       WHERE account_id = ? AND conversation_id = ?`).get(accountId, conversationId) as { last_sequence: number } | undefined;

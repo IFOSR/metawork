@@ -7,10 +7,8 @@ export function SessionSidebar({
   workspaces,
   activeWorkspaceId,
   pendingWorkspaceId,
-  activeSessionId,
+  currentSessionId,
   connected,
-  runningSessionId,
-  selectedSessionId,
   workspaceSwitching,
   newSessionPending,
   pendingDeleteSessionIds,
@@ -32,10 +30,8 @@ export function SessionSidebar({
   workspaces: WorkspaceSummary[];
   activeWorkspaceId: string | null;
   pendingWorkspaceId?: string | null;
-  activeSessionId: string | null;
+  currentSessionId: string | null;
   connected: boolean;
-  runningSessionId: string | null;
-  selectedSessionId: string | null;
   workspaceSwitching: boolean;
   newSessionPending: boolean;
   pendingDeleteSessionIds: ReadonlySet<string>;
@@ -90,7 +86,7 @@ export function SessionSidebar({
         {sessions.length > 0 && (
           <button
             className="clear-sessions"
-            title="清空除当前会话外的全部历史"
+            title="清空已停止的历史会话，保留未停止的会话"
             onClick={onClearSessions}
             disabled={workspaceSwitching}
           >
@@ -100,17 +96,14 @@ export function SessionSidebar({
       </div>
       <div className="session-list">
         {sessions.map(session => {
-          const active = session.id === activeSessionId;
-          const running = session.id === runningSessionId;
-          const selected = session.id === selectedSessionId;
-          const activity = resolveSessionActivity(session.activity?.state, running);
+          const current = session.id === currentSessionId;
+          const activity = resolveSessionActivity(session.activity?.state, false);
           return (
             <button
               className="session-row"
-              data-active={active}
+              data-current={current}
               data-running={activity === 'executing' || undefined}
               data-activity={activity}
-              data-selected={selected}
               key={session.id}
               onClick={() => onSelect(session.id)}
               disabled={workspaceSwitching}
@@ -122,10 +115,10 @@ export function SessionSidebar({
                   {formatRelativeTime(session.activity?.updatedAt ?? session.updatedAt)}
                   {' · '}
                   {activityLabel(activity)}
-                  {active ? ' · 当前' : ''}
+                  {current ? ' · 当前' : ''}
                 </small>
               </span>
-              {!active && (
+              {(
                 <span
                   className="delete-session"
                   role="button"

@@ -1,3 +1,4 @@
+import { SqliteConversationTurnStore } from './conversation-turn-repo.js';
 import { randomUUID } from 'node:crypto';
 import type Database from 'better-sqlite3';
 import type { ConversationReadRebuild, ConversationReadRebuildStore } from '../session/conversation-read-rebuild.js';
@@ -54,7 +55,7 @@ export class SqliteConversationReadRebuildStore implements ConversationReadRebui
       WHERE account_id = ? AND conversation_id = ? AND kind = 'conversation' AND sequence > ?
       ORDER BY sequence LIMIT 1`).get(accountId, conversationId, after) as
       { sequence: number; body_json: string } | undefined;
-    return row ? { sequence: row.sequence, turn: JSON.parse(row.body_json) as ConversationTurn } : null;
+    return row ? { sequence: row.sequence, turn: new SqliteConversationTurnStore(this.db).hydrateHistory(accountId, conversationId, JSON.parse(row.body_json) as ConversationTurn) } : null;
   }
 
   commitHistory(accountId: string, conversationId: string, epoch: string, sequence: number, write: () => void): void {

@@ -60,6 +60,16 @@ export class ConversationRegistry {
     await Promise.all(sessions.map(session => session.dispose()));
   }
 
+  /** A deletion tombstone already fences new admissions; observers do not own content. */
+  async closeForDeletion(conversationId: string): Promise<void> {
+    await this.opening.get(conversationId);
+    const session = this.sessions.get(conversationId);
+    if (!session) return;
+    if (!session.isIdle()) throw new Error('conversation_deletion_waiting_for_idle');
+    await session.dispose();
+    this.sessions.delete(conversationId);
+  }
+
   reviewTaskPoolOnTimer(nowMs = Date.now()): Promise<boolean> {
     if (this.closing) return Promise.resolve(false);
     if (this.reviewInFlight) return this.reviewInFlight;

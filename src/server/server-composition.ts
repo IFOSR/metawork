@@ -1,3 +1,7 @@
+import { RuntimeHomeMaterializer } from '../executor/runtime-home-materializer.js';
+import { ConversationDeletionService } from '../session/conversation-deletion.js';
+import { SqliteConversationDeletionStore } from '../storage/conversation-deletion-repo.js';
+import { SqliteConversationTurnStore } from '../storage/conversation-turn-repo.js';
 import { ManagedLocalServices } from '../execution/managed-local-service.js';
 import { ManagedLocalServiceRepo } from '../storage/managed-local-service-repo.js';
 import { resolveHostToolPath } from '../utils/host-tool-path.js';
@@ -5,7 +9,7 @@ import { resolveExecutorTool } from '../utils/executor-tool-path.js';
 import { validateCodexCommand } from '../executor/tool-validation.js';
 import { defaultVersionProbe } from '../management/agent-installation-readiness-service.js';
 import { createHash, randomUUID } from 'node:crypto';
-import { realpath } from 'node:fs/promises';
+import { realpath, rm } from 'node:fs/promises';
 import { DesktopSessionService } from '../management/desktop-session.js';
 import { ClientNotificationFeed, type ClientNotificationPage } from '../gateway/client-notification-feed.js';
 import { KernelWorkflowRepo } from '../storage/kernel-workflow-repo.js';
@@ -818,7 +822,8 @@ export async function main(cliCommand = parseCliArgs(process.argv.slice(2))) {
     async materialize(input: {
       accountId: string;
       taskId: string;
-      memoryIds: readonly string[];
+      conversationId?: string;
+      memoryIds: readonly ({ memoryId: string; revision?: string } | string)[];
     }) {
       const evidence = memoryRuntimeController.runtime.evidence;
       if (!evidence) {
@@ -826,7 +831,7 @@ export async function main(cliCommand = parseCliArgs(process.argv.slice(2))) {
         // silently dropping the requirement.
         return {
           materialized: [] as string[],
-          failed: input.memoryIds.map(memoryId => ({ memoryId, reason: 'memory_unavailable' })),
+          failed: input.memoryIds.map(value => ({ memoryId: typeof value === 'string' ? value : value.memoryId, reason: 'memory_unavailable' })),
         };
       }
       return evidence.materialize(input);
@@ -864,6 +869,7 @@ export async function main(cliCommand = parseCliArgs(process.argv.slice(2))) {
     {
       onMetadataCommitted: metadata => directoryProjector?.observeMetadata(metadata),
       history: canonicalHistory,
+      referenceHistory: true,
       metadataIndex: new SqliteConversationMetadataIndex(db, LOCAL_DEFAULT_ACCOUNT_ID),
       readLegacyHistory: async conversationId => (await presentationStore.read(conversationId))?.turns.map(turn => ({
         id: turn.id, conversationId, userInput: turn.userInput,
@@ -1632,6 +1638,10 @@ export async function main(cliCommand = parseCliArgs(process.argv.slice(2))) {
   await conversationBindings.initialize();
   const eventJournalRuntime = createAccountEventJournal({
     historyWorkerUrl: new URL('./conversation-history-worker.js', import.meta.url),
+    retireLegacyFiles: async conversationId => {
+      await conversationStore.retireLegacyTurns(conversationId);
+      await presentationStore.retireLegacyFile(conversationId);
+    },
     prepareHistory: async conversationId => {
       if (!canonicalHistory.isImported(conversationId)
         && new SqliteConversationMetadataIndex(db, LOCAL_DEFAULT_ACCOUNT_ID).find(conversationId)) {
@@ -1670,7 +1680,48 @@ export async function main(cliCommand = parseCliArgs(process.argv.slice(2))) {
     return turns.map(turn => normalizeExecutionPresentation(turn, aliases.get(turn.taskId ?? '') ?? new Map()));
   };
   const normalizeTurnPresentation = (turn: ConversationTurn): ConversationTurn => normalizeHistoryPage([turn])[0]!;
+  const deliveryResults = new ResultObjectRepo(db, accountPaths.results);
+  const legacyAdmissions = new FileCommandAdmissionStore(resolve(accountPaths.gateway, 'command-admissions'));
+  const conversationDeletion = new ConversationDeletionService({
+    store: new SqliteConversationDeletionStore(db),
+    cleanFiles: async (_accountId, conversationId) => {
+      await conversationRegistry.closeForDeletion(conversationId);
+      const metadata = await conversationStore.readMetadata(conversationId);
+      const plannerSessions = new Set((db.prepare(`SELECT DISTINCT planner_session_id FROM planner_transcript_turns
+        WHERE account_id = ? AND conversation_id = ?`).all(_accountId, conversationId) as { planner_session_id: string }[])
+        .map(row => row.planner_session_id));
+      if (metadata?.plannerSessionId) plannerSessions.add(metadata.plannerSessionId);
+      for (const plannerSessionId of plannerSessions) {
+        await plannerSupervisor.stopSession(plannerSessionId);
+        const path = resolve(accountPaths.plannerSessions, `${plannerSessionId}.jsonl`);
+        if (dirname(path) !== resolve(accountPaths.plannerSessions)) throw new Error('invalid_planner_session_path');
+        await rm(path, { force: true });
+      }
+      const attempts = db.prepare(`SELECT r.attempt_id FROM executor_attempt_receipts r JOIN tasks t ON t.id = r.task_id
+        WHERE t.account_id = ? AND t.conversation_id = ?`).all(_accountId, conversationId) as { attempt_id: string }[];
+      const materializer = new RuntimeHomeMaterializer(accountPaths.attempts);
+      for (const attempt of attempts) await rm(materializer.resolvePaths(attempt.attempt_id).attemptRoot, { recursive: true, force: true });
+      deliveryResults.eraseConversationContent(_accountId, conversationId);
+      await legacyAdmissions.eraseConversation(_accountId, conversationId);
+      await eventJournalRuntime.journal.deleteConversation(LOCAL_DEFAULT_ACCOUNT_ID, conversationId);
+      await presentationStore.delete(conversationId);
+      await conversationStore.eraseContent(conversationId);
+      await updateConversationCatalog(conversationStore, catalog => ({ ...catalog,
+        conversations: catalog.conversations.filter(item => item.id !== conversationId) }));
+    },
+    cleanMemory: async (accountId, conversationId) => {
+      const service = memoryRuntimeController.runtime.service;
+      if (service) return service.deleteConversation(accountId, conversationId);
+      // Disabled Memory may have older external data; never claim it was erased.
+      return !db.prepare(`SELECT 1 FROM memory_flush_state WHERE account_id = ? AND conversation_id = ? AND last_sequence > 0
+        UNION ALL SELECT 1 FROM conversation_memory_attempts WHERE account_id = ? AND conversation_id = ? LIMIT 1`)
+        .get(accountId, conversationId, accountId, conversationId);
+    },
+    onError: error => console.error(`Conversation deletion pending: ${(error as Error).message}`),
+  });
+  await conversationDeletion.retry(LOCAL_DEFAULT_ACCOUNT_ID);
   const webSessionCatalog = new WebSessionCatalog({
+    deleteContent: conversationId => conversationDeletion.remove(LOCAL_DEFAULT_ACCOUNT_ID, conversationId),
     directory: workspaceDirectory,
     conversationStore,
     presentationStore,
@@ -1963,6 +2014,10 @@ export async function main(cliCommand = parseCliArgs(process.argv.slice(2))) {
     configurationByRevision: timelineConfigurationByRevision,
   });
   const conversationGatewayRuntime = new ConversationGatewayRuntime({
+    resultSourceTask: resultId => (db.prepare('SELECT task_id FROM result_objects WHERE result_id = ? AND account_id = ?')
+      .get(resultId, LOCAL_DEFAULT_ACCOUNT_ID) as { task_id: string } | undefined)?.task_id ?? null,
+    onOutboxError: error => console.error('Conversation event publication pending:', errorStack(error)),
+    turnStore: new SqliteConversationTurnStore(db),
     storeResultContent: (accountId, conversationId, content) => {
       eventJournalRuntime.readModel.putContent(accountId, conversationId, content);
     },
@@ -1989,9 +2044,28 @@ export async function main(cliCommand = parseCliArgs(process.argv.slice(2))) {
       };
     },
   });
-  const deliveryResults = new ResultObjectRepo(db, accountPaths.results);
+  let turnMaintenanceBusy = false;
+  let turnMaintenanceError: string | null = null;
+  const maintainTurnContent = async () => {
+    if (turnMaintenanceBusy) return;
+    turnMaintenanceBusy = true;
+    try {
+      await conversationGatewayRuntime.flushTurnOutbox();
+      deliveryResults.collectReferencedContent();
+      await conversationDeletion.retry(LOCAL_DEFAULT_ACCOUNT_ID);
+      turnMaintenanceError = null;
+    } catch (error) {
+      const message = errorStack(error);
+      if (message !== turnMaintenanceError) console.error('Conversation content maintenance failed:', message);
+      turnMaintenanceError = message;
+    } finally { turnMaintenanceBusy = false; }
+  };
+  await maintainTurnContent();
+  const turnContentTimer = setInterval(() => { void maintainTurnContent(); }, 5_000);
+  turnContentTimer.unref();
   const deliveryScheduler = new ConversationTaskSchedulerRepo(db);
   deliverSystemResult = createBackgroundResultDelivery({
+    turnStore: new SqliteConversationTurnStore(db),
     accountId: LOCAL_DEFAULT_ACCOUNT_ID,
     resolveTask: resultId => {
       const object = deliveryResults.findObject(resultId);
@@ -2292,9 +2366,7 @@ export async function main(cliCommand = parseCliArgs(process.argv.slice(2))) {
     },
   });
   const commandAdmissionStore = new SqliteCommandAdmissionStore(db, LOCAL_DEFAULT_ACCOUNT_ID);
-  await commandAdmissionStore.initialize(new FileCommandAdmissionStore(
-    resolve(accountPaths.gateway, 'command-admissions'),
-  ));
+  await commandAdmissionStore.initialize(legacyAdmissions);
   const clientGateway = new ClientGateway({
     authenticator: {
       authenticate: async ({ transport, credential }) => {
@@ -3154,6 +3226,7 @@ export async function main(cliCommand = parseCliArgs(process.argv.slice(2))) {
         if (notificationTimer) clearInterval(notificationTimer);
         await notificationDrain;
         clearInterval(directoryProjectionTimer);
+        clearInterval(turnContentTimer);
         await directoryRebuild;
         await directoryDrain;
         await clientGateway.drain();

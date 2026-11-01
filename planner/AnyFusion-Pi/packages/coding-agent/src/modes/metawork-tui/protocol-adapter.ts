@@ -564,7 +564,7 @@ export function normalizeTaskView(payload: Record<string, unknown>): NormalizedT
 			? {
 					workspace: asString(delivery.workspace)!,
 					taskDirectory: asString(delivery.taskDirectory) ?? null,
-					mode: "in_place",
+					mode: delivery.mode === "worktree" ? "worktree" : "in_place",
 					modeSource:
 						delivery.modeSource === "explicit_user" ||
 						delivery.modeSource === "planner" ||

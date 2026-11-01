@@ -113,3 +113,24 @@ Web、Server、单一 TUI 和 Feishu adapter 协调发布并做能力对等测�
 ## Desktop amendment (2026-10-06)
 
 Desktop uses the shared Web observation/resource clients. A bounded authenticated account notification feed carries only stable navigation identities and generic completion/failure/approval kinds while Desktop is running. It does not observe every Conversation or authorize approval. First connection and expired feed cursors start from the head, without historical notification replay. See [ADR-0045](0045-desktop-thin-shell-and-local-session.md) and its implementation record for outstanding release gates.
+
+## 2026-10-30 修订：客户端唯一当前会话，无连接默认目标
+
+依据[会话当前状态简化设计](../plans/2026-10-30-session-current-state-simplification-design.md)，Web 客户端只维护一个 `currentSessionId`。创建完成和用户选择改变当前会话；目录分页、排序、搜索、WebSocket hello、迟到的服务端 current 事件及其他客户端操作不改变选择。启动只恢复客户端明确保存/链接指定的目标，无目标或目标失效时保持空状态，不回退到最近创建的会话。
+
+Server 保留的短生命周期 current 字段只是旧打开接口的结果信息；命令不能从它补全目标，客户端不依据它选择会话。发送携带 Conversation，取消携带 Conversation/Turn 或 Conversation/Task/executionGeneration；账户、Workspace 授权及幂等规则不变。目录不再含连接推导的 `active` 字段，侧边栏仅以 ID 相等计算当前行，各行运行状态来自自己的 activity。
+
+删除不因会话当前打开或最近创建而拒绝。Web Runtime 点查当前 activity，Workspace Directory 在实际归档入口再次校验；非 idle（含未停止的 blocked/needs_action）必须先停止，终态任务和历史 blocked Turn 不阻止归档。清空历史逐个走相同入口，返回 `deletedIds` 和 `skipped`；客户端只移除确认删除的条目。删除 A 的迟到响应不能清除已切换的 B。
+
+本修订不引入新的调度器、执行锁、后台所有者或语义路由，不变更持久化格式。
+
+## Conversation body authority amendment (2026-11-02)
+
+[ADR-0054](0054-conversation-turn-content-authority.md) supersedes prior body-source
+wording: original input and final-answer revisions belong to the account Turn
+Store. Preview, journal, presentation and Planner transcript cannot supply a
+missing authoritative body. Memory reads verified complete bodies and records
+per-Turn input/answer-hash receipts; the sequence cursor alone is insufficient
+for late completion or revised answers. Deletion is a fenced retryable workflow
+and remains pending until the external L0 service confirms complete erasure.
+Task lifecycle and L1/L2/L3 asset ownership remain unchanged.

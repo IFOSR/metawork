@@ -441,7 +441,7 @@ function resolveRequiredWork(input: {
   if(requirement.kind==='workspace_delivery') {
     const delivery=input.raw.workspaceDelivery;
     if(delivery?.summary?.state==='cancelled') return {fact:{...base,state:'failed',reason:createTaskReason('delivery_failed','Workspace 交付已取消，成果保留。')},failureReason:createTaskReason('delivery_failed','Workspace 交付已取消，成果保留。')};
-    const state=(delivery?.noChanges||delivery?.held)||delivery?.summary?.state==='delivered'?'completed'
+    const state=(delivery?.noChanges||delivery?.summary?.state==='delivered')?'completed'
       :delivery?.summary && ['conflicted','recovering'].includes(delivery.summary.state)?'waiting_for_user'
       :delivery?.summary && ['preparing','merging','writing'].includes(delivery.summary.state)?'running':'pending';
     return {fact:{...base,state,reason:null},failureReason:null};
@@ -553,8 +553,14 @@ function resolveRequiredWork(input: {
   if (requirement.kind === 'delivery') {
     // In-place attempts write the Conversation Workspace directly and never
     // create a publication row. A completed receipt plus a done Subtask is
-    // the durable delivery fact for declared file outputs.
-    if (input.raw.task.executionMode === 'in_place'
+    // the durable delivery fact for declared file outputs. Conversation Git
+    // rounds use a separate worktree/merge ledger (and therefore leave the
+    // Task's legacy execution_mode column null); a delivered merge summary is
+    // the equivalent durable delivery fact for that path.
+    const conversationWorkspaceDelivered = input.raw.workspaceDelivery
+      && (input.raw.workspaceDelivery.noChanges
+        || input.raw.workspaceDelivery.summary?.state === 'delivered');
+    if ((input.raw.task.executionMode === 'in_place' || conversationWorkspaceDelivered)
       && subtask.status === 'done'
       && hasCompletionEvidence) {
       return { fact: { ...base, state: 'completed', reason: null }, failureReason: null };

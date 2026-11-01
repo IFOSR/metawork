@@ -1,4 +1,5 @@
-import { beforeEach, describe, expect, it } from 'vitest';
+import { seedAuthoritativeTurn } from '../support/conversation-turn-fixture.js';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 import Database from 'better-sqlite3';
 import { runMigrations } from '../../src/storage/migrations.js';
 import { MemoryService } from '../../src/memory/memory-service.js';
@@ -51,6 +52,7 @@ function seedTurn(db: Database.Database, input: TurnInput): void {
     completedAt: input.completedAt ?? '2026-10-22T00:01:00.000Z',
     interactionKind: 'ai_turn',
   };
+  seedAuthoritativeTurn(db, ACCOUNT, CONVERSATION, body);
   db.prepare(`INSERT INTO conversation_read_turns
     (account_id, conversation_id, epoch, turn_id, first_sequence, revision, active, body_json, byte_length)
     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`)
@@ -94,6 +96,81 @@ describe('MemoryService', () => {
       turns: new SqliteMemoryTurnSource(db),
       thresholds: { idleAfterMs: 0, maxUnflushedTurns: 1, maxBatchTurns: 100 },
     });
+  });
+
+  it('filters all engine pages before pagination and gives un-recalled assets governable ids', async () => {
+    const remote = Array.from({ length: 120 }, (_, i) => ({
+      id: `tdai-${String(i).padStart(3, '0')}`, memoryId: `tdai-${i}`,
+      type: i === 119 ? 'persona' : 'instruction',
+      content: i === 119 ? '前文'.repeat(150) + 'fulltext-needle' : 'ordinary',
+      background: null, source: 'conversation' as const, workspaceId: null, enabled: true,
+      createdAt: '', updatedAt: '2026-10-31T00:00:00Z',
+    }));
+    const listing = vi.spyOn(port, 'listAssets').mockImplementation(async (...args: unknown[]) => {
+      const input = args[0] as { limit: number; offset: number };
+      return { items: remote.slice(input.offset, input.offset + input.limit), total: remote.length };
+    });
+    const page = await service.listAssets({ accountId: ACCOUNT, limit: 50, offset: 100, includeDisabled: true });
+    expect(page.items).toHaveLength(20);
+    expect(page.total).toBe(120);
+    expect(listing).toHaveBeenCalledTimes(2);
+    const found = await service.listAssets({ accountId: ACCOUNT, limit: 50, offset: 0, includeDisabled: true, query: 'fulltext-needle', type: 'persona' });
+    expect(found.total).toBe(1);
+    expect(found.unfilteredTotal).toBe(120);
+    const memoryId = found.items[0]!.memoryId;
+    expect(memoryId).toMatch(/^mem_/);
+    await service.setEnabled({ accountId: ACCOUNT, memoryId, enabled: false });
+    const disabled = await service.listAssets({ accountId: ACCOUNT, limit: 50, offset: 0, includeDisabled: true, enabled: false });
+    expect(disabled.items.map(item => item.memoryId)).toEqual([memoryId]);
+    expect(disabled.items[0]!.enabled).toBe(false);
+    expect((await service.listAssets({ accountId: ACCOUNT, limit: 50, offset: 0, includeDisabled: false })).total).toBe(119);
+  });
+
+  it('preserves the layer and revision when management first binds a profile asset', async () => {
+    const remote = {
+      id: 'tdai-persona', memoryId: 'tdai-persona', type: 'persona', title: 'User persona',
+      content: '偏好简洁中文', background: null, createdAt: '', updatedAt: '2026-11-01T00:00:00Z',
+      source: 'profile' as const, workspaceId: null, enabled: true, layer: 'l3' as const, revision: 'sha256:persona-v1',
+    };
+    vi.spyOn(port, 'listAssets').mockResolvedValue({ items: [remote], total: 1 });
+
+    const listed = await service.listAssets({ accountId: ACCOUNT, limit: 10, offset: 0, includeDisabled: true });
+    const binding = new MemoryBindingsRepo(db).findByTdaiMemoryId('tdai-persona', ACCOUNT, 'l3');
+
+    expect(listed.items[0]).toMatchObject({ layer: 'l3', revision: 'sha256:persona-v1', title: 'User persona' });
+    expect(binding).toMatchObject({ layer: 'l3', tdaiRevision: 'sha256:persona-v1', tdaiTitle: 'User persona', source: 'profile' });
+  });
+
+  it('lets the owner read disabled full content without opening execution eligibility', async () => {
+    const bindings = new MemoryBindingsRepo(db);
+    const record = bindings.upsert({ tdaiMemoryId: 'tdai-disabled', accountId: ACCOUNT, enabled: false });
+    const read = vi.spyOn(port, 'listAssets').mockResolvedValue({ items: [{
+      id: 'tdai-disabled', memoryId: 'tdai-disabled', type: 'instruction', content: '全文'.repeat(300), background: null,
+      createdAt: '', updatedAt: '', source: 'conversation', workspaceId: null, enabled: true,
+    }], total: 1 });
+    expect(await service.getAsset({ accountId: 'someone-else', memoryId: record.memoryId })).toBeNull();
+    expect(read).not.toHaveBeenCalled();
+    expect(await service.getAsset({ accountId: ACCOUNT, memoryId: record.memoryId })).toMatchObject({
+      content: '全文'.repeat(300), enabled: false,
+    });
+    await expect(service.materialize({ accountId: ACCOUNT, memoryId: record.memoryId })).rejects.toThrow('memory_not_authorized');
+  });
+
+  it('reads management details beyond the execution materialization scan limit', async () => {
+    const bindings = new MemoryBindingsRepo(db);
+    const binding = bindings.upsert({ accountId: ACCOUNT, tdaiMemoryId: 'asset-1100' });
+    const reads: number[] = [];
+    vi.spyOn(port, 'listAssets').mockImplementation(async (...args: unknown[]) => {
+      const { offset, limit } = args[0] as { offset: number; limit: number };
+      reads.push(offset);
+      return { total: 1101, items: Array.from({ length: Math.min(limit, 1101 - offset) }, (_, index) => ({
+        id: `asset-${offset + index}`, memoryId: '', type: 'persona', content: `正文 ${offset + index}`,
+        background: null, source: 'conversation' as const, workspaceId: null, enabled: true,
+        createdAt: '', updatedAt: '',
+      })) };
+    });
+    expect(await service.getAsset({ accountId: ACCOUNT, memoryId: binding.memoryId })).toMatchObject({ content: '正文 1100' });
+    expect(reads.at(-1)).toBe(1100);
   });
 
   it('deposits a whole batch of completed turns in one call', async () => {

@@ -1,5 +1,7 @@
 # Architecture Decision Records
 
+- [ADR-0054: Conversation Turn Content Authority](0054-conversation-turn-content-authority.md) — accepted; SQLite正文真源、运行副本与迁移删除边界。
+
 This directory contains current architecture decisions and explicitly marked proposed decisions under review. Proposed decisions are not implementation authority. Superseded proposals and fully absorbed decisions live under [the ADR archive](../archive/adr/README.md) and are historical context, not implementation authority.
 
 ## Required reading order
@@ -146,7 +148,7 @@ postconditions, never a Harness tool allowlist.
 | Executor tool surface | [ADR-0052](0052-executor-owned-tool-capabilities-and-kernel-boundary.md), as retained by ADR-0053 | Harness owns its tool registry and internal loop; Planner Workspace intent is an effect declaration, never a tool allowlist |
 | Task lifecycle state contracts | [ADR-0020](0020-core-module-ownership-and-dependency-direction.md) §2026-09-25 amendment, [ADR-0022](0022-unified-kernel-control-plane-and-decision-ledger.md), [ADR-0023](0023-durable-kernel-workflow-recovery-and-availability.md), [ADR-0037](0037-multi-conversation-task-parallelism.md) | Canonical Task/Subtask/Attempt lifecycle ownership, the single Task/Work Graph transition port, durable Replan Jobs and per-family uncertain-application postconditions, residue-based slot release, and the read-only TaskView projection consumed by TUI/Web/Feishu |
 | Multi-client observation and control | [ADR-0043](0043-explicit-conversation-observation-and-client-read-models.md) | Equal Account-scoped rights; bounded read models, explicit observers, exact cancellation, durable approval arbitration and independent notification routes; supersedes ADR-0036 |
-| Planner 主导的 Workspace 执行模式 | [ADR-0050](0050-planner-owned-workspace-execution-mode.md) | Planner 唯一语义判断、Kernel 确定性准入、`in_place` 主路径、内部 Worktree 隔离执行、授权变更集发布、模式对 Task 不可变 |
+| Planner 主导的 Workspace 执行模式 | [ADR-0050](0050-planner-owned-workspace-execution-mode.md) | Planner 唯一语义判断、`conversation_git` Conversation Worktree 唯一新任务路径、Workspace FIFO 合并交付；历史 `in_place` 仅只读兼容 |
 | Workspace-scoped Conversation organization | [ADR-0035](0035-workspace-scoped-conversation-organization.md) | Workspace Catalog identity, Account -> Workspace -> Conversations navigation, immutable Conversation binding, Client Workspace selection, bounded directory projection and migration |
 | Independent Server and Client lifecycle | [ADR-0034](0034-independent-server-and-client-process-lifecycle.md) | Persistent Server ownership, independent TUI/Web launch, endpoint manifest, Client-default and durable Conversation Workspace admission, protocol/draining, and Server-owned Feishu lifecycle |
 | Hot configuration activation and Auto model routing | [ADR-0033](0033-hot-configuration-activation-and-auto-model-routing.md) | AccountRuntime activation gate, revision-aware Planner/Executor concrete routing, unified Executor capability profile activation, completion facts, and read-only DAG projection |
@@ -176,7 +178,7 @@ postconditions, never a Harness tool allowlist.
 | Query usage metering, billing and external consumption | [ADR-0042](0042-query-usage-billing-and-external-consumption.md) | Query-scoped attribution, metering spans/observations and coverage, payer policy, exact money precision, immutable final Query bills, Task/account rollups, idempotent third-party consumption, client read-only projection and the trusted-export gate |
 | Settings model catalog and Planner quality | [ADR-0044](0044-settings-model-catalog-and-planner-quality.md) | OpenRouter public metadata and CNY pricing, optional AgentClass responsibilities, internal SettingsAssistant ownership, shared Planner/Executor hot activation, and advisory DAG quality checks |
 | Official account payment settlement and refund channel | [ADR-0048](0048-official-account-payment-settlement.md) | Callback-only settlement authority, idempotent attempt-history settlement, exact integer money, append-only refund rollback, admin-only refund channel, persisted payment incidents, and graceful degradation without gateway credentials |
-| Long-term memory ownership, deposition and delivery | [ADR-0049](0049-long-term-memory-ownership-deposition-and-delivery.md) | One memory engine behind a single port, Server-owned runtime for the single-installation deployment, account-scoped persistence, batched completed-turn deposition, user-selected extraction model, pull-only evidence delivery, pre-deposition sanitization, degradation that never fails a task, and schema 59 retirement of the local preference/learning chain (2026-10-26 amendment) |
+| Long-term memory ownership, deposition and delivery | [ADR-0049](0049-long-term-memory-ownership-deposition-and-delivery.md) | One memory engine behind a single port, Server-owned runtime for the single-installation deployment, account-scoped persistence, batched completed-turn deposition, layered L1/L2/L3 Planner recall, per-layer recall measurements, revision-pinned evidence delivery, pre-deposition sanitization, degradation that never fails a task, and schema 63 retirement of the local preference/learning chain (2026-11-01 amendment) |
 
 When two current ADRs appear to overlap, the more specific topic ADR defines its data contract while ADR-0020 defines module ownership and dependency direction. A newer ADR must explicitly amend or supersede an older one; implementation plans cannot silently override ADRs.
 
@@ -201,6 +203,9 @@ When two current ADRs appear to overlap, the more specific topic ADR defines its
   introduces schema 59 and retires the local preference/learning chain. See the
   [design](../plans/2026-10-22-memory-system-tdai-integration-design.md) and
   [pre-merge remediation](../plans/2026-10-26-server-scoped-memory-pre-merge-remediation.md).
+  The 2026-11-01 amendment adds account-scoped L1/L2/L3 recall, immutable
+  candidate revisions, Planner-only bounded previews, and Runtime evidence
+  materialization with a second revision/snapshot check before Executor launch.
 
 - [ADR-0043](0043-explicit-conversation-observation-and-client-read-models.md), accepted 2026-10-03: implementation remains local pending user validation. See the [design](../plans/2026-10-02-frontend-observation-architecture-upgrade-design.md) and [evidence and remaining gates](../plans/2026-10-02-frontend-observation-implementation.md).
 

@@ -1,5 +1,6 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import {
+  createMemoryApiClient,
   memoryAssetViewState,
   type MemoryAssetListView,
 } from '../../web/src/api/memory.js';
@@ -15,6 +16,16 @@ function view(overrides: Partial<MemoryAssetListView> = {}): MemoryAssetListView
 }
 
 describe('memory asset view state', () => {
+  it('requests explicit pagination and can read subsequent asset pages', async () => {
+    const request = vi.fn().mockResolvedValue(view());
+    const api = createMemoryApiClient(request);
+    await api.listAssets();
+    await api.listAssets({ limit: 50, offset: 50 });
+    expect(request.mock.calls).toEqual([
+      ['/api/memory/assets?limit=50&offset=0', undefined],
+      ['/api/memory/assets?limit=50&offset=50', undefined],
+    ]);
+  });
   it('shows a loading state before the first response', () => {
     expect(memoryAssetViewState(null)).toEqual({ kind: 'loading' });
   });

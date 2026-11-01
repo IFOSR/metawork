@@ -19,6 +19,16 @@ This directory contains both current technical documentation and historical plan
 
 ## Current Docs
 
+- [记忆资产交互设计](plans/2026-10-31-memory-assets-interaction-design.md)：首版已实施；消除设置轮询触发的闪烁，提供全文详情、搜索筛选、分页与单条管理；内容编辑仍为后续范围。
+
+- [L1/L2/L3 记忆接入 Planner 技术方案](plans/2026-11-01-layered-memory-planner-integration-design.md)：已实施 L2 场景经验和 L3 用户画像召回、版本化 ContextRef、Runtime 证据物化及分层资产治理；验证与实施记录见方案末尾。
+
+- [Conversation Turn 正文单一权威源技术方案](plans/2026-11-01-conversation-turn-single-source-design.md)：2026-11-02 已落地账户 SQLite 正文权威源、引用投影、Memory 完整分段沉淀、迁移和删除流程；454 项专项回归、26 项真实引擎端到端及原生 Gateway 冒烟通过，全仓剩余失败见实施记录。
+
+- [会话 Worktree 执行预检修复](plans/2026-10-30-conversation-worktree-dispatch-preflight-fix.md)：修正将内部 executionRoot 当成用户 Workspace 校验而导致所有此类执行被拒绝的问题，已部署；真实模型恢复等待重启后重新登录。
+
+- [会话当前状态简化](plans/2026-10-30-session-current-state-simplification-design.md)：客户端唯一当前会话、无连接级默认命令目标，按会话真实 activity 删除与展示；实施及验收记录见文档末尾。
+
 - [Web 用户路径验收测试报告](current/2026-10-27-web-acceptance-test-report.md)（2026-10-27）：真实浏览器对照架构 A1–A17、Memory 五组与滚动 12 景验收；结论为未通过，含 P0 阻断（同会话追问被 Kernel 拒绝、失败任务不释放会话槽位、Run Contract `serviceIntent` 生产路径缺失）与证据截图。
 
 - [Agent 执行架构重构方案](plans/2026-10-27-agent-execution-architecture-realignment-plan.md) 与 [技术实施方案](plans/2026-10-27-agent-execution-architecture-realignment-implementation-plan.md)：收敛 Planner → Work Graph → Kernel → Executor 链路，让 Runtime 不再干预 Harness 内部循环。已固化“Executor 内部失败由 Harness 消化、MetaWork 验收失败默认反馈 continuation、只有硬边界或预算耗尽才交给用户”的原则。P0/P1/P2 已实施：Run Contract 投影、服务身份与失败修复 continuation（ADR-0051）、失败诊断进入 Planner 与 Executor、终态 Task 自然取代、In-place 交付语义收敛；实施记录与未完成项见文档末尾。

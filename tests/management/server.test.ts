@@ -504,8 +504,8 @@ describe('ManagementServer WebSocket authentication', () => {
     const submitted: string[] = [];
     const listeners = new Set<(event: Parameters<Parameters<ManagementWebSessionRuntime['subscribe']>[1]>[0]) => void>();
     const sessionRuntime = createSessionRuntime({
-      getClientState: () => ({ activeWorkspaceId: 'workspace_repo', activeSessionId: 'session_gateway' }),
-      submit: async (_clientId, text) => {
+      getClientState: () => ({ activeWorkspaceId: 'workspace_repo', currentSessionId: 'session_gateway' }),
+      submit: async (_clientId, _conversationId, text) => {
         submitted.push(text);
         for (const listener of listeners) {
           listener({ type: 'output', from: 0, lines: ['Final answer'] });
@@ -524,10 +524,15 @@ describe('ManagementServer WebSocket authentication', () => {
     try {
       expect(JSON.parse(await client.nextText())).toEqual({
         type: 'hello',
-        sessionId: 'session_gateway',
+        currentSessionId: 'session_gateway',
         capabilities: [],
       });
-      client.sendJson({ type: 'input', text: 'Show the flow' });
+      client.sendJson({ type: 'input', text: 'must not default to the hello target' });
+      expect(JSON.parse(await client.nextText())).toEqual({ type: 'error', message: 'conversationId is required' });
+      client.sendJson({ type: 'cancel', turnId: 'turn_1' });
+      expect(JSON.parse(await client.nextText())).toEqual({ type: 'error', message: 'conversationId and turnId are required' });
+      expect(submitted).toEqual([]);
+      client.sendJson({ type: 'input', conversationId: 'session_gateway', text: 'Show the flow' });
       await expect(client.nextText()).resolves.toBe(JSON.stringify({
         type: 'output',
         from: 0,
@@ -540,11 +545,11 @@ describe('ManagementServer WebSocket authentication', () => {
     }
   });
 
-  it('broadcasts active-session changes from the runtime to every connected client', async () => {
+  it('broadcasts current-view metadata changes from the runtime to every connected client', async () => {
     const port = await reservePort();
     const listeners = new Set<(event: Parameters<Parameters<ManagementWebSessionRuntime['subscribe']>[1]>[0]) => void>();
     const sessionRuntime = createSessionRuntime({
-      getClientState: () => ({ activeWorkspaceId: 'workspace_repo', activeSessionId: 'session_live' }),
+      getClientState: () => ({ activeWorkspaceId: 'workspace_repo', currentSessionId: 'session_live' }),
       subscribe(_clientId, listener) {
         listeners.add(listener);
         return () => listeners.delete(listener);
@@ -557,13 +562,13 @@ describe('ManagementServer WebSocket authentication', () => {
     const second = await connectWebSocket(port, `http://127.0.0.1:${port}`, cookie);
 
     try {
-      await expect(first.nextText()).resolves.toContain('"sessionId":"session_live"');
-      await expect(second.nextText()).resolves.toContain('"sessionId":"session_live"');
+      await expect(first.nextText()).resolves.toContain('"currentSessionId":"session_live"');
+      await expect(second.nextText()).resolves.toContain('"currentSessionId":"session_live"');
       for (const listener of listeners) {
-        listener({ type: 'active_session_changed', sessionId: 'session_history' });
+        listener({ type: 'current_session_changed', sessionId: 'session_history' });
       }
       const expected = JSON.stringify({
-        type: 'active_session_changed',
+        type: 'current_session_changed',
         sessionId: 'session_history',
       });
       await expect(first.nextText()).resolves.toBe(expected);
@@ -604,7 +609,7 @@ describe('ManagementServer WebSocket authentication', () => {
       expect(closedClientIds).toEqual(['session-token-1']);
       await expect(first.nextText()).rejects.toThrow('socket closed');
 
-      second.sendJson({ type: 'input', text: 'still connected' });
+      second.sendJson({ type: 'input', conversationId: 'session_gateway', text: 'still connected' });
       await new Promise(resolve => setTimeout(resolve, 20));
       expect(closedClientIds).toEqual(['session-token-1']);
     } finally {
@@ -691,7 +696,7 @@ describe('ManagementServer WebSocket authentication', () => {
       );
       expect(await list.json()).toEqual({
         activeWorkspaceId: 'workspace_repo',
-        activeConversationId: 'session_live',
+        currentConversationId: 'session_live',
         nextCursor: null,
         conversations: [history],
       });
@@ -734,20 +739,20 @@ describe('ManagementServer WebSocket authentication', () => {
     }
   });
 
-  it('archives a Conversation and clears non-active Conversations over HTTP', async () => {
+  it('archives a Conversation and reports exact cleared IDs while preserving running Conversations', async () => {
     const port = await reservePort();
     const deletedIds: string[] = [];
     const clearedClientIds: string[] = [];
     const sessionRuntime = createSessionRuntime({
       deleteSession: async (_clientId, sessionId) => {
         deletedIds.push(sessionId);
-        if (sessionId === 'session_active') return 'active';
+        if (sessionId === 'session_active') return 'running';
         if (sessionId === 'session_missing') return 'not_found';
         return 'deleted';
       },
       clearAllSessions: async clientId => {
         clearedClientIds.push(clientId);
-        return { deleted: 3 };
+        return { deleted: 3, deletedIds: ['a', 'b', 'c'], skipped: 1 };
       },
     });
     const server = createManagementServer(port, { sessionRuntime });
@@ -786,7 +791,7 @@ describe('ManagementServer WebSocket authentication', () => {
         headers,
       });
       expect(clear.status).toBe(200);
-      expect(await clear.json()).toEqual({ deleted: 3 });
+      expect(await clear.json()).toEqual({ deleted: 3, deletedIds: ['a', 'b', 'c'], skipped: 1 });
       expect(clearedClientIds).toEqual(['manual-bearer-client']);
     } finally {
       await server.stop();
@@ -826,8 +831,10 @@ describe('ManagementServer WebSocket authentication', () => {
       sessionRuntime: createSessionRuntime({
         getClientState: () => ({
           activeWorkspaceId: 'workspace_repo',
-          activeSessionId: 'sess_web_abc',
+          currentSessionId: 'sess_web_abc',
         }),
+        readBrowsableSession: async (_client, id) => id === 'sess_web_abc'
+          ? { version: 1, session: { ...metadataFixture(id, false), workspaceId: 'workspace_repo', workspace: null }, turns: [] } : null,
       }),
     });
     await server.start();
@@ -918,7 +925,7 @@ describe('ManagementServer WebSocket authentication', () => {
       sessionRuntime: createSessionRuntime({
         getClientState: () => ({
           activeWorkspaceId: 'workspace_repo',
-          activeSessionId: 's',
+          currentSessionId: 's',
         }),
       }),
       attachmentStore: {
@@ -971,7 +978,7 @@ describe('ManagementServer WebSocket authentication', () => {
     const sessionRuntime = createSessionRuntime({
       getClientState: () => ({
         activeWorkspaceId: 'workspace_repo',
-        activeSessionId: 'sess_web_trace',
+        currentSessionId: 'sess_web_trace',
       }),
       getReplayEvents: () => [{
         type: 'trace_delta',
@@ -2073,7 +2080,7 @@ describe('ManagementServer WebSocket authentication', () => {
 
     try {
       await client.nextText();
-      client.sendJson({ type: 'input', requestId: 'req_blocked', text: '开始工作' });
+      client.sendJson({ type: 'input', conversationId: 'session_gateway', requestId: 'req_blocked', text: '开始工作' });
       await expect(client.nextText()).resolves.toBe(JSON.stringify({
         type: 'error',
         message: 'required_agent_unavailable',
@@ -2394,7 +2401,7 @@ function createSessionRuntime(
     async closeClient() {},
     async dispose() {},
     getClientState() {
-      return { activeWorkspaceId: 'workspace_repo', activeSessionId: 'session_live' };
+      return { activeWorkspaceId: 'workspace_repo', currentSessionId: 'session_live' };
     },
     async listWorkspaces() { return []; },
     async selectWorkspace() { return { status: 'accepted' }; },
@@ -2415,7 +2422,7 @@ function createSessionRuntime(
       return 'not_found';
     },
     async clearAllSessions() {
-      return { deleted: 0 };
+      return { deleted: 0, deletedIds: [], skipped: 0 };
     },
     subscribe() {
       return () => {};
@@ -2605,6 +2612,11 @@ describe('long-term memory management API', () => {
           degraded: false,
         };
       },
+      getAsset: async ({ memoryId }: { memoryId: string }) => memoryId === 'mem-1' ? {
+        memoryId, tdaiMemoryId: 'tdai-1', type: 'instruction', preview: '摘要',
+        content: '全文'.repeat(250), source: 'conversation', workspaceId: null,
+        enabled: false, createdAt: '', updatedAt: '',
+      } : null,
       setEnabled: async (input: { memoryId: string; enabled: boolean }) => {
         log.push(`toggle:${input.memoryId}:${input.enabled}`);
         if (input.memoryId !== 'mem-1') return null;
@@ -2662,6 +2674,27 @@ describe('long-term memory management API', () => {
     });
   });
 
+  it('authenticates full detail reads and returns missing assets as 404', async () => {
+    const server = createManagementServer(0, { memoryQuery: memoryQuery([]) });
+    expect((await request(server, '/api/memory/assets/mem-1', { authenticated: false })).status).toBe(401);
+    const detail = await request(server, '/api/memory/assets/mem-1');
+    expect(detail.status).toBe(200);
+    expect(detail.body).toMatchObject({ content: '全文'.repeat(250), enabled: false });
+    expect((await request(server, '/api/memory/assets/unknown')).status).toBe(404);
+  });
+
+  it('passes search and status filters to memory management', async () => {
+    let filters: unknown;
+    const server = createManagementServer(0, { memoryQuery: {
+      ...memoryQuery([]), listAssets: async input => {
+        filters = input;
+        return { items: [], total: 0, mode: 'enabled' as const, degraded: false };
+      },
+    } });
+    await request(server, '/api/memory/assets?q=hello&type=instruction&enabled=false&offset=50');
+    expect(filters).toEqual({ limit: 50, offset: 50, query: 'hello', type: 'instruction', enabled: false });
+  });
+
   it('bounds the asset page size', async () => {
     const log: string[] = [];
     const server = createManagementServer(0, { memoryQuery: memoryQuery(log) });
@@ -2669,6 +2702,14 @@ describe('long-term memory management API', () => {
     expect(log).toEqual(['list:200:0']);
     await request(server, '/api/memory/assets?limit=abc');
     expect(log[1]).toBe('list:50:0');
+  });
+
+  it.each(['', '?limit=', '?limit=%20&offset='])('defaults missing or empty memory pagination: %s', async query => {
+    const log: string[] = [];
+    const server = createManagementServer(0, { memoryQuery: memoryQuery(log) });
+    const result = await request(server, `/api/memory/assets${query}`);
+    expect(result.status).toBe(200);
+    expect(log).toEqual(['list:50:0']);
   });
 
   it('disables and deletes an asset', async () => {

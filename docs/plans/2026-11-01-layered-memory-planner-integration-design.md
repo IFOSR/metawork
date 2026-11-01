@@ -1,10 +1,10 @@
 # L1/L2/L3 记忆接入 Planner 技术方案
 
-**Status:** Proposed；仅完成设计，尚未实施
+**Status:** Implemented in source; focused validation complete, full release validation pending
 **Plan date:** 2026-11-01
 **Scope:** 将 TDAI L1 原子记忆、L2 场景记忆和 L3 用户画像接入 MetaWork Planner，并让被计划引用的记忆通过现有执行证据通道到达 Executor。
 **Related authority:** [ADR-0015](../adr/0015-planner-owned-semantics-and-tool-mediated-context.md)、[ADR-0020](../adr/0020-core-module-ownership-and-dependency-direction.md)、[ADR-0021](../adr/0021-work-graph-v4-subtask-execution-contract.md)、[ADR-0038](../adr/0038-planner-executor-context-continuity.md)、[ADR-0049](../adr/0049-long-term-memory-ownership-deposition-and-delivery.md)。
-**Supersedes:** 本文仅补充 ADR-0049 的分层召回与交付设计，不改变当前已接受实现契约。实施前必须更新 ADR-0049 及适用的 schema / ContextRef 契约。
+**Supersedes:** 本方案补充并修订 ADR-0049 的分层召回与交付契约；schema 63 增加分层快照、版本及召回观测字段，新 Work Graph 的 memory ContextRef 要求 revision。
 
 ## 1. 问题与目标
 
@@ -178,6 +178,8 @@ CREATE TABLE memory_recall_layers (
   layer TEXT NOT NULL CHECK(layer IN ('l1','l2','l3')),
   status TEXT NOT NULL CHECK(status IN ('available','empty','degraded')),
   reason TEXT,
+  duration_ms INTEGER NOT NULL DEFAULT 0,
+  candidate_count INTEGER NOT NULL DEFAULT 0,
   updated_at TEXT NOT NULL,
   PRIMARY KEY(account_id, conversation_id, layer)
 );
@@ -211,15 +213,17 @@ L3 每轮读一次，作为画像候选。读取成功但正文为空时记 `emp
 ```json
 {
   "layers": {
-    "l1": { "status": "available", "items": [] },
-    "l2": { "status": "empty", "items": [] },
-    "l3": { "status": "available", "items": [] }
+    "l1": { "status": "available", "durationMs": 14, "candidateCount": 2, "items": [] },
+    "l2": { "status": "empty", "durationMs": 9, "candidateCount": 0, "items": [] },
+    "l3": { "status": "available", "durationMs": 6, "candidateCount": 1, "items": [] }
   },
   "advice": "..."
 }
 ```
 
 每个 item 返回 `memoryId`、`layer`、`title`、`preview`、`revision`、`updatedAt`。`search_memory` 作为兼容工具继续工作，但只呈现 L1，并在 Planner skill 与工具说明迁移完成后标为 deprecated；不得让它悄悄返回混合层级结果。
+
+`get_memory_context` 的 query 只过滤当前会话已持久化的召回快照，不扩大资产搜索范围；`list_memory_assets` 是用于治理检查的账号级清单，不能作为当前轮 ContextRef 的来源。
 
 扩展 `ContextRef{kind:'memory'}` 为 `{kind:'memory', memoryId, revision}`。新 Planner proposal 必须提供 revision；旧持久化图中缺少 revision 的历史引用保留既有读取规则，仅允许已授权旧任务按旧规则恢复，不得在新图中接受无版本引用。引用资格检查要求该 memory ID/revision 出现在本 Conversation 当前召回快照，且绑定属于当前 account 并启用。禁止 Planner 猜测或引用 `list_memory_assets` 中未进入本轮候选快照的资产。
 
@@ -308,4 +312,35 @@ TDAI profile API 如果当前并未提供稳定的单项删除操作，则本期
 - 初版 L2 搜索依赖场景 filename/summary 的确定性词项匹配，语义表达差异会降低召回率。通过真实任务样本统计 L2 命中和 Planner 引用率，再决定是否增加场景摘要 FTS；不在首版引入另一个 LLM 选择器。
 - L3 Persona 是 TDAI 当前的合成画像，不是逐条偏好记录。Planner 应把采用的偏好转为明确任务要求，不能让 Executor 把整份画像当成任意指令集合。
 - L2/L3 版本可在规划期间更新。固定 revision 会导致少量引用失效并触发重规划，这是保证 Planner 看见内容与 Executor 收到内容一致所需的行为。
-- 原 ADR-0049 描述“仅索引 L1”与当前行为一致。实施本方案前必须明确修订该决策，避免实现和现行 ADR 冲突。
+- ADR-0049 已修订为分层召回及 revision 固定交付契约。
+
+## 实施记录（2026-11-01）
+
+已交付：
+
+- TDAI Gateway 提供 Persona 读取、场景摘要搜索、场景正文按稳定 ID 读取、分层资产查询与受控删除；场景读取通过索引解析文件名并拒绝路径输入。
+- Memory Port/Adapter、MemoryRuntime 与 Recall Repo 已接入 L1/L2/L3；L2/L3 各自有 2 秒规划前读取预算，层状态独立持久化，单层故障不清空其他层。
+- 每层 Recall 持久化并由 Planner 工具返回状态、毫秒耗时及候选数；未执行的层记录为 0 毫秒、0 候选。
+- Planner MCP 提供 `get_memory_context`，保留标记为兼容用途的 L1 `search_memory`；Planner skill 说明画像偏好应用、当前请求优先、revision 引用和执行证据传递规则。
+- schema 63 为绑定和召回快照持久化层级、标题、revision、来源、每层状态、耗时及候选数；刷新不恢复用户停用状态。
+- 新 Work Graph 的 memory ContextRef 必须包含 revision；Runtime 对账号、启用状态和物化正文 revision 做复核，正文仍仅经 `task_execution_evidence` 交给 Executor。
+- 管理 API 和设置页支持按 L1/L2/L3 筛选并展示标题。
+- 管理面首次发现 profile 资产时保留 layer、revision、title；TDAI profile 分页使用远端 offset，超过 100 条时不会重复第一页。L2 场景搜索和 L3 Persona 读取各使用独立的 2 秒单请求预算，不重试慢请求。
+
+验证：
+
+- `npm run lint`：通过。
+- 聚焦 Vitest：记忆目录及相关 Planner、存储、Web/e2e 测试 179 项通过；真实 TDAI sidecar 的 L2/L3 route 闭环测试另有 1 项通过，覆盖 account scope、revision 固定、memory evidence 和 `selectedEvidence`。
+- 最终记忆、Planner memory tool、迁移和 evidence 回归：17 个测试文件、176 项通过；新增覆盖 profile 分页、管理面首次绑定元数据、L2/L3 短超时和当前快照过滤。
+- 既有 L1 提取端到端用例在一次运行中通过，但重复运行会出现 TDAI 后台抽取未在 40 秒轮询窗口内产生 L1 atom 的不稳定失败；这是测试环境引擎抽取时序问题，本轮 L2/L3 闭环测试独立执行通过。
+- TDAI Vitest：69 项通过；新增 Gateway 标识与路径边界测试通过。
+- MetaWork `npm run build`：通过，包含 Web 生产构建；MetaWork `npx tsc --noEmit` 通过。
+- `npm test -- --run` 完整套件未通过：635 个测试文件中 21 个文件失败，76 项失败、4,365 项通过、24 个文件跳过；失败包含当前工作树中的 Workspace 执行模式断言、Kernel/Task 恢复旅程和缺失的 `docs/releases/v0.1.20.md` 等非记忆用例。记忆相关 176 项聚焦回归仍全部通过。
+- TDAI `npm run build`：通过；`npx tsc --noEmit` 受既有 vendored 上游 `src/integrations/feishu-app.ts` 两个 TS2871 报错阻断，但发布构建脚本本身成功完成。
+- 真实 sidecar round-trip 已通过：L2 场景搜索/读取和 L3 Persona 读取/净化/读取、revision 固定、scope mismatch、分层 evidence 以及 revision 变化拒绝均有测试覆盖。
+- 发布脚本现在在构建阶段安装 dev 依赖以生成 Gateway，再执行 `npm prune --omit=dev`，避免此前 `tsdown` 未安装导致发布构建无法启动。
+- 本轮重新执行发布准备脚本时，获取锁定的 TDAI 上游 commit 遇到 GitHub 连接错误（HTTP/2 framing error；强制 HTTP/1.1 后超时）；补丁此前已在干净 TDAI worktree 通过 `git apply --check`，新鲜 checkout 的完整打包/sidecar 启停验收待网络恢复后完成。
+
+实施日期：2026-11-01。Schema：63。Closing commit：待提交。
+
+后续验收：在发布环境执行 `scripts/prepare-memory-engine.mjs`，并使用真实配置完成 sidecar 启停；不再把未设置 `METAWORK_MEMORY_SIDECAR_DIR` 时跳过的旧用户旅程测试误报为实现失败。

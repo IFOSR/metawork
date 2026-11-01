@@ -68,7 +68,7 @@ describe('billing schema migration and recovery', () => {
     ]) {
       db.exec(`DROP TABLE IF EXISTS ${table}`);
     }
-    db.exec('UPDATE schema_version SET version = 38');
+    db.exec('DROP VIEW IF EXISTS conversation_memory_turns; UPDATE schema_version SET version = 38');
     runMigrations(db);
     expect(db.prepare('SELECT version FROM schema_version').get()).toEqual({ version: CURRENT_SCHEMA_VERSION });
     expect(billingSchemaTables(db)).toEqual(expect.arrayContaining([

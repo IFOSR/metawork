@@ -109,7 +109,7 @@ import {
 } from '../storage/workspace-publication-repo.js';
 import { AttemptTerminalService } from './attempt-terminal-service.js';
 import { authorizedExecutorBindingFingerprint, type AuthorizedExecutorBinding } from '../core/authorized-executor-binding.js';
-import { MemoryEvidenceService } from '../memory/memory-evidence-service.js';
+import { MemoryEvidenceMaterializationError, MemoryEvidenceService } from '../memory/memory-evidence-service.js';
 import {
   formatExecutorProgress,
   normalizeDependencyMaterializationFailure,
@@ -118,6 +118,7 @@ import { kernelFailure } from '../core/kernel-failure.js';
 import {
   EdgeHandoffMaterializationError,
   assertEdgeHandoffsMaterializable,
+  materializeOutgoingHandoffs,
 } from './subtask-handoff-materializer.js';
 import { publicText } from '../utils/public-text.js';
 import {
@@ -320,6 +321,10 @@ export class SubtaskAttemptRunner {
       }
     };
     const existing = this.publicationRepo.find(publicationId);
+    const existingConversationBinding = this.deps.conversationWorktrees?.repo.binding(
+      expected.taskId,
+      expected.generationId,
+    ) ?? null;
     if (!existing) assertCurrent();
     const receipt = this.receiptRepo.findByAttemptId(expected.attemptId);
     if (!receipt) throw new Error('结果归属校验失败');
@@ -331,12 +336,17 @@ export class SubtaskAttemptRunner {
         || existing.subtaskId !== expected.subtaskId || receipt.graphRevision !== expected.graphRevision) {
         throw new Error('该结果操作已过期，请刷新任务后重试。');
       }
-      return;
+      // A previous build could have staged a Conversation Git result as a
+      // legacy publication. Re-enter the acceptance path so it is converted
+      // to direct completion; the operation remains idempotent.
+      if (!existingConversationBinding) return;
     }
     const sourceRuntime = this.attemptRuntimeRepo.find(pair.resultOwnerAttemptId);
     const subtask = this.deps.subtaskRepo.findById(expected.subtaskId)!;
     const acceptedTask = this.deps.taskRuntimeService.findTask(expected.taskId);
-    const acceptedBinding = this.deps.conversationWorktrees?.repo.binding(expected.taskId, expected.generationId) ?? null;
+    const acceptedBinding = existingConversationBinding
+      ?? this.deps.conversationWorktrees?.repo.binding(expected.taskId, expected.generationId)
+      ?? null;
     // Historical Tasks have no execution_mode. They were always authored
     // directly in the Workspace; retain that interpretation for acceptance,
     // while a conversation binding selects the immutable Git path.
@@ -367,9 +377,24 @@ export class SubtaskAttemptRunner {
       delta ??= declaredOutputsDelta(rootPath, subtask.fileOutputs ?? []);
       if (!delta) throw new Error('无法确认文件变更，结果尚不能交付');
     } else {
-      const workspace = this.deps.workspaceRepository.findByIdentity(expected.taskId, expected.generationId, expected.subtaskId);
-      if (!workspace?.rootUri.startsWith('file:')) throw new Error('结果工作区不可用');
-      rootPath = join(fileURLToPath(workspace.rootUri), 'files');
+      // Conversation Git Attempts execute directly in the durable session
+      // Worktree. The legacy workspace record points at the Attempt-owned
+      // `.metawork-tmp` scratch directory, which is intentionally removed after
+      // the Attempt settles. Result acceptance must therefore resolve the
+      // immutable Conversation binding first and never resurrect that scratch
+      // path as the source of truth.
+      if (acceptedBinding) {
+        rootPath = acceptedBinding.executionRoot;
+        try {
+          statSync(rootPath);
+        } catch {
+          throw new Error('结果工作区不可用');
+        }
+      } else {
+        const workspace = this.deps.workspaceRepository.findByIdentity(expected.taskId, expected.generationId, expected.subtaskId);
+        if (!workspace?.rootUri.startsWith('file:')) throw new Error('结果工作区不可用');
+        rootPath = join(fileURLToPath(workspace.rootUri), 'files');
+      }
       if (!delta) throw new Error('无法确认文件变更，结果尚不能交付');
       const baseline = parseWorkspaceState(sourceRuntime?.workspaceBaseline);
       if (!baseline || delta.baselineTruncated || delta.finalTruncated) throw new Error('文件快照不完整，无法接受');
@@ -392,15 +417,77 @@ export class SubtaskAttemptRunner {
       || completion.assessment.certification.violations.some(item => item.code !== 'completion_acceptance_mismatch')) {
       throw new Error('文件、安全或下游交付检查失败，结果尚不能发布');
     }
+    const acceptedPaths = [...completion.normalizedArtifacts,
+      ...(completion.envelope?.status === 'completed'
+        ? completion.envelope.handoffs.flatMap(h => h.items.flatMap(item => item.type === 'text' ? [] : item.paths))
+        : [])]
+      .map(path => isAbsolute(path) ? relative(rootPath, path) : path);
     const candidate = inPlace
       ? { commit: `in-place:${expected.attemptId}` }
-      : await this.managedGitWorkspace.commit(
-        await this.managedGitWorkspace.ensure({ taskId: expected.taskId,
-          generationId: expected.generationId, subtaskId: expected.subtaskId },
-        this.deps.workspaceExecutionBindingRepo?.find(expected.taskId, expected.generationId)?.canonicalPath
-          ?? this.requireSourceRoot('accepted result')),
-        `fix: publish accepted ${subtask.id} result`,
+      : acceptedBinding
+        ? await this.deps.conversationWorktrees!.sealAttempt(
+          acceptedBinding,
+          expected.attemptId,
+          acceptedPaths,
+        )
+        : await this.managedGitWorkspace.commit(
+          await this.managedGitWorkspace.ensure({ taskId: expected.taskId,
+            generationId: expected.generationId, subtaskId: expected.subtaskId },
+          this.deps.workspaceExecutionBindingRepo?.find(expected.taskId, expected.generationId)?.canonicalPath
+            ?? this.requireSourceRoot('accepted result')),
+          `fix: publish accepted ${subtask.id} result`,
+        );
+    if (acceptedBinding) {
+      const edgeHandoffs = {
+        generationId: subtask.generationId,
+        completionSchemaVersion: 4 as const,
+        declaredHandoffs: completion.envelope?.status === 'completed' ? completion.envelope.handoffs : [],
+        safeProjection: safeProjectionForEdgeHandoffs(
+          this.resultObjectRepo,
+          pair.resultObjectId,
+          body,
+        ),
+      };
+      assertEdgeHandoffsMaterializable(
+        { subtaskRepo: this.deps.subtaskRepo },
+        { taskId: expected.taskId, subtaskId: expected.subtaskId },
+        edgeHandoffs.safeProjection,
       );
+      this.deps.db.transaction(() => {
+        assertCurrent();
+        this.lifecycle.transitionSubtask({
+          subtaskId: subtask.id,
+          to: 'done',
+          actor: 'subtask-attempt-runner',
+          reason: 'accepted result completed directly in Conversation Worktree',
+          changes: {
+            result: body,
+            artifacts: completion.normalizedArtifacts,
+            verification: { warnings: completion.warnings, completionSchemaVersion: 4 },
+            error: null,
+          },
+        });
+        materializeOutgoingHandoffs(
+          {
+            accountId: this.deps.accountId,
+            subtaskRepo: this.deps.subtaskRepo,
+            handoffRepo: this.handoffRepo,
+            results: this.resultObjectRepo,
+          },
+          {
+            taskId: expected.taskId,
+            subtaskId: expected.subtaskId,
+            generationId: subtask.generationId,
+            attemptId: expected.attemptId,
+            completionSchemaVersion: 4,
+            declaredHandoffs: edgeHandoffs.declaredHandoffs,
+          },
+          edgeHandoffs.safeProjection,
+          new Date().toISOString(),
+        );
+      }).immediate();
+      return;
+    }
     const dispatch = this.dispatchItemRepo.find(expected.attemptId)!;
     this.deps.db.transaction(() => {
       assertCurrent();
@@ -659,7 +746,10 @@ export class SubtaskAttemptRunner {
     }
     const conversationExecution = Boolean(conversationBinding && !serviceCheckout);
     const serviceExecution = Boolean(serviceCheckout);
-    const inPlaceExecution = !nonWritingExecution;
+    // A Conversation binding is always the authoritative writable directory
+    // for new Tasks. Keep the in-place branch only for historical fixtures and
+    // legacy records that predate Conversation Git.
+    const inPlaceExecution = !conversationExecution && !serviceExecution && !nonWritingExecution;
     const directCompletion = conversationExecution || serviceExecution || inPlaceExecution || nonWritingExecution;
     if (inPlaceExecution && !workspaceId) {
       throw new Error(`in-place attempt requires a Workspace identity: ${task.id}`);
@@ -925,7 +1015,7 @@ export class SubtaskAttemptRunner {
       );
       const containerExecutionBackend = this.deps.attemptExecutionBackend.pathMode === 'container'
         || this.deps.attemptExecutionBackend.kind === 'container';
-      if (containerExecutionBackend && !inPlaceExecution) {
+      if (containerExecutionBackend && !inPlaceExecution && !conversationExecution && !serviceExecution) {
         // Container ownership rewriting targets the private worktree. An in-place
         // Workspace belongs to the user, so its permissions must never be changed.
         await this.deps.workspaceStore.prepareForContainerExecution(workspace);
@@ -934,7 +1024,7 @@ export class SubtaskAttemptRunner {
       const handoffsPath = join(workspace.rootPath, 'handoffs');
       await Promise.all([mkdir(inputsPath, { recursive: true }), mkdir(handoffsPath, { recursive: true })]);
       await materializeImageTaskResources(task.resources, subtask, inputsPath);
-      if (!inPlaceExecution && !nonWritingExecution) {
+      if (!inPlaceExecution && !conversationExecution && !serviceExecution && !nonWritingExecution) {
         // Checkpoints snapshot the private worktree. An in-place Attempt never
         // copies the user's Workspace, so it records no snapshot.
         const startCheckpoint = await this.deps.workspaceStore.createCheckpoint(workspace, {
@@ -1143,7 +1233,7 @@ export class SubtaskAttemptRunner {
             // In-place Attempts must never copy or chmod the user's Workspace.
             // Their before/after change record is the recovery fact; managed
             // CAS checkpoints are reserved for private scratch roots.
-            if (inPlaceExecution) return null;
+            if (inPlaceExecution || conversationExecution || serviceExecution) return null;
             const checkpoint = await this.deps.workspaceStore.createCheckpoint(workspace, { reason, attemptId });
             this.deps.workspaceRepository.recordCheckpoint({
               id: checkpoint.id,
@@ -1898,6 +1988,20 @@ export class SubtaskAttemptRunner {
             referenceId: extractReferenceId(message),
           })
         : null;
+      const memoryFailure = error instanceof MemoryEvidenceMaterializationError
+        ? kernelFailure({
+            kind: 'capability_mismatch',
+            scope: 'task',
+            code: error.code,
+            summary: '引用的记忆已变化或不可用，正在重新校验当前记忆快照',
+            detail: message,
+            origin: 'kernel',
+            stage: 'context_preparation',
+            retryable: false,
+            attemptStarted: false,
+            externalSideEffect: false,
+          })
+        : null;
       const normalizedFailure = edgeHandoffFailure ?? (dependencyFailure
         ? kernelFailure({
             kind: dependencyFailure.retryable ? 'infrastructure' : 'capability_mismatch',
@@ -1905,7 +2009,7 @@ export class SubtaskAttemptRunner {
             code: dependencyFailure.code,
             summary: `${dependencyFailure.summary} (${dependencyFailure.sourceSubtaskId ?? 'unknown'} -> ${dependencyFailure.targetSubtaskId ?? subtask.id})`,
           })
-        : error instanceof InteractionReferenceError || error instanceof ExecutionEvidenceIdentityError
+        : memoryFailure ?? (error instanceof InteractionReferenceError || error instanceof ExecutionEvidenceIdentityError
           ? kernelFailure({
               kind: 'unknown',
               scope: 'task',
@@ -1916,9 +2020,9 @@ export class SubtaskAttemptRunner {
               stage: 'context_preparation',
               retryable: false,
               attemptStarted: false,
-              externalSideEffect: false,
-            })
-          : null);
+            externalSideEffect: false,
+          })
+          : null));
       if (mergeRepair) {
         this.publicationRepo.recordRepairFailure(
           mergeRepair.publicationId,
@@ -1962,7 +2066,7 @@ export class SubtaskAttemptRunner {
     } finally {
       closeUsageSpan('uncertain');
       clearInterval(heartbeat);
-      if (workspace && !inPlaceExecution && !nonWritingExecution) {
+      if (workspace && !inPlaceExecution && !conversationExecution && !serviceExecution && !nonWritingExecution) {
         try {
           const checkpoint = await this.deps.workspaceStore.createCheckpoint(workspace, {
             reason: finalCheckpointReason,
@@ -2194,7 +2298,9 @@ export class SubtaskAttemptRunner {
         task.id,
         subtask.generationId,
       );
-      const correctionWorkspaceRoot = correctionInPlace
+      const correctionWorkspaceRoot = correctionConversationBinding
+        ? correctionConversationBinding.executionRoot
+        : correctionInPlace
         ? (() => {
             const persistedRoot = sourceRuntime.workspaceRoot;
             if (!persistedRoot) return correctionBinding?.canonicalPath ?? null;
@@ -2347,13 +2453,55 @@ export class SubtaskAttemptRunner {
       if (!dispatchItem) {
         throw new Error(`authorized dispatch item not found: ${input.attemptId}`);
       }
-      const correctedWorkspace = await this.managedGitWorkspace.ensure({ taskId: task.id,
-        generationId: subtask.generationId, subtaskId: subtask.id },
-      input.sourceRoot
-        ?? this.deps.workspaceExecutionBindingRepo?.find(task.id, subtask.generationId)?.canonicalPath
-        ?? this.requireSourceRoot('correction attempt'));
-      const correctedCommit = await this.managedGitWorkspace.commit(correctedWorkspace, `fix: certify ${subtask.id} result`);
+      const correctionDirectCompletion = Boolean(correctionConversationBinding);
+      const correctedCommit = correctionDirectCompletion
+        ? (await this.deps.conversationWorktrees!.sealAttempt(
+            correctionConversationBinding!,
+            input.attemptId,
+            [...completion.normalizedArtifacts,
+              ...completion.envelope.handoffs.flatMap(h => h.items.flatMap(item => item.type === 'text' ? [] : item.paths))]
+              .map(path => isAbsolute(path)
+                ? relative(correctionConversationBinding!.executionRoot, path)
+                : path),
+          )).commit
+        : await this.managedGitWorkspace.commit(
+            await this.managedGitWorkspace.ensure({ taskId: task.id,
+              generationId: subtask.generationId, subtaskId: subtask.id },
+            input.sourceRoot
+              ?? this.deps.workspaceExecutionBindingRepo?.find(task.id, subtask.generationId)?.canonicalPath
+              ?? this.requireSourceRoot('correction attempt')),
+            `fix: certify ${subtask.id} result`,
+          ).then(result => result.commit);
+      const correctionEdgeHandoffs = correctionDirectCompletion
+        ? {
+            generationId: subtask.generationId,
+            completionSchemaVersion: 4 as const,
+            declaredHandoffs: completion.envelope.handoffs,
+            safeProjection: safeProjectionForEdgeHandoffs(
+              this.resultObjectRepo,
+              activeResultObjects.safeProjectionId,
+              landedBody,
+            ),
+          }
+        : null;
+      if (correctionEdgeHandoffs) {
+        assertEdgeHandoffsMaterializable(
+          { subtaskRepo: this.deps.subtaskRepo },
+          { taskId: task.id, subtaskId: subtask.id },
+          correctionEdgeHandoffs.safeProjection,
+        );
+      }
       const landing = this.terminalService.land({
+        ...(correctionDirectCompletion ? {
+          subtaskResult: landedBody ?? '',
+          subtaskArtifacts: completion.normalizedArtifacts,
+          subtaskVerification: {
+            warnings: completion.warnings,
+            completionSchemaVersion: 4,
+          },
+          directCompletion: true,
+          edgeHandoffs: correctionEdgeHandoffs ?? undefined,
+        } : {}),
         receipt: buildReceipt({
           attemptId: input.attemptId, executionId: input.executionId, taskId: task.id, subtaskId: subtask.id,
           workUnitId: claim.workUnit.id, agentClassName, startedAt,
@@ -2365,15 +2513,15 @@ export class SubtaskAttemptRunner {
         expectedSubtaskStatus: 'running',
         nextSubtaskStatus: 'awaiting_integration',
         subtaskError: null,
-        publication: {
+        ...(!correctionDirectCompletion ? { publication: {
           id: `publication_${input.attemptId}`, taskId: task.id, generationId: subtask.generationId,
           subtaskId: subtask.id, sourceAttemptId: input.attemptId, agentClassName,
-          candidateCommit: correctedCommit.commit,
+          candidateCommit: correctedCommit,
           completion: { body: landedBody ?? '', artifacts: completion.normalizedArtifacts,
             warnings: completion.warnings, handoffs: completion.envelope.handoffs, completionSchemaVersion: 4 },
           topologyLayer: deriveTopologyLayer(subtask.id, allSubtasks), firstDispatchOrder: dispatchItem.batchOrder,
           createdAt: completedAt,
-        },
+        } } : {}),
         event: {
           schemaVersion: 5,
           configurationRevision: dispatchItem.configurationRevision,
@@ -2440,11 +2588,17 @@ export class SubtaskAttemptRunner {
     if (!service) return;
     const memoryIds = MemoryEvidenceService.collectMemoryRefs(subtask.contextRefs ?? []);
     if (!memoryIds.length) return;
-    await service.materialize({
+    const result = await service.materialize({
       accountId: task.accountId ?? this.deps.accountId ?? 'local-default',
       taskId: task.id,
+      ...(task.conversationId ? { conversationId: task.conversationId } : {}),
       memoryIds,
     });
+    if (result.failed.length) {
+      const failure = result.failed[0]!;
+      const code = failure.reason.match(/^([a-z][a-z0-9_]+)/u)?.[1] ?? 'memory_context_unavailable';
+      throw new MemoryEvidenceMaterializationError(code, failure.memoryId);
+    }
   }
 
   private isStillCurrent(taskId: string, subtaskId: string, attemptId: string, workUnitId: string): boolean {

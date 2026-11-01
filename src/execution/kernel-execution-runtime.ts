@@ -1082,21 +1082,35 @@ export class KernelExecutionRuntime {
   async publicTaskDelivery(taskId: string): Promise<PublicDeliveryView | null> {
     const task = this.deps.taskRuntimeService.findTask(taskId);
     if (!task) return null;
-    const graph = this.deps.workGraphRevisionRepo.findActive(taskId);
+    const graph = this.deps.workGraphRevisionRepo.findActive(taskId)
+      ?? this.deps.workGraphRevisionRepo.findLatest(taskId);
     const binding = graph
       ? this.deps.workspaceExecutionBindingRepo?.find(task.id, graph.generationId) ?? null
       : this.deps.workspaceExecutionBindingRepo?.findLatestForTask(task.id) ?? null;
+    const conversationBinding = graph
+      ? this.deps.conversationWorktrees?.repo.binding(task.id, graph.generationId) ?? null
+      : null;
+    const conversationRoot = conversationBinding
+      ? this.deps.conversationWorktrees?.repo.root(conversationBinding.workspaceId) ?? null
+      : null;
     // A Task view must describe the Workspace that was authorized for that
     // Generation. Once the durable binding repository is wired, a missing
     // binding is an unavailable view rather than a reason to use the current
     // Conversation root (which may have changed since admission). Focused
     // fixtures without the repository retain their local resolver fallback.
     const workspace = binding?.canonicalPath
+      ?? conversationRoot?.userRoot
       ?? (this.deps.workspaceExecutionBindingRepo
         ? null
         : (task.conversationId ? await this.deps.resolveUserWorkspaceRoot?.(task.conversationId) : null)
           ?? this.deps.userArtifactPublication?.userWorkspaceRoot ?? null);
-    return projectPublicDelivery({ task, workspace,
+    // A legacy Task row may still say `in_place` even after its active
+    // generation has been rebound to Conversation Git. Project the durable
+    // binding, so the client never shows the retired mode for a live Worktree.
+    const projectedTask = conversationBinding && task.executionMode === 'in_place'
+      ? { ...task, executionMode: 'conversation_git' as const }
+      : task;
+    return projectPublicDelivery({ task: projectedTask, workspace,
       artifacts: [...(this.deps.userArtifactPublication?.taskArtifactRepo.publicFiles.list(task.accountId ?? 'local-default', taskId) ?? []),
         ...(this.deps.userArtifactPublication?.taskArtifactRepo.listByTask(taskId).filter(item => item.accountId === (task.accountId ?? 'local-default')) ?? [])],
       publications: this.deps.publicationRepo.listByTask(taskId).filter(item => item.generationId === graph?.generationId
@@ -1264,9 +1278,11 @@ export class KernelExecutionRuntime {
     if (!workspaceId || !resolved) return null;
     const canonical = await canonicalizeWorkspacePath(resolved).catch(() => null);
     if (!canonical) return null;
+    // A null mode is a pre-Conversation-Git historical row. New Tasks persist
+    // `conversation_git` before this fallback can be reached.
     const executionMode = task.executionMode ?? 'in_place';
-    if (executionMode === 'worktree') {
-      throw new Error(`Task ${taskId} uses a retired Worktree binding and cannot be dispatched`);
+    if (executionMode !== 'in_place') {
+      throw new Error(`Task ${taskId} requires the Conversation Git binding`);
     }
     // A replan of an existing Task keeps the mode of its first generation; a
     // later generation never reinterprets the current settings.
@@ -1777,9 +1793,36 @@ export class KernelExecutionRuntime {
   private resumeResultContinuations(taskId: string): Promise<boolean> {
     const running = this.resultContinuations.get(taskId);
     if (running) return running;
-    const work = this.drainResultContinuations(taskId).finally(() => this.resultContinuations.delete(taskId));
+    const pending = (this.deps.effectOutboxRepo?.listByTaskAndType?.(taskId, 'task_result_continuation') ?? [])
+      .some(effect => effect.status !== 'sent');
+    let work!: Promise<boolean>;
+    work = this.drainResultContinuations(taskId).then(
+      result => {
+        // Remove the in-flight guard before waking the graph. Otherwise the
+        // recovery call re-enters this method, observes its own promise and
+        // returns without submitting the dispatch event.
+        if (this.resultContinuations.get(taskId) === work) this.resultContinuations.delete(taskId);
+        if (pending && result) this.wakeAfterResultContinuation(taskId);
+        return result;
+      },
+      error => {
+        if (this.resultContinuations.get(taskId) === work) this.resultContinuations.delete(taskId);
+        throw error;
+      },
+    );
     this.resultContinuations.set(taskId, work);
     return work;
+  }
+
+  private wakeAfterResultContinuation(taskId: string): void {
+    // Keep this asynchronous: the acceptance transaction and the outbox
+    // receipt must be fully committed before the Kernel rebuilds its snapshot.
+    setTimeout(() => {
+      const current = this.deps.taskRuntimeService.findTask(taskId);
+      if (!current || !['queued', 'running'].includes(current.status)) return;
+      void this.recoverDue(taskId, 'accepted result continuation completed')
+        .catch(() => undefined);
+    }, 0);
   }
 
   private async drainResultContinuations(taskId: string): Promise<boolean> {
@@ -3092,7 +3135,14 @@ export class KernelExecutionRuntime {
     }
     const sourceTask = this.deps.taskRuntimeService.findTask(item.taskId);
     if (this.deps.preflightWorkspacePath) {
-      request = { ...request, workspacePath: await this.deps.preflightWorkspacePath(request.workspacePath!) };
+      if (binding && 'bindingVersion' in binding) {
+        // Workspace admission applies to the user's directory. The registered
+        // execution root is intentionally inside the runtime; AttemptRunner
+        // validates its worktree identity and binding before launching it.
+        await this.deps.preflightWorkspacePath(binding.userRoot);
+      } else {
+        request = { ...request, workspacePath: await this.deps.preflightWorkspacePath(request.workspacePath!) };
+      }
     }
     const existingReceipt = this.deps.attemptReceiptRepo.findByAttemptId(item.attemptId);
     if (
@@ -3314,11 +3364,9 @@ export class KernelExecutionRuntime {
       ),
     );
 
-    const startedAtMs = Date.now();
-    let lastProgressAtMs = startedAtMs;
-    let lastProgressKind = 'dispatch_started';
+    let lastProgressAtMs = Date.now();
     const operationHealthById = new Map<string, import('../executor/operation-activity-monitor.js').OperationHealth>();
-    let lastActivityAtMs = startedAtMs;
+    let lastActivityAtMs = lastProgressAtMs;
     const currentOperationHealth = () => [...operationHealthById.values()]
       .sort((a, b) => Date.parse(a.lastActivityAt) - Date.parse(b.lastActivityAt))[0] ?? null;
     let progressSequence = 0;
@@ -3332,7 +3380,7 @@ export class KernelExecutionRuntime {
         else operationHealthById.set(observation.operationId, observation);
         lastActivityAtMs = Math.max(lastActivityAtMs, Date.parse(observation.lastActivityAt));
         if (observation.lastProgressAt) lastProgressAtMs = Math.max(lastProgressAtMs, Date.parse(observation.lastProgressAt));
-      } else { lastProgressAtMs = Date.now(); lastActivityAtMs = lastProgressAtMs; lastProgressKind = event.kind; }
+      } else { lastProgressAtMs = Date.now(); lastActivityAtMs = lastProgressAtMs; }
       progressSequence += 1;
       this.appendExecutionTrace({
         phase: 'execution',
@@ -3369,49 +3417,16 @@ export class KernelExecutionRuntime {
     };
     const heartbeatMs = this.deps.executionTraceHeartbeatMs
       ?? DEFAULT_EXECUTION_TRACE_HEARTBEAT_MS;
-    let heartbeatSequence = 0;
     const heartbeat = heartbeatMs > 0
       ? setInterval(() => {
           const nowMs = Date.now();
           if (nowMs - lastProgressAtMs < heartbeatMs) return;
           const heartbeatAt = new Date(nowMs).toISOString();
+          // Keep the durable lease/watchdog alive, but do not manufacture a
+          // user-visible event when the Executor has produced no new command,
+          // output, or result.
           this.deps.attemptRuntimeRepo?.touch(item.attemptId, heartbeatAt);
           this.deps.dispatchItemRepo.touch?.(item.attemptId, heartbeatAt);
-          heartbeatSequence += 1;
-          this.appendExecutionTrace({
-            phase: 'execution',
-            actor: 'runtime',
-            kind: 'executor_heartbeat',
-            status: 'running',
-            title: `Execution awaiting new activity: ${subtask.title}`,
-            summary: 'Execution has not ended; this presentation heartbeat is not evidence of work progress.',
-            details: {
-              taskId: item.taskId,
-              attemptId: item.attemptId,
-              elapsedMs: nowMs - startedAtMs,
-              silentForMs: nowMs - lastProgressAtMs,
-              lastProgressAt: new Date(lastProgressAtMs).toISOString(),
-              lastProgressKind,
-              heartbeatSequence,
-              activityState: 'presentation_heartbeat',
-              watchdogAuthority: false,
-              operationHealth: currentOperationHealth(),
-              lastActivityAt: new Date(lastActivityAtMs).toISOString(),
-              ...bindingDetails,
-              ...executionEventDetails({
-                display,
-                step: {
-                  stepKey: 'executor_waiting',
-                  stepLabel: `尚未结束，等待新进展：${subtask.title}`,
-                  progress: null,
-                },
-                startedAt: dispatchStartedAt,
-              }),
-            },
-            eventKey: `${item.attemptId}:heartbeat:${heartbeatSequence}`,
-            taskId: item.taskId,
-          });
-          this.deps.callbacks.refreshRuntimeState?.();
         }, heartbeatMs)
       : null;
     heartbeat?.unref();

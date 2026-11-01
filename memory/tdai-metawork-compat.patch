@@ -1,8 +1,88 @@
+diff --git a/src/core/store/sqlite.ts b/src/core/store/sqlite.ts
+index 5ea6ac7..39db426 100644
+--- a/src/core/store/sqlite.ts
++++ b/src/core/store/sqlite.ts
+@@ -1947,6 +1947,15 @@ export class VectorStore implements IMemoryStore {
+    *
+    * Used by L1 runner to read L0 data from DB instead of JSONL files.
+    */
++  /** Erasure verification must fail on storage errors, never return a false empty result. */
++  queryL0ForDeletion(sessionKey: string, limit: number) {
++    if (this.degraded) throw new Error("memory_store_unavailable");
++    const rows = this.stmtL0QueryAll.all(sessionKey, limit) as Array<Record<string, unknown>>;
++    return rows.map(r => ({ record_id: String(r.record_id), session_key: String(r.session_key),
++      session_id: String(r.session_id ?? ""), role: String(r.role), message_text: String(r.message_text),
++      recorded_at: String(r.recorded_at ?? ""), timestamp: Number(r.timestamp ?? 0) }));
++  }
++
+   queryL0ForL1(
+     sessionKey: string,
+     afterRecordedAtMs?: number,
+diff --git a/src/core/store/tcvdb.ts b/src/core/store/tcvdb.ts
+index cbef188..5d2cbc5 100644
+--- a/src/core/store/tcvdb.ts
++++ b/src/core/store/tcvdb.ts
+@@ -868,6 +868,16 @@ export class TcvdbMemoryStore implements IMemoryStore {
+     }
+   }
+ 
++  async queryL0ForDeletion(sessionKey: string, limit: number): Promise<L0QueryRow[]> {
++    await this._ensureInit();
++    if (this.degraded) throw new Error("memory_store_unavailable");
++    const docs = await this._queryAllDocs(this.l0Collection, `session_key = ${JSON.stringify(sessionKey)}`,
++      L0_OUTPUT_FIELDS, limit, [{ fieldName: "recorded_at_ms", direction: "desc" }]);
++    return docs.map(doc => ({ record_id: String(doc.id ?? ""), session_key: String(doc.session_key ?? ""),
++      session_id: String(doc.session_id ?? ""), role: String(doc.role ?? ""), message_text: String(doc.message_text ?? ""),
++      recorded_at: epochMsToIso(Number(doc.recorded_at_ms ?? 0)), timestamp: Number(doc.timestamp ?? 0) }));
++  }
++
+   async queryL0ForL1(sessionKey: string, afterRecordedAtMs?: number, limit = 50): Promise<L0QueryRow[]> {
+     try {
+       await this._ensureInit();
+diff --git a/src/core/store/types.ts b/src/core/store/types.ts
+index 7cf62ce..973f169 100644
+--- a/src/core/store/types.ts
++++ b/src/core/store/types.ts
+@@ -286,6 +286,7 @@ export interface IMemoryStore {
+   // ── L0 Read ──────────────────────────────────────────────
+ 
+   countL0(): MaybePromise<number>;
++  queryL0ForDeletion?(sessionKey: string, limit: number): MaybePromise<L0QueryRow[]>;
+   queryL0ForL1(sessionKey: string, afterRecordedAtMs?: number, limit?: number): MaybePromise<L0QueryRow[]>;
+   queryL0GroupedBySessionId(sessionKey: string, afterRecordedAtMs?: number, limit?: number): MaybePromise<L0SessionGroup[]>;
+   getAllL0Texts(): MaybePromise<Array<{ record_id: string; message_text: string; recorded_at: string }>>;
+diff --git a/src/core/tdai-core.ts b/src/core/tdai-core.ts
+index 036ac8d..1a6a5c8 100644
+--- a/src/core/tdai-core.ts
++++ b/src/core/tdai-core.ts
+@@ -283,6 +283,13 @@ export class TdaiCore {
+     });
+   }
+ 
++  /** MetaWork writes exact L0 records through the store before waking extraction. */
++  async notifyCommittedConversation(sessionKey: string): Promise<void> {
++    await this.storeReady;
++    await this.ensureSchedulerStarted();
++    await this.scheduler?.notifyConversation(sessionKey, []);
++  }
++
+   /**
+    * Search L1 structured memories.
+    * Maps to: `tdai_memory_search` tool.
 diff --git a/src/gateway/server.ts b/src/gateway/server.ts
-index 1da5592..b2268af 100644
+index 1da5592..9bc379f 100644
 --- a/src/gateway/server.ts
 +++ b/src/gateway/server.ts
-@@ -23,6 +23,8 @@ import { loadGatewayConfig } from "./config.js";
+@@ -17,12 +17,17 @@
+ import http from "node:http";
+ import { URL } from "node:url";
+ import { timingSafeEqual } from "node:crypto";
++import { createHash } from "node:crypto";
++import fs from "node:fs/promises";
++import path from "node:path";
+ import { TdaiCore } from "../core/tdai-core.js";
+ import { StandaloneHostAdapter } from "../adapters/standalone/host-adapter.js";
+ import { loadGatewayConfig } from "./config.js";
  import type { GatewayConfig } from "./config.js";
  import { initDataDirectories } from "../utils/pipeline-factory.js";
  import { SessionFilter } from "../utils/session-filter.js";
@@ -11,13 +91,193 @@ index 1da5592..b2268af 100644
  import type {
    HealthResponse,
    RecallRequest,
-@@ -260,6 +262,21 @@ export class TdaiGateway {
+@@ -43,10 +48,125 @@ import type { Logger } from "../core/types.js";
+ import { validateAndNormalizeRaw, fillTimestamps, SeedValidationError } from "../core/seed/input.js";
+ import { executeSeed } from "../core/seed/seed-runtime.js";
+ import type { SeedProgress } from "../core/seed/types.js";
++import { syncSceneIndex } from "../core/scene/scene-index.js";
++import type { SceneIndexEntry } from "../core/scene/scene-index.js";
++import { parseSceneBlock } from "../core/scene/scene-format.js";
++import { stripSceneNavigation } from "../core/scene/scene-navigation.js";
+ 
+ const TAG = "[tdai-gateway]";
+ const VERSION = "0.1.0";
+ 
++interface MetaWorkScopeBody {
++  team_id?: string;
++  agent_id?: string;
++  user_id?: string;
++}
++
++interface MetaWorkScope {
++  teamId: string;
++  agentId: string;
++  userId: string;
++}
++
++export function readMetaWorkScope(body: MetaWorkScopeBody): MetaWorkScope | null {
++  if (![body.team_id, body.agent_id, body.user_id].every(value =>
++    typeof value === "string" && value.length > 0 && value.length <= 256 && !/[\/\\\u0000-\u001f]/u.test(value))) {
++    return null;
++  }
++  return { teamId: body.team_id!, agentId: body.agent_id!, userId: body.user_id! };
++}
++
++export function profileId(scope: MetaWorkScope, layer: "l2" | "l3", filename: string): string {
++  const digest = createHash("sha256")
++    .update(`${scope.teamId}\u0000${scope.agentId}\u0000${scope.userId}\u0000${layer}\u0000${filename}`)
++    .digest("hex");
++  return `tdai:${layer}:${digest}`;
++}
++
++function sha256(content: string): string {
++  return createHash("sha256").update(content, "utf8").digest("hex");
++}
++
++function normalizeSearchText(value: string): string {
++  return value.normalize("NFKC").toLocaleLowerCase().replace(/[^\p{L}\p{N}_]+/gu, " ").trim();
++}
++
++function searchTerms(value: string): string[] {
++  return [...new Intl.Segmenter("zh", { granularity: "word" }).segment(value)]
++    .filter(item => item.isWordLike)
++    .map(item => item.segment)
++    .filter(term => term.length > 0);
++}
++
++function scopeFingerprint(scope: MetaWorkScope): string {
++  return createHash("sha256")
++    .update(`${scope.teamId}\u0000${scope.agentId}\u0000${scope.userId}`)
++    .digest("hex");
++}
++
++async function readMetaWorkSceneIndex(dataDir: string): Promise<SceneIndexEntry[]> {
++  let raw: string;
++  try {
++    raw = await fs.readFile(path.join(dataDir, ".metadata", "scene_index.json"), "utf-8");
++  } catch (error) {
++    if ((error as NodeJS.ErrnoException).code === "ENOENT") return [];
++    throw error;
++  }
++  let parsed: unknown;
++  try {
++    parsed = JSON.parse(raw);
++  } catch {
++    throw new Error("memory_scene_index_invalid");
++  }
++  if (!Array.isArray(parsed)) throw new Error("memory_scene_index_invalid");
++  return parsed.map(item => {
++    if (!item || typeof item !== "object" || Array.isArray(item)) {
++      throw new Error("memory_scene_index_invalid");
++    }
++    const entry = item as Record<string, unknown>;
++    if (typeof entry.filename !== "string"
++      || typeof entry.summary !== "string"
++      || typeof entry.heat !== "number"
++      || typeof entry.created !== "string"
++      || typeof entry.updated !== "string") {
++      throw new Error("memory_scene_index_invalid");
++    }
++    resolveScenePath(dataDir, entry.filename);
++    return {
++      filename: entry.filename,
++      summary: entry.summary,
++      heat: entry.heat,
++      created: entry.created,
++      updated: entry.updated,
++    };
++  });
++}
++
++export function resolveScenePath(dataDir: string, filename: string): string {
++  if (!/^[^/\\.][^/\\]*\.md$/u.test(filename) || filename.includes("..")) {
++    throw new Error("memory_scene_filename_invalid");
++  }
++  return path.join(dataDir, "scene_blocks", filename);
++}
++
++async function readIndexedScene(dataDir: string, filename: string): Promise<string> {
++  const scenePath = resolveScenePath(dataDir, filename);
++  const info = await fs.lstat(scenePath);
++  if (!info.isFile() || info.isSymbolicLink()) throw new Error("memory_scene_file_invalid");
++  const dataRoot = await fs.realpath(dataDir);
++  const sceneRoot = await fs.realpath(path.join(dataDir, "scene_blocks"));
++  const sceneRootRelative = path.relative(dataRoot, sceneRoot);
++  if (!sceneRootRelative || sceneRootRelative.startsWith(`..${path.sep}`) || path.isAbsolute(sceneRootRelative)) {
++    throw new Error("memory_scene_file_invalid");
++  }
++  const actualPath = await fs.realpath(scenePath);
++  const relative = path.relative(sceneRoot, actualPath);
++  if (!relative || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative)) {
++    throw new Error("memory_scene_file_invalid");
++  }
++  return fs.readFile(scenePath, "utf-8");
++}
++
+ // ============================
+ // Console logger (for standalone gateway — no OpenClaw logger available)
+ // ============================
+@@ -112,11 +232,49 @@ function safeEqual(a: string, b: string): boolean {
+ // ============================
+ 
+ export class TdaiGateway {
++  private metaWorkL0Tail: Promise<void> = Promise.resolve();
+   private config: GatewayConfig;
+   private logger: Logger;
+   private core: TdaiCore;
+   private server: http.Server | null = null;
+   private startTime = Date.now();
++  private metaWorkScopeInitialization: Promise<string> | null = null;
++
++  /** Bind this standalone sidecar's existing memory directory to its one local account. */
++  private async allowMetaWorkScope(scope: MetaWorkScope, res: http.ServerResponse): Promise<boolean> {
++    const registryPath = path.join(this.config.data.baseDir, ".metadata", "metawork-scope.json");
++    const expected = scopeFingerprint(scope);
++    try {
++      this.metaWorkScopeInitialization ??= (async () => {
++        await fs.mkdir(path.dirname(registryPath), { recursive: true });
++        try {
++          return JSON.parse(await fs.readFile(registryPath, "utf-8")) as { schemaVersion?: number; fingerprint?: string };
++        } catch (error) {
++          if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
++        }
++        const temporaryPath = `${registryPath}.${process.pid}.${Date.now()}.tmp`;
++        await fs.writeFile(temporaryPath, JSON.stringify({ schemaVersion: 1, fingerprint: expected }), {
++          encoding: "utf-8", mode: 0o600, flag: "wx",
++        });
++        try {
++          await fs.link(temporaryPath, registryPath);
++        } catch (error) {
++          if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
++        } finally {
++          await fs.unlink(temporaryPath).catch(() => undefined);
++        }
++        return JSON.parse(await fs.readFile(registryPath, "utf-8")) as { schemaVersion?: number; fingerprint?: string };
++      })();
++      const saved = await this.metaWorkScopeInitialization;
++      if (saved.schemaVersion === 1 && saved.fingerprint === expected) return true;
++    } catch {
++      this.metaWorkScopeInitialization = null;
++      sendError(res, 500, "memory_scope_registry_unavailable");
++      return false;
++    }
++    sendError(res, 403, "memory_scope_mismatch");
++    return false;
++  }
+ 
+   constructor(configOverrides?: Partial<GatewayConfig>) {
+     this.config = loadGatewayConfig(configOverrides);
+@@ -260,6 +418,33 @@ export class TdaiGateway {
        if (!this.checkAuth(req, res)) return;
  
        switch (`${method} ${pathname}`) {
 +        // MetaWork's anti-corruption adapter speaks the v3 data-plane shape.
 +        // Keep these routes as a thin compatibility layer over the same Core
 +        // and store used by the native Gateway routes below.
++        case "POST /v3/metawork/conversation/upsert":
++          return await this.handleMetaWorkL0(req, res, false);
++        case "POST /v3/metawork/conversation/delete":
++          return await this.handleMetaWorkL0(req, res, true);
 +        case "POST /v3/conversation/add":
 +          return await this.handleMetaWorkConversationAdd(req, res);
 +        case "POST /v3/atomic/search":
@@ -30,10 +290,18 @@ index 1da5592..b2268af 100644
 +          return await this.handleMetaWorkAtomicDelete(req, res);
 +        case "POST /v3/core/read":
 +          return await this.handleMetaWorkCoreRead(req, res);
++        case "POST /v3/metawork/scenario/search":
++          return await this.handleMetaWorkScenarioSearch(req, res);
++        case "POST /v3/metawork/scenario/read":
++          return await this.handleMetaWorkProfileRead(req, res, "l2");
++        case "POST /v3/metawork/profile/delete":
++          return await this.handleMetaWorkProfileDelete(req, res);
++        case "POST /v3/metawork/profile/query":
++          return await this.handleMetaWorkProfileQuery(req, res);
          case "POST /recall":
            return await this.handleRecall(req, res);
          case "POST /capture":
-@@ -355,6 +372,147 @@ export class TdaiGateway {
+@@ -355,6 +540,469 @@ export class TdaiGateway {
    // Route handlers
    // ============================
  
@@ -41,14 +309,124 @@ index 1da5592..b2268af 100644
 +    sendJson(res, 200, { code: 0, message: "ok", data });
 +  }
 +
++  /** Durable IDs make partial HTTP retries safe; no truncation or capture heuristics. */
++  private async handleMetaWorkL0(req: http.IncomingMessage, res: http.ServerResponse, deleting: boolean): Promise<void> {
++    const body = await parseJsonBody<MetaWorkScopeBody & { session_id?: string; complete?: boolean; batch_id?: string; offset?: number; total?: number;
++      messages?: Array<{ id: string; role: string; content: string }> }>(req);
++    const scope = readMetaWorkScope(body);
++    if (!scope || !body.session_id || body.session_id.length > 256) {
++      sendError(res, 400, "memory_scope_invalid"); return;
++    }
++    if (!await this.allowMetaWorkScope(scope, res)) return;
++    const operation = this.metaWorkL0Tail.catch(() => undefined).then(async () => {
++      const store = this.core.getVectorStore();
++      if (!store || store.isDegraded()) throw new Error("memory_store_unavailable");
++      const sessionKey = body.session_id!;
++      const key = createHash("sha256").update(JSON.stringify([scope, sessionKey])).digest("hex");
++      const tombstone = path.join(this.config.data.baseDir, ".metawork-deletions", key);
++      if (deleting) {
++        if (!store.queryL0ForDeletion) throw new Error("memory_delete_verification_unavailable");
++        await fs.mkdir(path.dirname(tombstone), { recursive: true, mode: 0o700 });
++        await fs.writeFile(tombstone, "deleted", { mode: 0o600 });
++        for (;;) {
++          const rows = await store.queryL0ForDeletion(sessionKey, 100);
++          if (!rows.length) break;
++          for (const row of rows) if (!await store.deleteL0(row.record_id)) throw new Error("memory_delete_failed");
++        }
++        await fs.rm(path.join(this.config.data.baseDir, ".metawork-l0-staging", key), { recursive: true, force: true });
++        // Old capture endpoints also wrote daily JSONL. Remove the matching
++        // records atomically so fallback readers cannot resurrect this session.
++        const root = path.join(this.config.data.baseDir, "conversations");
++        for (const name of await fs.readdir(root).catch(() => [] as string[])) {
++          if (!name.endsWith(".jsonl")) continue;
++          const file = path.join(root, name);
++          const lines = (await fs.readFile(file, "utf8")).split("\n").filter(Boolean);
++          const kept = lines.filter(line => { const row = JSON.parse(line); return row.sessionKey !== sessionKey && row.sessionId !== sessionKey; });
++          if (kept.length !== lines.length) {
++            await fs.writeFile(`${file}.delete-tmp`, kept.length ? kept.join("\n") + "\n" : "", { mode: 0o600 });
++            await fs.rename(`${file}.delete-tmp`, file);
++          }
++        }
++        if ((await store.queryL0ForDeletion(sessionKey, 1)).length) throw new Error("memory_delete_incomplete");
++        this.sendMetaWorkResponse(res, { deleted: true }); return;
++      }
++      if (await fs.stat(tombstone).then(() => true, error => { if (error.code === "ENOENT") return false; throw error; })) {
++        sendError(res, 409, "conversation_deleted"); return;
++      }
++      const messages = body.messages;
++      if (!Array.isArray(messages) || !messages.length || messages.length > 100 || messages.some(message =>
++        !/^[a-f0-9]{64}:(user|assistant):[0-9]+$/.test(message.id) || !["user", "assistant"].includes(message.role)
++        || typeof message.content !== "string" || !message.content.length || Array.from(message.content).length > 8192)) {
++        sendError(res, 400, "memory_messages_invalid"); return;
++      }
++      const { batch_id: batchId, offset, total } = body;
++      if (!batchId || !/^[a-f0-9]{64}$/.test(batchId) || !Number.isSafeInteger(offset) || offset! < 0
++        || !Number.isSafeInteger(total) || total! < messages.length || offset! + messages.length > total!
++        || Boolean(body.complete) !== (offset! + messages.length === total)) {
++        sendError(res, 400, "memory_batch_invalid"); return;
++      }
++      const staging = path.join(this.config.data.baseDir, ".metawork-l0-staging", key, batchId);
++      await fs.mkdir(staging, { recursive: true, mode: 0o700 });
++      const pageFile = path.join(staging, `${offset}.json`);
++      const encoded = JSON.stringify(messages);
++      const oldPage = await fs.readFile(pageFile, "utf8").catch(error => { if (error.code === "ENOENT") return null; throw error; });
++      if (oldPage !== null && oldPage !== encoded) throw new Error("memory_message_conflict");
++      await fs.writeFile(`${pageFile}.tmp`, encoded, { mode: 0o600 });
++      await fs.rename(`${pageFile}.tmp`, pageFile);
++      if (!body.complete) { this.sendMetaWorkResponse(res, { total_count: messages.length }); return; }
++      const all: Array<{ id: string; role: string; content: string }> = [];
++      while (all.length < total!) {
++        const page = JSON.parse(await fs.readFile(path.join(staging, `${all.length}.json`), "utf8")) as typeof all;
++        if (!page.length) throw new Error("memory_batch_incomplete");
++        all.push(...page);
++      }
++      if (all.length !== total || createHash("sha256").update(JSON.stringify(all)).digest("hex") !== batchId) {
++        throw new Error("memory_batch_integrity_error");
++      }
++      const receipts = path.join(this.config.data.baseDir, ".metawork-l0-receipts", key);
++      await fs.mkdir(receipts, { recursive: true, mode: 0o700 });
++      const receipt = path.join(receipts, batchId);
++      if (!await fs.stat(receipt).then(() => true, error => { if (error.code === "ENOENT") return false; throw error; })) {
++        // Stable message IDs make retries after partial backend writes idempotent.
++        // The staging mtime is stable across crashes, so retries cannot move old
++        // messages behind the extraction cursor merely by assigning new dates.
++        const clockFile = path.join(staging, "timestamp");
++        await fs.writeFile(clockFile, String(Date.now()), { flag: "wx", mode: 0o600 }).catch(error => { if (error.code !== "EEXIST") throw error; });
++        const timestamp = Number(await fs.readFile(clockFile, "utf8"));
++        for (let index = 0; index < all.length; index++) {
++          const message = all[index]!;
++          const stampFile = path.join(receipts, message.id.replaceAll(":", "-"));
++          await fs.writeFile(stampFile, String(timestamp + index), { flag: "wx", mode: 0o600 }).catch(error => { if (error.code !== "EEXIST") throw error; });
++          const messageTimestamp = Number(await fs.readFile(stampFile, "utf8"));
++          if (!await store.upsertL0({ id: `metawork:${key}:${message.id}`, sessionKey, sessionId: sessionKey, role: message.role,
++            messageText: message.content, recordedAt: new Date(messageTimestamp).toISOString(), timestamp: messageTimestamp })) {
++            throw new Error("memory_deposit_failed");
++          }
++        }
++        await this.core.notifyCommittedConversation(sessionKey);
++        await fs.writeFile(receipt, "committed", { mode: 0o600 });
++      }
++      await fs.rm(staging, { recursive: true, force: true });
++      this.sendMetaWorkResponse(res, { total_count: messages.length });
++    });
++    this.metaWorkL0Tail = operation;
++    await operation;
++  }
++
 +  private async handleMetaWorkConversationAdd(
 +    req: http.IncomingMessage,
 +    res: http.ServerResponse,
 +  ): Promise<void> {
-+    const body = await parseJsonBody<{
++    const body = await parseJsonBody<MetaWorkScopeBody & {
 +      session_id?: string;
 +      messages?: Array<{ role?: string; content?: string }>;
 +    }>(req);
++    const scope = readMetaWorkScope(body);
++    if (!scope) {
++      sendError(res, 400, "memory_scope_invalid");
++      return;
++    }
++    if (!await this.allowMetaWorkScope(scope, res)) return;
 +    const messages = (body.messages ?? [])
 +      .filter(message => typeof message.content === "string" && message.content.length > 0)
 +      .map(message => ({ role: message.role ?? "user", content: message.content! }));
@@ -56,7 +434,13 @@ index 1da5592..b2268af 100644
 +      sendError(res, 400, "Missing required field: messages");
 +      return;
 +    }
++    const operation = this.metaWorkL0Tail.catch(() => undefined).then(async () => {
 +    const sessionKey = body.session_id ?? `metawork:${Date.now()}`;
++    const deletionKey = createHash("sha256").update(JSON.stringify([scope, sessionKey])).digest("hex");
++    if (await fs.stat(path.join(this.config.data.baseDir, ".metawork-deletions", deletionKey)).then(() => true,
++      error => { if (error.code === "ENOENT") return false; throw error; })) {
++      sendError(res, 409, "conversation_deleted"); return;
++    }
 +    let accepted = 0;
 +    for (let index = 0; index < messages.length; index += 2) {
 +      const user = messages[index];
@@ -72,26 +456,37 @@ index 1da5592..b2268af 100644
 +      accepted += result.l0RecordedCount;
 +    }
 +    this.sendMetaWorkResponse(res, { accepted_ids: [], total_count: accepted });
++    });
++    this.metaWorkL0Tail = operation;
++    await operation;
 +  }
 +
 +  private async handleMetaWorkAtomicSearch(
 +    req: http.IncomingMessage,
 +    res: http.ServerResponse,
 +  ): Promise<void> {
-+    const body = await parseJsonBody<{ query?: string; limit?: number; type?: string }>(req);
++    const body = await parseJsonBody<MetaWorkScopeBody & { query?: string; limit?: number; type?: string }>(req);
++    const scope = readMetaWorkScope(body);
++    if (!scope) {
++      sendError(res, 400, "memory_scope_invalid");
++      return;
++    }
++    if (!await this.allowMetaWorkScope(scope, res)) return;
 +    const store = this.core.getVectorStore();
 +    if (!store || !body.query) {
 +      this.sendMetaWorkResponse(res, { items: [] });
 +      return;
 +    }
 +    const ftsQuery = buildFtsQuery(body.query);
-+    const rows = ftsQuery ? await store.searchL1Fts(ftsQuery, Math.min(100, Math.max(1, body.limit ?? 20))) : [];
++    const rows = ftsQuery ? await store.searchL1Fts(ftsQuery, 100) : [];
 +    const items = rows
 +      .filter(row => !body.type || row.type === body.type)
++      .slice(0, Math.min(100, Math.max(1, body.limit ?? 20)))
 +      .map(row => ({
 +        id: row.record_id,
 +        type: row.type,
 +        content: row.content,
++        revision: sha256(row.content),
 +        background: null,
 +        created_at: row.timestamp_start,
 +        updated_at: row.timestamp_end,
@@ -104,7 +499,13 @@ index 1da5592..b2268af 100644
 +    req: http.IncomingMessage,
 +    res: http.ServerResponse,
 +  ): Promise<void> {
-+    const body = await parseJsonBody<{ limit?: number; offset?: number }>(req);
++    const body = await parseJsonBody<MetaWorkScopeBody & { limit?: number; offset?: number }>(req);
++    const scope = readMetaWorkScope(body);
++    if (!scope) {
++      sendError(res, 400, "memory_scope_invalid");
++      return;
++    }
++    if (!await this.allowMetaWorkScope(scope, res)) return;
 +    const store = this.core.getVectorStore();
 +    const rows = store ? await store.queryL1Records() : [];
 +    const offset = Math.max(0, body.offset ?? 0);
@@ -113,6 +514,7 @@ index 1da5592..b2268af 100644
 +      id: row.record_id,
 +      type: row.type,
 +      content: row.content,
++      revision: sha256(row.content),
 +      background: null,
 +      created_at: row.created_time,
 +      updated_at: row.updated_time,
@@ -124,7 +526,13 @@ index 1da5592..b2268af 100644
 +    req: http.IncomingMessage,
 +    res: http.ServerResponse,
 +  ): Promise<void> {
-+    const body = await parseJsonBody<{ id?: string; content?: string }>(req);
++    const body = await parseJsonBody<MetaWorkScopeBody & { id?: string; content?: string }>(req);
++    const scope = readMetaWorkScope(body);
++    if (!scope) {
++      sendError(res, 400, "memory_scope_invalid");
++      return;
++    }
++    if (!await this.allowMetaWorkScope(scope, res)) return;
 +    const store = this.core.getVectorStore();
 +    if (!store || !body.id || typeof body.content !== "string") {
 +      sendError(res, 400, "Missing required fields: id, content");
@@ -163,25 +571,207 @@ index 1da5592..b2268af 100644
 +    req: http.IncomingMessage,
 +    res: http.ServerResponse,
 +  ): Promise<void> {
-+    const body = await parseJsonBody<{ ids?: string[] }>(req);
++    const body = await parseJsonBody<MetaWorkScopeBody & { ids?: string[] }>(req);
++    const scope = readMetaWorkScope(body);
++    if (!scope) {
++      sendError(res, 400, "memory_scope_invalid");
++      return;
++    }
++    if (!await this.allowMetaWorkScope(scope, res)) return;
 +    const store = this.core.getVectorStore();
 +    const ids = Array.isArray(body.ids) ? body.ids.filter(id => typeof id === "string") : [];
-+    const deleted = store && ids.length > 0 ? await store.deleteL1Batch(ids) : false;
-+    this.sendMetaWorkResponse(res, { deleted_count: deleted ? ids.length : 0 });
++    const owned = store && ids.length > 0
++      ? (await store.queryL1Records()).filter(row => ids.includes(row.record_id)).map(row => row.record_id)
++      : [];
++    const deleted = store && owned.length > 0 ? await store.deleteL1Batch(owned) : false;
++    this.sendMetaWorkResponse(res, { deleted_count: deleted ? owned.length : 0 });
 +  }
 +
 +  private async handleMetaWorkCoreRead(
 +    req: http.IncomingMessage,
 +    res: http.ServerResponse,
 +  ): Promise<void> {
-+    await parseJsonBody<Record<string, unknown>>(req);
-+    this.sendMetaWorkResponse(res, { content: null, updated_at: null });
++    const body = await parseJsonBody<MetaWorkScopeBody>(req);
++    const scope = readMetaWorkScope(body);
++    if (!scope) {
++      sendError(res, 400, "memory_scope_invalid");
++      return;
++    }
++    if (!await this.allowMetaWorkScope(scope, res)) return;
++    const personaPath = path.join(this.config.data.baseDir, "persona.md");
++    let content: string;
++    try {
++      content = stripSceneNavigation(await fs.readFile(personaPath, "utf-8")).trim();
++    } catch (error) {
++      if ((error as NodeJS.ErrnoException).code === "ENOENT") {
++        this.sendMetaWorkResponse(res, { id: profileId(scope, "l3", "persona.md"), content: null, updated_at: null, revision: sha256("") });
++        return;
++      }
++      throw error;
++    }
++    content = [...content].slice(0, 2_000).join("");
++    const stat = await fs.stat(personaPath);
++    this.sendMetaWorkResponse(res, {
++      id: profileId(scope, "l3", "persona.md"),
++      content: content || null,
++      updated_at: stat.mtime.toISOString(),
++      revision: sha256(content),
++    });
++  }
++
++  private async handleMetaWorkScenarioSearch(req: http.IncomingMessage, res: http.ServerResponse): Promise<void> {
++    const body = await parseJsonBody<MetaWorkScopeBody & { query?: string; limit?: number }>(req);
++    const scope = readMetaWorkScope(body);
++    if (!scope || typeof body.query !== "string") {
++      sendError(res, 400, "memory_scenario_search_invalid");
++      return;
++    }
++    if (!await this.allowMetaWorkScope(scope, res)) return;
++    const query = normalizeSearchText(body.query);
++    if (!query) {
++      this.sendMetaWorkResponse(res, { items: [] });
++      return;
++    }
++    const terms = searchTerms(query);
++    const index = await readMetaWorkSceneIndex(this.config.data.baseDir);
++    const items = index.map(entry => {
++      const haystack = normalizeSearchText(`${entry.filename} ${entry.summary}`);
++      const matches = terms.filter(term => haystack.includes(term)).length;
++      return { entry, matches };
++    }).filter(item => item.matches > 0)
++      .sort((a, b) => b.matches - a.matches
++        || b.entry.heat - a.entry.heat
++        || b.entry.updated.localeCompare(a.entry.updated)
++        || profileId(scope, "l2", a.entry.filename).localeCompare(profileId(scope, "l2", b.entry.filename)))
++      .slice(0, Math.min(5, Math.max(1, body.limit ?? 3)))
++      .map(({ entry, matches }) => ({
++        id: profileId(scope, "l2", entry.filename),
++        title: entry.filename,
++        preview: entry.summary,
++        revision: "", // Filled from the indexed scene file so it pins the exact body.
++        updated_at: entry.updated || null,
++        score: matches,
++      }));
++    for (const item of items) {
++      const entry = index.find(candidate => profileId(scope, "l2", candidate.filename) === item.id);
++      if (!entry) continue;
++      try {
++        const raw = await readIndexedScene(this.config.data.baseDir, entry.filename);
++        item.revision = sha256(parseSceneBlock(raw, entry.filename).content);
++      } catch {
++        item.revision = "";
++      }
++    }
++    this.sendMetaWorkResponse(res, { items: items.filter(item => item.revision) });
++  }
++
++  private async handleMetaWorkProfileRead(
++    req: http.IncomingMessage,
++    res: http.ServerResponse,
++    layer: "l2",
++  ): Promise<void> {
++    const body = await parseJsonBody<MetaWorkScopeBody & { id?: string }>(req);
++    const scope = readMetaWorkScope(body);
++    if (!scope || typeof body.id !== "string") {
++      sendError(res, 400, "memory_profile_read_invalid");
++      return;
++    }
++    if (!await this.allowMetaWorkScope(scope, res)) return;
++    const index = await readMetaWorkSceneIndex(this.config.data.baseDir);
++    const entry = index.find(candidate => profileId(scope, layer, candidate.filename) === body.id);
++    if (!entry) {
++      sendError(res, 404, `memory_asset_not_found: ${body.id}`);
++      return;
++    }
++    const raw = await readIndexedScene(this.config.data.baseDir, entry.filename);
++    const scene = parseSceneBlock(raw, entry.filename);
++    this.sendMetaWorkResponse(res, {
++      id: body.id,
++      title: entry.filename,
++      content: scene.content,
++      summary: entry.summary,
++      updated_at: entry.updated || null,
++      revision: sha256(scene.content),
++    });
++  }
++
++  private async handleMetaWorkProfileDelete(req: http.IncomingMessage, res: http.ServerResponse): Promise<void> {
++    const body = await parseJsonBody<MetaWorkScopeBody & { id?: string; layer?: string }>(req);
++    const scope = readMetaWorkScope(body);
++    if (!scope || typeof body.id !== "string" || (body.layer !== "l2" && body.layer !== "l3")) {
++      sendError(res, 400, "memory_profile_delete_invalid");
++      return;
++    }
++    if (!await this.allowMetaWorkScope(scope, res)) return;
++    if (body.layer === "l3") {
++      if (body.id !== profileId(scope, "l3", "persona.md")) {
++        sendError(res, 404, `memory_asset_not_found: ${body.id}`);
++        return;
++      }
++      await fs.rm(path.join(this.config.data.baseDir, "persona.md"), { force: true });
++      this.sendMetaWorkResponse(res, { deleted: true });
++      return;
++    }
++    const index = await readMetaWorkSceneIndex(this.config.data.baseDir);
++    const entry = index.find(candidate => profileId(scope, "l2", candidate.filename) === body.id);
++    if (!entry) {
++      sendError(res, 404, `memory_asset_not_found: ${body.id}`);
++      return;
++    }
++    await fs.rm(resolveScenePath(this.config.data.baseDir, entry.filename));
++    await syncSceneIndex(this.config.data.baseDir);
++    this.sendMetaWorkResponse(res, { deleted: true });
++  }
++
++  private async handleMetaWorkProfileQuery(req: http.IncomingMessage, res: http.ServerResponse): Promise<void> {
++    const body = await parseJsonBody<MetaWorkScopeBody & { limit?: number; offset?: number }>(req);
++    const scope = readMetaWorkScope(body);
++    if (!scope) {
++      sendError(res, 400, "memory_profile_query_invalid");
++      return;
++    }
++    if (!await this.allowMetaWorkScope(scope, res)) return;
++    const items: Array<Record<string, unknown>> = [];
++    const index = await readMetaWorkSceneIndex(this.config.data.baseDir);
++    for (const entry of index) {
++      try {
++        const raw = await readIndexedScene(this.config.data.baseDir, entry.filename);
++        const scene = parseSceneBlock(raw, entry.filename);
++        const stat = await fs.stat(resolveScenePath(this.config.data.baseDir, entry.filename));
++        items.push({
++          id: profileId(scope, "l2", entry.filename), type: "scene", title: entry.filename,
++          content: scene.content, background: entry.summary, created_at: entry.created,
++          updated_at: stat.mtime.toISOString(), revision: sha256(scene.content), layer: "l2",
++        });
++      } catch {
++        // A scene removed while the index was being read is omitted.
++      }
++    }
++    const personaPath = path.join(this.config.data.baseDir, "persona.md");
++    try {
++      const raw = await fs.readFile(personaPath, "utf-8");
++      const content = [...stripSceneNavigation(raw).trim()].slice(0, 2_000).join("");
++      if (content) {
++        const stat = await fs.stat(personaPath);
++        items.push({
++          id: profileId(scope, "l3", "persona.md"), type: "persona", title: "User persona",
++          content, background: null, created_at: stat.birthtime.toISOString(),
++          updated_at: stat.mtime.toISOString(), revision: sha256(content), layer: "l3",
++        });
++      }
++    } catch (error) {
++      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
++    }
++    items.sort((a, b) => String(b.updated_at).localeCompare(String(a.updated_at)) || String(a.id).localeCompare(String(b.id)));
++    const offset = Math.max(0, body.offset ?? 0);
++    const limit = Math.min(100, Math.max(1, body.limit ?? 100));
++    this.sendMetaWorkResponse(res, { items: items.slice(offset, offset + limit), total: items.length });
 +  }
 +
    private handleHealth(res: http.ServerResponse): void {
      const response: HealthResponse = {
        status: this.core.getVectorStore() ? "ok" : "degraded",
-@@ -362,6 +520,7 @@ export class TdaiGateway {
+@@ -362,6 +1010,7 @@ export class TdaiGateway {
        uptime: Math.floor((Date.now() - this.startTime) / 1000),
        stores: {
          vectorStore: !!this.core.getVectorStore(),

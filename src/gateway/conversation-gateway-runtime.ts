@@ -1,3 +1,4 @@
+import type { ConversationTurnStore } from '../session/conversation-turn-store.js';
 import { clientConnectionEventStreamId } from './client-connection-event-stream.js';
 import { nanoid } from 'nanoid';
 import { createHash } from 'node:crypto';
@@ -25,6 +26,9 @@ import { publicText } from '../utils/public-text.js';
 import { conversationPreview } from '../session/conversation-read-model.js';
 
 export interface ConversationGatewayRuntimeDeps {
+  readonly turnStore?: ConversationTurnStore;
+  readonly resultSourceTask?: (resultId: string) => string | null;
+  readonly onOutboxError?: (error: unknown) => void;
   readonly accountId: string;
   readonly registry: RuntimeRegistry;
   readonly conversations: ConversationRegistry;
@@ -80,6 +84,9 @@ export class ConversationGatewayRuntime {
   private readonly turnRequestIds = new Map<string, string>();
   private readonly turnOrigins = new Map<string, GatewayTurnOrigin>();
   private admissionClosed = false;
+  private readonly pendingAnswerBodies = new Map<string, string>();
+  private readonly pendingResultEvents = new Map<string, { events: Array<{ kind: GatewayEventKind; payload: unknown }>; target?: GatewayTurnOrigin }>();
+  private outboxTail: Promise<void> = Promise.resolve();
 
   constructor(private readonly deps: ConversationGatewayRuntimeDeps) {}
 
@@ -200,13 +207,14 @@ export class ConversationGatewayRuntime {
     delivery: ConversationResultDelivery;
     backgroundWorkPending?: boolean;
     originTurnId?: string;
+    sourceTaskId?: string;
   }): Promise<void> {
     const { conversationId, turnId, requestId, delivery } = input;
     const origin = this.turnOrigins.get(input.originTurnId ?? turnId);
     const result = await this.publishResultDelivery(conversationId, requestId, turnId,
       delivery.content, delivery.certification, delivery.completeness, delivery.resultId, origin);
     await this.publish(conversationId, requestId, turnId, 'final_answer',
-      finalAnswerPayload([], result, input.backgroundWorkPending === true), origin);
+      { ...finalAnswerPayload([], result, input.backgroundWorkPending === true), sourceTaskId: input.sourceTaskId }, origin);
   }
 
   async drain(): Promise<void> {
@@ -480,7 +488,7 @@ export class ConversationGatewayRuntime {
     }
     if (origin) this.activeOrigins.set(conversation.conversationId, origin);
     const accountRuntime = this.deps.registry.getIfLoaded(this.deps.accountId);
-    const turnId = this.id('turn');
+    const turnId = this.deps.turnStore?.findRequest(this.deps.accountId, conversation.conversationId, mailboxCommand.idempotencyKey)?.turnId ?? this.id('turn');
     this.turnRequestIds.set(turnId, mailboxCommand.requestId);
     if (origin) this.turnOrigins.set(turnId, origin);
     const before = conversation.getOutput().length;
@@ -503,12 +511,21 @@ export class ConversationGatewayRuntime {
       if (mailboxCommand.command.kind === 'user_message') {
         await this.deps.recordInputTitle?.(conversation.conversationId, mailboxCommand.command.text);
       }
-      const userInput = 'text' in mailboxCommand.command ? publicText(mailboxCommand.command.text) : null;
+      const userInput = 'text' in mailboxCommand.command
+        ? this.deps.turnStore ? mailboxCommand.command.text : publicText(mailboxCommand.command.text) : '';
       const turnAttachments = mailboxCommand.command.kind === 'user_message'
         ? await this.resolveAttachmentMetadata(conversation.conversationId, mailboxCommand.command)
         : [];
-      if (userInput !== null) this.deps.storeResultContent?.(this.deps.accountId, conversation.conversationId, userInput);
-      await this.publish(
+      if (!this.deps.turnStore && userInput !== null) this.deps.storeResultContent?.(this.deps.accountId, conversation.conversationId, userInput);
+      if (this.deps.turnStore) {
+        this.deps.turnStore.accept({ accountId: this.deps.accountId, conversationId: conversation.conversationId,
+          turnId, userInput, requestKey: mailboxCommand.idempotencyKey,
+          event: { protocolVersion: 2, eventId: this.id('event'), sequence: 0, accountId: this.deps.accountId,
+            conversationId: conversation.conversationId, requestId: mailboxCommand.requestId, turnId,
+            kind: 'turn_started', occurredAt: this.now(), payload: { commandKind: mailboxCommand.command.kind,
+              attachments: turnAttachments, interactionKind: mailboxCommand.command.kind === 'user_message' ? 'ai_turn' : 'system_command' } } });
+        await this.flushTurnOutbox().catch(error => this.deps.onOutboxError?.(error));
+      } else await this.publish(
         conversation.conversationId,
         mailboxCommand.requestId,
         turnId,
@@ -702,6 +719,33 @@ export class ConversationGatewayRuntime {
     payload: unknown,
     target?: GatewayTurnOrigin,
   ): Promise<GatewayEventEnvelope> {
+    if (kind === 'terminal_error' && turnId && this.deps.turnStore) {
+      this.deps.turnStore.recordFailure({ accountId: this.deps.accountId, conversationId, turnId }, this.now());
+    }
+    if (kind === 'final_answer' && turnId && this.deps.turnStore) {
+      const content = this.pendingAnswerBodies.get(turnId);
+      if (content === undefined) throw new Error('final_answer_body_unavailable');
+      const fields = payload as Record<string, unknown>;
+      const event: GatewayEventEnvelope = { protocolVersion: 2, eventId: this.id('event'), sequence: 0,
+        accountId: this.deps.accountId, conversationId, requestId, turnId, kind, payload, occurredAt: this.now() };
+      this.deps.turnStore.appendFinalAnswer({ accountId: this.deps.accountId, conversationId, turnId, content,
+        sourceTaskId: typeof fields.sourceTaskId === 'string' ? fields.sourceTaskId
+          : typeof fields.resultId === 'string' ? this.deps.resultSourceTask?.(fields.resultId) : null,
+        revisionKey: String(fields.resultId ?? createHash('sha256').update(content).digest('hex')), event });
+      const delivery = this.pendingResultEvents.get(turnId);
+      this.pendingResultEvents.delete(turnId);
+      this.pendingAnswerBodies.delete(turnId);
+      try {
+        if (delivery) await this.publishMany(conversationId, requestId, turnId, delivery.events, delivery.target);
+      } catch (error) {
+        // The committed answer is recoverable through the outbox/read model.
+        // A live transport failure must not turn successful execution into failure.
+        this.deps.onOutboxError?.(error);
+      } finally {
+        await this.flushTurnOutbox().catch(error => this.deps.onOutboxError?.(error));
+      }
+      return event;
+    }
     const appended = await this.deps.journal.append({
       protocolVersion: 2,
       eventId: this.id('event'),
@@ -716,6 +760,25 @@ export class ConversationGatewayRuntime {
     });
     this.deps.subscriptions.publish(appended, target);
     return appended;
+  }
+
+  /** Serialized, at-least-once publication; journal event IDs make crash replay idempotent. */
+  flushTurnOutbox(): Promise<void> {
+    const next = this.outboxTail.catch(() => undefined).then(async () => {
+      const store = this.deps.turnStore;
+      if (!store) return;
+      for (;;) {
+        const pending = store.pendingEvents(this.deps.accountId);
+        if (!pending.length) return;
+        for (const event of pending) {
+          const appended = await this.deps.journal.append(event);
+          store.acknowledgeEvent(event.accountId, event.eventId);
+          this.deps.subscriptions.publish(appended);
+        }
+      }
+    });
+    this.outboxTail = next;
+    return next;
   }
 
   private async publishHistoryPage(
@@ -768,8 +831,9 @@ export class ConversationGatewayRuntime {
   ): Promise<ResultDeliveryMetadata> {
     // The journal applies the same redaction before persistence. Hash the
     // projected content so clients can verify exactly what they receive.
-    const deliveryContent = publicText(content);
-    this.deps.storeResultContent?.(this.deps.accountId, conversationId, deliveryContent);
+    const deliveryContent = this.deps.turnStore ? content : publicText(content);
+    if (this.deps.turnStore) this.pendingAnswerBodies.set(turnId, deliveryContent);
+    else this.deps.storeResultContent?.(this.deps.accountId, conversationId, deliveryContent);
     const bytes = Buffer.from(deliveryContent, 'utf8');
     const contentHash = `sha256:${createHash('sha256').update(bytes).digest('hex')}`;
     const resultId = persistedResultId ?? `result_${contentHash.slice('sha256:'.length)}`;
@@ -800,13 +864,8 @@ export class ConversationGatewayRuntime {
       kind: 'result_completed',
       payload: metadata,
     });
-    await this.publishMany(
-      conversationId,
-      requestId,
-      turnId,
-      events,
-      target,
-    );
+    if (this.deps.turnStore) this.pendingResultEvents.set(turnId, { events, target });
+    else await this.publishMany(conversationId, requestId, turnId, events, target);
     return metadata;
   }
 
@@ -829,6 +888,15 @@ export class ConversationGatewayRuntime {
       payload: event.payload,
       occurredAt: this.now(),
     }));
+    if (this.deps.turnStore && events.every(event => ['result_delivery_available', 'result_chunk', 'result_completed'].includes(event.kind))) {
+      const reserve = this.deps.journal.reserveSequence?.bind(this.deps.journal);
+      if (!reserve) throw new Error('result_transport_unavailable');
+      for (const event of envelopes) {
+        event.sequence = await reserve(this.deps.accountId, conversationId);
+        this.deps.subscriptions.publish(event, target);
+      }
+      return envelopes;
+    }
     const appended = this.deps.journal.appendBatch
       ? await this.deps.journal.appendBatch(envelopes)
       : await appendSequentially(this.deps.journal, envelopes);

@@ -1697,7 +1697,7 @@ describe('ControlKernel', () => {
     expect(kernel.decide(fallbackFailure, exhausted).action).toEqual({ type: 'park_for_replan', taskId: 'task_1' });
   });
 
-  it('authorizes one metadata correction and then requests user resolution when correction is exhausted', () => {
+  it('authorizes one metadata correction and then accepts the safe result when correction is exhausted', () => {
     const kernel = new ControlKernel();
     const first = runtimeEvent({
       type: 'execution_result_observed',
@@ -1721,14 +1721,17 @@ describe('ControlKernel', () => {
       })],
     });
     expect(kernel.decide({ ...first, id: 'contract_2', receiptCount: 2 }, dispatchSnapshot([], 'awaiting_decision')).action).toEqual({
-      type: 'await_user_decision',
+      type: 'accept_uncertified_result',
       taskId: 'task_1',
       subtaskId: 'subtask_1',
-      reason: 'uncertified_result',
+      generationId: 'generation_task_1_1',
+      graphRevision: 1,
+      attemptId: 'attempt_1',
+      resultId: 'result_attempt_1_safe',
     });
   });
 
-  it('requests user resolution when a safe result cannot be corrected automatically', () => {
+  it('accepts a safe result automatically when no metadata correction driver is available', () => {
     const event = runtimeEvent({
       type: 'execution_result_observed',
       attemptId: 'attempt_pi',
@@ -1749,10 +1752,13 @@ describe('ControlKernel', () => {
       event,
       dispatchSnapshot([], 'awaiting_decision'),
     ).action).toEqual({
-      type: 'await_user_decision',
+      type: 'accept_uncertified_result',
       taskId: 'task_1',
       subtaskId: 'subtask_1',
-      reason: 'uncertified_result',
+      generationId: 'generation_task_1_1',
+      graphRevision: 1,
+      attemptId: 'attempt_pi',
+      resultId: 'result_pi_safe',
     });
   });
 

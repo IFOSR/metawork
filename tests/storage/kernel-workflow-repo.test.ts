@@ -1,4 +1,5 @@
 import Database from 'better-sqlite3';
+import { SqliteConversationDeletionStore } from '../../src/storage/conversation-deletion-repo.js';
 import { describe, expect, it } from 'vitest';
 import type { KernelDecision, KernelEvent, KernelSnapshot } from '../../src/kernel/control-kernel.js';
 import { KernelWorkflowRepo } from '../../src/storage/kernel-workflow-repo.js';
@@ -7,6 +8,18 @@ import { runMigrations } from '../../src/storage/migrations.js';
 const CONFIGURATION_REVISION = 'revision_test';
 
 describe('KernelWorkflowRepo', () => {
+  it('does not replay erased pending events after conversation deletion', () => {
+    const db = new Database(':memory:'); runMigrations(db); seedConfigurationRevision(db);
+    const repo = new KernelWorkflowRepo(db);
+    const event = { ...directReplyEvent(), taskId: null, sessionId: 'deleted-conv' };
+    repo.enqueue(event);
+    const deletion = new SqliteConversationDeletionStore(db);
+    deletion.begin('local-default', 'deleted-conv');
+    deletion.cleanLocal('local-default', 'deleted-conv');
+    expect(repo.claimNext(event.occurredAt)).toBeNull();
+    expect(repo.findEvent(event.id)).toBeNull();
+    db.close();
+  });
   it('arbitrates opposing permission decisions at durable admission and recovers before application', () => {
     const db = new Database(':memory:');
     runMigrations(db);

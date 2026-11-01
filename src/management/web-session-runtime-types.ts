@@ -26,9 +26,10 @@ export interface WebDirectoryPage<T = WebSessionDirectoryMetadataProjection> {
 export interface WebSessionRuntimeCatalog {
   readTurn?(sessionId: string, turnId: string): Promise<WebSessionRecord['turns'][number] | null>;
   readMetadata?(sessionId: string): Promise<(WebSessionRecord['session'] & { workspaceId: string | null }) | null>;
+  readActivity(sessionId: string): Promise<import('../workspace/conversation-activity-projector.js').ConversationActivityProjection | null>;
   readVersion?(sessionId: string): Promise<string | null>;
   listPage?(input: {
-    workspaceId: string; principalId: string; activeConversationId?: string | null;
+    workspaceId: string; principalId: string;
     query?: string; cursor?: string;
   }): Promise<WebDirectoryPage<WebSessionDirectoryMetadata>>;
   initialize(): Promise<void>;
@@ -36,22 +37,21 @@ export interface WebSessionRuntimeCatalog {
   list(input: {
     workspaceId: string;
     principalId: string;
-    activeConversationId?: string | null;
     query?: string;
   }): Promise<WebSessionDirectoryMetadata[]>;
   search(input: {
     workspaceId: string;
     principalId: string;
-    activeConversationId?: string | null;
     query?: string;
   }): Promise<WebSessionDirectoryMetadata[]>;
-  read(sessionId: string, activeConversationId?: string | null): Promise<WebSessionRecord | null>;
+  read(sessionId: string): Promise<WebSessionRecord | null>;
   readPage?(
-    sessionId: string, activeConversationId?: string | null,
+    sessionId: string,
     request?: import('../session/conversation-history-store.js').ConversationHistoryRequest,
   ): Promise<WebSessionRecord | null>;
   workspaceIdForConversation(sessionId: string): Promise<string | null>;
   listWorkspaces(principalId: string): Promise<WorkspaceSummary[]>;
+  delete?(sessionId: string, workspaceId: string, principalId: string): Promise<'completed' | 'pending'>;
   archive(sessionId: string, workspaceId: string, principalId: string): Promise<boolean>;
   clearWorkspace(workspaceId: string, principalId: string, exceptId?: string): Promise<number>;
   appendTurn(sessionId: string, turn: import('./web-session-types.js').ConversationTurn): Promise<unknown>;
@@ -65,17 +65,17 @@ export type WebSessionRuntimeEvent =
     removed?: boolean;
     changes?: Partial<WebSessionDirectoryMetadataProjection>;
   }
-  | { type: 'active_session_changed'; sessionId: string }
+  | { type: 'current_session_changed'; sessionId: string }
   | {
     type: 'session_catalog';
-    activeSessionId: string;
+    currentSessionId: string | null;
     sessions: WebSessionDirectoryMetadataProjection[];
     nextCursor?: string | null;
   }
   | {
     type: 'workspace_directory';
     activeWorkspaceId: string;
-    activeSessionId: string | null;
+    currentSessionId: string | null;
     sessions: WebSessionDirectoryMetadataProjection[];
     nextCursor?: string | null;
   }
@@ -181,28 +181,29 @@ export interface ManagementWebSessionRuntime {
   dispose(): Promise<void>;
   getClientState(clientId: string): {
     activeWorkspaceId: string | null;
-    activeSessionId: string | null;
+    currentSessionId: string | null;
   };
   listWorkspaces(clientId: string): Promise<WorkspaceSummary[]>;
   selectWorkspace(clientId: string, path: string): Promise<WorkspaceInitializationResult>;
   submit(
     clientId: string,
+    conversationId: string,
     text: string,
     attachments?: Array<{ attachmentId: string; kind: string }>,
     requestId?: string,
   ): Promise<void>;
-  /** Cancels the Client's current turn (Planner run and/or its Task). */
-  cancelTurn(clientId: string, turnId: string): Promise<void>;
+  /** Cancels the explicitly identified Conversation/Turn (Planner run and/or its Task). */
+  cancelTurn(clientId: string, conversationId: string, turnId: string): Promise<void>;
   listSessions(clientId: string, query?: string): Promise<WebSessionDirectoryMetadataProjection[]>;
   listSessionPage?(clientId: string, input?: { query?: string; cursor?: string }): Promise<WebDirectoryPage>;
   readSession(clientId: string, sessionId: string, cursor?: string): Promise<WebSessionRecordProjection | null>;
   readBrowsableSession(clientId: string, sessionId: string, cursor?: string): Promise<WebSessionRecordProjection | null>;
   createSession(clientId: string): Promise<WebSessionCreationResult>;
   activateSession(clientId: string, sessionId: string, expectedWorkspaceId?: string): Promise<WebSessionActivationResult>;
-  /** 硬删除历史会话；活跃会话拒绝删除。 */
-  deleteSession(clientId: string, sessionId: string): Promise<'deleted' | 'not_found' | 'active'>;
-  /** 清空除活跃外的全部会话，返回删除数量。 */
-  clearAllSessions(clientId: string): Promise<{ deleted: number }>;
+  /** 删除会话；只有目标会话仍有未完成 activity 时拒绝。 */
+  deleteSession(clientId: string, sessionId: string): Promise<'deleted' | 'deletion_pending' | 'not_found' | 'running'>;
+  /** 清空当前 Workspace 已停止的会话，返回精确删除 ID 和保留数量。 */
+  clearAllSessions(clientId: string): Promise<{ deleted: number; deletedIds: string[]; skipped: number }>;
   subscribe(clientId: string, listener: (event: WebSessionRuntimeEvent) => void): () => void;
   getReplayEvents(clientId: string): WebSessionRuntimeEvent[];
   /**

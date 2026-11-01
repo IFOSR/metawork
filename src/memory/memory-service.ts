@@ -21,6 +21,7 @@ import type {
   MemoryMaterialization,
   MemoryScope,
   MemorySearchResult,
+  MemoryLayer,
   MemoryTurnCandidate,
 } from './memory-types.js';
 import type { MemoryBindingsRepo } from '../storage/memory-bindings-repo.js';
@@ -100,12 +101,37 @@ export class MemoryService {
     return deriveMemoryScope(accountId);
   }
 
+  private readonly conversationOperations = new Map<string, Promise<unknown>>();
+
+  private serial<T>(accountId: string, conversationId: string, operation: () => Promise<T>): Promise<T> {
+    const key = `${accountId}:${conversationId}`;
+    const work = (this.conversationOperations.get(key) ?? Promise.resolve()).catch(() => undefined).then(operation);
+    this.conversationOperations.set(key, work);
+    return work.finally(() => { if (this.conversationOperations.get(key) === work) this.conversationOperations.delete(key); });
+  }
+
+  flushConversation(input: { accountId: string; conversationId: string; workspaceId?: string | null; force?: boolean }): Promise<MemoryFlushOutcome> {
+    return this.serial(input.accountId, input.conversationId, () => this.flushConversationNow(input)).catch(error => {
+      const message = error instanceof Error ? error.message : String(error);
+      this.logger(`memory flush failed for ${input.conversationId}: ${message}`);
+      return { conversationId: input.conversationId, flushed: 0, refused: 0, sanitized: false,
+        advancedTo: this.cursors.lastSequence(input.accountId, input.conversationId), error: message };
+    });
+  }
+
+  deleteConversation(accountId: string, conversationId: string): Promise<boolean> {
+    return this.serial(accountId, conversationId, async () => {
+      if (!this.port.deleteConversation) return false;
+      return this.port.deleteConversation(conversationId, this.scopeFor(accountId));
+    });
+  }
+
   /**
    * Flush one conversation. Only completed turns are deposited, and only after
    * the sanitizer has approved them. The cursor advances only when the engine
    * accepted the batch, so a failed flush is retried on the next tick.
    */
-  async flushConversation(input: {
+  private async flushConversationNow(input: {
     accountId: string;
     conversationId: string;
     workspaceId?: string | null;
@@ -145,6 +171,7 @@ export class MemoryService {
       // Everything was refused. The cursor still advances past the refused turns
       // so a poisoned turn is not retried forever.
       const advancedTo = this.highestSequence(candidates);
+      this.cursors.acknowledge(input.accountId, input.conversationId, candidates);
       this.cursors.advance(input.accountId, input.conversationId, advancedTo, true, { deposition: false });
       return {
         conversationId: input.conversationId,
@@ -161,11 +188,14 @@ export class MemoryService {
       turns: sanitized.turns,
     };
     try {
+      this.cursors.markAttempt(input.accountId, input.conversationId);
       const result = await this.port.deposit(batch, scope);
+      if (result.accepted !== sanitized.turns.length * 2) throw new Error('memory_partial_deposit');
       const advancedTo = this.highestSequence(candidates);
       // Sticky provenance: a segment that needed redaction marks this
       // conversation, so assets recalled from it carry `source='sanitized'`
       // (design §8.2, review P2-4).
+      this.cursors.acknowledge(input.accountId, input.conversationId, candidates);
       this.cursors.advance(input.accountId, input.conversationId, advancedTo, sanitized.sanitized > 0, { deposition: result.accepted > 0 });
       return {
         conversationId: input.conversationId,
@@ -318,6 +348,19 @@ export class MemoryService {
     }
   }
 
+  async searchScenarios(input: { accountId: string; query: string; limit: number }) {
+    try {
+      if (!this.port.searchScenarios) return { items: [], degraded: true, degradedReason: 'memory_scenario_search_unsupported' };
+      return await this.port.searchScenarios({ query: input.query, limit: input.limit }, this.scopeFor(input.accountId));
+    } catch (error) {
+      return { items: [], degraded: true, degradedReason: (error as Error).message };
+    }
+  }
+
+  async readPersona(input: { accountId: string }) {
+    return this.port.readPersona(this.scopeFor(input.accountId));
+  }
+
   /**
    * Materialize one memory for execution evidence. The asset must belong to the
    * account and must be enabled; otherwise the evidence is refused explicitly
@@ -326,13 +369,17 @@ export class MemoryService {
   async materialize(input: {
     accountId: string;
     memoryId: string;
+    revision?: string;
   }): Promise<MemoryMaterialization> {
     const binding = this.bindings.findEnabledForAccount(input.memoryId, input.accountId);
     if (!binding) {
       throw new Error(`memory_not_authorized: ${input.memoryId}`);
     }
     const scope = this.scopeFor(input.accountId);
-    return this.port.materialize(binding.tdaiMemoryId, scope);
+    const asset = await this.port.materialize(binding.tdaiMemoryId, scope, binding.layer);
+    const revision = input.revision ?? binding.tdaiRevision;
+    if (revision && asset.revision !== revision) throw new Error(`memory_revision_changed: ${input.memoryId}`);
+    return asset;
   }
 
   /** The local binding of one memory, or null when it is unknown or disabled. */
@@ -346,16 +393,20 @@ export class MemoryService {
     tdaiMemoryId: string;
     workspaceId?: string | null;
     /** Explicit provenance override; otherwise derived from the deposition state. */
-    source?: 'conversation' | 'sanitized';
+    source?: 'conversation' | 'sanitized' | 'profile';
     /** Conversation that produced this memory, used to resolve provenance. */
     conversationId?: string | null;
     content?: string | null;
     confidence?: number | null;
+    layer?: MemoryLayer;
+    revision?: string | null;
+    title?: string;
   }) {
     // Provenance (design §8.2, review P2-4): when the originating conversation
     // is known, use its own flag; otherwise fall back to the account-level fact,
     // which never claims clean content if a redaction happened anywhere.
     const source = input.source
+      ?? (input.layer && input.layer !== 'l1' ? 'profile' : undefined)
       ?? ((input.conversationId
         ? this.cursors.isSanitized(input.accountId, input.conversationId)
         : this.cursors.hasSanitizedSegments(input.accountId))
@@ -368,33 +419,85 @@ export class MemoryService {
       source,
       content: input.content ?? null,
       confidence: input.confidence ?? null,
+      layer: input.layer ?? 'l1',
+      revision: input.revision ?? null,
+      title: input.title,
     });
   }
 
-  /** Management view of the account's memory assets. */
+  /** Management filtering precedes pagination, including the local user switch. */
   async listAssets(input: {
     accountId: string;
     limit: number;
     offset: number;
     includeDisabled: boolean;
-  }): Promise<{ items: MemoryAsset[]; total: number }> {
+    query?: string;
+    type?: string;
+    layer?: MemoryLayer;
+    enabled?: boolean;
+  }): Promise<{ items: MemoryAsset[]; total: number; unfilteredTotal: number }> {
     const scope = this.scopeFor(input.accountId);
-    const remote = await this.port.listAssets({
-      limit: input.limit,
-      offset: input.offset,
-      includeDisabled: input.includeDisabled,
-    }, scope);
-    const items = remote.items.map(asset => {
-      const binding = this.bindings.findByTdaiMemoryId(asset.id, input.accountId);
-      return {
-        ...asset,
-        memoryId: binding?.memoryId ?? asset.id,
-        enabled: binding ? binding.enabled : true,
-        workspaceId: binding?.workspaceId ?? null,
-        source: binding?.source ?? asset.source,
+    const assets = new Map<string, MemoryAsset>();
+    let offset = 0;
+    // Read through the account-scoped port. No body cache or second search index.
+    for (;;) {
+      const page = await this.port.listAssets({ limit: 100, offset, includeDisabled: true }, scope);
+      const previousSize = assets.size;
+      for (const asset of page.items) {
+        const layer = asset.layer ?? 'l1';
+        const binding = this.bindings.findByTdaiMemoryId(asset.id, input.accountId, layer)
+          ?? this.bind({
+            accountId: input.accountId,
+            tdaiMemoryId: asset.id,
+            content: asset.content,
+            layer,
+            revision: asset.revision,
+            title: asset.title ?? asset.type,
+            source: asset.source,
+          });
+        assets.set(asset.id, {
+          ...asset, memoryId: binding.memoryId, enabled: binding.enabled,
+          workspaceId: binding.workspaceId, source: binding.source,
+          layer: binding.layer, revision: binding.tdaiRevision ?? asset.revision, title: binding.tdaiTitle || asset.title || asset.type,
+        });
+      }
+      offset += page.items.length;
+      if (offset >= page.total) break;
+      if (assets.size === previousSize) throw new Error('memory_asset_listing_incomplete');
+    }
+    const query = input.query?.trim().toLocaleLowerCase();
+    const items = [...assets.values()].filter(asset =>
+      (input.includeDisabled || asset.enabled)
+      && (input.enabled === undefined || asset.enabled === input.enabled)
+      && (!input.layer || asset.layer === input.layer)
+      && (!input.type || asset.type === input.type)
+      && (!query || asset.content.toLocaleLowerCase().includes(query)),
+    ).sort((a, b) => b.updatedAt.localeCompare(a.updatedAt) || a.id.localeCompare(b.id));
+    return {
+      items: items.slice(input.offset, input.offset + input.limit),
+      total: items.length, unfilteredTotal: assets.size,
+    };
+  }
+
+  /** User management can read disabled assets; execution eligibility is unchanged. */
+  async getAsset(input: { accountId: string; memoryId: string }): Promise<MemoryAsset | null> {
+    const binding = this.bindings.findByMemoryId(input.memoryId, input.accountId);
+    if (!binding) return null;
+    const scope = this.scopeFor(input.accountId);
+    let offset = 0;
+    // Management must not inherit the Executor's bounded materialization scan.
+    for (;;) {
+      const page = await this.port.listAssets({ limit: 100, offset, includeDisabled: true }, scope);
+      const asset = page.items.find(item => item.id === binding.tdaiMemoryId);
+      if (asset) return {
+        ...asset, memoryId: binding.memoryId, enabled: binding.enabled,
+        workspaceId: binding.workspaceId, source: binding.source,
+        layer: binding.layer, revision: binding.tdaiRevision ?? asset.revision, title: binding.tdaiTitle || asset.title || asset.type,
       };
-    });
-    return { items, total: remote.total };
+      offset += page.items.length;
+      if (offset >= page.total) return null;
+      if (!page.items.length) throw new Error('memory_asset_listing_incomplete');
+    }
   }
 
   /** Local summaries of the bound assets, independent of the engine. */
@@ -421,7 +524,12 @@ export class MemoryService {
     const binding = this.bindings.findByMemoryId(input.memoryId, input.accountId);
     if (!binding || binding.accountId !== input.accountId) return false;
     const scope = this.scopeFor(input.accountId);
-    await this.port.deleteAsset(binding.tdaiMemoryId, scope);
+    if (binding.layer === 'l1') {
+      const result = await this.port.deleteAsset(binding.tdaiMemoryId, scope);
+      if (!result.deleted) return false;
+    } else if (!this.port.deleteProfile || !(await this.port.deleteProfile(binding.tdaiMemoryId, binding.layer, scope))) {
+      return false;
+    }
     return this.bindings.delete(input.memoryId, input.accountId);
   }
 

@@ -35,8 +35,7 @@ export function useWorkspaceController() {
   const [sessions, setSessions] = useState<WebSessionMetadata[]>([]);
   const [directoryCursor, setDirectoryCursor] = useState<string | null>(null);
   const [directoryLoading, setDirectoryLoading] = useState(false);
-  const [activeSessionId, setActiveSessionId] = useState<string | null>(null);
-  const [browsedSessionId, setBrowsedSessionId] = useState<string | null>(null);
+  const [currentSessionId, setCurrentSessionId] = useState<string | null>(null);
   const [workspaceSwitching, setWorkspaceSwitching] = useState(false);
   const [newSessionPending, setNewSessionPending] = useState(false);
   const [pendingDeleteSessionIds, setPendingDeleteSessionIds] = useState<ReadonlySet<string>>(new Set());
@@ -80,9 +79,8 @@ export function useWorkspaceController() {
   } | null>(null);
   const httpRef = useRef<HttpClient | null>(null);
   const wsRef = useRef<WsClient | null>(null);
-  const activeConversationRef = useRef<string | null>(null);
+  const currentConversationRef = useRef<string | null>(null);
   const activeWorkspaceRef = useRef<string | null>(null);
-  const browsedConversationRef = useRef<string | null>(null);
   const conversationRequestRef = useRef(0);
   const recordRequestRef = useRef(0);
   const workspaceSwitchRef = useRef(false);
@@ -119,7 +117,7 @@ export function useWorkspaceController() {
   const draftOwner = useRef<string | null>(null);
   const draftValue = useRef({ draft, attachments: pendingAttachments });
   draftValue.current = { draft, attachments: pendingAttachments };
-  const observedId = browsedSessionId ?? activeSessionId ?? '';
+  const observedId = currentSessionId ?? '';
   const observedWindow = useConversationWindow(observationClient?.conversations, observedId);
   const observedActivity = useConversationActivity(observationClient?.conversations, observedId);
   const latestObservedTurn = useConversationTurn(observationClient?.conversations, observedId, observedWindow.ids.at(-1) ?? '');
@@ -142,6 +140,11 @@ export function useWorkspaceController() {
     void desktopBridge()?.setViewport(id, null).catch(reportPersistenceError);
     for (const key of viewportMemory.current.heights.keys()) if (key.startsWith(`${id}\0`)) viewportMemory.current.heights.delete(key);
     for (const [key, input] of pendingInputsRef.current) if (input.conversationId === id) pendingInputsRef.current.delete(key);
+    if (currentConversationRef.current === id) {
+      currentConversationRef.current = null; setCurrentSessionId(null);
+      setRoute(null);
+      if (activeWorkspaceRef.current) writeConversationRoute({ workspaceId: activeWorkspaceRef.current, conversationId: null });
+    }
     if (draftOwner.current === id) {
       draftOwner.current = null; draftValue.current = { draft: '', attachments: [] };
       setDraft(''); setPendingAttachments([]); setSelectedRecord(null);
@@ -149,6 +152,18 @@ export function useWorkspaceController() {
       setPreviewState({ status: 'closed' }); ++recordRequestRef.current;
     }
   }), [observationClient]);
+  useEffect(() => {
+    const http = httpRef.current;
+    if (!authenticated || !currentSessionId || !http) return;
+    const request = ++recordRequestRef.current;
+    let cancelled = false;
+    void http.getConversationMetadata(currentSessionId).then(metadata => {
+      if (cancelled || request !== recordRequestRef.current || currentConversationRef.current !== currentSessionId) return;
+      if (metadata.workspaceId !== activeWorkspaceRef.current) return;
+      setSelectedRecord(metadata);
+    }).catch(() => undefined);
+    return () => { cancelled = true; };
+  }, [authenticated, currentSessionId, observationClient]);
   useEffect(() => {
     if (!authenticated || !observationClient || !observedId) return;
     return observationClient.observations.follow(observedId);
@@ -177,10 +192,9 @@ export function useWorkspaceController() {
     const startupLifetime = createNavigationGuard(() => 'mounted');
     const previousSelection = {
       workspaceId: readConversationRoute()?.workspaceId ?? activeWorkspaceRef.current,
-      conversationId: readConversationRoute()?.conversationId ?? browsedConversationRef.current,
+      conversationId: readConversationRoute()?.conversationId ?? currentConversationRef.current,
     };
     const launchSuggestion = startupLaunchAppliedRef.current ? null : startupLaunchSuggestion;
-    let socketSelectionGeneration = 0;
     const handleUnauthorized = () => {
       if (!startupLifetime.current()) return;
       if (desktopBridge()) {
@@ -213,65 +227,32 @@ export function useWorkspaceController() {
     const http = new HttpClient(handleUnauthorized);
     httpRef.current = http;
     const loadRecord = (sessionId: string, _reuse = false) => {
-      if (browsedConversationRef.current !== sessionId) return;
+      if (currentConversationRef.current !== sessionId) return;
       const request = ++recordRequestRef.current;
       void http.getConversationMetadata(sessionId).then(metadata => {
-        if (startupLifetime.current() && request === recordRequestRef.current && browsedConversationRef.current === sessionId) {
+        if (startupLifetime.current() && request === recordRequestRef.current && currentConversationRef.current === sessionId) {
           setSelectedRecord(metadata);
         }
       }).catch(() => undefined);
     };
     const ws = new WsClient({
-      onHello: sessionId => {
-        activeConversationRef.current = sessionId;
-        setActiveSessionId(sessionId);
-        if (sessionId) {
-          if (!browsedConversationRef.current) {
-            browsedConversationRef.current = sessionId;
-            setBrowsedSessionId(sessionId);
-          }
-          loadRecord(sessionId, true);
-        }
+      onHello: () => {
+        // The handshake never selects an execution target. Startup/navigation
+        // owns the client current session explicitly.
       },
-      onSessionCatalog: (sessionId, nextSessions, nextCursor) => {
+      onSessionCatalog: (_sessionId, nextSessions, nextCursor) => {
         if (workspaceSwitchRef.current || searchRef.current) return;
         ++conversationRequestRef.current;
-        activeConversationRef.current = sessionId;
-        setActiveSessionId(sessionId);
         setSessions(nextSessions);
         setDirectoryCursor(nextCursor ?? null);
-        if (
-          browsedConversationRef.current === sessionId
-          && nextSessions.some(session => session.id === sessionId)
-        ) {
-          loadRecord(sessionId);
-        }
+        if (currentConversationRef.current) loadRecord(currentConversationRef.current);
       },
-      onWorkspaceDirectory: (workspaceId, sessionId, nextSessions, nextCursor) => {
-        if (workspaceSwitchRef.current) return;
-        if (workspaceId === activeWorkspaceRef.current && searchRef.current) return;
+      onWorkspaceDirectory: (workspaceId, _sessionId, nextSessions, nextCursor) => {
+        if (workspaceSwitchRef.current || workspaceId !== activeWorkspaceRef.current || searchRef.current) return;
         ++conversationRequestRef.current;
-        activeWorkspaceRef.current = workspaceId;
-        setActiveWorkspaceId(workspaceId);
-        activeConversationRef.current = sessionId;
-        setActiveSessionId(sessionId);
         setSessions(nextSessions);
         setDirectoryCursor(nextCursor ?? null);
-        const nextBrowsedSessionId = (
-          browsedConversationRef.current
-          && nextSessions.some(session => session.id === browsedConversationRef.current)
-        )
-          ? browsedConversationRef.current
-          : sessionId && nextSessions.some(session => session.id === sessionId)
-            ? sessionId
-            : null;
-        browsedConversationRef.current = nextBrowsedSessionId;
-        setBrowsedSessionId(nextBrowsedSessionId);
-        setSelectedRecord(current => (
-          current && nextSessions.some(session => session.id === current.id)
-            ? current
-            : null
-        ));
+        // A page is not the full directory. It cannot invalidate an off-page selection.
       },
       onWorkspaceConversationChanged: event => {
         const changes = directoryChangesRef.current;
@@ -279,24 +260,17 @@ export function useWorkspaceController() {
         if (event.workspaceId !== activeWorkspaceRef.current) return;
         const observed = changes.sequence - 1;
         setSessions(current => changes.merge(current, event.workspaceId, searchRef.current, observed));
+        if (event.removed && event.conversationId === currentConversationRef.current) {
+          currentConversationRef.current = null;
+          setCurrentSessionId(null);
+          ++recordRequestRef.current;
+          setSelectedRecord(null);
+          setRoute(null);
+          writeConversationRoute({ workspaceId: event.workspaceId, conversationId: null });
+        }
         setSelectedRecord(current => current?.id === event.conversationId
           && current.workspaceId === event.workspaceId && event.changes
           ? { ...current, ...event.changes } : current);
-      },
-      onActiveSessionChanged: sessionId => {
-        const navigation = conversationNavigationRef.current;
-        if (workspaceSwitchRef.current || (navigation.target
-          && navigation.target !== sessionId && navigation.target !== 'new')) return;
-        if (!navigation.target) socketSelectionGeneration += 1;
-        activeConversationRef.current = sessionId;
-        browsedConversationRef.current = sessionId;
-        setActiveSessionId(sessionId);
-        setBrowsedSessionId(sessionId);
-        setActivationNotice(null);
-        // 切换会话后旧会话的预览与执行详情不得残留。
-        setPreviewState({ status: 'closed' });
-        setExecutionDetail(null);
-        if (!navigation.target) loadRecord(sessionId);
       },
       onWorkspaceChanged: (
         sessionId: string,
@@ -309,14 +283,14 @@ export function useWorkspaceController() {
       onConfigurationRuntimeState: state => setConfigurationRuntime(state),
       onAgentReadinessState: agents => setAgentReadiness(agents),
       onCommandResult: result => {
-        if (result.targetConversationId !== browsedConversationRef.current) return;
+        if (result.targetConversationId !== currentConversationRef.current) return;
         setActivationNotice(result.status === 'completed' ? '操作已处理。' : `操作未完成：${result.reason ?? '请刷新状态后重试。'}`);
       },
       onReceipt: receipt => {
         const pending = pendingInputsRef.current.get(receipt.requestId);
         if (receipt.status !== 'rejected') {
           pendingInputsRef.current.delete(receipt.requestId);
-          if (pending?.conversationId === browsedConversationRef.current) {
+          if (pending?.conversationId === currentConversationRef.current) {
             setActivationNotice(current => current === '正在确认发送状态…' ? null : current);
           }
         }
@@ -338,7 +312,7 @@ export function useWorkspaceController() {
             try {
               drafts.current.set(pending.conversationId, pending);
               pendingInputsRef.current.delete(detail.requestId);
-              if (browsedConversationRef.current === pending.conversationId) {
+              if (currentConversationRef.current === pending.conversationId) {
                 setDraft(pending.draft); setPendingAttachments(pending.attachments);
               }
             } catch { /* Keep the rejected input until a draft slot becomes available. */ }
@@ -367,7 +341,7 @@ export function useWorkspaceController() {
     };
     window.addEventListener('focus', handleReadinessFocus);
     const startupGuard = createNavigationGuard(() => JSON.stringify([
-      workspaceSwitchRequestRef.current, conversationNavigationRef.current.generation, socketSelectionGeneration,
+      workspaceSwitchRequestRef.current, conversationNavigationRef.current.generation,
     ]));
     const startupDirectoryGuard = createNavigationGuard(() => JSON.stringify([
       conversationRequestRef.current, searchRef.current,
@@ -401,21 +375,15 @@ export function useWorkspaceController() {
         let initialSessionId = (offPageRequest ? requestedConversationId : null) ?? selectInitialSessionId(
           catalog?.conversations ?? [],
           requestedConversationId,
-          catalog?.activeConversationId ?? null,
         );
-        let resolvedActiveSessionId = catalog?.activeConversationId ?? null;
-        let requestedConversationUnavailable = false;
         if (offPageRequest && initialSessionId) {
           const metadata = await http.getConversationMetadata(initialSessionId).catch(() => null);
           if (!startupGuard.current()) return;
           if (metadata?.workspaceId !== applied.activeWorkspaceId) {
             initialSessionId = null;
-            resolvedActiveSessionId = null;
-            requestedConversationUnavailable = true;
             setActivationNotice('链接中的会话不可用，请从目录重新选择。');
           }
         }
-        if (initialSessionId) resolvedActiveSessionId = initialSessionId;
         setWorkspaces(applied.workspaces);
         activeWorkspaceRef.current = applied.activeWorkspaceId;
         setActiveWorkspaceId(applied.activeWorkspaceId);
@@ -435,31 +403,19 @@ export function useWorkspaceController() {
             workspaceId: applied.activeWorkspaceId, query: '',
           };
         }
-        // WebSocket 事件可能在本启动快照返回前就已建立活动会话。此时不得用陈旧目录覆盖它，
-        // 焦点恢复必须遵守当前浏览目标。
-        const liveSessionId = !requestedConversationId
-          && catalog?.conversations.some(session => session.id === activeConversationRef.current)
-          ? activeConversationRef.current : null;
-        const activeInWorkspace = liveSessionId ?? (
-          (initialSessionId !== null && initialSessionId === resolvedActiveSessionId
-            || catalog?.conversations.some(session => session.id === resolvedActiveSessionId))
-            ? resolvedActiveSessionId
-            : null
-        );
-        const resolvedSessionId = requestedConversationUnavailable ? null : initialSessionId ?? activeInWorkspace;
-        activeConversationRef.current = activeInWorkspace;
-        setActiveSessionId(activeInWorkspace);
-        const nextBrowsedSessionId = resolvedSessionId;
-        browsedConversationRef.current = nextBrowsedSessionId;
-        setBrowsedSessionId(nextBrowsedSessionId);
+        const nextCurrentSessionId = initialSessionId;
+        currentConversationRef.current = nextCurrentSessionId;
+        setCurrentSessionId(nextCurrentSessionId);
         setConfigurationRuntime(config);
-        if (nextBrowsedSessionId) {
+        if (nextCurrentSessionId) {
           if (applied.activeWorkspaceId) writeConversationRoute({ ...readConversationRoute(),
-            workspaceId: applied.activeWorkspaceId, conversationId: nextBrowsedSessionId }, true);
-          loadRecord(nextBrowsedSessionId, true);
+            workspaceId: applied.activeWorkspaceId, conversationId: nextCurrentSessionId }, true);
+          loadRecord(nextCurrentSessionId, true);
         } else {
           ++recordRequestRef.current;
           setSelectedRecord(null);
+          setRoute(null);
+          if (applied.activeWorkspaceId) writeConversationRoute({ workspaceId: applied.activeWorkspaceId, conversationId: null }, true);
         }
       })
       .catch(() => undefined);
@@ -490,8 +446,8 @@ export function useWorkspaceController() {
         activeWorkspaceRef.current = target.workspaceId; setActiveWorkspaceId(target.workspaceId);
         setSessions(directory.conversations); setDirectoryCursor(directory.nextCursor ?? null); setSearch('');
         directoryLoadedRef.current = { workspaceId: target.workspaceId, query: '' };
-        browsedConversationRef.current = target.conversationId; activeConversationRef.current = target.conversationId;
-        setBrowsedSessionId(target.conversationId); setActiveSessionId(target.conversationId); setSelectedRecord(metadata);
+        currentConversationRef.current = target.conversationId;
+        setCurrentSessionId(target.conversationId); setSelectedRecord(metadata);
         setRoute(target); setTab('conversation'); setActivationNotice(null);
         setPreviewState({ status: 'closed' }); setExecutionDetail(null);
       }).catch(error => {
@@ -529,8 +485,12 @@ export function useWorkspaceController() {
       window.clearTimeout(timer);
     };
   }, [authenticated, activeWorkspaceId, search]);
-  useEffect(() => setSelectedTrajectoryTurnId(null), [activeWorkspaceId, browsedSessionId]);
-  useEffect(() => setSelectedBillingTurnId(null), [activeWorkspaceId, browsedSessionId]);
+  useEffect(() => {
+    setSelectedTrajectoryTurnId(null);
+    setSelectedBillingTurnId(null);
+    setPreviewState({ status: 'closed' });
+    setExecutionDetail(null);
+  }, [activeWorkspaceId, currentSessionId]);
   useEffect(() => {
     if (previewState.status === 'closed' && !executionDetail) return;
     const onKeyDown = (event: KeyboardEvent) => {
@@ -573,11 +533,9 @@ export function useWorkspaceController() {
     try {
       const result = await loadWorkspaceSelection(http, workspacePath);
       if (switchRequestId !== workspaceSwitchRequestRef.current) return null;
-      const workspaceActiveSessionId = result.conversations.some(
-        session => session.id === result.activeSessionId,
-      )
-        ? result.activeSessionId
-        : null;
+      const workspaceActiveSessionId = currentConversationRef.current
+        && result.conversations.some(session => session.id === currentConversationRef.current)
+        ? currentConversationRef.current : null;
       if (result.workspace) {
         const workspace = result.workspace;
         setWorkspaces(current => [...current.filter(item => item.id !== workspace.id), workspace]);
@@ -588,11 +546,9 @@ export function useWorkspaceController() {
       setDirectoryCursor(result.nextCursor ?? null);
       setActiveWorkspaceId(result.activeWorkspaceId);
       setPendingWorkspaceId(null);
-      activeConversationRef.current = workspaceActiveSessionId;
-      browsedConversationRef.current = workspaceActiveSessionId;
-      setActiveSessionId(workspaceActiveSessionId);
+      currentConversationRef.current = workspaceActiveSessionId;
+      setCurrentSessionId(workspaceActiveSessionId);
       setSessions(directoryChangesRef.current.merge(result.conversations, result.activeWorkspaceId, '', eventsAtRequest));
-      setBrowsedSessionId(workspaceActiveSessionId);
       setSelectedRecord(null);
       setPreviewState({ status: 'closed' });
       setExecutionDetail(null);
@@ -707,9 +663,9 @@ export function useWorkspaceController() {
   const handleSelectSession = (sessionId: string) => {
     if (workspaceSwitchRef.current) return;
     conversationNavigationRef.current = { generation: conversationNavigationRef.current.generation + 1, target: null };
-    browsedConversationRef.current = sessionId;
-    activeConversationRef.current = sessionId;
-    setBrowsedSessionId(sessionId); setActiveSessionId(sessionId);
+    currentConversationRef.current = sessionId;
+    // Selecting a conversation changes only this client's current view.
+    setCurrentSessionId(sessionId);
     setSelectedRecord(null); setActivationNotice(null);
     setPreviewState({ status: 'closed' }); setExecutionDetail(null);
     setRoute(null);
@@ -738,15 +694,13 @@ export function useWorkspaceController() {
       setSessions(current => [
         result.session.session, ...current.filter(item => item.id !== result.session.session.id),
       ]);
-      browsedConversationRef.current = result.session.session.id;
-      setBrowsedSessionId(result.session.session.id);
+      currentConversationRef.current = result.session.session.id;
+      setCurrentSessionId(result.session.session.id);
       setSelectedRecord(result.session.session);
       setRoute(null);
       writeConversationRoute({ workspaceId: activeWorkspaceId, conversationId: result.session.session.id });
       setActivationNotice(activationMessage(result.activation));
       if (result.activation.state === 'active') {
-        activeConversationRef.current = result.session.session.id;
-        setActiveSessionId(result.session.session.id);
         setPreviewState({ status: 'closed' });
         setExecutionDetail(null);
       }
@@ -778,25 +732,40 @@ export function useWorkspaceController() {
     if (!httpRef.current || pendingDeleteSessionIdsRef.current.has(sessionId)) return;
     pendingDeleteSessionIdsRef.current.add(sessionId);
     setPendingDeleteSessionIds(new Set(pendingDeleteSessionIdsRef.current));
-    try {
-      await httpRef.current.deleteConversation(sessionId);
+    const removeLocalSession = () => {
       setSessions(current => current.filter(session => session.id !== sessionId));
-      if (browsedSessionId === sessionId) {
-        browsedConversationRef.current = null;
+      if (currentConversationRef.current === sessionId) {
+        currentConversationRef.current = null;
         ++recordRequestRef.current;
-        setBrowsedSessionId(null);
+        setCurrentSessionId(null);
         setSelectedRecord(null);
+        setRoute(null);
+        if (activeWorkspaceRef.current) writeConversationRoute({ workspaceId: activeWorkspaceRef.current, conversationId: null });
       }
-      setActivationNotice(null);
+    };
+    try {
+      const deletion = await httpRef.current.deleteConversation(sessionId);
+      removeLocalSession();
+      setActivationNotice(deletion?.status === 'deletion_pending' ? '会话已移除，后台正在完成内容与记忆清理。' : null);
     } catch (error) {
-      setActivationNotice(`删除失败：${(error as Error).message}`);
+      // A directory row can be stale after another tab/client archived the
+      // conversation or after the transport session was recreated. DELETE is
+      // idempotent from the user's point of view: converge the local list
+      // when the server says the target is already gone.
+      const status = (error as { status?: unknown }).status;
+      if (status === 404) {
+        removeLocalSession();
+        setActivationNotice(null);
+      } else {
+        setActivationNotice(`删除失败：${(error as Error).message}`);
+      }
     } finally {
       pendingDeleteSessionIdsRef.current.delete(sessionId);
       setPendingDeleteSessionIds(new Set(pendingDeleteSessionIdsRef.current));
     }
   };
   const handleFilesSelected = async (files: File[]) => {
-    const uploadTarget = browsedConversationRef.current;
+    const uploadTarget = currentConversationRef.current;
     if (!httpRef.current || !uploadTarget) {
       setUploadError('当前没有活跃会话，无法上传附件。');
       return;
@@ -831,7 +800,7 @@ export function useWorkspaceController() {
         const saved = drafts.current.get(uploadTarget) ?? { draft: '', attachments: [] };
         const updated = { ...saved, attachments: [...saved.attachments, metadata] };
         drafts.current.set(uploadTarget, updated);
-        if (browsedConversationRef.current === uploadTarget) setPendingAttachments(updated.attachments);
+        if (currentConversationRef.current === uploadTarget) setPendingAttachments(updated.attachments);
       } catch (error) {
         setUploadError(`上传 ${file.name} 失败：${(error as Error).message}`);
       } finally {
@@ -843,20 +812,25 @@ export function useWorkspaceController() {
     if (!httpRef.current) return;
     try {
       const result = await httpRef.current.clearConversations();
-      setSessions(current => current.filter(session => session.id === activeSessionId));
-      if (browsedSessionId && browsedSessionId !== activeSessionId) {
-        browsedConversationRef.current = null;
+      const removed = new Set(result.deletedIds);
+      setSessions(current => current.filter(session => !removed.has(session.id)));
+      if (currentConversationRef.current && removed.has(currentConversationRef.current)) {
+        currentConversationRef.current = null;
         ++recordRequestRef.current;
-        setBrowsedSessionId(null);
+        setCurrentSessionId(null);
         setSelectedRecord(null);
+        setRoute(null);
+        if (activeWorkspaceRef.current) writeConversationRoute({ workspaceId: activeWorkspaceRef.current, conversationId: null });
       }
-      setActivationNotice(result.deleted > 0 ? `已清空 ${result.deleted} 个历史会话。` : null);
+      setActivationNotice(result.skipped > 0
+        ? `已清空 ${result.deleted} 个历史会话，保留 ${result.skipped} 个未停止的会话。`
+        : result.deleted > 0 ? `已清空 ${result.deleted} 个历史会话。` : null);
     } catch (error) {
       setActivationNotice(`清空失败：${(error as Error).message}`);
     }
   };
   const handleDraftChange = (text: string) => {
-    const id = browsedConversationRef.current; if (!id) return;
+    const id = currentConversationRef.current; if (!id) return;
     try { drafts.current.set(id, { draft: text, attachments: pendingAttachments }); setDraft(text); }
     catch (error) { setActivationNotice((error as Error).message); }
   };
@@ -864,7 +838,8 @@ export function useWorkspaceController() {
     if (pendingInputsRef.current.size >= 64) {
       setActivationNotice('有较多消息正在确认发送状态，请稍后再发。'); return;
     }
-    const target = browsedConversationRef.current;
+    const target = currentConversationRef.current;
+    if (!target) { setActivationNotice('请先选择会话。'); return; }
     const requestId = target ? wsRef.current?.sendCommand(target, text.trim().startsWith('/')
       ? { kind: 'slash_command', text }
       : { kind: 'user_message', text, attachments: (attachments ?? []).map(item => ({ ...item, kind: 'file' })) }) ?? null : null;
@@ -884,7 +859,7 @@ export function useWorkspaceController() {
     setPendingInputRevision(value => value + 1);
   };
   const handleRemoveAttachment = (attachmentId: string) => {
-    const id = browsedConversationRef.current; if (!id) return;
+    const id = currentConversationRef.current; if (!id) return;
     const saved = drafts.current.get(id) ?? { draft: '', attachments: [] };
     const updated = { ...saved, attachments: saved.attachments.filter(item => item.attachmentId !== attachmentId) };
     drafts.current.set(id, updated); setPendingAttachments(updated.attachments);
@@ -902,7 +877,7 @@ export function useWorkspaceController() {
     } catch (error) { setActivationNotice((error as Error).message); }
   };
   const handleCancelTurn = () => {
-    const target = browsedConversationRef.current;
+    const target = currentConversationRef.current;
     const source = wsRef.current?.conversations;
     const ids = target && source ? [...source.window(target).ids] : [];
     const activity = target && source ? source.activity(target).tasks : [];
@@ -935,7 +910,7 @@ export function useWorkspaceController() {
       // Planner that has not closed its turn yet.
       if (turnId) requests.push(wsRef.current.control(target, { kind: 'cancel_turn', turnId }, () => undefined));
       void Promise.allSettled(requests).then(results => {
-        if (browsedConversationRef.current !== target) return;
+        if (currentConversationRef.current !== target) return;
         const failed = results.find(result => result.status === 'rejected')
           ?? results.find(result => result.status === 'fulfilled' && result.value.status !== 'completed');
         if (!failed) {
@@ -963,11 +938,7 @@ export function useWorkspaceController() {
     showStopNotice('当前没有正在执行的任务或轮次，无需停止。');
   };
   const activeWorkspace = workspaces.find(workspace => workspace.id === activeWorkspaceId) ?? null;
-  const activeConversationInWorkspace = activeSessionId
-    && sessions.some(session => session.id === activeSessionId)
-    ? activeSessionId
-    : null;
-  const selectedId = browsedSessionId ?? activeConversationInWorkspace;
+  const selectedId = currentSessionId;
   const selectedMetadata = sessions.find(session => session.id === selectedId)
     ?? selectedRecord;
   const latestTurn = latestObservedTurn ? turnProjection(latestObservedTurn) : null;
@@ -997,7 +968,7 @@ export function useWorkspaceController() {
     themePreference, setThemePreference, authenticated, authError, connected,
     workspaces, activeWorkspaceId, pendingWorkspaceId, sessions, directoryCursor, directoryLoading,
     newSessionPending, pendingDeleteSessionIds,
-    activeSessionId, workspaceSwitching, tab, setTab, setSelectedTrajectoryTurnId,
+    currentSessionId, workspaceSwitching, tab, setTab, setSelectedTrajectoryTurnId,
     draft, route, search, setSearch, settingsOpen,
     setSettingsOpen, workspaceCreatorOpen, setWorkspaceCreatorOpen, configurationRuntime, agentReadiness,
     pendingAttachments, handleRemoveAttachment, uploadError, previewState, setPreviewState,

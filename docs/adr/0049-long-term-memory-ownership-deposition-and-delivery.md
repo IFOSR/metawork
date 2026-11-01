@@ -1,6 +1,6 @@
 ---
 status: accepted
-last_updated: 2026-10-26
+last_updated: 2026-11-01
 ---
 
 # Long-Term Memory Ownership, Deposition And Delivery
@@ -47,7 +47,7 @@ has four seams:
 | Seam | Consumer | Operation | Timing | Failure behavior |
 |---|---|---|---|---|
 | S1 deposit | MetaWork Server | write the L0 conversation segment | after the conversation goes idle | dropped and logged; no conversation or execution impact |
-| S2 recall candidates | Planner MCP tools | search the L1 atoms | during a planning turn | empty result with a `degraded` flag; planning continues |
+| S2 recall candidates | Planner MCP tools | search bounded L1 atoms, L2 scenes and L3 persona | during a planning turn | per-layer `empty` or `degraded`; other layers remain usable |
 | S3 materialize | execution context build | read one atom body | before an attempt starts | the evidence is unavailable and the failure is explicit |
 | S4 asset governance | Web settings | list / disable / delete assets | user action | the page shows the error |
 
@@ -102,9 +102,10 @@ receives no memory credential and no memory network route.
 Memory reaches an Executor through exactly one channel:
 `task_execution_evidence` with `kind='long_term_memory'`.
 
-The Planner references a memory with `ContextRef{kind:'memory', memoryId}`. The
-Runtime re-validates the reference (account ownership, enabled state), fetches
-the body on the host side, materializes it as evidence, and the Executor
+The Planner references a memory with
+`ContextRef{kind:'memory', memoryId, revision}`. Runtime re-validates the
+current Conversation recall snapshot, account ownership, enabled state and
+content revision, fetches the body on the host side, materializes it as evidence, and the Executor
 receives it in `selectedEvidence`. The existing ADR-0021 budget (4,000
 characters per item, 24,000 per task) and the `executor_evidence_accessed`
 audit apply unchanged.
@@ -119,9 +120,29 @@ never passed off as evidence.
 The Planner process tree may not hold engine credentials and may not talk to
 the engine. The Server owns the adapter, performs the recall and projects a
 bounded preview into the account database; the Planner reads that read model
-through the `search_memory` and `list_memory_assets` MCP tools, exactly as it
-already reads tasks, interactions and the memory read model from the database.
-The full body only ever reaches the Runtime through the evidence channel.
+through `get_memory_context`, `search_memory` and `list_memory_assets` MCP tools,
+exactly as it already reads tasks, interactions and the memory read model from
+the database. `get_memory_context` returns bounded candidates with independent
+L1/L2/L3 status; `search_memory` remains L1-only compatibility. New Work Graph
+references include the candidate revision. The full body only ever reaches the
+Runtime through the evidence channel.
+
+### Amendment 2026-11-01 — layered recall and revision-pinned delivery
+
+The Planner-facing recall projection now keeps separate L1, L2 and L3 candidate
+sets and records each layer's `available`, `empty` or `degraded` state, elapsed
+recall time and candidate count. The `get_memory_context` tool exposes these
+bounded measurements without exposing memory bodies beyond previews. A single
+layer failure never removes successful layers; only an all-layer failure marks
+the tool result degraded.
+
+The schema-63 migration adds the per-layer measurement columns and keeps user
+disabled bindings disabled across refreshes. New Work Graph memory references
+include the candidate revision. Runtime validates account, enabled state,
+current Conversation snapshot membership and the materialized body's revision
+before writing `long_term_memory` execution evidence. A changed asset therefore
+causes the existing replan/continuation boundary instead of silently delivering
+new content.
 
 ### 7. Sanitization happens before deposition
 
@@ -284,3 +305,24 @@ The engine is now a required part of every release:
 
 Nothing else about the capability changes: `memory.enabled=false` still starts
 no process, sends no request and costs nothing.
+
+## Management clarification — 2026-10-31
+
+The account user may inspect a disabled atom's full body through the management
+query. This is separate from execution evidence eligibility: disabling still
+prevents new evidence materialization. Management listing filters full bodies,
+types and the local enabled switch before pagination and binds newly encountered
+engine atoms for stable governance IDs. All engine reads remain behind Memory
+Port; no browser engine credential, second search index, persistent body cache or
+content editing path is added. See the [memory interaction design](../plans/2026-10-31-memory-assets-interaction-design.md).
+
+## Conversation body authority amendment (2026-11-02)
+
+[ADR-0054](0054-conversation-turn-content-authority.md) supersedes prior body-source
+wording: original input and final-answer revisions belong to the account Turn
+Store. Preview, journal, presentation and Planner transcript cannot supply a
+missing authoritative body. Memory reads verified complete bodies and records
+per-Turn input/answer-hash receipts; the sequence cursor alone is insufficient
+for late completion or revised answers. Deletion is a fenced retryable workflow
+and remains pending until the external L0 service confirms complete erasure.
+Task lifecycle and L1/L2/L3 asset ownership remain unchanged.

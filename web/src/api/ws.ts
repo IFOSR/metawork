@@ -32,19 +32,19 @@ export type ConversationCommand =
 export interface WsHandlers {
   onCommandResult?: (result: { targetConversationId: string; status: string; reason?: string }) => void;
   onReceipt?: (receipt: { requestId: string; status: string; conversationId?: string | null }) => void;
-  onHello?: (sessionId: string | null) => void;
+  onHello?: (currentSessionId: string | null) => void;
   onAgentReadinessState?: (agents: AgentReadiness[]) => void;
-  onSessionCatalog?: (activeSessionId: string, sessions: WebSessionMetadata[], nextCursor?: string | null) => void;
+  onSessionCatalog?: (currentSessionId: string | null, sessions: WebSessionMetadata[], nextCursor?: string | null) => void;
   onWorkspaceConversationChanged?: (
     event: Extract<ServerMessage, { type: 'workspace_conversation_changed' }>,
   ) => void;
   onWorkspaceDirectory?: (
     activeWorkspaceId: string,
-    activeSessionId: string | null,
+    currentSessionId: string | null,
     sessions: WebSessionMetadata[],
     nextCursor?: string | null,
   ) => void;
-  onActiveSessionChanged?: (sessionId: string) => void;
+  onCurrentSessionChanged?: (sessionId: string) => void;
   onWorkspaceChanged?: (
     sessionId: string,
     workspace: ConversationWorkspaceProjection | null,
@@ -166,19 +166,19 @@ export class WsClient {
           }
           this.observations.connection(true);
           this.handlers.onStatusChange?.(true);
-          this.handlers.onHello?.(message.sessionId);
+          this.handlers.onHello?.(message.currentSessionId);
           this.retryUnconfirmedInputs();
           break;
         case 'agent_readiness_state':
           this.handlers.onAgentReadinessState?.(message.agents);
           break;
         case 'session_catalog':
-          this.handlers.onSessionCatalog?.(message.activeSessionId, message.sessions, message.nextCursor);
+          this.handlers.onSessionCatalog?.(message.currentSessionId, message.sessions, message.nextCursor);
           break;
         case 'workspace_directory':
           this.handlers.onWorkspaceDirectory?.(
             message.activeWorkspaceId,
-            message.activeSessionId,
+            message.currentSessionId,
             message.sessions,
             message.nextCursor,
           );
@@ -186,8 +186,8 @@ export class WsClient {
         case 'workspace_conversation_changed':
           this.handlers.onWorkspaceConversationChanged?.(message);
           break;
-        case 'active_session_changed':
-          this.handlers.onActiveSessionChanged?.(message.sessionId);
+        case 'current_session_changed':
+          this.handlers.onCurrentSessionChanged?.(message.sessionId);
           break;
         case 'workspace_changed':
           this.handlers.onWorkspaceChanged?.(message.sessionId, message.workspace);
@@ -309,6 +309,7 @@ export class WsClient {
   }
 
   sendCommand(conversationId: string, command: ConversationCommand, requestId = `req_${crypto.randomUUID()}`): string | null {
+    if (!conversationId.trim()) return null;
     const input = command.kind === 'user_message' || command.kind === 'slash_command';
     if (input && this.unconfirmedInputs.size >= 64) return null;
     const message = { type: 'command', envelope: {

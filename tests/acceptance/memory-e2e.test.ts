@@ -1,3 +1,4 @@
+import { seedAuthoritativeTurn } from '../support/conversation-turn-fixture.js';
 /**
  * User-perspective acceptance for long-term memory (ADR-0049).
  *
@@ -131,6 +132,7 @@ describeAcceptance('long-term memory acceptance (user perspective)', () => {
       completedAt: '2026-10-22T00:01:00.000Z',
       interactionKind: 'ai_turn',
     };
+    seedAuthoritativeTurn(db, ACCOUNT, input.conversationId, body);
     db.prepare(`INSERT INTO conversation_read_turns
       (account_id, conversation_id, epoch, turn_id, first_sequence, revision, active, body_json, byte_length)
       VALUES (?, ?, ?, ?, ?, 1, 0, ?, ?)`)
@@ -263,7 +265,7 @@ describeAcceptance('long-term memory acceptance (user perspective)', () => {
       refs: [{ kind: 'memory', memoryId: binding!.memoryId }],
       targetTask: target, userInput: '再整理一份销售周报',
     });
-    expect(eligible).toEqual([`memory:${binding!.memoryId}`]);
+    expect(eligible).toEqual([`memory:${binding!.memoryId}:legacy`]);
 
     const materialized = await evidence.materialize({
       accountId: ACCOUNT, taskId: target.id, memoryIds: [binding!.memoryId],
@@ -314,8 +316,8 @@ describeAcceptance('long-term memory acceptance (user perspective)', () => {
   }, 60_000);
 
   it('never shares memory with another account', async () => {
-    const other = await adapter.search({ query: '中文表格', limit: 5 }, deriveMemoryScope('account-b'));
-    expect(other.items).toEqual([]);
+    await expect(adapter.search({ query: '中文表格', limit: 5 }, deriveMemoryScope('account-b')))
+      .rejects.toThrow('memory_scope_mismatch');
   }, 60_000);
 
   it('redacts a pasted secret instead of storing it', () => {

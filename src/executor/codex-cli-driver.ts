@@ -159,12 +159,6 @@ export class CodexCliDriver implements HarnessDriver {
     if (input.stream !== 'stdout') return null;
     const event = parseJsonLine(input.line);
     if (!event || typeof event.type !== 'string') return null;
-    if (event.type === 'thread.started') {
-      return { kind: 'status', text: 'Executor session started' };
-    }
-    if (event.type === 'turn.started') {
-      return { kind: 'status', text: 'Executor processing cycle started' };
-    }
     if (!['item.started', 'item.completed'].includes(event.type)) return null;
     const item = event.item;
     if (!item || typeof item !== 'object' || Array.isArray(item)) return null;
@@ -173,13 +167,17 @@ export class CodexCliDriver implements HarnessDriver {
     const completed = event.type === 'item.completed';
     if (itemType === 'command_execution') {
       const command = typeof record.command === 'string'
-        ? executorActivityExcerpt(record.command, 120)
+        ? executorActivityExcerpt(record.command, 500)
         : '';
+      const result = completed ? codexResultDetail(record) : '';
+      const lines = [
+        `Executor ${completed ? 'completed' : 'started'} workspace command`,
+        ...(command ? [`Command: ${command}`] : []),
+        ...(completed ? [`Return: ${result || 'no output'}`] : []),
+      ];
       return {
         kind: 'status',
-        text: completed
-          ? `Executor completed workspace command${command ? `: ${command}` : ''}`
-          : `Executor started workspace command${command ? `: ${command}` : ''}`,
+        text: lines.join('\n'),
       };
     }
     if (itemType === 'mcp_tool_call') {
@@ -189,18 +187,27 @@ export class CodexCliDriver implements HarnessDriver {
           ? safeHarnessName(record.name)
           : '';
       const detail = codexArgDetail(record.arguments ?? record.args);
+      const result = completed ? codexResultDetail(record) : '';
       return {
         kind: 'skill',
-        text: `${completed ? 'Executor completed' : 'Executor started'} MCP tool${tool ? `: ${tool}` : ''}${detail ? ` — ${detail}` : ''}`,
+        text: [
+          `${completed ? 'Executor completed' : 'Executor started'} MCP tool${tool ? `: ${tool}` : ''}`,
+          ...(detail ? [`Input: ${detail}`] : []),
+          ...(completed ? [`Return: ${result || 'no output'}`] : []),
+        ].join('\n'),
       };
     }
     if (itemType === 'web_search') {
       const query = typeof record.query === 'string'
-        ? executorActivityExcerpt(record.query, 120)
+        ? executorActivityExcerpt(record.query, 500)
         : '';
       return {
         kind: 'skill',
-        text: `${completed ? 'Executor completed' : 'Executor started'} web search${query ? `: ${query}` : ''}`,
+        text: [
+          `${completed ? 'Executor completed' : 'Executor started'} web search`,
+          ...(query ? [`Query: ${query}`] : []),
+          ...(completed ? [`Return: ${codexResultDetail(record) || 'no output'}`] : []),
+        ].join('\n'),
       };
     }
     if (itemType === 'agent_message' && completed) {
@@ -210,17 +217,9 @@ export class CodexCliDriver implements HarnessDriver {
       if (text) return { kind: 'status', text: `Executor: ${text}` };
       return { kind: 'status', text: 'Executor produced an assistant message' };
     }
-    if (itemType === 'reasoning') {
-      // 隐藏思维链内容不透出，只呈现"正在推理"这一安全里程碑。
-      return {
-        kind: 'status',
-        text: completed
-          ? 'Executor finished a reasoning step'
-          : 'Executor is reasoning through the next step',
-      };
-    }
     if (itemType === 'file_change' && completed) {
-      return { kind: 'status', text: 'Executor recorded workspace changes' };
+      const path = typeof record.path === 'string' ? executorActivityExcerpt(record.path, 500) : '';
+      return { kind: 'status', text: `Executor recorded workspace changes${path ? `\nPath: ${path}` : ''}` };
     }
     return null;
   }
@@ -335,6 +334,20 @@ function codexArgDetail(args: unknown): string {
     if (typeof value === 'string' && value.trim()) {
       return redactSensitiveText(value.replace(/\s+/gu, ' ').trim()).slice(0, 120);
     }
+  }
+  return '';
+}
+
+function codexResultDetail(record: Record<string, unknown>): string {
+  const values = ['aggregated_output', 'stdout', 'stderr', 'output', 'result', 'error']
+    .map(key => record[key])
+    .filter((value): value is string => typeof value === 'string' && value.trim().length > 0);
+  if (values.length > 0) {
+    const text = redactSensitiveText(values.join('\n').trim());
+    return text.length <= 1200 ? text : `${text.slice(0, 880)}\n… [output truncated] …\n${text.slice(-280)}`;
+  }
+  if (typeof record.exit_code === 'number' || typeof record.exitCode === 'number') {
+    return `exit code: ${record.exit_code ?? record.exitCode}`;
   }
   return '';
 }

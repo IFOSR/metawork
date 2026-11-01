@@ -157,6 +157,7 @@ export class MetaWorkConversationPanel implements Component {
 			const delivery = turn.publicDelivery;
 			const modeLabels: Record<string, string> = {
 				in_place: "目标 Workspace 就地执行",
+				worktree: "Conversation Worktree 执行",
 			};
 			const sourceLabels: Record<string, string> = {
 				explicit_user: "用户明确要求",

@@ -16,14 +16,14 @@ const changes = {
 };
 
 describe('workspace change observation card', () => {
-  it('separates delivered, unregistered and scratch files with the coverage reason', () => {
+  it('separates delivered, pending writeback and scratch files with the coverage reason', () => {
     const html = renderToStaticMarkup(createElement(WorkspaceChangesCard, {
       changes, delivered: ['out/deck.pptx'],
     }));
     expect(html).toContain('本轮改动');
     expect(html).toContain('out/deck.pptx');
     expect(html).toContain('临时');
-    expect(html).toContain('未登记');
+    expect(html).toContain('尚未写回');
     expect(html).toContain('改动记录范围有限（不影响任务完成状态）');
     expect(html).toContain('通过 Shell 写入的文件无法由文件观察通道完整核对。');
   });

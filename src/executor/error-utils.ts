@@ -341,20 +341,6 @@ export function formatExecutorProgress(raw?: string): string | undefined {
   const normalized = stripExecutorLogPrefix(raw.trim());
   if (!normalized) return undefined;
 
-  const workspaceCommand = /^Executor (started|completed) workspace command(?:\s*:[\s\S]*)?$/iu.exec(
-    normalized,
-  );
-  if (workspaceCommand) {
-    return `Executor ${workspaceCommand[1]?.toLowerCase()} a workspace command`;
-  }
-
-  const toolActivity = /^Executor (started|completed) ((?:MCP )?tool):\s*([A-Za-z0-9_.:/-]+)(?:\s+[—-][\s\S]*)?$/iu.exec(
-    normalized,
-  );
-  if (toolActivity) {
-    return `Executor ${toolActivity[1]?.toLowerCase()} ${toolActivity[2]}: ${toolActivity[3]}`;
-  }
-
   if (EXECUTOR_NOISE_PATTERNS.some(pattern => pattern.test(normalized))) {
     return undefined;
   }
@@ -363,7 +349,8 @@ export function formatExecutorProgress(raw?: string): string | undefined {
     return undefined;
   }
 
-  if (isInternalExecutorProgressNoise(normalized)) {
+  const isStructuredExecutorActivity = /^Executor (?:started|completed|failed)\b/iu.test(normalized);
+  if (!isStructuredExecutorActivity && isInternalExecutorProgressNoise(normalized)) {
     return undefined;
   }
 
@@ -375,7 +362,10 @@ export function formatExecutorProgress(raw?: string): string | undefined {
     return '执行器网络连接异常，正在重试';
   }
 
-  return truncateText(redactSensitiveText(normalized), 500);
+  // Preserve the actual command and tool return text. This is deliberately
+  // bounded, but must remain detailed enough for a user to see what ran and
+  // what it returned while the attempt is still in progress.
+  return truncateText(redactSensitiveText(normalized), isStructuredExecutorActivity ? 1800 : 500);
 }
 
 function stripExecutorLogPrefix(raw: string): string {

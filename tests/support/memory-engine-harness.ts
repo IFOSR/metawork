@@ -22,7 +22,7 @@ export interface MemoryEngineHandle {
 
 export function resolveMemoryEngineRoot(): string | null {
   const explicit = process.env.METAWORK_MEMORY_SIDECAR_DIR?.trim();
-  const candidates = [explicit, resolve(process.cwd(), '.tmp/tdai/MemoryCore')]
+  const candidates = [explicit, resolve(process.cwd(), 'memory/tdai'), resolve(process.cwd(), '.tmp/tdai/MemoryCore')]
     .filter(Boolean) as string[];
   for (const candidate of candidates) {
     if (existsSync(join(candidate, 'src/gateway/server.ts'))) return candidate;

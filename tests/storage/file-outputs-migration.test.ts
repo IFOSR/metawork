@@ -5,7 +5,8 @@ import { CURRENT_SCHEMA_VERSION, runMigrations } from '../../src/storage/migrati
 function schema49() {
   const db = new Database(':memory:');
   runMigrations(db);
-  db.exec(`ALTER TABLE subtasks DROP COLUMN file_outputs_json;
+  db.exec(`DROP VIEW conversation_memory_turns;
+    ALTER TABLE subtasks DROP COLUMN file_outputs_json;
     UPDATE schema_version SET version = 49;
     INSERT INTO tasks (id, title, goal, status, created_at, updated_at) VALUES ('old', 'History', 'Preserve old authorizations', 'succeeded', 'now', 'now');`);
   return db;

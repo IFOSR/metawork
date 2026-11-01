@@ -57,6 +57,22 @@ describe('task state review regressions', () => {
       publications: [{ id: 'publication_a', subtaskId: 'a', status: 'integrated', deliveryStatus: null }] });
     expect(evaluate(facts).status).not.toBe('succeeded');
   });
+  it('treats a delivered Conversation Worktree merge as file delivery', () => {
+    const facts = raw({
+      task: taskRecord({ status: 'running', executionMode: undefined }),
+      subtasks: [{ id: 'a', title: 'A', status: 'done', dependencySubtaskIds: [] }],
+      receipts: [{ attemptId: 'attempt_a', subtaskId: 'a', terminalState: 'completed',
+        failureCode: null, failureKind: null, completedAt: '2026-10-30T00:00:00Z' }],
+      completionRequirements: [{ key: 'delivery:a', kind: 'delivery', label: 'A', subtaskId: 'a', serviceId: null }],
+      workspaceDelivery: {
+        noChanges: false,
+        summary: { rowVersion: 1, jobId: 'merge_a', state: 'delivered', sequence: 1,
+          aheadCount: 0, conflictVersion: 0, completedFiles: 1, totalFiles: 1, error: null },
+      },
+    });
+    expect(readTaskEvaluationInput(facts).requiredWork[0]).toMatchObject({ state: 'completed' });
+    expect(evaluate(facts).status).toBe('succeeded');
+  });
   it('ends definite delivery failure instead of offering same-task resume', () => {
     const facts = raw({ subtasks: [{ id: 'a', title: 'A', status: 'done', dependencySubtaskIds: [] }],
       completionRequirements: [{ key: 'delivery:a', kind: 'delivery', label: 'A', subtaskId: 'a', serviceId: null }],
@@ -87,6 +103,30 @@ describe('task state review regressions', () => {
       authority.reconcile({ taskId: task.id, decisionId: 'passive_observation', operationKey: 'passive_observation',
         actor: 'account-startup-recovery', reason: 'passively observed complete evidence' });
       expect(repo.findById(task.id)!.status).toBe('needs_action');
+    } finally { db.close(); }
+  });
+  it('repairs a stale system block after a Conversation Worktree merge is delivered', () => {
+    const db = new Database(':memory:'); runMigrations(db);
+    try {
+      const repo = new TaskRepo(db);
+      const task = new TaskEngine(repo, '/tmp/review-state-worktree').create({ title: 'Delivered', goal: 'Deliver' });
+      setTaskStatus(db, task.id, 'needs_action');
+      const authority = new TaskStateAuthority({ taskRepo: repo, lifecycle: createTaskLifecyclePort(db),
+        transaction: createSqliteTaskStateTransaction(db), facts: { read: () => raw({
+          task: repo.findById(task.id)!,
+          subtasks: [{ id: 'a', title: 'A', status: 'done', dependencySubtaskIds: [] }],
+          receipts: [{ attemptId: 'attempt_a', subtaskId: 'a', terminalState: 'completed',
+            failureCode: null, failureKind: null, completedAt: '2026-10-30T00:00:00Z' }],
+          completionRequirements: [{ key: 'delivery:a', kind: 'delivery', label: 'A', subtaskId: 'a', serviceId: null }],
+          workspaceDelivery: {
+            noChanges: false,
+            summary: { rowVersion: 1, jobId: 'merge_a', state: 'delivered', sequence: 1,
+              aheadCount: 0, conflictVersion: 0, completedFiles: 1, totalFiles: 1, error: null },
+          },
+        }) } });
+      authority.reconcile({ taskId: task.id, decisionId: 'merge_delivered', operationKey: 'merge_delivered',
+        actor: 'kernel-execution-runtime', reason: 'Workspace merge delivered' });
+      expect(repo.findById(task.id)!.status).toBe('succeeded');
     } finally { db.close(); }
   });
   it('fences each new reservation of the same task with a new token', () => {

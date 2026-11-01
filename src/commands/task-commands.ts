@@ -1,3 +1,4 @@
+import { verifyInteractionContent } from '../storage/conversation-content-references.js';
 import { publicText } from '../utils/public-text.js';
 import type { TaskView } from '../task/task-view.js';
 import { publicDeliveryLines } from '../delivery/public-delivery-view.js';
@@ -223,11 +224,11 @@ export async function showTask(args: ResolvedCommandArgs, context: CommandContex
   const delivery = await context.taskControl?.publicTaskDelivery?.(taskId) ?? null;
 
   const latestInteraction = context.db.prepare(
-    'SELECT executor_used, system_output, created_at FROM interactions WHERE task_id = ? ORDER BY created_at DESC LIMIT 1'
-  ).get(taskId) as { executor_used: string | null; system_output: string | null; created_at: string } | undefined;
+    'SELECT id, executor_used, system_output, created_at FROM interaction_contents WHERE task_id = ? ORDER BY created_at DESC LIMIT 1'
+  ).get(taskId) as { id: string; executor_used: string | null; system_output: string | null; created_at: string } | undefined;
   const latestSnapshot = task.snapshots[task.snapshots.length - 1] ?? null;
   const blocker = task.dependencies.find(dep => dep.status === 'waiting')?.description || '无';
-  const latestResult = task.summary || latestInteraction?.system_output || '无';
+  const latestResult = task.summary || (latestInteraction ? verifyInteractionContent(context.db, latestInteraction).system_output : null) || '无';
   const latestNextStep = buildLatestNextStep(task);
   const lastProgress = latestSnapshot?.done.join('；') || task.summary || '无';
   const materialGroups = splitTaskResources(task.resources);

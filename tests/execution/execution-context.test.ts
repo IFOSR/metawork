@@ -28,14 +28,14 @@ function context(overrides: Partial<ExecutionContext> = {}): ExecutionContext {
 
 describe('execution context', () => {
   it('defaults new admissions to in-place and rejects the retired mode', () => {
-    expect(DEFAULT_EXECUTION_MODE).toBe('in_place');
-    expect(parseExecutionMode(undefined)).toBe('in_place');
-    expect(parseExecutionMode('')).toBe('in_place');
+    expect(DEFAULT_EXECUTION_MODE).toBe('conversation_git');
+    expect(parseExecutionMode(undefined)).toBe('conversation_git');
+    expect(parseExecutionMode('')).toBe('conversation_git');
     expect(parseExecutionMode('in_place')).toBe('in_place');
     expect(() => parseExecutionMode('in-place')).toThrow(ExecutionContextError);
     expect(resolveExecutionModeFromEnvironment({ [EXECUTION_MODE_ENVIRONMENT]: ' in_place ' }))
       .toBe('in_place');
-    expect(resolveExecutionModeFromEnvironment({})).toBe('in_place');
+    expect(resolveExecutionModeFromEnvironment({})).toBe('conversation_git');
     expect(() => parseExecutionMode('worktree')).toThrow(/retired/u);
   });
 

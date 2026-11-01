@@ -115,7 +115,9 @@ class WebGatewayClientSession {
   private readonly listeners = new Set<(event: WebSessionRuntimeEvent) => void>();
   private readonly workspaces = new Map<string, ConversationWorkspaceProjection | null>();
   private workspaceUnsubscribe: (() => void) | null = null;
-  private _activeSessionId: string | null = null;
+  /** The conversation currently opened by this client. It is never an
+   * execution owner and is never used as an implicit command target. */
+  private _currentSessionId: string | null = null;
   private disposed = false;
   private disposePromise: Promise<void> | null = null;
   private activeWorkspaceId: string | null = null;
@@ -130,18 +132,13 @@ class WebGatewayClientSession {
     return `web:${this.clientId}`;
   }
 
-  get activeSessionId(): string {
-    if (!this._activeSessionId) throw new Error('Web Gateway runtime is not initialized');
-    return this._activeSessionId;
-  }
-
   async initialize(): Promise<void> {
     if (this.disposed) throw new Error('Web Gateway runtime is disposed');
     await this.deps.catalog.initialize();
   }
 
-  getState(): { activeWorkspaceId: string | null; activeSessionId: string | null } {
-    return { activeWorkspaceId: this.activeWorkspaceId, activeSessionId: this._activeSessionId };
+  getState(): { activeWorkspaceId: string | null; currentSessionId: string | null } {
+    return { activeWorkspaceId: this.activeWorkspaceId, currentSessionId: this._currentSessionId };
   }
 
   listWorkspaces() {
@@ -157,7 +154,7 @@ class WebGatewayClientSession {
     this.disposed = true;
     this.workspaceUnsubscribe?.();
     this.workspaceUnsubscribe = null;
-    this._activeSessionId = null;
+    this._currentSessionId = null;
     this.workspaces.clear();
     this.deps.gateway.closeConnection?.(this.connectionId);
     this.disposePromise = this.navigationQueue;
@@ -166,22 +163,23 @@ class WebGatewayClientSession {
   }
 
   async submit(
+    conversationId: string,
     text: string,
     attachments: Array<{ attachmentId: string; kind: string }> = [],
     requestId?: string,
   ): Promise<void> {
-    const targetSessionId = this.activeSessionId;
+    const targetSessionId = await this.authorizeConversation(conversationId);
     const effectiveRequestId = requestId ?? this.id('req');
     // Enforce the per-message attachment budget before the turn is admitted so
     // a rejected message never consumes Planner/Kernel work.
-    if (attachments.length > 0) await this.assertAttachmentBudget(attachments);
+    if (attachments.length > 0) await this.assertAttachmentBudget(conversationId, attachments);
     const command: GatewayCommand = text.startsWith('/')
       ? { kind: 'slash_command', text }
       : { kind: 'user_message', text, attachments };
     const receipt = await this.deps.gateway.submit({
       protocolVersion: 2,
       requestId: effectiveRequestId,
-      idempotencyKey: this.id('idem'),
+      idempotencyKey: effectiveRequestId,
       connectionId: this.connectionId,
       scope: {
         kind: 'conversation',
@@ -205,20 +203,21 @@ class WebGatewayClientSession {
    * stale or foreign reference fails closed instead of entering Planner.
    */
   private async assertAttachmentBudget(
+    conversationId: string,
     attachments: Array<{ attachmentId: string; kind: string }>,
   ): Promise<void> {
     const store = this.deps.attachments;
-    const conversationId = this.activeSessionId;
+    const targetConversationId = conversationId;
     const countViolation = evaluateAttachmentCount(attachments.length);
     if (countViolation) {
       throw new WebGatewayAdmissionError(countViolation.code, undefined, countViolation.message);
     }
-    if (!store || !conversationId) return;
+    if (!store) return;
     const entries: AttachmentBudgetEntry[] = [];
     for (const reference of attachments) {
       const metadata = store.readAttachmentMetadata
-        ? await store.readAttachmentMetadata(conversationId, reference.attachmentId)
-        : (await store.readAttachment(conversationId, reference.attachmentId))?.metadata;
+        ? await store.readAttachmentMetadata(targetConversationId, reference.attachmentId)
+        : (await store.readAttachment(targetConversationId, reference.attachmentId))?.metadata;
       if (!metadata || metadata.status !== 'available') {
         throw new WebGatewayAdmissionError(
           'attachment_unavailable',
@@ -237,9 +236,9 @@ class WebGatewayClientSession {
    * Gateway admission path so the Application Shell owns the latch and the
    * Planner abort.
    */
-  async cancelTurn(turnId: string): Promise<void> {
-    const targetSessionId = this.activeSessionId;
-    if (!targetSessionId) return;
+  async cancelTurn(conversationId: string, turnId: string): Promise<void> {
+    if (!turnId.trim()) throw new Error('turn_required');
+    const targetSessionId = await this.authorizeConversation(conversationId);
     const receipt = await this.deps.gateway.submit({
       protocolVersion: 2,
       requestId: this.id('req'),
@@ -268,7 +267,6 @@ class WebGatewayClientSession {
     const input = {
       workspaceId: this.activeWorkspaceId,
       principalId: WEB_WORKSPACE_PRINCIPAL,
-      activeConversationId: this._activeSessionId,
       ...(query.trim() ? { query } : {}),
     };
     const page = this.deps.catalog.listPage
@@ -288,29 +286,41 @@ class WebGatewayClientSession {
     };
   }
   async readSession(sessionId: string, cursor?: string): Promise<WebSessionRecordProjection | null> {
-    if (sessionId !== this._activeSessionId) return null;
+    const requestedWorkspaceId = this.activeWorkspaceId;
+    if (!requestedWorkspaceId) return null;
+    const workspaceId = await this.deps.catalog.workspaceIdForConversation(sessionId);
+    if (!workspaceId || workspaceId !== requestedWorkspaceId) return null;
     const record = await measureNavigationStage('record_read', () => this.deps.catalog.readPage
-      ? this.deps.catalog.readPage(sessionId, this._activeSessionId, { cursor })
-      : this.deps.catalog.read(sessionId, this._activeSessionId));
-    if (!record) return null;
+      ? this.deps.catalog.readPage(sessionId, { cursor })
+      : this.deps.catalog.read(sessionId));
+    if (!record || record.session.archived) return null;
     return this.projectRecord(measureNavigationStageSync(
       'history_enrichment', () => this.enrichRecord(record), record.turns.length,
     ));
   }
 
   async readBrowsableSession(sessionId: string, cursor?: string): Promise<WebSessionRecordProjection | null> {
-    if (!this.activeWorkspaceId) return null;
+    const requestedWorkspaceId = this.activeWorkspaceId;
+    if (!requestedWorkspaceId) return null;
     const workspaceId = await this.deps.catalog.workspaceIdForConversation(sessionId);
-    if (!workspaceId || workspaceId !== this.activeWorkspaceId) return null;
+    if (!workspaceId || workspaceId !== requestedWorkspaceId) return null;
     const record = await measureNavigationStage(
       'record_browse_read', () => this.deps.catalog.readPage
-        ? this.deps.catalog.readPage(sessionId, this._activeSessionId, { cursor })
-        : this.deps.catalog.read(sessionId, this._activeSessionId),
+        ? this.deps.catalog.readPage(sessionId, { cursor })
+        : this.deps.catalog.read(sessionId),
     );
-    if (!record) return null;
+    if (!record || record.session.archived) return null;
     return this.projectRecord(measureNavigationStageSync(
       'history_browse_enrichment', () => this.enrichRecord(record), record.turns.length,
     ));
+  }
+
+  private async authorizeConversation(conversationId: string): Promise<string> {
+    const requestedWorkspaceId = this.activeWorkspaceId;
+    if (!conversationId.trim() || !requestedWorkspaceId) throw new Error('conversation_required');
+    const workspaceId = await this.deps.catalog.workspaceIdForConversation(conversationId);
+    if (!workspaceId || workspaceId !== requestedWorkspaceId) throw new Error('conversation_denied');
+    return conversationId;
   }
 
   async listBillingRecords(input: {
@@ -483,7 +493,7 @@ class WebGatewayClientSession {
     }
     const metadata = await this.deps.catalog.readMetadata?.(receipt.conversationId);
     const created = metadata
-      ? { version: 1 as const, session: { ...metadata, active: true }, turns: [], historyCursor: null }
+      ? { version: 1 as const, session: metadata, turns: [], historyCursor: null }
       : await this.deps.catalog.read(receipt.conversationId);
     if (!created) throw new Error('created_conversation_unavailable');
     const activation = await this.activateSessionNow(created.session.id, created);
@@ -515,44 +525,62 @@ class WebGatewayClientSession {
     this.deps.gateway.restoreWorkspace?.(this.connectionId, workspaceId);
     this.followWorkspace(workspaceId);
     if (this.disposed) throw new Error('Web Gateway runtime is disposed');
-    this._activeSessionId = sessionId;
-    this.emit({ type: 'active_session_changed', sessionId });
+    this._currentSessionId = sessionId;
+    this.emit({ type: 'current_session_changed', sessionId });
     return { state: 'active', sessionId };
   }
 
-  async deleteSession(sessionId: string): Promise<'deleted' | 'not_found' | 'active'> {
-    if (sessionId === this._activeSessionId) return 'active';
-    if (!this.activeWorkspaceId) return 'not_found';
-    const deleted = await this.deps.catalog.archive(
-      sessionId,
-      this.activeWorkspaceId,
-      WEB_WORKSPACE_PRINCIPAL,
-    );
-    if (!deleted) return 'not_found';
+  async deleteSession(sessionId: string): Promise<'deleted' | 'deletion_pending' | 'not_found' | 'running'> {
+    // The directory row may outlive the client's in-memory navigation state
+    // (for example after a reconnect or while another tab switches
+    // Workspace). Resolve the target from the durable conversation binding so
+    // deletion does not depend on whichever Workspace this client happens to
+    // have selected at the moment.
+    const workspaceId = await this.deps.catalog.workspaceIdForConversation(sessionId);
+    if (!workspaceId) return 'not_found';
+    // Activity is read directly from the durable conversation projection. Do
+    // not rebuild the whole Workspace directory on a delete click.
+    const activity = await this.deps.catalog.readActivity(sessionId);
+    if (activity && activity.state !== 'idle') {
+      return 'running';
+    }
+    let deletion: 'completed' | 'pending';
+    try {
+      deletion = this.deps.catalog.delete
+        ? await this.deps.catalog.delete(sessionId, workspaceId, WEB_WORKSPACE_PRINCIPAL)
+        : await this.deps.catalog.archive(sessionId, workspaceId, WEB_WORKSPACE_PRINCIPAL).then(() => 'completed');
+    } catch (error) {
+      if ((error as Error).message === 'workspace_busy') return 'running';
+      throw error;
+    }
+    // A stale directory row can still have a metadata index entry after its
+    // canonical record was removed. The requested end state is already true
+    // in that case, so make DELETE idempotent and let the client remove the
+    // stale row.
     this.emit({
-      type: 'workspace_conversation_changed', workspaceId: this.activeWorkspaceId,
+      type: 'workspace_conversation_changed', workspaceId,
       conversationId: sessionId, removed: true,
     });
-    return 'deleted';
+    if (this._currentSessionId === sessionId) {
+      this._currentSessionId = null;
+    }
+    return deletion === 'pending' ? 'deletion_pending' : 'deleted';
   }
 
-  async clearAllSessions(): Promise<{ deleted: number }> {
-    const deleted = this.activeWorkspaceId
-      ? await this.deps.catalog.clearWorkspace(
-          this.activeWorkspaceId,
-          WEB_WORKSPACE_PRINCIPAL,
-          this._activeSessionId ?? undefined,
-        )
-      : 0;
-    if (this._activeSessionId) {
-      const page = await this.listSessionPage();
-      this.emit({
-        type: 'session_catalog',
-        activeSessionId: this._activeSessionId,
-        sessions: page.items, nextCursor: page.nextCursor,
-      });
+  async clearAllSessions(): Promise<{ deleted: number; deletedIds: string[]; skipped: number }> {
+    const workspaceId = this.activeWorkspaceId;
+    if (!workspaceId) return { deleted: 0, deletedIds: [], skipped: 0 };
+    // Enumerate only for this explicitly requested bulk action. Every target
+    // goes through the same admission and removal event as a single delete.
+    const sessions = await this.deps.catalog.list({ workspaceId, principalId: WEB_WORKSPACE_PRINCIPAL });
+    const deletedIds: string[] = [];
+    let skipped = 0;
+    for (const session of sessions) {
+      const outcome = await this.deleteSession(session.id);
+      if (outcome === 'running') skipped += 1;
+      else deletedIds.push(session.id);
     }
-    return { deleted };
+    return { deleted: deletedIds.length, deletedIds, skipped };
   }
 
   subscribe(listener: (event: WebSessionRuntimeEvent) => void): () => void {
@@ -585,6 +613,7 @@ class WebGatewayClientSession {
         };
       }
       if (!receipt.workspaceId) return { status: 'failed', reason: 'workspace_identity_missing' };
+      if (this.activeWorkspaceId !== receipt.workspaceId) this._currentSessionId = null;
       this.activeWorkspaceId = receipt.workspaceId;
       this.followWorkspace(receipt.workspaceId);
       if (receipt.directory) {
@@ -593,12 +622,11 @@ class WebGatewayClientSession {
           id: item.conversationId, workspaceId: item.workspaceId,
           title: item.title, createdAt: item.createdAt, updatedAt: item.updatedAt,
           archived: item.archived, preview: item.preview, activity: item.activity,
-          active: item.conversationId === this._activeSessionId,
           workspace: this.workspaces.get(item.conversationId) ?? null,
         }));
         this.emit({
           type: 'workspace_directory', activeWorkspaceId: workspace.id,
-          activeSessionId: this._activeSessionId, sessions: conversations,
+          currentSessionId: this._currentSessionId, sessions: conversations,
           nextCursor: page.nextCursor,
         });
         return {
@@ -702,7 +730,7 @@ class WebGatewayClientSession {
               changes: {
                 id: conversationId, workspaceId, title: item.title,
                 createdAt: String(item.createdAt ?? ''), updatedAt: String(item.updatedAt ?? ''),
-                archived: item.archived === true, active: conversationId === this._activeSessionId,
+                archived: item.archived === true,
                 preview: String(item.preview ?? ''), workspace: this.workspaces.get(conversationId) ?? null,
                 activity: item.activity as WebSessionDirectoryMetadata['activity'],
               },
@@ -726,7 +754,7 @@ class WebGatewayClientSession {
     this.emit({
       type: 'workspace_directory',
       activeWorkspaceId: workspaceId,
-      activeSessionId: this._activeSessionId,
+      currentSessionId: this._currentSessionId,
       sessions: page.items, nextCursor: page.nextCursor,
     });
   }
@@ -987,16 +1015,18 @@ export class WebGatewaySessionRuntime {
     return this.client(clientId).selectWorkspace(path);
   }
 
-  cancelTurn(clientId: string, turnId: string): Promise<void> {
-    return this.client(clientId).cancelTurn(turnId);
+  cancelTurn(clientId: string, conversationId: string, turnId: string): Promise<void> {
+    return this.client(clientId).cancelTurn(conversationId, turnId);
   }
 
   submit(
     clientId: string,
+    conversationId: string,
     text: string,
     attachments?: Array<{ attachmentId: string; kind: string }>,
+    requestId?: string,
   ): Promise<void> {
-    return this.client(clientId).submit(text, attachments);
+    return this.client(clientId).submit(conversationId, text, attachments, requestId);
   }
 
   listSessions(clientId: string, query?: string): Promise<WebSessionDirectoryMetadataProjection[]> {
@@ -1045,11 +1075,11 @@ export class WebGatewaySessionRuntime {
   deleteSession(
     clientId: string,
     sessionId: string,
-  ): Promise<'deleted' | 'not_found' | 'active'> {
+  ): Promise<'deleted' | 'deletion_pending' | 'not_found' | 'running'> {
     return this.client(clientId).deleteSession(sessionId);
   }
 
-  clearAllSessions(clientId: string): Promise<{ deleted: number }> {
+  clearAllSessions(clientId: string): Promise<{ deleted: number; deletedIds: string[]; skipped: number }> {
     return this.client(clientId).clearAllSessions();
   }
 

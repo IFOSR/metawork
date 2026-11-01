@@ -65,9 +65,9 @@ if (existsSync(compatibilityPatch)) {
 const packageJson = JSON.parse(readFileSync(join(target, 'package.json'), 'utf8'));
 const lockfile = join(target, 'package-lock.json');
 if (existsSync(lockfile)) {
-  run('npm', ['ci', '--omit=dev', '--no-audit', '--no-fund', '--legacy-peer-deps'], target);
+  run('npm', ['ci', '--include=dev', '--no-audit', '--no-fund', '--legacy-peer-deps'], target);
 } else {
-  run('npm', ['install', '--omit=dev', '--no-audit', '--no-fund', '--legacy-peer-deps'], target);
+  run('npm', ['install', '--include=dev', '--no-audit', '--no-fund', '--legacy-peer-deps'], target);
 }
 
 if (typeof packageJson.scripts?.build === 'string') {
@@ -123,5 +123,8 @@ if (!existsSync(join(target, lock.entry))) {
     + ' the pinned revision must produce a build artifact so releases never run TypeScript at startup',
   );
 }
+
+// Build tools are needed during compilation, but are not shipped at runtime.
+run('npm', ['prune', '--omit=dev', '--no-audit', '--no-fund', '--legacy-peer-deps'], target);
 
 process.stdout.write(`memory engine ready: ${target} @ ${head}\n`);

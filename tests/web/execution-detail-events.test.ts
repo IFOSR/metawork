@@ -26,6 +26,15 @@ function timeline(): ExecutionTimeline {
 }
 
 describe('Executor detail progress sources', () => {
+  it('hides presentation heartbeats from the user detail stream', () => {
+    const heartbeat: InteractionTraceEvent = {
+      ...trace(1), id: 'heartbeat', kind: 'executor_heartbeat', summary: 'no actual progress',
+    };
+    const events = collectDetailEvents([heartbeat], timeline(), 'subtask');
+    expect(events.some(event => event.id === 'heartbeat')).toBe(false);
+    expect(events.every(event => event.kind !== 'executor_heartbeat')).toBe(true);
+  });
+
   it('shows one authoritative stream per attempt despite independent timestamp skew', () => {
     const result = collectDetailEvents([trace(1)], timeline(), 'subtask');
     expect(result).toHaveLength(2);

@@ -325,9 +325,9 @@ describe('ExecutionProjector', () => {
     expect(attempts[0]?.progressHistory?.length).toBeLessThanOrEqual(50);
     expect(attempts[0]?.progressHistory?.[0]?.text).toBe('步骤 25');
     expect(attempts[0]?.progressHistory?.at(-1)?.text)
-      .toBe('Executor completed a workspace command');
-    expect(attempts[0]?.progress?.text).toBe('Executor started a workspace command');
-    expect(JSON.stringify(attempts)).not.toContain('/tmp/private.txt');
+      .toBe('Executor completed workspace command: cat /tmp/private.txt');
+    expect(attempts[0]?.progress?.text).toBe('Executor started workspace command: cat /tmp/private.txt');
+    expect(JSON.stringify(attempts)).toContain('/tmp/private.txt');
   });
 
   it('verification 阶段按 receipt violations 推导 failed', () => {

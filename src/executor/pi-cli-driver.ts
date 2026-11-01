@@ -54,6 +54,11 @@ export class PiCliDriver implements HarnessDriver {
   private readonly webExtensionSourcePath?: string;
   private readonly pdfExtensionRoot: string;
   private readonly command: string;
+  /**
+   * Pi's tool_execution_end event normally omits args. Keep the start facts
+   * long enough to pair the end result with the command that actually ran.
+   */
+  private readonly pendingToolCalls = new Map<string, { toolName: string; detail: string }>();
 
   constructor(dependencies: {
     command?: string;
@@ -196,22 +201,7 @@ export class PiCliDriver implements HarnessDriver {
     if (input.stream !== 'stdout') return null;
     const event = parseJsonLine(input.line);
     if (!event || typeof event.type !== 'string') return null;
-    if (event.type === 'agent_start') {
-      return { kind: 'status', text: 'Executor agent loop started' };
-    }
-    if (event.type === 'turn_start') {
-      const turn = typeof event.turnIndex === 'number' ? event.turnIndex + 1 : null;
-      return {
-        kind: 'status',
-        text: turn ? `Executor processing cycle ${turn}` : 'Executor processing cycle started',
-      };
-    }
-    if (event.type === 'message_start' && messageRole(event.message) === 'assistant') {
-      return { kind: 'status', text: 'Executor model response stream started' };
-    }
     if (event.type === 'message_end' && messageRole(event.message) === 'assistant') {
-      // Executor 的执行叙述（assistant 正文）：脱敏截断后实时呈现给用户，
-      // 让用户看到 Executor 正在做什么、想什么、下一步做什么。
       const text = assistantMessageText(event.message);
       if (text) {
         return { kind: 'status', text: `Executor: ${executorActivityExcerpt(text)}` };
@@ -219,31 +209,31 @@ export class PiCliDriver implements HarnessDriver {
       return null;
     }
     if (event.type === 'tool_execution_start') {
+      const toolName = safeHarnessName(event.toolName);
       const detail = toolArgSummary(event.args);
+      if (typeof event.toolCallId === 'string' && event.toolCallId.trim()) {
+        this.pendingToolCalls.set(event.toolCallId, { toolName, detail });
+      }
       return {
         kind: 'skill',
-        text: `Executor started tool: ${safeHarnessName(event.toolName)}${detail ? ` — ${detail}` : ''}`,
+        text: formatToolStart(toolName, detail),
       };
     }
     if (event.type === 'tool_execution_end') {
-      const detail = toolArgSummary(event.args);
+      const toolCallId = typeof event.toolCallId === 'string' ? event.toolCallId : '';
+      const pending = toolCallId ? this.pendingToolCalls.get(toolCallId) : undefined;
+      const toolName = safeHarnessName(event.toolName || pending?.toolName);
+      const detail = toolArgSummary(event.args) || pending?.detail || '';
+      if (toolCallId) this.pendingToolCalls.delete(toolCallId);
+      const result = toolResultSummary(event.result);
       return {
         kind: 'skill',
-        text: `Executor ${event.isError === true ? 'failed' : 'completed'} tool: ${safeHarnessName(event.toolName)}${detail ? ` — ${detail}` : ''}`,
+        text: formatToolEnd(toolName, detail, result, event.isError === true),
       };
     }
     if (event.type === 'tool_execution_update') {
-      const text = assistantMessageText(event.partialResult);
-      return text ? { kind: 'log', text: `Executor tool progress: ${executorActivityExcerpt(text)}` } : null;
-    }
-    if (event.type === 'turn_end') {
-      return { kind: 'status', text: 'Executor processing cycle completed' };
-    }
-    if (event.type === 'agent_end') {
-      return { kind: 'status', text: 'Executor agent loop completed' };
-    }
-    if (event.type === 'agent_settled') {
-      return { kind: 'status', text: 'Executor process settled' };
+      const text = toolResultSummary(event.partialResult);
+      return text ? { kind: 'log', text: `Executor tool progress:\n${text}` } : null;
     }
     return null;
   }
@@ -557,10 +547,69 @@ function toolArgSummary(args: unknown): string {
   for (const key of TOOL_ARG_KEYS) {
     const value = record[key];
     if (typeof value === 'string' && value.trim()) {
-      return executorActivityExcerpt(value, 120);
+      return executorActivityExcerpt(value, 500);
     }
   }
   return '';
+}
+
+function formatToolStart(toolName: string, detail: string): string {
+  if (!detail) return `Executor started tool: ${toolName}`;
+  const label = toolName === 'bash' ? 'Command' : 'Input';
+  return `Executor started tool: ${toolName}\n${label}: ${detail}`;
+}
+
+function formatToolEnd(toolName: string, detail: string, result: string, failed: boolean): string {
+  const lines = [`Executor ${failed ? 'failed' : 'completed'} tool: ${toolName}`];
+  if (detail) lines.push(`${toolName === 'bash' ? 'Command' : 'Input'}: ${detail}`);
+  lines.push(`Return: ${result || 'no output'}`);
+  return lines.join('\n');
+}
+
+/** Extract the useful, user-visible portion of Pi's tool result envelope. */
+function toolResultSummary(value: unknown): string {
+  if (value === undefined || value === null) return '';
+  if (typeof value === 'string') return executorResultExcerpt(value);
+  if (typeof value !== 'object' || Array.isArray(value)) {
+    return executorResultExcerpt(JSON.stringify(value) ?? String(value));
+  }
+
+  const record = value as Record<string, unknown>;
+  const content = Array.isArray(record.content)
+    ? record.content
+      .map(item => {
+        if (typeof item === 'string') return item;
+        if (!item || typeof item !== 'object' || Array.isArray(item)) return '';
+        const itemRecord = item as Record<string, unknown>;
+        return typeof itemRecord.text === 'string'
+          ? itemRecord.text
+          : typeof itemRecord.content === 'string' ? itemRecord.content : '';
+      })
+      .filter(Boolean)
+      .join('\n')
+    : '';
+  const output = [
+    content,
+    ...['stdout', 'stderr', 'output', 'error', 'errorMessage', 'text']
+      .map(key => typeof record[key] === 'string' ? String(record[key]) : '')
+      .filter(Boolean),
+  ].filter(Boolean).join('\n');
+  if (output) return executorResultExcerpt(output);
+
+  try {
+    return executorResultExcerpt(JSON.stringify(value));
+  } catch {
+    return '[unserializable tool result]';
+  }
+}
+
+/** Redact while preserving line breaks so stdout/stderr remains readable. */
+function executorResultExcerpt(value: string, limit = 1200): string {
+  const normalized = redactSensitiveText(value.trim());
+  if (normalized.length <= limit) return normalized;
+  const tailLength = Math.min(320, Math.floor(limit / 3));
+  const headLength = limit - tailLength - 32;
+  return `${normalized.slice(0, headLength)}\n… [output truncated] …\n${normalized.slice(-tailLength)}`;
 }
 
 /** 脱敏 + 压缩空白 + 截断：Executor 活动文本进入用户可见进度的唯一通道。 */

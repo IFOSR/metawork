@@ -1,3 +1,4 @@
+import { resolveDerivedContent } from '../storage/conversation-content-references.js';
 import { createHash } from 'node:crypto';
 import type Database from 'better-sqlite3';
 import { TaskEventRepo } from '../storage/task-event-repo.js';
@@ -16,6 +17,7 @@ export class ExecutionEvidenceIdentityError extends Error {
 
 export type ExecutionEvidenceKind =
   | 'user_input'
+  | 'task_instruction'
   | 'task_resource'
   | 'task_evidence'
   /** Long-term memory recalled from the memory engine (design §10). */
@@ -56,6 +58,7 @@ interface EvidenceRow {
   source_id: string | null;
   title: string;
   content: string;
+  content_ref?: string | null;
   exact_only: number;
   created_at: string;
 }
@@ -82,13 +85,16 @@ export class TaskExecutionEvidenceRepo {
     exactOnly?: boolean;
     createdAt?: string;
   }): void {
+    const referenceColumn = ['user_input', 'task_instruction'].includes(input.kind) ? 'input_content_ref' : input.kind === 'assistant_ref' ? 'output_content_ref' : null;
+    const reference = referenceColumn && input.sourceId ? (this.db.prepare(`SELECT ${referenceColumn} AS ref FROM interactions WHERE id = ?`)
+      .get(input.sourceId) as { ref: string | null } | undefined)?.ref ?? null : null;
     const result = this.db.prepare(`
       INSERT INTO task_execution_evidence (
-        id, task_id, kind, source_id, title, content, exact_only, created_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        id, task_id, kind, source_id, title, content, exact_only, created_at, content_ref
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
       ON CONFLICT(task_id, id) DO UPDATE SET
         title = excluded.title,
-        content = excluded.content
+        content = excluded.content, content_ref = excluded.content_ref
       WHERE task_execution_evidence.kind = excluded.kind
         AND task_execution_evidence.source_id IS excluded.source_id
         AND task_execution_evidence.exact_only = excluded.exact_only
@@ -98,25 +104,31 @@ export class TaskExecutionEvidenceRepo {
       input.kind,
       input.sourceId ?? null,
       input.title,
-      input.content,
+      reference ? '' : input.content,
       input.exactOnly ? 1 : 0,
       input.createdAt ?? new Date().toISOString(),
+      reference,
     );
     if (result.changes !== 1) throw new ExecutionEvidenceIdentityError(input.id);
   }
 
   findForTask(taskId: string, evidenceId: string): EvidenceRow | null {
-    return this.db.prepare(`
+    const row = this.db.prepare(`
       SELECT * FROM task_execution_evidence WHERE task_id = ? AND id = ?
-    `).get(taskId, evidenceId) as EvidenceRow | undefined ?? null;
+    `).get(taskId, evidenceId) as EvidenceRow | undefined;
+    return row ? this.hydrate(row) : null;
   }
 
   listGeneral(taskId: string): EvidenceRow[] {
-    return this.db.prepare(`
+    return (this.db.prepare(`
       SELECT * FROM task_execution_evidence
       WHERE task_id = ? AND exact_only = 0
       ORDER BY created_at ASC, id ASC
-    `).all(taskId) as EvidenceRow[];
+    `).all(taskId) as EvidenceRow[]).map(row => this.hydrate(row));
+  }
+
+  private hydrate(row: EvidenceRow): EvidenceRow {
+    return row.content_ref ? { ...row, content: resolveDerivedContent(this.db, row.content_ref) } : row;
   }
 
   listTaskEvidenceByGeneration(taskId: string, generationId: string): TaskEvidenceRecord[] {
@@ -160,7 +172,7 @@ export class TaskExecutionEvidenceRepo {
     this.upsert({
       id: evidenceId,
       taskId: input.taskId,
-      kind: input.side === 'assistant' ? 'assistant_ref' : 'user_input',
+      kind: input.side === 'assistant' ? 'assistant_ref' : row.input_kind === 'task_instruction' ? 'task_instruction' : 'user_input',
       sourceId: row.id,
       title: `${input.side} interaction ${row.id}`,
       content: input.side === 'user' ? row.user_input : row.system_output,

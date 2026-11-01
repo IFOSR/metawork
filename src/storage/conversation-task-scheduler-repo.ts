@@ -1,3 +1,4 @@
+import { resolveDerivedContent, storeDerivedContent } from './conversation-content-references.js';
 import { randomUUID } from 'node:crypto';
 import { selectTaskDispatches, type SchedulerPriority } from '../kernel/task-scheduler.js';
 import type Database from 'better-sqlite3';
@@ -329,6 +330,16 @@ export class ConversationTaskSchedulerRepo {
       : reasonOrPayload.schedulingReason ?? 'conversation_slot_occupied';
     const queuedPayload = typeof reasonOrPayload === 'string' ? payload : reasonOrPayload;
     this.ensureSlot(conversationId, now);
+    let storedPayload: unknown = queuedPayload ?? {};
+    const owner = this.db.prepare('SELECT account_id FROM tasks WHERE id = ?').get(taskId) as { account_id: string } | undefined;
+    if (owner && queuedPayload?.requestText) {
+      const source = queuedPayload.queryId ? this.db.prepare('SELECT turn_id FROM query_usage_contexts WHERE query_id = ?')
+        .get(queuedPayload.queryId) as { turn_id: string | null } | undefined : undefined;
+      const ref = storeDerivedContent(this.db, { accountId: owner.account_id, conversationId,
+        turnId: source?.turn_id ?? null, kind: 'queued_task_request', text: queuedPayload.requestText });
+      const { requestText: _text, ...metadata } = queuedPayload;
+      storedPayload = { ...metadata, requestTextRef: ref };
+    }
     this.db.prepare(`
       INSERT INTO task_schedule_entries (
         task_id, conversation_id, state, enqueued_at, eligible_since, scheduling_reason, payload_json
@@ -339,7 +350,7 @@ export class ConversationTaskSchedulerRepo {
         enqueued_at = excluded.enqueued_at, eligible_since = excluded.eligible_since,
         scheduling_reason = excluded.scheduling_reason,
         payload_json = excluded.payload_json
-    `).run(taskId, conversationId, now, now, reason, JSON.stringify(queuedPayload ?? {}));
+    `).run(taskId, conversationId, now, now, reason, JSON.stringify(storedPayload));
   }
 
   getQueuedPayload(taskId: string): QueuedTaskPayload | null {
@@ -347,7 +358,9 @@ export class ConversationTaskSchedulerRepo {
       SELECT payload_json FROM task_schedule_entries WHERE task_id = ?
     `).get(taskId) as { payload_json: string } | undefined;
     if (!row) return null;
-    return JSON.parse(row.payload_json) as QueuedTaskPayload;
+    const value = JSON.parse(row.payload_json) as QueuedTaskPayload & { requestTextRef?: string };
+    if (value.requestTextRef) value.requestText = resolveDerivedContent(this.db, value.requestTextRef);
+    return value;
   }
 
   getQueuedReason(taskId: string): string | null {

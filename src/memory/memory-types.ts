@@ -22,6 +22,8 @@ export interface MemoryTurnCandidate {
   sequence: number;
   userInput: string;
   assistantAnswer: string;
+  inputHash?: string;
+  answerHash?: string;
   completedAt: string;
 }
 
@@ -33,7 +35,7 @@ export interface MemoryFlushBatch {
 }
 
 /** Where a memory asset came from. */
-export type MemoryAssetSource = 'conversation' | 'sanitized';
+export type MemoryAssetSource = 'conversation' | 'sanitized' | 'profile';
 
 /** A memory atom as surfaced to Planner and the management view. */
 export interface MemoryAsset {
@@ -51,6 +53,38 @@ export interface MemoryAsset {
   /** Provenance label only; never an isolation boundary. */
   workspaceId: string | null;
   enabled: boolean;
+  layer?: MemoryLayer;
+  revision?: string;
+  title?: string;
+}
+
+export type MemoryLayer = 'l1' | 'l2' | 'l3';
+
+export interface MemoryRecallItem {
+  memoryId: string;
+  layer: MemoryLayer;
+  title: string;
+  preview: string;
+  revision?: string;
+  score: number;
+  updatedAt: string | null;
+  source: 'conversation' | 'sanitized' | 'profile';
+}
+
+export type MemoryLayerStatus = 'available' | 'empty' | 'degraded';
+
+export interface MemoryLayerRecall {
+  status: MemoryLayerStatus;
+  reason?: string;
+  durationMs?: number;
+  candidateCount?: number;
+  items: readonly MemoryRecallItem[];
+}
+
+export interface LayeredMemoryRecall {
+  l1: MemoryLayerRecall;
+  l2: MemoryLayerRecall;
+  l3: MemoryLayerRecall;
 }
 
 /** A memory candidate returned by search, before it is bound locally. */
@@ -62,6 +96,7 @@ export interface MemorySearchCandidate {
   createdAt: string;
   updatedAt: string;
   score: number;
+  revision?: string;
 }
 
 /** Result of a recall request. */
@@ -90,6 +125,9 @@ export interface MemoryMaterialization {
   background: string | null;
   createdAt: string;
   updatedAt: string;
+  revision?: string;
+  layer?: MemoryLayer;
+  title?: string;
 }
 
 /** Management view of one bound asset. */
@@ -104,6 +142,9 @@ export interface MemoryAssetSummary {
   confidence: number | null;
   createdAt: string;
   updatedAt: string;
+  layer?: MemoryLayer;
+  title?: string;
+  revision?: string | null;
 }
 
 /** Errors raised by the memory port. */

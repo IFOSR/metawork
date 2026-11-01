@@ -1,3 +1,4 @@
+import { verifyInteractionContent } from '../storage/conversation-content-references.js';
 import {
   closeSync,
   chmodSync,
@@ -376,18 +377,19 @@ export class SubtaskExecutionContextBuilder {
 
   private syncTaskEvidenceCatalog(task: Task): void {
     const interactions = this.db.prepare(`
-      SELECT id, user_input, created_at
-      FROM interactions
+      SELECT id, user_input, input_kind, created_at
+      FROM interaction_contents
       WHERE task_id = ? AND TRIM(COALESCE(user_input, '')) <> ''
       ORDER BY created_at ASC, id ASC
-    `).all(task.id) as Array<{ id: string; user_input: string; created_at: string }>;
-    for (const interaction of interactions) {
+    `).all(task.id) as Array<{ id: string; user_input: string; input_kind: string | null; created_at: string }>;
+    for (const raw of interactions) {
+      const interaction = verifyInteractionContent(this.db, raw);
       this.evidenceRepo.upsert({
         id: createEvidenceId('user_interaction', interaction.id),
         taskId: task.id,
-        kind: 'user_input',
+        kind: interaction.input_kind === 'task_instruction' ? 'task_instruction' : 'user_input',
         sourceId: interaction.id,
-        title: `User interaction ${interaction.id}`,
+        title: `${interaction.input_kind === 'task_instruction' ? 'Derived task instruction' : 'User interaction'} ${interaction.id}`,
         content: interaction.user_input,
         createdAt: interaction.created_at,
       });
@@ -597,7 +599,7 @@ export class SubtaskExecutionContextBuilder {
       // Long-term memory is materialized by the Runtime before the attempt
       // starts. If it is missing, the evidence is unavailable and the attempt
       // fails explicitly — an empty body is never passed off as evidence.
-      evidenceId = createEvidenceId('long_term_memory', ref.memoryId);
+      evidenceId = createEvidenceId('long_term_memory', ref.revision ? `${ref.memoryId}:${ref.revision}` : ref.memoryId);
       const row = this.evidenceRepo.findForTask(task.id, evidenceId);
       if (!row || row.kind !== 'long_term_memory') {
         throw new Error(`memory_not_authorized: ${ref.memoryId}`);

@@ -6,7 +6,7 @@ function legacyDatabase() {
   const db = new Database(':memory:');
   db.pragma('foreign_keys = ON');
   runMigrations(db);
-  db.exec(`DROP TABLE workspace_publication_deliveries; UPDATE schema_version SET version = 48;
+  db.exec(`DROP TABLE workspace_publication_deliveries; DROP VIEW IF EXISTS conversation_memory_turns; UPDATE schema_version SET version = 48;
     INSERT INTO tasks (id, title, goal, status, created_at, updated_at) VALUES ('historical', 'History', 'Keep history intact', 'succeeded', '2026-10-14', '2026-10-14');`);
   return db;
 }

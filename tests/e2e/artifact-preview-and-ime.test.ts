@@ -572,7 +572,7 @@ async function startMockServer(webDist: string): Promise<{
     if (url.pathname === '/api/workspaces/workspace-1/conversations') {
       json(response, {
         activeWorkspaceId: 'workspace-1',
-        activeConversationId: 'session-1',
+        currentConversationId: 'session-1',
         conversations: [{
           id: 'session-1',
           workspaceId: 'workspace-1',

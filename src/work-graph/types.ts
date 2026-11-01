@@ -26,7 +26,7 @@ export type ContextRef =
    * Long-term memory recalled from the memory engine. Reaches the Executor only
    * through the evidence channel; it is never spliced into the prompt body.
    */
-  | { kind: 'memory'; memoryId: string };
+  | { kind: 'memory'; memoryId: string; revision?: string };
 
 export interface WorkGraphAcceptanceCriterion {
   key: string;

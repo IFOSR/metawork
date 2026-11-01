@@ -1,3 +1,4 @@
+import { encodeKernelEvent, decodeKernelEvent } from './kernel-event-content.js';
 import type Database from 'better-sqlite3';
 import type { KernelDecision, KernelDecisionAction, KernelEvent } from '../kernel/control-kernel.js';
 import type {
@@ -40,7 +41,7 @@ export class KernelWorkflowRepo implements KernelWorkflowStore {
     const row = this.db.prepare(`SELECT schema_version, event_json FROM kernel_events
       WHERE event_type = 'permission_resolution_received' AND correlation_id = ?
       ORDER BY rowid LIMIT 1`).get(requestId) as { schema_version: number; event_json: string } | undefined;
-    const event = row ? parseCurrentEvent(row.event_json, row.schema_version) : null;
+    const event = row ? parseCurrentEvent(decodeKernelEvent(this.db, row.event_json), row.schema_version) : null;
     return event?.type === 'permission_resolution_received' ? event : null;
   }
 
@@ -85,7 +86,7 @@ export class KernelWorkflowRepo implements KernelWorkflowStore {
   findEvent(id: string): KernelEvent | null {
     const row = this.db.prepare('SELECT schema_version, event_json FROM kernel_events WHERE id = ?')
       .get(id) as { schema_version: number; event_json: string } | undefined;
-    return row ? parseCurrentEvent(row.event_json, row.schema_version) : null;
+    return row && row.event_json !== '{}' ? parseCurrentEvent(decodeKernelEvent(this.db, row.event_json), row.schema_version) : null;
   }
 
   findApplicationByDecisionId(decisionId: string): KernelDecisionApplicationRecord | null {
@@ -102,7 +103,7 @@ export class KernelWorkflowRepo implements KernelWorkflowStore {
       ORDER BY created_at ASC, id ASC
     `).all(taskId) as Array<{ schema_version: number; event_json: string }>;
     return rows
-      .map(row => parseCurrentEvent(row.event_json, row.schema_version))
+      .map(row => parseCurrentEvent(decodeKernelEvent(this.db, row.event_json), row.schema_version))
       .filter((event): event is Extract<KernelEvent, { type: 'capacity_signal' }> => (
         event.type === 'capacity_signal' && event.cycleId === cycleId
       ));
@@ -117,7 +118,7 @@ export class KernelWorkflowRepo implements KernelWorkflowStore {
     const claim = this.db.transaction(() => {
       const row = this.db.prepare(`
         SELECT id, schema_version, event_json FROM kernel_events
-        WHERE status = 'pending' AND available_at <= ?${eventFilter}${taskFilter}
+        WHERE status = 'pending' AND event_json <> '{}' AND available_at <= ?${eventFilter}${taskFilter}
         ORDER BY available_at ASC, created_at ASC, id ASC
         LIMIT 1
       `).get(now, ...(eventTypes ?? []), ...(taskId ? [taskId] : []), ...(correlationId ? [correlationId] : [])) as {
@@ -126,7 +127,7 @@ export class KernelWorkflowRepo implements KernelWorkflowStore {
         event_json: string;
       } | undefined;
       if (!row) return null;
-      const event = parseCurrentEvent(row.event_json, row.schema_version);
+      const event = parseCurrentEvent(decodeKernelEvent(this.db, row.event_json), row.schema_version);
       const result = this.db.prepare(`
         UPDATE kernel_events
         SET status = 'processing', processing_started_at = ?, updated_at = ?
@@ -179,7 +180,7 @@ export class KernelWorkflowRepo implements KernelWorkflowStore {
       SELECT application.*, decision.decision_json,
              decision.schema_version AS decision_schema_version
       FROM kernel_decision_applications application
-      JOIN kernel_decisions decision ON decision.id = application.decision_id
+      JOIN kernel_decisions decision ON decision.id = application.decision_id AND decision.decision_json <> '{}'
       WHERE application.status = 'pending'${actionFilter}${taskFilter}
       ORDER BY application.created_at ASC, application.id ASC
     `).all(...(actions ?? []), ...(taskId ? [taskId] : []), ...(correlationId ? [correlationId] : [])) as ApplicationRow[];
@@ -201,7 +202,7 @@ export class KernelWorkflowRepo implements KernelWorkflowStore {
       SELECT application.*, decision.decision_json,
              decision.schema_version AS decision_schema_version
       FROM kernel_decision_applications application
-      JOIN kernel_decisions decision ON decision.id = application.decision_id
+      JOIN kernel_decisions decision ON decision.id = application.decision_id AND decision.decision_json <> '{}'
       WHERE application.status = 'uncertain'${actionFilter}${taskFilter}
       ORDER BY application.created_at ASC, application.id ASC
     `).all(...(actions ?? []), ...(taskId ? [taskId] : [])) as ApplicationRow[];
@@ -346,7 +347,7 @@ export class KernelWorkflowRepo implements KernelWorkflowStore {
       ) OR EXISTS (
         SELECT 1
         FROM kernel_decision_applications application
-        JOIN kernel_decisions decision ON decision.id = application.decision_id
+        JOIN kernel_decisions decision ON decision.id = application.decision_id AND decision.decision_json <> '{}'
         WHERE decision.task_id = ? AND application.status <> 'applied'
       )
     `).get(taskId, taskId) as { present: number } | undefined;
@@ -358,7 +359,7 @@ export class KernelWorkflowRepo implements KernelWorkflowStore {
       SELECT application.*, decision.decision_json,
              decision.schema_version AS decision_schema_version
       FROM kernel_decision_applications application
-      JOIN kernel_decisions decision ON decision.id = application.decision_id
+      JOIN kernel_decisions decision ON decision.id = application.decision_id AND decision.decision_json <> '{}'
       WHERE decision.task_id = ? AND application.status IN ('uncertain', 'failed')
       ORDER BY application.created_at ASC, application.id ASC
     `).all(taskId) as ApplicationRow[];
@@ -370,7 +371,7 @@ export class KernelWorkflowRepo implements KernelWorkflowStore {
       SELECT application.*, decision.decision_json,
              decision.schema_version AS decision_schema_version
       FROM kernel_decision_applications application
-      JOIN kernel_decisions decision ON decision.id = application.decision_id
+      JOIN kernel_decisions decision ON decision.id = application.decision_id AND decision.decision_json <> '{}'
       WHERE application.id = ? AND application.status IN ('uncertain', 'failed')
     `).get(id) as ApplicationRow | undefined;
     return row ? rowToApplication(row) : null;
@@ -408,7 +409,7 @@ export class KernelWorkflowRepo implements KernelWorkflowStore {
       event.taskId ?? null,
       event.subtaskId ?? null,
       event.attemptId ?? null,
-      JSON.stringify(event),
+      encodeKernelEvent(this.db, event),
       availableAt,
       event.configurationRevision,
       event.occurredAt,
@@ -422,7 +423,7 @@ export class KernelWorkflowRepo implements KernelWorkflowStore {
       SELECT application.*, decision.decision_json,
              decision.schema_version AS decision_schema_version
       FROM kernel_decision_applications application
-      JOIN kernel_decisions decision ON decision.id = application.decision_id
+      JOIN kernel_decisions decision ON decision.id = application.decision_id AND decision.decision_json <> '{}'
       WHERE application.decision_id = ?
     `).get(decisionId) as ApplicationRow | undefined;
     return row ? rowToApplication(row) : null;

@@ -1,3 +1,4 @@
+import { encodeKernelEvent, decodeKernelEvent } from './kernel-event-content.js';
 import type Database from 'better-sqlite3';
 import type { AuthorizedExecutorBinding } from '../core/authorized-executor-binding.js';
 import type { KernelDecision, KernelEvent, KernelSnapshot } from '../kernel/control-kernel.js';
@@ -60,7 +61,7 @@ export class KernelDecisionRepo {
     `).run(
       record.id, record.schemaVersion, record.eventId, record.eventType,
       record.correlationId, record.causationId, record.sessionId, record.taskId,
-      record.subtaskId, record.attemptId, JSON.stringify(record.event),
+      record.subtaskId, record.attemptId, encodeKernelEvent(this.db, record.event),
       JSON.stringify(record.snapshot), JSON.stringify(record.decision), record.action,
       record.reason, record.configurationRevision, JSON.stringify(record.authorizedBindings),
       JSON.stringify(record.bindingFingerprints), record.createdAt,
@@ -85,31 +86,31 @@ export class KernelDecisionRepo {
 
   findByEventId(eventId: string): RevisionedKernelDecisionLedgerRecord | null {
     const row = this.db.prepare('SELECT * FROM kernel_decisions WHERE event_id = ?').get(eventId) as KernelDecisionRow | undefined;
-    return row ? rowToRecord(row) : null;
+    return row ? rowToRecord(row, this.db) : null;
   }
 
   findById(decisionId: string): RevisionedKernelDecisionLedgerRecord | null {
     const row = this.db.prepare('SELECT * FROM kernel_decisions WHERE id = ?')
       .get(decisionId) as KernelDecisionRow | undefined;
-    return row ? rowToRecord(row) : null;
+    return row ? rowToRecord(row, this.db) : null;
   }
 
   listBySession(sessionId: string): RevisionedKernelDecisionLedgerRecord[] {
     return (this.db.prepare(`
       SELECT * FROM kernel_decisions WHERE session_id = ? ORDER BY created_at ASC, id ASC
-    `).all(sessionId) as KernelDecisionRow[]).map(rowToRecord);
+    `).all(sessionId) as KernelDecisionRow[]).map(row => rowToRecord(row, this.db));
   }
 
   listByCorrelation(correlationId: string): RevisionedKernelDecisionLedgerRecord[] {
     return (this.db.prepare(`
       SELECT * FROM kernel_decisions WHERE correlation_id = ? ORDER BY created_at ASC, id ASC
-    `).all(correlationId) as KernelDecisionRow[]).map(rowToRecord);
+    `).all(correlationId) as KernelDecisionRow[]).map(row => rowToRecord(row, this.db));
   }
 
   listByTask(taskId: string): RevisionedKernelDecisionLedgerRecord[] {
     return (this.db.prepare(`
       SELECT * FROM kernel_decisions WHERE task_id = ? ORDER BY created_at ASC, id ASC
-    `).all(taskId) as KernelDecisionRow[]).map(rowToRecord);
+    `).all(taskId) as KernelDecisionRow[]).map(row => rowToRecord(row, this.db));
   }
 
   /**
@@ -172,7 +173,8 @@ export class KernelDecisionRepo {
       task_id: string; schema_version: number; decision_schema: number;
       graph_revision: number; subtask_ids_json: string;
     }[];
-    return rows.map(row => {
+    return rows.filter(row => !this.db.prepare(`SELECT 1 FROM tasks t JOIN conversation_deletions d
+      ON d.account_id = t.account_id AND d.conversation_id = t.conversation_id WHERE t.id = ?`).get(row.task_id)).map(row => {
       assertCurrentSchema(row.schema_version, 'decision');
       assertCurrentSchema(row.decision_schema, 'decision');
       const subtaskIds: unknown = JSON.parse(row.subtask_ids_json);
@@ -199,7 +201,7 @@ export class KernelDecisionRepo {
               OR (later.created_at = decision.created_at AND later.id > decision.id))
         )
       ORDER BY decision.created_at ASC, decision.id ASC
-    `).all(action) as KernelDecisionRow[]).map(rowToRecord);
+    `).all(action) as KernelDecisionRow[]).map(row => rowToRecord(row, this.db));
   }
 
   /** Read-model identities only; never deserialize immutable control payloads. */
@@ -222,9 +224,13 @@ export class KernelDecisionRepo {
   }
 }
 
-function rowToRecord(row: KernelDecisionRow): RevisionedKernelDecisionLedgerRecord {
+function rowToRecord(row: KernelDecisionRow, db: Database.Database): RevisionedKernelDecisionLedgerRecord {
+  if (row.task_id && db.prepare(`SELECT 1 FROM tasks t JOIN conversation_deletions d
+    ON d.account_id = t.account_id AND d.conversation_id = t.conversation_id WHERE t.id = ?`).get(row.task_id)) {
+    throw new Error('conversation_deleted');
+  }
   assertCurrentSchema(row.schema_version, 'decision');
-  const event = parseCurrentKernelValue<KernelEvent>(row.event_json, 'event');
+  const event = parseCurrentKernelValue<KernelEvent>(decodeKernelEvent(db, row.event_json), 'event');
   const snapshot = parseCurrentKernelValue<KernelSnapshot>(row.snapshot_json, 'snapshot');
   const decision = parseCurrentKernelValue<KernelDecision>(row.decision_json, 'decision');
   return {

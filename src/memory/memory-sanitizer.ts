@@ -50,6 +50,7 @@ export class MemorySanitizer {
    * which keeps the content out of the engine entirely.
    */
   sanitize(content: string): MemorySanitizeResult {
+    if (!content.length) return { status: 'refused', content: '', reasons: ['empty_content'] };
     const reasons = new Set<string>();
     let sanitized = content;
 

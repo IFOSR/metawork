@@ -91,6 +91,8 @@ describe('Task result action presentation', () => {
       mode: 'worktree', state: 'failed', stateLabel: '发布失败',
       files: ['src/server.ts'], conflicts: ['package.json'],
     });
+    expect(html).toContain('Conversation Worktree 执行');
+    expect(html).not.toContain('目标 Workspace 就地执行');
     expect(html).not.toContain('接受并交付');
     expect(html).not.toContain('重新执行');
   });

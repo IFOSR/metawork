@@ -139,8 +139,9 @@ export function collectDetailEvents(
 ): InteractionTraceEvent[] {
   const events = traceEvents.filter(event => {
     const details = event.details as Record<string, unknown> | undefined;
-    return event.subtaskId === subtaskId
-      || (Boolean(details) && details?.subtaskId === subtaskId);
+    return event.kind !== 'executor_heartbeat'
+      && (event.subtaskId === subtaskId
+        || (Boolean(details) && details?.subtaskId === subtaskId));
   });
   // Trace and the bounded runtime history are projections of the same progress
   // stream, with independently recorded timestamps. Prefer the trace per attempt;
@@ -157,6 +158,7 @@ export function collectDetailEvents(
   for (const attempt of subtask?.attempts ?? []) {
     if (attempt.attemptId && tracedAttempts.has(attempt.attemptId)) continue;
     for (const [index, progress] of (attempt.progressHistory ?? []).entries()) {
+      if (progress.kind === 'heartbeat') continue;
       durableEvents.push({
         id: `durable:${attempt.attemptId ?? subtaskId}:${index}:${progress.occurredAt}`,
         cursor: `durable:${attempt.attemptId ?? subtaskId}:${index}`,
@@ -168,9 +170,9 @@ export function collectDetailEvents(
         occurredAt: progress.occurredAt,
         phase: 'execution',
         actor: 'executor',
-        kind: progress.kind === 'heartbeat' ? 'executor_heartbeat' : 'executor_progress',
+        kind: 'executor_progress',
         status: 'running',
-        title: progress.kind === 'heartbeat' ? 'Executor 心跳' : 'Executor 进度',
+        title: 'Executor 进度',
         summary: progress.text,
         details: {
           subtaskId,

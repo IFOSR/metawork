@@ -15,6 +15,185 @@ const runBrowserE2e = process.env.RUN_BROWSER_E2E === '1';
 const e2e = runBrowserE2e ? describe : describe.skip;
 
 e2e('Settings workbench browser flow', () => {
+  it('keeps memory stable through parent polling and manages full filtered assets', async () => {
+    const root = resolve(fileURLToPath(new URL('../../', import.meta.url)));
+    const server = await startMockServer(join(root, 'web', 'dist'));
+    const profile = await mkdtemp(join(tmpdir(), 'settings-memory-pages-'));
+    const chrome = spawn(chromePath, ['--headless=new',
+      '--use-mock-keychain', '--disable-gpu', '--no-first-run',
+      '--no-default-browser-check', '--remote-debugging-port=0', `--user-data-dir=${profile}`,
+      `http://127.0.0.1:${server.port}/`], { stdio: 'ignore' });
+    try {
+      const target = await waitForPageTarget(await waitForDebuggingPort(profile));
+      const cdp = await CdpClient.connect(target.webSocketDebuggerUrl);
+      try {
+        await waitForExpression(cdp, `Boolean(document.querySelector('.sidebar-settings'))`);
+        await cdp.evaluate(`(() => {
+          const original = window.fetch.bind(window);
+          window.memoryReads = 0;
+          window.fetch = (url, options) => {
+            if (String(url).includes('/api/memory/')) window.memoryReads++;
+            return original(url, options);
+          };
+          document.querySelector('.sidebar-settings').click();
+        })()`);
+        await waitForExpression(cdp, `Boolean(document.querySelector('.advanced-settings .memory-panel'))`);
+        expect(await cdp.evaluate(`document.querySelector('.advanced-settings').open`)).toBe(false);
+        await cdp.evaluate(`document.querySelector('.advanced-settings > summary').click()`);
+        expect(await cdp.evaluate(`document.querySelector('.advanced-settings .memory-row')?.checkVisibility() ?? document.querySelector('.advanced-settings').open`)).toBe(true);
+        await waitForExpression(cdp, `document.querySelectorAll('.memory-row').length === 50 && !document.querySelector('.memory-refresh').disabled`);
+        const reads = await cdp.evaluate('window.memoryReads');
+        await delay(30_000);
+        expect(await cdp.evaluate('window.memoryReads')).toBe(reads);
+        expect(await cdp.evaluate(`document.querySelector('.memory-refresh').textContent`)).toBe('刷新');
+        const nextPage = `[...document.querySelectorAll('.memory-pagination button')].find(b => b.textContent.trim() === '下一页')`;
+        await cdp.evaluate(`${nextPage}.click()`);
+        await waitForExpression(cdp, `document.querySelector('.memory-pagination').textContent.includes('第 2 页') && !document.querySelector('.memory-refresh').disabled`);
+        await cdp.evaluate(`${nextPage}.click()`);
+        await waitForExpression(cdp, `document.querySelectorAll('.memory-row').length === 21 && !document.querySelector('.memory-refresh').disabled`);
+        await delay(10_000);
+        expect(await cdp.evaluate(`document.querySelector('.memory-pagination').textContent`)).toContain('第 3 页');
+        await cdp.evaluate(`(() => {
+          const input = document.querySelector('[aria-label="搜索记忆内容"]');
+          Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set.call(input, '全文末尾关键词');
+          input.dispatchEvent(new Event('input', { bubbles: true }));
+        })()`);
+        await waitForExpression(cdp, `document.querySelectorAll('.memory-row').length === 1 && !document.querySelector('.memory-refresh').disabled`);
+        expect(await cdp.evaluate(`document.querySelector('.memory-list-summary').textContent`)).toContain('找到 1 条，共 121 条');
+        await cdp.evaluate(`document.querySelector('.memory-row').click()`);
+        await waitForExpression(cdp, `document.querySelector('.memory-full-content')?.textContent.includes('全文末尾关键词')`);
+        expect(await cdp.evaluate(`document.querySelector('.memory-full-content').textContent.length`)).toBeGreaterThan(240);
+        await cdp.evaluate(`document.querySelector('.memory-usage-toggle input').click()`);
+        await waitForExpression(cdp, `!document.querySelector('.memory-usage-toggle input').checked && !document.querySelector('.memory-usage-toggle input').disabled`);
+        await cdp.evaluate(`document.querySelector('.memory-detail-dialog .memory-delete').click()`);
+        await waitForExpression(cdp, `document.querySelector('.memory-delete-dialog').open`);
+        await cdp.evaluate(`document.querySelector('.memory-delete-actions .ghost-button').click()`);
+        expect(await cdp.evaluate(`document.querySelector('.memory-full-content').textContent.includes('全文末尾关键词')`)).toBe(true);
+        await cdp.evaluate(`document.querySelector('.memory-detail-dialog .memory-delete').click()`);
+        await waitForExpression(cdp, `document.querySelector('.memory-delete-dialog').open`);
+        await cdp.evaluate(`document.querySelector('.memory-delete-confirm').click()`);
+        await waitForExpression(cdp, `!document.querySelector('.memory-detail-dialog').open && document.querySelector('.memory-list-summary').textContent.includes('找到 0 条，共 120 条')`);
+        await cdp.evaluate(`document.querySelector('.memory-empty button').click()`);
+        await waitForExpression(cdp, `document.querySelectorAll('.memory-row').length === 50 && !document.querySelector('.memory-refresh').disabled`);
+        await cdp.send('Emulation.setDeviceMetricsOverride', { width: 390, height: 844, deviceScaleFactor: 1, mobile: true });
+        await cdp.evaluate(`document.querySelector('.memory-panel').scrollIntoView()`);
+        expect(await cdp.evaluate(`document.querySelector('.memory-panel').scrollWidth <= document.querySelector('.memory-panel').clientWidth`)).toBe(true);
+        await cdp.evaluate(`document.querySelector('.memory-row').click()`);
+        await waitForExpression(cdp, `Boolean(document.querySelector('.memory-full-content'))`);
+        expect(await cdp.evaluate(`document.querySelector('.memory-detail-dialog').scrollWidth <= innerWidth`)).toBe(true);
+      } finally { cdp.close(); }
+    } finally {
+      chrome.kill('SIGTERM'); await server.close();
+      await rm(profile, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+    }
+  }, 65_000);
+
+  it('keeps the latest memory search and existing content on network failures', async () => {
+    const root = resolve(fileURLToPath(new URL('../../', import.meta.url)));
+    const server = await startMockServer(join(root, 'web', 'dist'));
+    const profile = await mkdtemp(join(tmpdir(), 'settings-memory-network-'));
+    const chrome = spawn(chromePath, ['--headless=new', '--use-mock-keychain', '--disable-gpu',
+      '--no-first-run', '--no-default-browser-check', '--remote-debugging-port=0', `--user-data-dir=${profile}`,
+      `http://127.0.0.1:${server.port}/`], { stdio: 'ignore' });
+    try {
+      const cdp = await CdpClient.connect((await waitForPageTarget(await waitForDebuggingPort(profile))).webSocketDebuggerUrl);
+      try {
+        await waitForExpression(cdp, `Boolean(document.querySelector('.sidebar-settings'))`);
+        await cdp.evaluate(`document.querySelector('.sidebar-settings').click()`);
+        await waitForExpression(cdp, `Boolean(document.querySelector('.advanced-settings .memory-panel'))`);
+        expect(await cdp.evaluate(`document.querySelector('.advanced-settings').open`)).toBe(false);
+        await cdp.evaluate(`document.querySelector('.advanced-settings > summary').click()`);
+        expect(await cdp.evaluate(`document.querySelector('.advanced-settings .memory-row')?.checkVisibility() ?? document.querySelector('.advanced-settings').open`)).toBe(true);
+        await waitForExpression(cdp, `document.querySelectorAll('.memory-row').length === 50 && !document.querySelector('.memory-refresh').disabled`);
+        await cdp.evaluate(`(() => {
+          const original = window.fetch.bind(window);
+          window.assetRequests = 0;
+          window.fetch = (url, options) => {
+            const path = new URL(String(url), location.href);
+            if (path.pathname === '/api/memory/assets') {
+              window.assetRequests++;
+              if (window.failMemoryList) return Promise.reject(new Error('模拟断网'));
+              if (path.searchParams.get('q') === 'slow') {
+                window.slowStarted = true;
+                return new Promise(resolve => setTimeout(() => resolve(new Response(JSON.stringify({
+                  items: [], total: 0, unfilteredTotal: 121, mode: 'enabled', degraded: false,
+                }), { status: 200, headers: { 'Content-Type': 'application/json' } })), 1500));
+              }
+            }
+            if (window.failToggle && path.pathname.endsWith('/assets/enabled')) return Promise.reject(new Error('保存失败'));
+            if (window.memoryDisabled && path.pathname === '/api/memory/status') return Promise.resolve(new Response(JSON.stringify({
+              enabled: false, mode: 'disabled', engineReady: false, ftsAvailable: false, selectableProviders: [], providerRef: null, modelRef: null,
+            }), { status: 200, headers: { 'Content-Type': 'application/json' } }));
+            return original(url, options);
+          };
+          window.searchMemory = value => {
+            const input = document.querySelector('[aria-label="搜索记忆内容"]');
+            Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set.call(input, value);
+            input.dispatchEvent(new Event('input', { bubbles: true }));
+          };
+          window.searchMemory('slow');
+        })()`);
+        await waitForExpression(cdp, 'window.slowStarted');
+        await cdp.evaluate(`window.searchMemory('全文末尾关键词')`);
+        await waitForExpression(cdp, `document.querySelectorAll('.memory-row').length === 1 && !document.querySelector('.memory-refresh').disabled`);
+        await delay(1700);
+        expect(await cdp.evaluate(`document.querySelectorAll('.memory-row').length`)).toBe(1);
+        await cdp.evaluate(`window.failMemoryList = true; document.querySelector('.memory-refresh').click()`);
+        await waitForExpression(cdp, `document.querySelector('.memory-error')?.textContent.includes('刷新失败')`);
+        expect(await cdp.evaluate(`document.querySelectorAll('.memory-row').length`)).toBe(1);
+        await cdp.evaluate(`window.failMemoryList = false; document.querySelector('.memory-refresh').click()`);
+        await waitForExpression(cdp, `!document.querySelector('.memory-error') && !document.querySelector('.memory-refresh').disabled`);
+        await cdp.evaluate(`document.querySelector('.memory-row').click()`);
+        await waitForExpression(cdp, `Boolean(document.querySelector('.memory-full-content'))`);
+        await cdp.evaluate(`window.failToggle = true; document.querySelector('.memory-usage-toggle input').click()`);
+        await waitForExpression(cdp, `document.querySelector('.memory-detail-dialog .memory-error')?.textContent.includes('操作失败')`);
+        expect(await cdp.evaluate(`document.querySelector('.memory-usage-toggle input').checked`)).toBe(true);
+        await cdp.evaluate(`document.querySelector('.memory-detail-dialog header button').click(); window.memoryDisabled = true`);
+        const assetRequests = await cdp.evaluate('window.assetRequests');
+        await cdp.evaluate(`document.querySelector('.memory-refresh').click()`);
+        await waitForExpression(cdp, `document.querySelector('.memory-empty')?.textContent.includes('记忆已关闭')`);
+        expect(await cdp.evaluate('window.assetRequests')).toBe(assetRequests);
+      } finally { cdp.close(); }
+    } finally {
+      chrome.kill('SIGTERM'); await server.close();
+      await rm(profile, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+    }
+  }, 20_000);
+
+  it('returns to the previous memory page after deleting the last item', async () => {
+    const root = resolve(fileURLToPath(new URL('../../', import.meta.url)));
+    const server = await startMockServer(join(root, 'web', 'dist'), 'memory-last-page');
+    const profile = await mkdtemp(join(tmpdir(), 'settings-memory-last-'));
+    const chrome = spawn(chromePath, ['--headless=new', '--use-mock-keychain', '--disable-gpu',
+      '--no-first-run', '--no-default-browser-check', '--remote-debugging-port=0', `--user-data-dir=${profile}`,
+      `http://127.0.0.1:${server.port}/`], { stdio: 'ignore' });
+    try {
+      const cdp = await CdpClient.connect((await waitForPageTarget(await waitForDebuggingPort(profile))).webSocketDebuggerUrl);
+      try {
+        await waitForExpression(cdp, `Boolean(document.querySelector('.sidebar-settings'))`);
+        await cdp.evaluate(`document.querySelector('.sidebar-settings').click()`);
+        await waitForExpression(cdp, `Boolean(document.querySelector('.advanced-settings .memory-panel'))`);
+        expect(await cdp.evaluate(`document.querySelector('.advanced-settings').open`)).toBe(false);
+        await cdp.evaluate(`document.querySelector('.advanced-settings > summary').click()`);
+        expect(await cdp.evaluate(`document.querySelector('.advanced-settings .memory-row')?.checkVisibility() ?? document.querySelector('.advanced-settings').open`)).toBe(true);
+        await waitForExpression(cdp, `document.querySelectorAll('.memory-row').length === 50 && !document.querySelector('.memory-refresh').disabled`);
+        await cdp.evaluate(`[...document.querySelectorAll('.memory-pagination button')].find(b => b.textContent === '下一页').click()`);
+        await waitForExpression(cdp, `document.querySelectorAll('.memory-row').length === 1 && !document.querySelector('.memory-refresh').disabled`);
+        await cdp.evaluate(`document.querySelector('.memory-row').click()`);
+        await waitForExpression(cdp, `Boolean(document.querySelector('.memory-full-content'))`);
+        await cdp.evaluate(`document.querySelector('.memory-detail-dialog .memory-delete').click()`);
+        await waitForExpression(cdp, `document.querySelector('.memory-delete-dialog').open`);
+        await cdp.evaluate(`document.querySelector('.memory-delete-confirm').click()`);
+        await waitForExpression(cdp, `!document.querySelector('.memory-detail-dialog').open && document.querySelectorAll('.memory-row').length === 50 && !document.querySelector('.memory-refresh').disabled`);
+        expect(await cdp.evaluate(`document.querySelector('.memory-list-summary').textContent`)).toContain('共 50 条');
+        expect(await cdp.evaluate(`document.querySelector('.memory-pagination') === null`)).toBe(true);
+      } finally { cdp.close(); }
+    } finally {
+      chrome.kill('SIGTERM'); await server.close();
+      await rm(profile, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+    }
+  }, 15_000);
+
   it('persists the chosen protocol when adding a Provider', async () => {
     const root = resolve(fileURLToPath(new URL('../../', import.meta.url)));
     const server = await startMockServer(join(root, 'web', 'dist'));
@@ -794,12 +973,12 @@ async function startMockServer(webDist: string): Promise<{
   getActivationPayload(): unknown;
   setBusy(value: boolean): void;
 }>;
-async function startMockServer(webDist: string, mode: 'provider-recovery' | 'executor-management'): Promise<{
+async function startMockServer(webDist: string, mode: 'provider-recovery' | 'executor-management' | 'memory-last-page'): Promise<{
   port: number; close(): Promise<void>; getActivationPayload(): unknown; setBusy(value: boolean): void;
 }>;
 async function startMockServer(
   webDist: string,
-  mode?: 'provider-recovery' | 'executor-management',
+  mode?: 'provider-recovery' | 'executor-management' | 'memory-last-page',
 ): Promise<{
   port: number;
   close(): Promise<void>;
@@ -819,8 +998,48 @@ async function startMockServer(
     }
   }
   let activationOrdinal = 0;
+  let memoryAssets = Array.from({ length: mode === 'memory-last-page' ? 51 : 121 }, (_, index) => ({
+    memoryId: `mem-${index + 1}`, tdaiMemoryId: `tdai-${index + 1}`,
+    type: 'instruction', preview: `记忆 ${index + 1}`, content: `记忆 ${index + 1}：${'完整正文'.repeat(80)}${index === 120 ? '全文末尾关键词' : ''}`, source: 'conversation',
+    workspaceId: null, enabled: true, createdAt: '', updatedAt: '',
+  }));
   const server = createServer((request, response) => {
     const url = new URL(request.url ?? '/', 'http://127.0.0.1');
+    if (url.pathname === '/api/memory/status') {
+      json(response, { enabled: true, mode: 'enabled', engineReady: true, ftsAvailable: true,
+        providerRef: null, modelRef: null, modelName: null, modelPricing: null, selectableProviders: [] });
+      return;
+    }
+    if (url.pathname === '/api/memory/assets') {
+      const limit = Number(url.searchParams.get('limit') ?? 50);
+      const offset = Number(url.searchParams.get('offset') ?? 0);
+      const query = url.searchParams.get('q') ?? '';
+      const enabled = url.searchParams.get('enabled');
+      const type = url.searchParams.get('type');
+      const filtered = memoryAssets.filter(asset => (!query || asset.content.includes(query))
+        && (!type || asset.type === type) && (enabled === null || asset.enabled === (enabled === 'true')));
+      json(response, { items: filtered.slice(offset, offset + limit), total: filtered.length,
+        unfilteredTotal: memoryAssets.length, mode: 'enabled', degraded: false });
+      return;
+    }
+    if (request.method === 'GET' && url.pathname.startsWith('/api/memory/assets/')) {
+      const asset = memoryAssets.find(item => item.memoryId === url.pathname.split('/').pop());
+      json(response, asset ?? { error: 'not found' });
+      return;
+    }
+    if (request.method === 'POST' && url.pathname === '/api/memory/assets/enabled') {
+      void readJsonBody(request).then(body => {
+        const asset = memoryAssets.find(item => item.memoryId === body.memoryId);
+        if (asset) asset.enabled = Boolean(body.enabled);
+        json(response, asset ?? { error: 'not found' });
+      });
+      return;
+    }
+    if (request.method === 'DELETE' && url.pathname.startsWith('/api/memory/assets/')) {
+      memoryAssets = memoryAssets.filter(asset => asset.memoryId !== url.pathname.split('/').pop());
+      json(response, { ok: true });
+      return;
+    }
     if (mode === 'executor-management') {
       if (url.pathname === '/api/config') {
         json(response, { ...executorSnapshot, runningRevisionId: executorSnapshot.revisionId });
@@ -887,7 +1106,7 @@ async function startMockServer(
     if (url.pathname === '/api/workspaces/workspace-1/conversations') {
       json(response, {
         activeWorkspaceId: 'workspace-1',
-        activeConversationId: 'session-1',
+        currentConversationId: 'session-1',
         conversations: [{
           id: 'session-1',
           workspaceId: 'workspace-1',

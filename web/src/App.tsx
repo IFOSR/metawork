@@ -12,7 +12,7 @@ export function App() {
   const {
     themePreference, setThemePreference, authenticated, authError, connected,
     workspaces, activeWorkspaceId, pendingWorkspaceId, sessions, directoryCursor, directoryLoading,
-    activeSessionId, workspaceSwitching, newSessionPending, pendingDeleteSessionIds, tab, setTab, setSelectedTrajectoryTurnId,
+    currentSessionId, workspaceSwitching, newSessionPending, pendingDeleteSessionIds, tab, setTab, setSelectedTrajectoryTurnId,
     draft, route, search, setSearch, settingsOpen,
     setSettingsOpen, workspaceCreatorOpen, setWorkspaceCreatorOpen, configurationRuntime, agentReadiness,
     pendingAttachments, handleRemoveAttachment, uploadError, previewState, setPreviewState,
@@ -52,8 +52,7 @@ export function App() {
         workspaces={workspaces}
         activeWorkspaceId={activeWorkspaceId}
         pendingWorkspaceId={pendingWorkspaceId}
-        activeSessionId={activeSessionId}
-        selectedSessionId={selectedId}
+        currentSessionId={currentSessionId}
         workspaceSwitching={workspaceSwitching}
         newSessionPending={newSessionPending}
         pendingDeleteSessionIds={pendingDeleteSessionIds}

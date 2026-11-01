@@ -35,10 +35,9 @@ export type WorkspaceExecutionResolution =
   | { status: 'rejected'; reason: string };
 
 /**
- * Resolve Workspace access for a new Task. There is one write model: direct
- * execution in the trusted Conversation Workspace. Read-only work receives a
- * read admission and is run with a Runtime-owned scratch directory. No path is
- * copied, no Worktree is created, and no publication policy is selected here.
+ * Resolve Workspace access for a new Task. There is one execution model:
+ * Conversation Git Worktree execution. Read-only work still receives the same
+ * Conversation binding; if it produces no changes, no merge item is created.
  */
 export function resolveWorkspaceAdmission(
   input: WorkspaceExecutionDecisionInput,
@@ -140,8 +139,8 @@ export function resolveWorkspaceAdmission(
 
   const existing = input.facts.existingTaskBinding;
   if (existing) {
-    if (existing.executionMode !== 'in_place') {
-      return { status: 'rejected', reason: 'legacy Worktree Task bindings are no longer dispatchable' };
+    if (existing.executionMode === 'worktree') {
+      return { status: 'rejected', reason: 'historical Task Worktree bindings are no longer dispatchable' };
     }
     if (existing.workspaceId && existing.workspaceId !== target.workspaceId) {
       return {
@@ -171,9 +170,9 @@ function resolvedRead(
     intent,
     admission: { kind: 'read', workspaceId, targetPaths },
     decision: {
-      executionMode: 'in_place',
+      executionMode: 'conversation_git',
       source: 'planner',
-      reason: 'read-only admission uses a Runtime-owned scratch directory',
+      reason: 'read-only admission uses the Conversation Git Worktree and creates no merge item when unchanged',
       deliveryPolicy: 'none',
       targetPaths,
     },
@@ -190,7 +189,7 @@ function resolvedWrite(
     intent,
     admission: { kind: 'write', workspaceId, targetPaths },
     decision: {
-      executionMode: 'in_place',
+      executionMode: 'conversation_git',
       source: 'planner',
       reason: intent.reason,
       deliveryPolicy: 'none',

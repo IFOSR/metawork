@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { access, mkdir, open, readFile, rename, unlink } from 'node:fs/promises';
+import { access, mkdir, open, readFile, readdir, rename, unlink } from 'node:fs/promises';
 import { dirname, join, resolve } from 'node:path';
 import type { ConversationTurn } from '../management/web-session-types.js';
 import { boundWebSessionTurns } from '../management/web-session-types.js';
@@ -142,9 +142,20 @@ export class FileConversationPresentationStore implements ConversationPresentati
   async delete(conversationId: string): Promise<boolean> {
     const path = this.recordPath(conversationId);
     const legacy = await exists(path);
-    if (legacy) await this.quarantine(path, conversationId, 'deleted');
+    if (legacy) await unlink(path);
+    for (const name of await readdir(this.quarantineDir).catch(error => { if (isMissingFile(error)) return []; throw error; })) {
+      if (name.startsWith(`${conversationId}.`) && /^\d+\.(invalid|deleted)\.json$/.test(name.slice(conversationId.length + 1))) {
+        await unlink(join(this.quarantineDir, name));
+      }
+    }
     const indexed = this.history?.delete(conversationId) ?? false;
     return legacy || indexed;
+  }
+
+  async retireLegacyFile(conversationId: string): Promise<void> {
+    if (!await exists(this.recordPath(conversationId))) return;
+    if (!this.history?.isImported(conversationId)) throw new Error('history_not_imported');
+    await unlink(this.recordPath(conversationId)).catch(error => { if (!isMissingFile(error)) throw error; });
   }
 
   private recordPath(conversationId: string): string {

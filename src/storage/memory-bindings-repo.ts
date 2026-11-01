@@ -8,7 +8,7 @@
 
 import { createHash, randomUUID } from 'node:crypto';
 import type Database from 'better-sqlite3';
-import type { MemoryAssetSource, MemoryAssetSummary } from '../memory/memory-types.js';
+import type { MemoryAssetSource, MemoryAssetSummary, MemoryLayer } from '../memory/memory-types.js';
 
 export interface MemoryBindingRecord {
   memoryId: string;
@@ -19,6 +19,9 @@ export interface MemoryBindingRecord {
   enabled: boolean;
   confidence: number | null;
   contentDigest: string | null;
+  layer: MemoryLayer;
+  tdaiRevision: string | null;
+  tdaiTitle: string;
   createdAt: string;
   updatedAt: string;
 }
@@ -32,6 +35,9 @@ export interface MemoryBindingInput {
   enabled?: boolean;
   confidence?: number | null;
   content?: string | null;
+  layer?: MemoryLayer;
+  revision?: string | null;
+  title?: string;
 }
 
 interface BindingRow {
@@ -43,6 +49,9 @@ interface BindingRow {
   enabled: number;
   confidence: number | null;
   content_digest: string | null;
+  layer: MemoryLayer;
+  tdai_revision: string | null;
+  tdai_title: string;
   created_at: string;
   updated_at: string;
 }
@@ -59,7 +68,8 @@ export class MemoryBindingsRepo {
     const timestamp = this.now().toISOString();
     // The engine id is unique: binding the same asset twice must reuse the
     // existing local id instead of colliding with the unique index.
-    const existing = this.findByTdaiMemoryId(input.tdaiMemoryId, input.accountId);
+    const layer = input.layer ?? 'l1';
+    const existing = this.findByTdaiMemoryId(input.tdaiMemoryId, input.accountId, layer);
     const memoryId = input.memoryId ?? existing?.memoryId ?? `mem_${randomUUID().replace(/-/gu, '')}`;
     const digest = input.content ? memoryContentDigest(input.content) : null;
     // The user's switch is a governance decision: a re-bind must not silently
@@ -67,8 +77,9 @@ export class MemoryBindingsRepo {
     const enabled = input.enabled ?? existing?.enabled ?? true;
     this.db.prepare(`
       INSERT INTO memory_bindings
-        (memory_id, tdai_memory_id, account_id, workspace_id, source, enabled, confidence, content_digest, created_at, updated_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        (memory_id, tdai_memory_id, account_id, workspace_id, source, enabled, confidence, content_digest, created_at, updated_at,
+         layer, tdai_revision, tdai_title)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       ON CONFLICT(memory_id) DO UPDATE SET
         tdai_memory_id = excluded.tdai_memory_id,
         account_id = excluded.account_id,
@@ -77,6 +88,9 @@ export class MemoryBindingsRepo {
         enabled = excluded.enabled,
         confidence = excluded.confidence,
         content_digest = COALESCE(excluded.content_digest, memory_bindings.content_digest),
+        layer = excluded.layer,
+        tdai_revision = COALESCE(excluded.tdai_revision, memory_bindings.tdai_revision),
+        tdai_title = CASE WHEN excluded.tdai_title = '' THEN memory_bindings.tdai_title ELSE excluded.tdai_title END,
         updated_at = excluded.updated_at
     `).run(
       memoryId,
@@ -89,6 +103,9 @@ export class MemoryBindingsRepo {
       digest,
       timestamp,
       timestamp,
+      layer,
+      input.revision ?? null,
+      input.title ?? '',
     );
     return this.findByMemoryId(memoryId, input.accountId)!;
   }
@@ -100,10 +117,10 @@ export class MemoryBindingsRepo {
     return row ? toRecord(row) : null;
   }
 
-  findByTdaiMemoryId(tdaiMemoryId: string, accountId: string): MemoryBindingRecord | null {
+  findByTdaiMemoryId(tdaiMemoryId: string, accountId: string, layer?: MemoryLayer): MemoryBindingRecord | null {
     const row = this.db.prepare(
-      'SELECT * FROM memory_bindings WHERE tdai_memory_id = ? AND account_id = ?',
-    ).get(tdaiMemoryId, accountId) as BindingRow | undefined;
+      `SELECT * FROM memory_bindings WHERE tdai_memory_id = ? AND account_id = ?${layer ? ' AND layer = ?' : ''}`,
+    ).get(...(layer ? [tdaiMemoryId, accountId, layer] : [tdaiMemoryId, accountId])) as BindingRow | undefined;
     return row ? toRecord(row) : null;
   }
 
@@ -168,6 +185,9 @@ export class MemoryBindingsRepo {
       workspaceId: record.workspaceId,
       enabled: record.enabled,
       confidence: record.confidence,
+      layer: record.layer,
+      title: record.tdaiTitle,
+      revision: record.tdaiRevision,
       createdAt: record.createdAt,
       updatedAt: record.updatedAt,
     }));
@@ -180,10 +200,13 @@ function toRecord(row: BindingRow): MemoryBindingRecord {
     tdaiMemoryId: row.tdai_memory_id,
     accountId: row.account_id,
     workspaceId: row.workspace_id,
-    source: row.source === 'sanitized' ? 'sanitized' : 'conversation',
+    source: row.source === 'sanitized' ? 'sanitized' : row.source === 'profile' ? 'profile' : 'conversation',
     enabled: row.enabled === 1,
     confidence: row.confidence,
     contentDigest: row.content_digest,
+    layer: row.layer ?? 'l1',
+    tdaiRevision: row.tdai_revision ?? null,
+    tdaiTitle: row.tdai_title ?? '',
     createdAt: row.created_at,
     updatedAt: row.updated_at,
   };

@@ -1,3 +1,5 @@
+import { verifyInteractionContent } from '../storage/conversation-content-references.js';
+import { decodeKernelEvent } from '../storage/kernel-event-content.js';
 import Database from 'better-sqlite3';
 import { lstatSync, readFileSync } from 'node:fs';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
@@ -218,7 +220,7 @@ export class PlannerDataReader {
     const bounded = boundedLimit(limit);
     const interactions = this.db.prepare(`
       SELECT id, task_id, user_input, system_output, executor_used, created_at
-      FROM interactions WHERE session_id = ?
+      FROM interaction_contents WHERE session_id = ?
       ORDER BY created_at DESC LIMIT ?
     `).all(this.sessionId, bounded) as Array<Record<string, unknown>>;
     const decisions = this.db.prepare(`
@@ -283,7 +285,7 @@ export class PlannerDataReader {
       }));
     return {
       sessionId: this.sessionId,
-      interactions: interactions.reverse().map(row => ({
+      interactions: interactions.reverse().map(row => verifyInteractionContent<Record<string, unknown> & { id: unknown }>(this.db, { ...row, id: row.id })).map(row => ({
         interactionId: row.id,
         taskId: row.task_id,
         userInput: truncateText(String(row.user_input ?? ''), 500),
@@ -292,7 +294,7 @@ export class PlannerDataReader {
         createdAt: row.created_at,
       })),
       recentPlanningDecisions: recentPlanningDecisions.map(row => {
-        const event = safeJson<Record<string, unknown>>(row.event_json, {});
+        const event = safeJson<Record<string, unknown>>(decodeKernelEvent(this.db, String(row.event_json ?? '{}')), {});
         const plan = isRecord(event.proposal) ? event.proposal : {};
         const task = isRecord(plan.task) ? plan.task : {};
         const risk = isRecord(plan.risk) ? plan.risk : {};
@@ -319,10 +321,11 @@ export class PlannerDataReader {
   getSessionInteraction(input: { interactionId: string; side: 'user' | 'assistant' }) {
     const row = this.db.prepare(`
       SELECT id, task_id, user_input, system_output, executor_used, created_at
-      FROM interactions WHERE id = ? AND session_id = ?
+      FROM interaction_contents WHERE id = ? AND session_id = ?
     `).get(input.interactionId, this.sessionId) as Record<string, unknown> | undefined;
     if (!row) return { found: false, interactionId: input.interactionId };
-    const content = input.side === 'user' ? row.user_input : row.system_output;
+    const verified = verifyInteractionContent<Record<string, unknown> & { id: unknown }>(this.db, { ...row, id: row.id });
+    const content = input.side === 'user' ? verified.user_input : verified.system_output;
     return {
       found: true,
       interactionId: row.id,
@@ -466,11 +469,12 @@ export class PlannerDataReader {
     // projected must not be offered to the Planner, or it would pick a reference
     // the Runtime then rejects (review P2-3).
     const rows = this.db.prepare(`
-      SELECT c.memory_id, c.type, c.preview, c.score, c.created_at, b.source
+      SELECT c.memory_id, c.type, c.preview, c.score, c.created_at, c.revision, b.source
       FROM memory_recall_candidates c
       INNER JOIN memory_bindings b
         ON b.memory_id = c.memory_id AND b.account_id = c.account_id
       WHERE c.account_id = ? AND c.conversation_id = ? AND b.enabled = 1
+        AND c.layer = 'l1'
       ORDER BY c.score DESC, c.created_at ASC
       LIMIT ?
     `).all(this.accountId, this.conversationId, limit) as Array<Record<string, unknown>>;
@@ -478,6 +482,7 @@ export class PlannerDataReader {
     const items = rows
       .map(row => ({
         memoryId: String(row.memory_id),
+        revision: String(row.revision ?? ''),
         type: String(row.type),
         preview: truncateText(String(row.preview ?? ''), 400),
         score: Number(row.score ?? 0),
@@ -507,6 +512,68 @@ export class PlannerDataReader {
     };
   }
 
+  getMemoryContext(input: { limit?: number; query?: string } = {}) {
+    const gate = this.memoryRuntimeGate();
+    if (!gate.available) {
+      return {
+        layers: Object.fromEntries(['l1', 'l2', 'l3'].map(layer => [layer, {
+          status: 'degraded', items: [], reason: truncateText(gate.reason ?? gate.mode, 300),
+          durationMs: 0, candidateCount: 0,
+        }])),
+        degraded: true,
+        advice: '长期记忆暂不可用；请基于当前请求规划，并在回复中说明未能参考历史记忆。',
+      };
+    }
+    const bounded = boundedLimit(input.limit);
+    const layerStates = this.db.prepare(`
+      SELECT layer, status, reason, duration_ms, candidate_count FROM memory_recall_layers
+      WHERE account_id = ? AND conversation_id = ?
+    `).all(this.accountId, this.conversationId) as Array<Record<string, unknown>>;
+    const queryCandidates = this.db.prepare(`
+      SELECT c.memory_id, c.layer, c.title, c.preview, c.revision, c.score, c.source, c.created_at
+      FROM memory_recall_candidates c
+      INNER JOIN memory_bindings b ON b.memory_id = c.memory_id AND b.account_id = c.account_id
+      WHERE c.account_id = ? AND c.conversation_id = ? AND b.enabled = 1 AND c.layer = ?
+      ORDER BY c.score DESC, c.created_at ASC LIMIT ?
+    `);
+    const layers = ['l1', 'l2', 'l3'] as const;
+    const rows = layers.flatMap(layer => queryCandidates.all(
+      this.accountId, this.conversationId, layer, layerLimit(layer, bounded),
+    ) as Array<Record<string, unknown>>);
+    const query = input.query?.trim().toLocaleLowerCase();
+    const output: Record<string, unknown> = {};
+    for (const layer of layers) {
+      const state = layerStates.find(item => item.layer === layer);
+      output[layer] = {
+        status: String(state?.status ?? 'empty'),
+        ...(state?.reason ? { reason: truncateText(String(state.reason), 300) } : {}),
+        durationMs: Number(state?.duration_ms ?? 0),
+        candidateCount: Number(state?.candidate_count ?? rows.filter(row => row.layer === layer).length),
+        items: rows.filter(row => row.layer === layer).filter(row => {
+          if (!query) return true;
+          return `${String(row.title ?? '')}\n${String(row.preview ?? '')}`.toLocaleLowerCase().includes(query);
+        }).slice(0, layerLimit(layer, bounded)).map(row => ({
+          memoryId: String(row.memory_id),
+          layer,
+          title: truncateText(String(row.title ?? ''), 160),
+          preview: truncateText(String(row.preview ?? ''), layerPreviewLimit(layer)),
+          revision: String(row.revision ?? ''),
+          score: Number(row.score ?? 0),
+          source: String(row.source ?? 'conversation'),
+          updatedAt: String(row.created_at ?? ''),
+        })),
+      };
+    }
+    const allDegraded = layers.every(layer => String(layerStates.find(item => item.layer === layer)?.status ?? 'empty') === 'degraded');
+    return {
+      layers: output,
+      degraded: allDegraded,
+      ...(allDegraded
+        ? { advice: '长期记忆暂不可用；请基于当前请求规划，并在回复中说明未能参考历史记忆。' }
+        : {}),
+    };
+  }
+
   /** The account memory assets the Planner may reference. */
   listMemoryAssets(limit?: number) {
     const gate = this.memoryRuntimeGate();
@@ -520,7 +587,7 @@ export class PlannerDataReader {
     }
     const bounded = boundedLimit(limit);
     const rows = this.db.prepare(`
-      SELECT memory_id, tdai_memory_id, source, enabled, confidence, created_at, updated_at
+      SELECT memory_id, tdai_memory_id, layer, tdai_title, tdai_revision, source, enabled, confidence, created_at, updated_at
       FROM memory_bindings
       WHERE account_id = ?
       ORDER BY created_at DESC, memory_id ASC
@@ -530,7 +597,10 @@ export class PlannerDataReader {
       count: rows.length,
       items: rows.map(row => ({
         memoryId: String(row.memory_id),
-        type: 'atomic',
+        type: row.layer === 'l1' ? String(row.tdai_title || 'atomic') : row.layer === 'l2' ? 'scene' : 'persona',
+        layer: String(row.layer ?? 'l1'),
+        title: String(row.tdai_title ?? ''),
+        revision: String(row.tdai_revision ?? ''),
         source: String(row.source ?? 'conversation'),
         enabled: Number(row.enabled ?? 1) === 1,
         confidence: row.confidence === null || row.confidence === undefined ? null : Number(row.confidence),
@@ -621,14 +691,21 @@ export function createPlannerMcpServer(reader: PlannerDataReader): McpServer {
     },
   }, async input => toolResult(reader.getExecutorDiagnostics(input)));
   server.registerTool('search_memory', {
-    description: 'Search the current turn\'s bounded long-term memory candidates for durable practices and prior experience. The Server has already queried the memory engine for this user request; this tool reads the projected previews and returns the memoryId a ContextRef may reference. It is not a full-text search over every stored memory asset. Reference a result with contextRefs [{kind:"memory", memoryId}]; the body is delivered to the Executor as evidence, never pasted into the prompt. When the result carries degraded:true the memory engine was unavailable, so plan without it and tell the user memory could not be consulted.',
+    description: 'Deprecated L1-only view. Use get_memory_context to inspect L1 atomic memories, L2 scene experience and L3 persona together. A referenced item must include its memoryId and revision in contextRefs; the body reaches the Executor only through execution evidence.',
     inputSchema: {
       query: z.string().min(1).max(500).optional(),
       limit: z.number().int().min(1).max(MAX_RESULTS).optional(),
     },
   }, async input => toolResult(reader.searchMemory(input)));
+  server.registerTool('get_memory_context', {
+    description: 'Read the current turn\'s bounded, account-scoped L1/L2/L3 memory candidates and per-layer availability. Optional query only filters this already-recalled snapshot; it does not search additional assets. Use relevant L3 preferences to make the subtask goal explicit. Add a memory ContextRef with memoryId and revision only when the Executor needs the source content; current user instructions override historical defaults. Memory bodies are delivered as execution evidence, never pasted into the prompt.',
+    inputSchema: {
+      query: z.string().max(500).optional(),
+      limit: z.number().int().min(1).max(MAX_RESULTS).optional(),
+    },
+  }, async input => toolResult(reader.getMemoryContext(input)));
   server.registerTool('list_memory_assets', {
-    description: 'List the account long-term memory assets that may be referenced by memoryId, with their type, a short preview and whether the user disabled them.',
+    description: 'List account-scoped memory asset inventory for inspection, including layer, title, revision and enabled state. This inventory is not the current-turn recall snapshot and must not be used to create ContextRefs; reference only items returned by get_memory_context.',
     inputSchema: {
       limit: z.number().int().min(1).max(MAX_RESULTS).optional(),
     },
@@ -750,6 +827,14 @@ function toolResult(value: unknown) {
 
 function boundedLimit(limit?: number): number {
   return Math.max(1, Math.min(MAX_RESULTS, limit ?? DEFAULT_RESULTS));
+}
+
+function layerLimit(layer: 'l1' | 'l2' | 'l3', requested: number): number {
+  return Math.min(requested, layer === 'l1' ? 5 : layer === 'l2' ? 3 : 1);
+}
+
+function layerPreviewLimit(layer: 'l1' | 'l2' | 'l3'): number {
+  return layer === 'l1' ? 240 : layer === 'l2' ? 320 : 1_200;
 }
 
 function projectCapabilityManuals(

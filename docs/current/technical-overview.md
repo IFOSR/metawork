@@ -1,6 +1,31 @@
-> 当前 Workspace 执行模型（ADR-0050）：新任务统一在 Conversation 绑定 Workspace 内就地执行。写入 Attempt 启动前申请物理路径 ResourceLease，成功后直接完成 Subtask；只读 Attempt 使用受控 scratch 和只读源边界，不申请 Workspace write lease、不创建候选 publication。历史 Worktree binding 只停放并拒绝重新 dispatch。
+> 当前 Workspace 执行模型（Workspace 内部 Git / Session Worktree 方案）：所有新任务统一在 Conversation 的 Git Worktree 中执行。Worktree 变更封存后进入 Workspace FIFO 合并队列，未产生变更的问答或报告不创建合并项。历史 `in_place` 记录仅用于迁移和恢复读取，新任务不会再选择该模式。
+
+Conversation content authority (2026-11-01, ADR-0054): account SQLite Turn Store
+owns original user input and final answer revisions. Planner JSONL is a runtime
+copy; read models and Memory consume references. Implementation and validation
+are tracked in `docs/plans/2026-11-01-conversation-turn-single-source-design.md`.
+Schema 64 uses `conversation_turns`, content-addressed UTF-8 bodies, versioned
+answers and a transactional outbox. History/read-model/search are projections;
+Planner JSONL is runtime recovery data. Memory uses per-Turn input/answer-hash
+receipts, complete chunked L0 writes and verified conversation deletion. A
+persistent deletion tombstone fences writers and projection rebuilds; pending
+cleanup is retried and exposed as HTTP 202. Legacy public/redacted bytes without
+original-input provenance stay unresolved and are not deposited as L0.
+Projector version 2 uses authoritative Turn sequence. Verified legacy copies
+retain a seven-day rollback window, then undergo hash verification and cleanup;
+unresolved conversations retain their migration evidence.
+
 
 # MetaWork
+
+New Workspace Tasks use `conversation_git` as their sole admission mode. The
+Executor receives the Conversation Worktree path, seals changes into the
+Workspace private Git repository, and the Workspace merge queue writes the
+delivered tree back to the user directory. `in_place` is a legacy storage and
+recovery value only; it is never emitted by Planner/Kernel admission for a new
+Task.
+
+Web 会话选择（2026-10-30，ADR-0043）：客户端唯一 `currentSessionId` 同时用于内容、输入、操作和当前行样式；会话 activity 独立显示。Server/连接不提供隐式命令目标，发送与取消必须携带精确 ID。启动/重连仅恢复客户端明确选择，无目标时保持空状态；目录分页与服务端 current 通知不抢占选择。删除当前或最近会话遵循同一 activity 检查，非 idle 须先停止；历史 blocked Turn 不构成永久删除禁令。清空历史返回精确删除 ID 和跳过数量。详见[实施方案与验证](../plans/2026-10-30-session-current-state-simplification-design.md)。
 
 Upstream-input recovery (2026-10-17): explicit Resume may continue a settled
 `missing_upstream_input` failure only after current binding/evidence support,
@@ -1955,6 +1980,18 @@ MetaWork uses executor registration when the missing capability is a different w
 
 ## Long-Term Memory
 
+Memory management (2026-10-31): the Web memory panel keeps its API identity stable
+across settings status polls. User-triggered reads retain the rendered page while
+loading; no persistent browser cache is introduced. Account-scoped management
+supports full-body detail (including disabled assets), full-text substring/type/
+enabled filtering before pagination, and stable updated-time/id ordering.
+MemoryService enumerates engine pages through the existing Memory Port, overlays
+the local enabled switch, and binds newly encountered atoms so every listed item
+can be governed. This performs a fresh account-wide read per list request; it does
+not add a body cache or search index. Management detail scans independently of the
+Executor materialization budget; execution evidence still requires an enabled
+account-owned binding. No content editing or new memory write path is introduced.
+
 MetaWork has an optional long-term memory capability (ADR-0049). An external
 memory engine (TencentDB Agent Memory MemoryCore) runs as a local sidecar and is
 the only extraction and retrieval implementation. MetaWork owns the seam around
@@ -1999,10 +2036,12 @@ have passed since the last successful deposition; a failed deposition never
 moves that timestamp. Secrets are redacted before deposition; content whose
 secret cannot be masked is refused.
 
-Delivery is pull-only. The Planner references a memory with
-`ContextRef{kind:'memory', memoryId}` and reads candidates through the bounded
-`search_memory` / `list_memory_assets` MCP tools over a Server-projected read
-model. The Runtime re-validates the reference, materializes the body on the
+Delivery is pull-only. The Planner reads bounded L1 atomic memories, L2 scene
+experience and L3 Persona candidates through `get_memory_context`, with
+independent per-layer availability. New Work Graph references include the
+candidate's `memoryId` and content `revision`; Runtime validates the current
+Conversation snapshot, account binding, enabled state and revision before
+materializing the body on the
 host side, and the Executor receives it as
 `task_execution_evidence(kind='long_term_memory')` under the existing ADR-0021
 budget and audit. Memory is never spliced into the prompt body.
@@ -2025,9 +2064,12 @@ management API returns a structured degraded result (`mode`, `degraded`,
 `degradedReason`) so the settings page shows an unavailable engine rather than
 an empty asset list.
 
-Schema 59 is the memory migration on top of main's schema 58. It creates
+Schema 59 introduced the memory tables on top of main's schema 58. Schema 63
+adds layered L1/L2/L3 binding and recall metadata, per-layer status, duration and
+candidate-count measurements, and
+revision-pinned Planner references. It creates or extends
 `memory_bindings`, `memory_recall_candidates`, `memory_flush_state`,
-`memory_recall_state` and `memory_runtime_state`; it also retires the
+`memory_recall_state`, `memory_recall_layers` and `memory_runtime_state`; it also retires the
 pre-TDAI local chain (see below). A memory-branch schema-53 database that lacks
 main's six-state Task base fails closed instead of being reinterpreted as
 main's 53.

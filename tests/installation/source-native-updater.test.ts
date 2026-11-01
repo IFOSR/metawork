@@ -413,6 +413,7 @@ describe('SourceNativeUpdater', () => {
       fixture.accountPaths.database,
     );
     try {
+      sourceDatabase.exec('DROP VIEW IF EXISTS conversation_memory_turns');
       sourceDatabase.prepare('UPDATE schema_version SET version = 34').run();
     } finally {
       sourceDatabase.close();

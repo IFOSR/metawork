@@ -5,12 +5,16 @@
  * These are cross-module value types. Planning emits a `WorkspaceIntent`, the
  * Kernel resolves a `WorkspaceAdmission`, and the Runtime executes the durable
  * binding produced from that admission. Workspace access is deliberately a
- * single product model: writes happen in the Conversation-bound Workspace and
- * reads use a bounded scratch directory.
+ * single product model: new Tasks write in the Conversation Git Worktree and
+ * publish through the Workspace merge queue.
  */
 
-/** Runtime mode retained only to identify and reject historical Worktree rows. */
-export type WorkspaceExecutionMode = 'in_place' | 'worktree';
+/**
+ * Workspace execution modes. `conversation_git` is the only mode admitted for
+ * new Tasks. `in_place` and `worktree` remain readable solely for historical
+ * rows created before the Workspace Git protocol was enabled.
+ */
+export type WorkspaceExecutionMode = 'conversation_git' | 'service_git' | 'in_place' | 'worktree';
 
 /**
  * What the user is trying to do in the target Workspace. Planner produces this;
@@ -48,7 +52,7 @@ export type WorkspaceAdmissionKind = 'read' | 'write' | 'clarification' | 'rejec
 export interface WorkspaceAdmissionBinding {
   workspaceId: string | null;
   targetPaths: string[];
-  /** The only writable directory is the Conversation-bound Workspace root. */
+  /** The only writable directory is the Conversation-bound Git Worktree. */
   authorizedWorkingDirectory?: string;
 }
 
@@ -75,7 +79,8 @@ export type WorkspaceDeliveryPolicy = 'none' | 'auto_publish' | 'await_acceptanc
 
 /** Kernel-authorized Workspace execution facts consumed by the Runtime. */
 export interface WorkspaceExecutionDecision {
-  executionMode: 'in_place';
+  /** New admissions always execute in the Conversation's Git Worktree. */
+  executionMode: 'conversation_git';
   source: 'planner';
   reason: string;
   deliveryPolicy: 'none';
@@ -93,7 +98,7 @@ export const WORKSPACE_OPERATIONS: readonly WorkspaceOperation[] = [
 ];
 
 const WORKSPACE_OPERATION_SET = new Set<string>(WORKSPACE_OPERATIONS);
-const EXECUTION_MODE_SET = new Set<string>(['in_place', 'worktree']);
+const EXECUTION_MODE_SET = new Set<string>(['conversation_git', 'service_git', 'in_place', 'worktree']);
 const ORIGINAL_FILE_POLICY_SET = new Set<string>(['may_replace', 'must_preserve', 'unknown']);
 const SOURCE_SET = new Set<string>(['explicit_user', 'planner', 'fallback', 'kernel_safety']);
 const DELIVERY_POLICY_SET = new Set<string>(['none', 'auto_publish', 'await_acceptance']);

@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import type Database from 'better-sqlite3';
 import type { PlannerProposalResult } from '../planning/planner-proposal.js';
 
@@ -24,6 +25,7 @@ export type PlannerProposalReservation =
 
 interface TurnRow {
   user_input: string;
+  input_hash: string | null;
   accepted_submission_id: string | null;
 }
 
@@ -42,18 +44,19 @@ interface SubmissionRow {
 export class PlannerProposalRepo {
   constructor(private readonly db: Database.Database) {}
 
-  ensureTurn(sessionId: string, turnId: string, userInput: string): { created: boolean; conflict: boolean } {
+  ensureTurn(sessionId: string, turnId: string, userInput: string, sourceTurnId?: string | null): { created: boolean; conflict: boolean } {
     return this.db.transaction(() => {
+      const hash = createHash('sha256').update(userInput).digest('hex');
       const existing = this.findTurn(sessionId, turnId);
       if (existing) {
-        return { created: false, conflict: existing.user_input !== userInput };
+        return { created: false, conflict: existing.input_hash ? existing.input_hash !== hash : existing.user_input !== userInput };
       }
       const now = new Date().toISOString();
       this.db.prepare(`
         INSERT INTO planner_proposal_turns (
-          session_id, turn_id, user_input, accepted_submission_id, created_at, updated_at
-        ) VALUES (?, ?, ?, NULL, ?, ?)
-      `).run(sessionId, turnId, userInput, now, now);
+          session_id, turn_id, user_input, accepted_submission_id, created_at, updated_at, input_hash, source_turn_id
+        ) VALUES (?, ?, '', NULL, ?, ?, ?, ?)
+      `).run(sessionId, turnId, now, now, hash, sourceTurnId ?? null);
       return { created: true, conflict: false };
     }).immediate();
   }
@@ -178,7 +181,7 @@ export class PlannerProposalRepo {
 
   private findTurn(sessionId: string, turnId: string): TurnRow | null {
     return (this.db.prepare(`
-      SELECT user_input, accepted_submission_id
+      SELECT user_input, input_hash, accepted_submission_id
       FROM planner_proposal_turns WHERE session_id = ? AND turn_id = ?
     `).get(sessionId, turnId) as TurnRow | undefined) ?? null;
   }

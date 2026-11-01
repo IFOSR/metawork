@@ -36,7 +36,7 @@ describe('memory context ref eligibility', () => {
 
   it('accepts an enabled memory of the account', () => {
     const binding = bindings.upsert({ tdaiMemoryId: 'tdai-1', accountId: ACCOUNT });
-    expect(keys([{ kind: 'memory', memoryId: binding.memoryId }])).toEqual([`memory:${binding.memoryId}`]);
+    expect(keys([{ kind: 'memory', memoryId: binding.memoryId }])).toEqual([`memory:${binding.memoryId}:legacy`]);
   });
 
   it('rejects a memory of another account', () => {

@@ -172,7 +172,7 @@ export const MAX_WEB_SESSION_TURNS = 100;
 export const MAX_WEB_SESSION_EVENTS_PER_TURN = 400;
 
 export type WebSessionAvailability = 'active' | 'browsable' | 'activation_blocked';
-export type ConversationTurnStatus = Exclude<InteractionTraceStatus, 'running'>;
+export type ConversationTurnStatus = InteractionTraceStatus;
 
 export type WebSessionActivationBlockReason =
   | 'planner_turn_active'
@@ -207,7 +207,6 @@ export interface WebSessionMetadata {
   createdAt: string;
   updatedAt: string;
   latestTaskCreatedAt?: string;
-  active: boolean;
   archived: boolean;
   preview?: string;
   activity?: ConversationActivityProjection;

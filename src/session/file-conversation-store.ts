@@ -11,7 +11,7 @@
  */
 
 import { randomUUID } from 'node:crypto';
-import { mkdir, open, readFile, rename, unlink } from 'node:fs/promises';
+import { mkdir, open, readFile, readdir, rename, unlink } from 'node:fs/promises';
 import { dirname, join, resolve } from 'node:path';
 import { measureNavigationStage } from '../utils/navigation-diagnostics.js';
 import { isValidConversationId } from './conversation-types.js';
@@ -39,6 +39,7 @@ export class FileConversationStore implements ConversationStore {
   constructor(rootDir: string, private readonly options: {
     readonly onMetadataCommitted?: (metadata: ConversationMetadata) => void;
     readonly history?: ConversationHistoryStore<ConversationTurn>;
+    readonly referenceHistory?: boolean;
     readonly metadataIndex?: ConversationMetadataIndex;
     /** One-time legacy presentation backfill; never called on an indexed page. */
     readonly readLegacyHistory?: (conversationId: string) => Promise<readonly ConversationTurn[]>;
@@ -80,7 +81,12 @@ export class FileConversationStore implements ConversationStore {
   async readConversation(conversationId: string): Promise<ConversationRecord | null> {
     return this.serialized(conversationId, async () => {
       await this.recoverPendingHistory(conversationId);
-      return this.readRecord(conversationId);
+      const record = await this.readRecord(conversationId);
+      if (record && this.options.referenceHistory && this.options.history) {
+        await this.importHistory(conversationId, record.turns);
+        return { ...record, turns: this.options.history.page(conversationId, { limit: 50 }).turns };
+      }
+      return record;
     });
   }
 
@@ -163,10 +169,45 @@ export class FileConversationStore implements ConversationStore {
         }
         await this.importHistory(record.conversation.id, previous?.turns ?? []);
       }
+      if (this.options.referenceHistory) {
+        for (const turn of record.turns) history.upsert(record.conversation.id, turn);
+        await atomicWriteJson(path, { ...record, turns: [] });
+        this.options.metadataIndex?.put(record.conversation);
+        this.options.onMetadataCommitted?.(record.conversation);
+        return;
+      }
       // A durable write intent closes the JSON/index crash window. Recovery
       // repeats this exact write before serving either the record or its pages.
       await atomicWriteJson(`${path}.pending-history`, record);
       await this.recoverPendingHistory(record.conversation.id);
+    });
+  }
+
+  /** Keep archived directory identity; erase every rolling file copy. */
+  async retireLegacyTurns(conversationId: string): Promise<void> {
+    await this.serialized(conversationId, async () => {
+      await this.recoverPendingHistory(conversationId);
+      const record = await this.readRecord(conversationId);
+      if (record?.turns.length) await atomicWriteJson(this.recordPath(conversationId), { ...record, turns: [] });
+    });
+  }
+
+  /** Keep archived directory identity; erase every rolling file copy. */
+  async eraseContent(conversationId: string): Promise<void> {
+    await this.serialized(conversationId, async () => {
+      const record = await this.readRecord(conversationId);
+      if (record) {
+        const metadata = { ...record.conversation, title: 'Deleted conversation', archived: true };
+        await atomicWriteJson(this.recordPath(conversationId), { ...record, conversation: metadata, turns: [] });
+        this.options.metadataIndex?.put(metadata);
+        this.options.onMetadataCommitted?.(metadata);
+      }
+      await unlink(`${this.recordPath(conversationId)}.pending-history`).catch(error => { if (!isMissingFile(error)) throw error; });
+      for (const name of await readdir(this.quarantineDir).catch(error => { if (isMissingFile(error)) return []; throw error; })) {
+        if (name.startsWith(`${conversationId}.`) && /^\d+\.invalid\.json$/.test(name.slice(conversationId.length + 1))) {
+          await unlink(join(this.quarantineDir, name));
+        }
+      }
     });
   }
 
@@ -424,7 +465,7 @@ function isTurn(value: unknown, conversationId: string): value is ConversationTu
   if (value.conversationId !== conversationId) return false;
   if (typeof value.userInput !== 'string') return false;
   if (value.finalAnswer !== null && typeof value.finalAnswer !== 'string') return false;
-  if (!['completed', 'failed', 'blocked'].includes(String(value.status))) return false;
+  if (!['running', 'completed', 'failed', 'blocked', 'cancelled'].includes(String(value.status))) return false;
   return true;
 }
 

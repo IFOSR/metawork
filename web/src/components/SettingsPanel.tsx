@@ -2,7 +2,7 @@ import { ProviderProtocolSelect } from './ProviderProtocolSelect';
 import { ModelCapabilityDetails } from './ModelCapabilityDetails';
 import { ExecutorTools } from './ExecutorTools';
 import { sameAiText, aiActionError, type ResponsibilityRewriteFeedback } from './AiActionStatus';
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import type { HttpClient } from '../api/http';
 import type {
   ActivateResult,
@@ -414,6 +414,9 @@ export function SettingsPanel({
   onClose,
   agentReadiness = [],
 }: SettingsPanelProps) {
+  const memoryApi = useMemo(() => http
+    ? createMemoryApiClient((path, init) => http.requestMemory(path, init))
+    : null, [http]);
   const [activationState, setActivationState] = useState<ConfigurationRuntimeState | null>(runtime);
   const [revisionId, setRevisionId] = useState<string | null>(null);
   const [codexCommand, setCodexCommand] = useState('codex');
@@ -2412,17 +2415,6 @@ export function SettingsPanel({
                 )}
               </section>
 
-              {http && (
-                <MemorySettingsPanel
-                  api={createMemoryApiClient((path, init) => (
-                    http.requestMemory(path, init) as Promise<unknown>
-                  ))}
-                  draft={memoryDraft}
-                  onChange={setMemoryDraft}
-                  disabled={editingDisabled}
-                />
-              )}
-
               <ExecutorTools agents={agentReadiness} http={http} command={codexCommand}
                 onCommand={setCodexCommand} disabled={editingDisabled} />
 
@@ -2542,11 +2534,19 @@ export function SettingsPanel({
               <details className="settings-section advanced-settings">
                 <summary>高级设置</summary>
                 <div className="advanced-settings-body">
-                  <section className="runtime-policy-section">
+                  {memoryApi && (
+                    <MemorySettingsPanel
+                      api={memoryApi}
+                      configurationRevision={revisionId ?? undefined}
+                      draft={memoryDraft}
+                      onChange={setMemoryDraft}
+                      disabled={editingDisabled}
+                    />
+                  )}
+                  <section className="runtime-policy-section" aria-labelledby="runtime-policy-heading">
                     <div className="section-heading">
                       <div>
-                        <div className="settings-eyebrow">PLANNER AND RUNTIME</div>
-                        <h3>并行与队列</h3>
+                        <h3 id="runtime-policy-heading">并行与队列</h3>
                         <p>不同会话可并行执行；同一会话的后续任务会排队。</p>
                       </div>
                     </div>

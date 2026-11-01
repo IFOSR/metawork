@@ -2,8 +2,8 @@
  * 持久化 Conversation 存储契约（ADR-0031 第 2、7 节）。
  *
  * Conversation 是账户内一个持久的用户交互线程，拥有稳定的 Planner 会话身份。
- * 记录是版本化、账户作用域的，只保留有界、脱敏的终态 turn 投影。权威的
- * Planner 历史仍在 Planner 会话文件里，权威的 Task/Kernel 事实仍在 SQLite。
+ * 记录是版本化、账户作用域的元数据；正文来自 ConversationTurnStore。
+ * Planner 文件仅用于运行时恢复，Task/Kernel 事实仍由各自 SQLite repository 管理。
  */
 
 import type { WorkspaceId } from '../workspace/workspace-types.js';
@@ -35,7 +35,11 @@ export interface ConversationTurn {
   readonly conversationId: string;
   readonly userInput: string;
   readonly finalAnswer: string | null;
-  readonly status: 'completed' | 'failed' | 'blocked' | 'cancelled';
+  readonly status: 'running' | 'completed' | 'failed' | 'blocked' | 'cancelled';
+  readonly requestId?: string | null;
+  readonly startedAt?: string;
+  readonly completedAt?: string | null;
+  readonly taskId?: string | null;
 }
 
 export interface ConversationRecord {

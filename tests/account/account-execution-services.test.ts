@@ -34,6 +34,12 @@ describe('AccountExecutionServices', () => {
 
     expect(adapter).toBeInstanceOf(PiCompositeExecutorAdapter);
     expect(adapter?.name).toBe('pi-agent');
+    // A Conversation Git worktree uses native host paths. It must resolve to
+    // the host Pi CLI adapter; the container compatibility adapter rejects a
+    // worktree backend during probe.
+    await expect(services.executorRegistry.probe(binding!)).resolves.toMatchObject({
+      available: true,
+    });
     expect(services.executorRegistry.supportsResponseOnly(
       'pi-agent',
       stagedConfiguration.snapshot.revisionId,

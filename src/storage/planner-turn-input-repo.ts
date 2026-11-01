@@ -1,3 +1,4 @@
+import { SqliteConversationTurnStore } from './conversation-turn-repo.js';
 import { createHash } from 'node:crypto';
 import type Database from 'better-sqlite3';
 import type { PlannerAttachmentView } from '../planning/planning-types.js';
@@ -36,10 +37,24 @@ export class PlannerTurnInputRepo {
 
   upsert(input: {
     conversationId: string;
+    accountId?: string;
+    turnId?: string | null;
+    plannerSessionId?: string;
     userInput: string;
     attachmentViews: readonly PlannerAttachmentView[];
   }): void {
     const now = new Date().toISOString();
+    if (input.accountId && input.turnId && input.plannerSessionId) {
+      const store = new SqliteConversationTurnStore(this.db);
+      if (store.deletionState(input.accountId, input.conversationId)) throw new Error('conversation_deleted');
+      const turn = store.find({ accountId: input.accountId, conversationId: input.conversationId, turnId: input.turnId });
+      if (turn) {
+        const hash = plannerTurnInputHash(input.userInput);
+        this.db.prepare(`INSERT OR IGNORE INTO planner_transcript_turns VALUES (?, ?, ?, ?, ?, ?, ?, ?)`)
+          .run(input.accountId, input.conversationId, input.turnId, input.plannerSessionId,
+            turn.input.hash, hash, hash === turn.input.hash ? 'match' : 'derived', now);
+      }
+    }
     this.db.prepare(`
       INSERT INTO planner_turn_inputs (
         conversation_id, user_input_hash, attachment_views_json, created_at, updated_at

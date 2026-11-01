@@ -140,7 +140,7 @@ export interface GatewayPublicDelivery {
 	readonly workspace: string;
 	/** Only set when the Task explicitly targets an existing project directory. */
 	readonly taskDirectory: string | null;
-	readonly mode: "in_place";
+  readonly mode: "in_place" | "worktree";
 	/** Which admission fact authorized the Workspace access. */
 	readonly modeSource: "explicit_user" | "planner" | "fallback" | "kernel_safety" | null;
 	readonly deliveryPolicy: "none" | "auto_publish" | "await_acceptance" | null;

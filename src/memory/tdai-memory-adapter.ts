@@ -18,12 +18,14 @@ import {
   type MemoryAsset,
   type MemoryEngineHealth,
   type MemoryFlushBatch,
+  type MemoryLayer,
   type MemoryMaterialization,
   type MemoryScope,
   type MemorySearchResult,
 } from './memory-types.js';
 import { memoryScopeFields } from './memory-scope.js';
 import { interpretEngineHealth } from './memory-sidecar.js';
+import { createHash } from 'node:crypto';
 
 const DEFAULT_TIMEOUT_MS = 10_000;
 const DEFAULT_SEARCH_TIMEOUT_MS = 2_000;
@@ -33,13 +35,6 @@ const MAX_MESSAGES_PER_DEPOSIT = 100;
 /** TDAI `messages[].content` accepts 1–8192 characters. */
 const MAX_MESSAGE_CHARS = 8_192;
 
-/** Bound one message so a long answer cannot fail the whole deposit. */
-function boundMessage(value: string): string {
-  if (value.length === 0) return '(empty)';
-  if (value.length <= MAX_MESSAGE_CHARS) return value;
-  const marker = '…[truncated]';
-  return `${value.slice(0, MAX_MESSAGE_CHARS - marker.length)}${marker}`;
-}
 const DEFAULT_RETRIES = 1;
 const RETRY_BASE_DELAY_MS = 200;
 /**
@@ -87,6 +82,7 @@ interface AtomicDetail {
   created_at?: string;
   updated_at?: string;
   score?: number;
+  revision?: string;
 }
 
 interface AtomicSearchData {
@@ -104,8 +100,32 @@ interface ConversationAddData {
 }
 
 interface CoreReadData {
+  id?: string;
   content?: string | null;
   updated_at?: string | null;
+  revision?: string;
+}
+
+interface ProfileReadData {
+  id?: string;
+  title?: string;
+  content?: string;
+  summary?: string;
+  updated_at?: string | null;
+  revision?: string;
+}
+
+interface ScenarioSearchData {
+  items?: Array<{ id: string; title: string; preview: string; revision: string; updated_at?: string | null; score?: number }>;
+}
+
+interface ProfileDeleteData {
+  deleted?: boolean;
+}
+
+interface ProfileQueryData {
+  items?: Array<AtomicDetail & { title?: string; layer?: MemoryLayer }>;
+  total?: number;
 }
 
 interface AtomicUpdateData {
@@ -167,25 +187,38 @@ export class TdaiMemoryAdapter implements MemoryPort {
   }
 
   async deposit(batch: MemoryFlushBatch, scope: MemoryScope): Promise<{ accepted: number }> {
-    const messages = batch.turns.flatMap(turn => [
-      { role: 'user', content: boundMessage(turn.userInput) },
-      { role: 'assistant', content: boundMessage(turn.assistantAnswer) },
-    ]);
-    // The engine rejects more than 100 messages. Failing here with a clear
-    // error beats a rejected request that never advances the cursor
-    // (review P1-4); the caller also bounds the batch upstream.
-    if (messages.length === 0 || messages.length > MAX_MESSAGES_PER_DEPOSIT) {
-      throw new MemoryPortError(
-        'memory_request_invalid',
-        `memory_deposit_message_budget: ${messages.length}`,
-      );
-    }
-    const data = await this.call<ConversationAddData>('/v3/conversation/add', {
-      session_id: batch.conversationId,
-      messages,
-      ...memoryScopeFields(scope),
+    const messages = batch.turns.flatMap(turn => {
+      const key = createHash('sha256').update(JSON.stringify([batch.conversationId, turn.turnId,
+        turn.userInput, turn.assistantAnswer])).digest('hex');
+      return ([['user', turn.userInput], ['assistant', turn.assistantAnswer]] as const).flatMap(([role, text]) => {
+        const points = Array.from(text);
+        const parts: { id: string; role: string; content: string }[] = [];
+        for (let offset = 0; offset < points.length; offset += MAX_MESSAGE_CHARS) {
+          parts.push({ id: `${key}:${role}:${offset / MAX_MESSAGE_CHARS}`, role,
+            content: points.slice(offset, offset + MAX_MESSAGE_CHARS).join('') });
+        }
+        return parts;
+      });
     });
-    return { accepted: data?.total_count ?? messages.length };
+    if (!messages.length) throw new MemoryPortError('memory_request_invalid', 'memory_empty_batch');
+    const batchId = createHash('sha256').update(JSON.stringify(messages)).digest('hex');
+    for (let offset = 0; offset < messages.length; offset += MAX_MESSAGES_PER_DEPOSIT) {
+      const page = messages.slice(offset, offset + MAX_MESSAGES_PER_DEPOSIT);
+      const data = await this.call<ConversationAddData>('/v3/metawork/conversation/upsert', {
+        session_id: batch.conversationId, messages: page, batch_id: batchId,
+        offset, total: messages.length,
+        complete: offset + page.length === messages.length, ...memoryScopeFields(scope),
+      });
+      if (data?.total_count !== page.length) throw new MemoryPortError('memory_request_invalid', 'memory_partial_deposit');
+    }
+    return { accepted: batch.turns.length * 2 };
+  }
+
+  async deleteConversation(conversationId: string, scope: MemoryScope): Promise<boolean> {
+    const data = await this.call<{ deleted: boolean }>('/v3/metawork/conversation/delete', {
+      session_id: conversationId, ...memoryScopeFields(scope),
+    });
+    return data?.deleted === true;
   }
 
   async search(input: {
@@ -209,7 +242,51 @@ export class TdaiMemoryAdapter implements MemoryPort {
     }
   }
 
-  async materialize(memoryId: string, scope: MemoryScope): Promise<MemoryMaterialization> {
+  async searchScenarios(input: { query: string; limit: number }, scope: MemoryScope) {
+    try {
+      const data = await this.call<ScenarioSearchData>('/v3/metawork/scenario/search', {
+        query: input.query,
+        limit: Math.max(1, Math.min(5, input.limit)),
+        ...memoryScopeFields(scope),
+      }, this.searchTimeoutMs, 0);
+      return {
+        items: (data?.items ?? []).map(item => ({
+          id: item.id, title: item.title, preview: item.preview, revision: item.revision,
+          updatedAt: item.updated_at ?? null, score: item.score ?? 0,
+        })),
+        degraded: false,
+      };
+    } catch (error) {
+      if (error instanceof MemoryPortError && error.code === 'memory_engine_unavailable') {
+        return { items: [], degraded: true, degradedReason: error.detail ?? error.message };
+      }
+      throw error;
+    }
+  }
+
+  async materialize(memoryId: string, scope: MemoryScope, layer: MemoryLayer = 'l1'): Promise<MemoryMaterialization> {
+    if (layer === 'l2') {
+      const data = await this.call<ProfileReadData>('/v3/metawork/scenario/read', {
+        id: memoryId, ...memoryScopeFields(scope),
+      });
+      if (!data?.content) throw new MemoryPortError('memory_asset_not_found', `memory_asset_not_found: ${memoryId}`);
+      return {
+        id: data.id ?? memoryId, type: 'scene', title: data.title ?? memoryId,
+        content: data.content, background: data.summary ?? null, createdAt: '',
+        updatedAt: data.updated_at ?? '', revision: data.revision ?? digest(data.content), layer,
+      };
+    }
+    if (layer === 'l3') {
+      const data = await this.call<CoreReadData>('/v3/core/read', { ...memoryScopeFields(scope) });
+      if (!data?.content || data.id !== memoryId) {
+        throw new MemoryPortError('memory_asset_not_found', `memory_asset_not_found: ${memoryId}`);
+      }
+      return {
+        id: data.id, type: 'persona', title: 'User persona', content: data.content,
+        background: null, createdAt: '', updatedAt: data.updated_at ?? '',
+        revision: data.revision ?? digest(data.content), layer,
+      };
+    }
     for (let page = 0; page < MATERIALIZE_SCAN_PAGES; page++) {
       const data = await this.call<AtomicQueryData>('/v3/atomic/query', {
         limit: MATERIALIZE_PAGE_SIZE,
@@ -235,11 +312,24 @@ export class TdaiMemoryAdapter implements MemoryPort {
   }, scope: MemoryScope): Promise<{ items: readonly MemoryAsset[]; total: number }> {
     const data = await this.call<AtomicQueryData>('/v3/atomic/query', {
       limit: Math.max(1, Math.min(100, input.limit)),
-      offset: Math.max(0, input.offset),
+      offset: Math.min(input.offset, 100_000),
       ...memoryScopeFields(scope),
     });
-    const items = (data?.items ?? []).map(item => toAsset(item, scope));
-    return { items, total: data?.total ?? items.length };
+    const atomicTotal = data?.total ?? data?.items?.length ?? 0;
+    const profileOffset = Math.max(0, input.offset - atomicTotal);
+    const profileLimit = Math.max(1, Math.min(100, input.limit));
+    const profiles = await this.call<ProfileQueryData>('/v3/metawork/profile/query', {
+      limit: profileLimit,
+      offset: profileOffset,
+      ...memoryScopeFields(scope),
+    });
+    const profileItems = profiles?.items ?? [];
+    const merged = input.offset < atomicTotal
+      ? [...(data?.items ?? []).map(item => toAsset(item, scope)), ...(input.offset + input.limit > atomicTotal
+        ? profileItems.slice(0, input.offset + input.limit - atomicTotal).map(item => toProfileAsset(item, scope))
+        : [])]
+      : profileItems.slice(0, input.limit).map(item => toProfileAsset(item, scope));
+    return { items: merged, total: atomicTotal + (profiles?.total ?? profileItems.length) };
   }
 
   async updateAsset(input: {
@@ -262,19 +352,29 @@ export class TdaiMemoryAdapter implements MemoryPort {
     return { deleted: (data?.deleted_count ?? 0) > 0 };
   }
 
-  async readPersona(scope: MemoryScope): Promise<{ content: string | null; updatedAt: string | null }> {
-    const data = await this.call<CoreReadData>('/v3/core/read', { ...memoryScopeFields(scope) });
-    return { content: data?.content ?? null, updatedAt: data?.updated_at ?? null };
+  async readPersona(scope: MemoryScope): Promise<{ id: string; content: string | null; updatedAt: string | null; revision: string }> {
+    const data = await this.call<CoreReadData>('/v3/core/read', { ...memoryScopeFields(scope) }, this.searchTimeoutMs, 0);
+    return {
+      id: data?.id ?? '', content: data?.content ?? null,
+      updatedAt: data?.updated_at ?? null, revision: data?.revision ?? digest(data?.content ?? ''),
+    };
+  }
+
+  async deleteProfile(memoryId: string, layer: Exclude<MemoryLayer, 'l1'>, scope: MemoryScope): Promise<boolean> {
+    const data = await this.call<ProfileDeleteData>('/v3/metawork/profile/delete', {
+      id: memoryId, layer, ...memoryScopeFields(scope),
+    });
+    return data?.deleted === true;
   }
 
   /**
    * One v3 RPC call: envelope parsing, timeout, error normalization and a
    * bounded retry for transport-level failures only.
    */
-  private async call<T>(path: string, body: unknown, timeoutMs = this.timeoutMs): Promise<T | undefined> {
+  private async call<T>(path: string, body: unknown, timeoutMs = this.timeoutMs, retries = this.retries): Promise<T | undefined> {
     const payload = JSON.stringify(body ?? {});
     let lastError: unknown;
-    for (let attempt = 0; attempt <= this.retries; attempt++) {
+    for (let attempt = 0; attempt <= retries; attempt++) {
       if (attempt > 0) await this.sleep(RETRY_BASE_DELAY_MS * attempt);
       const controller = new AbortController();
       const timer = setTimeout(() => controller.abort(), timeoutMs);
@@ -318,7 +418,7 @@ export class TdaiMemoryAdapter implements MemoryPort {
         if (error instanceof MemoryPortError) {
           if (error.code === 'memory_request_failed') {
             lastError = error;
-            if (attempt < this.retries) continue;
+            if (attempt < retries) continue;
           }
           throw error;
         }
@@ -358,6 +458,7 @@ function toCandidate(item: AtomicDetail) {
     createdAt: item.created_at ?? '',
     updatedAt: item.updated_at ?? '',
     score: typeof item.score === 'number' ? item.score : 0,
+    revision: item.revision ?? digest(item.content),
   };
 }
 
@@ -369,7 +470,13 @@ function toMaterialization(item: AtomicDetail): MemoryMaterialization {
     background: item.background ?? null,
     createdAt: item.created_at ?? '',
     updatedAt: item.updated_at ?? '',
+    revision: item.revision ?? digest(item.content),
+    layer: 'l1',
   };
+}
+
+function digest(content: string): string {
+  return createHash('sha256').update(content, 'utf8').digest('hex');
 }
 
 function toAsset(item: AtomicDetail, scope: MemoryScope): MemoryAsset {
@@ -385,5 +492,27 @@ function toAsset(item: AtomicDetail, scope: MemoryScope): MemoryAsset {
     source: 'conversation',
     workspaceId: null,
     enabled: true,
+    layer: 'l1',
+    title: item.type,
+    revision: item.revision ?? digest(item.content),
+  };
+}
+
+function toProfileAsset(item: AtomicDetail & { title?: string; layer?: MemoryLayer }, scope: MemoryScope): MemoryAsset {
+  const layer = item.layer ?? (item.type === 'persona' ? 'l3' : 'l2');
+  return {
+    id: item.id,
+    memoryId: item.id,
+    type: item.type,
+    content: item.content,
+    background: item.background ?? null,
+    createdAt: item.created_at ?? '',
+    updatedAt: item.updated_at ?? '',
+    source: 'profile',
+    workspaceId: null,
+    enabled: true,
+    layer,
+    title: item.title ?? item.type,
+    revision: item.revision ?? digest(item.content),
   };
 }

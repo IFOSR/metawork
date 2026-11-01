@@ -52,7 +52,6 @@ export function SpanRoutingSettings({ draft, models, providers, credentialConfig
     <section className="settings-section system-routing-settings" aria-labelledby="decision-model-heading">
       <div className="section-heading">
         <div>
-          <div className="settings-eyebrow">SYSTEM ROUTING</div>
           <h3 id="decision-model-heading">系统路由</h3>
           <p>决策模型在 Planner 完成 DAG 后联合选择 AgentClass 和 Model。凭证复用 Provider 配置，设置只影响后续新 Graph。</p>
         </div>

@@ -34,6 +34,16 @@ function makeSession(
 }
 
 describe('ConversationRegistry', () => {
+  it('closes an idle observed session for deletion before removing its runtime files', async () => {
+    let disposed = false;
+    const registry = new ConversationRegistry();
+    const session = await registry.getOrOpen('conv_1', async () => makeSession('conv_1', { disposed: () => { disposed = true; } }));
+    session.attachClient();
+    expect(await registry.closeIdle('conv_1')).toBe('busy');
+    await registry.closeForDeletion('conv_1');
+    expect(disposed).toBe(true);
+    expect(registry.getIfOpen('conv_1')).toBeNull();
+  });
   it('opens a conversation once under concurrent requests', async () => {
     let opens = 0;
     const registry = new ConversationRegistry();

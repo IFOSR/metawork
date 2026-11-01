@@ -17,7 +17,7 @@ function schema50() {
     ALTER TABLE tasks DROP COLUMN public_delivery_baseline_json;
     ALTER TABLE tasks DROP COLUMN start_service_after_publish;
     ALTER TABLE tasks DROP COLUMN public_project;
-    UPDATE schema_version SET version=50;
+    DROP VIEW IF EXISTS conversation_memory_turns; UPDATE schema_version SET version = 50;
     INSERT INTO tasks (id,title,goal,status,created_at,updated_at) VALUES ('old', 'Old title', 'retain facts', 'succeeded', 'then', 'then');
     INSERT INTO tasks (id,title,goal,status,created_at,updated_at) VALUES ('new', 'New title', 'new directory', 'needs_action', 'then', 'then');`);
   new TaskArtifactRepo(db).insert({ accountId: 'a', taskId: 'old', displayName: 'answer.md',

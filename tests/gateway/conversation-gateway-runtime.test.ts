@@ -1,3 +1,6 @@
+import Database from 'better-sqlite3';
+import { runMigrations } from '../../src/storage/migrations.js';
+import { SqliteConversationTurnStore } from '../../src/storage/conversation-turn-repo.js';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { createHash } from 'node:crypto';
 import { tmpdir } from 'node:os';
@@ -33,6 +36,44 @@ afterEach(() => {
 });
 
 describe('ConversationGatewayRuntime', () => {
+  it('persists exact input before execution and revisions before journal publication, and recovers a failed publisher', async () => {
+    const db = new Database(':memory:'); runMigrations(db);
+    const store = new SqliteConversationTurnStore(db);
+    const input = 'raw query  \r\n' + 'long input🙂'.repeat(1000);
+    const output = '完整回答'.repeat(5000);
+    const fixture = createFixture(async (_conversationId, _command, session) => {
+      const accepted = store.findRequest('local-default', 'conv_1', 'authority-key');
+      expect(accepted).not.toBeNull();
+      expect(store.readBody('local-default', accepted!.input.hash).text).toBe(input);
+      session.output.push(output);
+    }, undefined, store);
+    const originalAppend = fixture.journal.append.bind(fixture.journal);
+    const append = vi.spyOn(fixture.journal, 'append').mockImplementation(event => ['turn_started', 'final_answer'].includes(event.kind)
+      ? Promise.reject(new Error('journal unavailable')) : originalAppend(event));
+    try {
+      const receipt = await fixture.submit('conv_1', 'authority-request', 'authority-key', userMessage(input));
+      expect(await receipt.completion).toEqual({ status: 'completed' });
+      const turn = store.findRequest('local-default', 'conv_1', 'authority-key')!;
+      expect(store.readBody('local-default', turn.answer!.hash).text).toBe(output);
+      expect(store.pendingEvents('local-default')).toHaveLength(2);
+      append.mockRestore();
+      await fixture.runtime.flushTurnOutbox();
+      expect(store.pendingEvents('local-default')).toEqual([]);
+      const replay = await fixture.journal.replay('local-default', 'conv_1');
+      const durable = [...replay.snapshot, ...replay.deltas];
+      expect(durable.some(event => event.kind === 'result_chunk')).toBe(false);
+      expect(JSON.stringify(durable)).not.toContain('raw query');
+      expect(JSON.stringify(durable)).not.toContain('完整回答');
+      await fixture.runtime.publishBackgroundResult({ conversationId: 'conv_1', turnId: turn.turnId,
+        requestId: 'authority-request', delivery: { resultId: 'result-background', content: 'background completion',
+          certification: 'certified', completeness: 'complete' } });
+      expect(store.find(turn)?.answerRevision).toBe(2);
+      await fixture.runtime.publishBackgroundResult({ conversationId: 'conv_1', turnId: turn.turnId,
+        requestId: 'authority-request', delivery: { resultId: 'result-background', content: 'background completion',
+          certification: 'certified', completeness: 'complete' } });
+      expect(store.find(turn)?.answerRevision).toBe(2);
+    } finally { db.close(); }
+  });
   it('persists the full redacted prompt before publishing a bounded live preview', async () => {
     const fixture = createFixture();
     const input = `api_key=private-value\n${'完整问题🙂'.repeat(5000)}`;
@@ -835,6 +876,7 @@ function createFixture(
   ) => Promise<unknown> | null = null,
   readHistory: NonNullable<import('../../src/gateway/conversation-gateway-runtime.js').ConversationGatewayRuntimeDeps['readHistory']>
     = async () => ({ turns: [], previousCursor: null, nextCursor: null }),
+  turnStore?: SqliteConversationTurnStore,
 ) {
   const root = mkdtempSync(join(tmpdir(), 'anyfusion-conversation-gateway-'));
   roots.push(root);
@@ -915,6 +957,7 @@ function createFixture(
     return session as unknown as ConversationSession;
   };
   fixture.runtime = new ConversationGatewayRuntime({
+    turnStore,
     storeResultContent: (_accountId, _conversationId, text) => {
       fixture.bodies.set(createHash('sha256').update(text).digest('hex'), text);
     },

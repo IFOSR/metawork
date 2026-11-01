@@ -37,6 +37,7 @@ export interface WebSessionCatalogDeps {
   readonly directory: WorkspaceDirectoryService;
   readonly conversationStore: ConversationStore;
   readonly presentationStore: ConversationPresentationStore;
+  deleteContent?: (conversationId: string) => Promise<'completed' | 'pending'>;
   now?: () => string;
   normalizeTurnPresentation?: (turn: ConversationTurn) => ConversationTurn;
   normalizeHistoryPage?: (turns: readonly ConversationTurn[]) => ConversationTurn[];
@@ -50,7 +51,6 @@ export interface CreateWebSessionInput {
 export interface ListWebSessionsInput {
   readonly workspaceId: string;
   readonly principalId: string;
-  readonly activeConversationId?: string | null;
   readonly query?: string;
 }
 
@@ -82,7 +82,7 @@ export class WebSessionCatalog {
     );
     const record: WebSessionRecord = {
       version: WEB_SESSION_FORMAT_VERSION,
-      session: metadataProjection(conversation, false),
+      session: metadataProjection(conversation),
       turns: [],
     };
     await this.deps.presentationStore.write({
@@ -114,7 +114,6 @@ export class WebSessionCatalog {
         createdAt: item.createdAt,
         updatedAt: item.updatedAt,
         latestTaskCreatedAt: item.latestTaskCreatedAt,
-        active: item.conversationId === input.activeConversationId,
         archived: item.archived,
         preview: item.preview,
         activity: structuredClone(item.activity),
@@ -136,7 +135,6 @@ export class WebSessionCatalog {
         title: item.title, createdAt: item.createdAt, updatedAt: item.updatedAt,
         latestTaskCreatedAt: item.latestTaskCreatedAt,
         archived: item.archived, preview: item.preview, activity: item.activity,
-        active: item.conversationId === input.activeConversationId,
       })),
     };
   }
@@ -147,7 +145,6 @@ export class WebSessionCatalog {
 
   async read(
     sessionId: string,
-    activeConversationId: string | null = null,
   ): Promise<WebSessionRecord | null> {
     await this.ensureInitialized();
     const conversation = await this.deps.conversationStore.readConversation(sessionId);
@@ -155,10 +152,7 @@ export class WebSessionCatalog {
     const presentation = await this.deps.presentationStore.read(sessionId);
     return {
       version: WEB_SESSION_FORMAT_VERSION,
-      session: metadataProjection(
-        conversation.conversation,
-        sessionId === activeConversationId,
-      ),
+      session: metadataProjection(conversation.conversation),
       turns: (presentation?.turns ?? []).map(turn => this.normalizeTurn(turn)),
     };
   }
@@ -184,8 +178,14 @@ export class WebSessionCatalog {
       ? await this.deps.conversationStore.readMetadata(sessionId)
       : (await this.deps.conversationStore.readConversation(sessionId))?.conversation;
     return metadata ? {
-      ...metadataProjection(metadata, false), workspaceId: metadata.workspaceBinding?.workspaceId ?? null,
+      ...metadataProjection(metadata), workspaceId: metadata.workspaceBinding?.workspaceId ?? null,
     } : null;
+  }
+
+  async readActivity(sessionId: string) {
+    const metadata = await this.readMetadata(sessionId);
+    if (!metadata || !metadata.workspaceId) return null;
+    return this.deps.directory.getConversationActivity(sessionId, metadata.updatedAt);
   }
 
   async readVersion(sessionId: string): Promise<string | null> {
@@ -201,7 +201,6 @@ export class WebSessionCatalog {
 
   async readPage(
     sessionId: string,
-    activeConversationId: string | null = null,
     request: ConversationHistoryRequest = {},
   ): Promise<WebSessionRecord | null> {
     await this.ensureInitialized();
@@ -209,7 +208,7 @@ export class WebSessionCatalog {
       ? await this.deps.conversationStore.readMetadata(sessionId)
       : (await this.deps.conversationStore.readConversation(sessionId))?.conversation;
     if (!metadata) return null;
-    if (!this.deps.presentationStore.readPage) return this.read(sessionId, activeConversationId);
+    if (!this.deps.presentationStore.readPage) return this.read(sessionId);
     const source = request.cursor?.startsWith('conversation.') ? 'conversation'
       : request.cursor?.startsWith('presentation.') ? 'presentation' : null;
     if (request.cursor && !source) throw new Error('invalid_history_cursor');
@@ -223,19 +222,20 @@ export class WebSessionCatalog {
       ? await this.deps.presentationStore.findMany(sessionId, canonical!.turns.map(turn => turn.id)) : new Map<string, ConversationTurn>();
     const page = useCanonical ? {
       turns: canonical!.turns.map(turn => ({
-        taskId: null, startedAt: metadata.createdAt, completedAt: null,
         traceEvents: [], executionTimeline: null, artifactRefs: [], artifacts: [],
         ...rich.get(turn.id),
         // Rich records add presentation details; terminal content belongs to
         // the canonical Turn, including completions observed only by another client.
         id: turn.id, sessionId, userInput: turn.userInput, finalAnswer: turn.finalAnswer,
-        status: turn.status === 'cancelled' ? 'failed' as const : turn.status,
+        status: turn.status,
+        startedAt: turn.startedAt ?? metadata.createdAt, completedAt: turn.completedAt ?? null,
+        taskId: turn.taskId ?? rich.get(turn.id)?.taskId ?? null,
       })),
       nextCursor: canonical!.nextCursor,
     } : await this.deps.presentationStore.readPage(sessionId, innerRequest);
     return {
       version: WEB_SESSION_FORMAT_VERSION,
-      session: metadataProjection(metadata, sessionId === activeConversationId),
+      session: metadataProjection(metadata),
       turns: this.deps.normalizeHistoryPage
         ? this.deps.normalizeHistoryPage(page.turns)
         : page.turns.map(turn => this.normalizeTurn(turn)),
@@ -325,10 +325,15 @@ export class WebSessionCatalog {
     }));
     const updated: WebSessionRecord = {
       version: WEB_SESSION_FORMAT_VERSION,
-      session: metadataProjection(metadata, false),
+      session: metadataProjection(metadata),
       turns,
     };
     return updated;
+  }
+
+  async delete(sessionId: string, workspaceId: string, principalId: string): Promise<'completed' | 'pending'> {
+    await this.archive(sessionId, workspaceId, principalId);
+    return this.deps.deleteContent ? this.deps.deleteContent(sessionId) : 'completed';
   }
 
   async archive(
@@ -386,14 +391,12 @@ function isOrdinaryUserQuery(value: string): boolean {
 
 function metadataProjection(
   metadata: import('../session/conversation-store.js').ConversationMetadata,
-  active: boolean,
 ): WebSessionMetadata {
   return {
     id: metadata.id,
     title: metadata.title,
     createdAt: metadata.createdAt,
     updatedAt: metadata.updatedAt,
-    active,
     archived: metadata.archived,
   };
 }

@@ -23,6 +23,7 @@ import type {
   MemoryFlushBatch,
   MemoryMaterialization,
   MemoryPortError,
+  MemoryLayer,
   MemoryScope,
   MemorySearchResult,
 } from './memory-types.js';
@@ -38,6 +39,8 @@ export interface MemoryPort {
    */
   deposit(batch: MemoryFlushBatch, scope: MemoryScope): Promise<{ accepted: number }>;
 
+  deleteConversation?(conversationId: string, scope: MemoryScope): Promise<boolean>;
+
   /** S2 — recall candidate memory atoms for the account scope. */
   search(input: {
     query: string;
@@ -45,8 +48,15 @@ export interface MemoryPort {
     type?: string;
   }, scope: MemoryScope): Promise<MemorySearchResult>;
 
+  /** Search the indexed TDAI L2 scene summaries without reading scene bodies. */
+  searchScenarios?(input: { query: string; limit: number }, scope: MemoryScope): Promise<{
+    items: readonly { id: string; title: string; preview: string; revision: string; updatedAt: string | null; score: number }[];
+    degraded: boolean;
+    degradedReason?: string;
+  }>;
+
   /** S3 — materialize the full body of one memory atom. */
-  materialize(memoryId: string, scope: MemoryScope): Promise<MemoryMaterialization>;
+  materialize(memoryId: string, scope: MemoryScope, layer?: MemoryLayer): Promise<MemoryMaterialization>;
 
   /** S4 — list the account's memory assets for the management view. */
   listAssets(input: {
@@ -65,7 +75,14 @@ export interface MemoryPort {
   deleteAsset(memoryId: string, scope: MemoryScope): Promise<{ deleted: boolean }>;
 
   /** S4 — read the L3 persona document for the account scope. */
-  readPersona(scope: MemoryScope): Promise<{ content: string | null; updatedAt: string | null }>;
+  readPersona(scope: MemoryScope): Promise<{
+    id?: string;
+    content: string | null;
+    updatedAt: string | null;
+    revision?: string;
+  }>;
+
+  deleteProfile?(memoryId: string, layer: Exclude<MemoryLayer, 'l1'>, scope: MemoryScope): Promise<boolean>;
 }
 
 export type { MemoryPortError };

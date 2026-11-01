@@ -1,3 +1,4 @@
+import { seedAuthoritativeTurn } from '../support/conversation-turn-fixture.js';
 /**
  * User journey for long-term memory.
  *
@@ -89,6 +90,7 @@ describeEngine('long-term memory user journey', () => {
       completedAt: '2026-10-22T00:01:00.000Z',
       interactionKind: 'ai_turn',
     };
+    seedAuthoritativeTurn(db, ACCOUNT, conversationId, body);
     db.prepare(`INSERT INTO conversation_read_turns
       (account_id, conversation_id, epoch, turn_id, first_sequence, revision, active, body_json, byte_length)
       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`)
@@ -175,7 +177,7 @@ describeEngine('long-term memory user journey', () => {
       targetTask: null,
       userInput: '再整理一份销售周报',
     });
-    expect(eligible).toEqual([`memory:${candidates[0]!.memoryId}`]);
+    expect(eligible).toEqual([`memory:${candidates[0]!.memoryId}:legacy`]);
 
     // The Runtime materializes it and the Executor receives it as evidence.
     const materialized = await stack.evidence.materialize({

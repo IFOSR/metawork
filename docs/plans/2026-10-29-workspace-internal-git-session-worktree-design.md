@@ -7,6 +7,14 @@
 - 范围：代码、网站、调研、PPT、日常文档、普通问答统一采用本模型
 - 运行实现已接入私有 Git、会话 Worktree、Workspace FIFO 合并与固定服务 Worktree；ADR 与部署切换仍需最终验收后更新
 
+## 2026-10-30 执行模式收敛修订
+
+实现验收发现旧的 Workspace admission 和交付投影仍把新任务标成
+`in_place`。本次修订将新 admission 和 Task 持久化值统一为
+`conversation_git`，Attempt 只有历史记录才进入 in-place 兼容分支，Web、Gateway
+和 MetaWork TUI 统一显示 Conversation Worktree。旧数据库值继续只读可见，不能被
+新任务重新选择。
+
 ## 1. 唯一方案
 
 **一个 Workspace 对应一个私有 Git 仓库；一个会话对应一个真实 Git Worktree；会话并行执行；成果通过该 Workspace 的串行合并队列写回用户目录。**

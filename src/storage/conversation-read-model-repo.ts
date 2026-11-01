@@ -1,3 +1,4 @@
+import { SqliteConversationTurnStore } from './conversation-turn-repo.js';
 import { createHash, randomUUID } from 'node:crypto';
 import type Database from 'better-sqlite3';
 import { recordNavigationRead } from '../utils/navigation-diagnostics.js';
@@ -18,6 +19,15 @@ export class SqliteConversationReadModel implements ConversationReadModel {
   constructor(private readonly db: Database.Database, private readonly now: () => number = Date.now,
     private readonly onTurnCommitted?: (accountId: string, turn: ConversationTurnView) => void,
     private readonly staging?: { accountId: string; conversationId: string; epoch: string }) {}
+
+  authoritativeTurn(accountId: string, conversationId: string, turnId: string) {
+    this.assertScope(accountId, conversationId);
+    const store = new SqliteConversationTurnStore(this.db);
+    const turn = store.find({ accountId, conversationId, turnId });
+    if (!turn) return null;
+    return { sequence: turn.sequence, userInput: store.readBody(accountId, turn.input.hash).text, inputRef: turn.input,
+      answer: turn.answer ? store.readBody(accountId, turn.answer.hash).text : null, answerRef: turn.answer };
+  }
 
   private headTable(): string { return this.staging ? 'conversation_read_rebuilds' : 'conversation_read_heads'; }
 
@@ -48,14 +58,17 @@ export class SqliteConversationReadModel implements ConversationReadModel {
   }
 
   private assertScope(accountId: string, conversationId: string): void {
+    if (new SqliteConversationTurnStore(this.db).deletionState(accountId, conversationId)) throw new Error('conversation_deleted');
     if (this.staging && (accountId !== this.staging.accountId || conversationId !== this.staging.conversationId)) {
       throw new Error('observation_scope_mismatch');
     }
   }
 
   putContent(accountId: string, conversationId: string, value: string) {
+    this.assertScope(accountId, conversationId);
     const bytes = Buffer.from(value);
     const hash = createHash('sha256').update(bytes).digest('hex');
+    if (this.ownsBody(accountId, conversationId, hash)) return { hash, byteLength: bytes.length };
     this.db.prepare(`INSERT INTO conversation_read_bodies
       (account_id, conversation_id, hash, body, created_at) VALUES (?, ?, ?, ?, ?)
       ON CONFLICT(account_id, conversation_id, hash) DO UPDATE SET created_at = excluded.created_at
@@ -64,6 +77,7 @@ export class SqliteConversationReadModel implements ConversationReadModel {
   }
 
   putContentChunk(accountId: string, conversationId: string, reference: ConversationContentReference, offset: number, text: string): void {
+    this.assertScope(accountId, conversationId);
     const body = Buffer.from(text);
     if (!/^[a-f0-9]{64}$/.test(reference.hash) || !Number.isSafeInteger(reference.byteLength) || reference.byteLength < 0
       || !Number.isSafeInteger(offset) || offset < 0 || offset + body.length > reference.byteLength) {
@@ -206,12 +220,14 @@ export class SqliteConversationReadModel implements ConversationReadModel {
 
   commit(accountId: string, conversationId: string, turns: readonly ConversationTurnView[], journalSequence: number,
     bodies: readonly { hash: string; value: string }[] = []): void {
+    this.assertScope(accountId, conversationId);
     this.db.transaction(() => {
       if (!this.staging) this.db.prepare(`INSERT OR IGNORE INTO conversation_read_heads
         (account_id, conversation_id, epoch, projector_version) VALUES (?, ?, ?, ?)`).run(accountId, conversationId, randomUUID(), CONVERSATION_PROJECTOR_VERSION);
       const head = this.head(accountId, conversationId)!;
       if (journalSequence < head.journalSequence) throw new Error('observation_checkpoint_regression');
       for (const body of bodies) {
+        if (this.ownsBody(accountId, conversationId, body.hash)) continue;
         const bytes = Buffer.from(body.value);
         if (createHash('sha256').update(bytes).digest('hex') !== body.hash) throw new Error('observation_content_hash_mismatch');
         this.db.prepare(`INSERT OR IGNORE INTO conversation_read_bodies
@@ -220,6 +236,14 @@ export class SqliteConversationReadModel implements ConversationReadModel {
       let revision = head.revision;
       for (const value of turns) {
         if (value.conversationId !== conversationId) throw new Error('observation_scope_mismatch');
+        for (const ref of [value.userInputRef, value.answerRef]) {
+          if (ref && this.ownsBody(accountId, conversationId, ref.hash)) {
+            this.db.prepare(`INSERT OR IGNORE INTO conversation_content_search_queue(account_id, conversation_id, hash)
+              SELECT ?, ?, ? WHERE NOT EXISTS (SELECT 1 FROM conversation_content_search_chunks
+                WHERE account_id = ? AND conversation_id = ? AND hash = ?)`)
+              .run(accountId, conversationId, ref.hash, accountId, conversationId, ref.hash);
+          }
+        }
         const turn = { ...value, revision: ++revision };
         const json = JSON.stringify(turn);
         const bytes = Buffer.byteLength(json);
@@ -227,7 +251,7 @@ export class SqliteConversationReadModel implements ConversationReadModel {
         this.db.prepare(`INSERT INTO conversation_read_turns
           (account_id, conversation_id, epoch, turn_id, first_sequence, revision, active, body_json, byte_length)
           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(account_id, conversation_id, epoch, turn_id)
-          DO UPDATE SET revision = excluded.revision, active = excluded.active,
+          DO UPDATE SET revision = excluded.revision, active = excluded.active, first_sequence = excluded.first_sequence,
             body_json = excluded.body_json, byte_length = excluded.byte_length`)
           .run(accountId, conversationId, head.epoch, turn.id, turn.firstSequence, revision,
             ['running', 'blocked'].includes(turn.status) ? 1 : 0, json, bytes);
@@ -243,8 +267,16 @@ export class SqliteConversationReadModel implements ConversationReadModel {
   }
 
   content(accountId: string, conversationId: string, hash: string, offset: number, maxBytes: number) {
+    this.assertScope(accountId, conversationId);
     if (!/^[a-f0-9]{64}$/.test(hash) || !Number.isSafeInteger(offset) || offset < 0
       || !Number.isSafeInteger(maxBytes) || maxBytes < 4 || maxBytes > 64 * 1024) throw new Error('invalid_content_range');
+    if (this.ownsBody(accountId, conversationId, hash)) {
+      const body = Buffer.from(new SqliteConversationTurnStore(this.db).readBody(accountId, hash).text);
+      if (offset > body.length || (offset < body.length && (body[offset]! & 0xc0) === 0x80)) throw new Error('invalid_content_offset');
+      let end = Math.min(offset + maxBytes, body.length);
+      while (end < body.length && (body[end]! & 0xc0) === 0x80) end--;
+      return { text: body.subarray(offset, end).toString('utf8'), offset, nextOffset: end, byteLength: body.length };
+    }
     let row = this.db.prepare(`SELECT length(body) AS byte_length, substr(body, ?, ?) AS chunk
       FROM conversation_read_bodies WHERE account_id = ? AND conversation_id = ? AND hash = ?`)
       .get(offset + 1, maxBytes + 1, accountId, conversationId, hash) as
@@ -268,6 +300,13 @@ export class SqliteConversationReadModel implements ConversationReadModel {
     let end = Math.min(chunk.length, maxBytes);
     while (end > 0 && end < chunk.length && (chunk[end]! & 0xc0) === 0x80) end--;
     return { text: chunk.subarray(0, end).toString('utf8'), offset, nextOffset: offset + end, byteLength: row.byte_length };
+  }
+
+  private ownsBody(accountId: string, conversationId: string, hash: string): boolean {
+    return Boolean(this.db.prepare(`SELECT 1 FROM conversation_turns
+      WHERE account_id = ? AND conversation_id = ? AND user_input_hash = ?
+      UNION ALL SELECT 1 FROM conversation_turn_answers WHERE account_id = ? AND conversation_id = ? AND body_hash = ? LIMIT 1`)
+      .get(accountId, conversationId, hash, accountId, conversationId, hash));
   }
 
   private trimTail(accountId: string, conversationId: string, epoch: string): void {

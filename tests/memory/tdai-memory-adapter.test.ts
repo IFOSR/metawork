@@ -47,12 +47,12 @@ describe('TdaiMemoryAdapter', () => {
 
     expect(result.accepted).toBe(2);
     expect(calls).toHaveLength(1);
-    expect(calls[0]!.url).toBe('http://127.0.0.1:8420/v3/conversation/add');
+    expect(calls[0]!.url).toBe('http://127.0.0.1:8420/v3/metawork/conversation/upsert');
     const body = calls[0]!.body as { session_id: string; messages: Array<{ role: string; content: string }>; team_id: string };
     expect(body.session_id).toBe('conv-1');
     expect(body.messages).toEqual([
-      { role: 'user', content: '帮我看下销售数据' },
-      { role: 'assistant', content: '好的' },
+      { id: expect.any(String), role: 'user', content: '帮我看下销售数据' },
+      { id: expect.any(String), role: 'assistant', content: '好的' },
     ]);
     expect(body.team_id).toBe(scope.teamId);
     expect(calls[0]!.headers.Authorization).toBe('Bearer kernel-token');
@@ -164,6 +164,40 @@ describe('TdaiMemoryAdapter', () => {
     });
   });
 
+  it('pages profile assets after the atomic assets and preserves layer metadata', async () => {
+    const calls: Array<{ path: string; body: Record<string, unknown> }> = [];
+    const adapter = new TdaiMemoryAdapter({
+      baseUrl: 'http://127.0.0.1:8420',
+      serviceId: 'metawork',
+      fetchImpl: (async (url: string, init: RequestInit) => {
+        const path = new URL(String(url)).pathname;
+        const body = JSON.parse(String(init.body)) as Record<string, unknown>;
+        calls.push({ path, body });
+        if (path === '/v3/atomic/query') return okEnvelope({ items: [], total: 0 });
+        const profileAssets = Array.from({ length: 120 }, (_, index) => ({
+          id: `tdai-scene-${index}`, type: 'scene', title: index === 105 ? 'weekly-report.md' : `scene-${index}.md`,
+          content: index === 105 ? '场景正文' : `正文-${index}`, background: '周报场景',
+          revision: index === 105 ? 'scene-revision' : `revision-${index}`, layer: 'l2',
+        }));
+        const offset = Number(body.offset ?? 0);
+        const limit = Number(body.limit ?? 100);
+        return okEnvelope({
+          items: profileAssets.slice(offset, offset + limit),
+          total: 120,
+        });
+      }) as unknown as typeof fetch,
+    });
+
+    const result = await adapter.listAssets({ limit: 10, offset: 105, includeDisabled: true }, scope);
+
+    expect(calls.find(call => call.path === '/v3/metawork/profile/query')?.body).toMatchObject({ offset: 105, limit: 10 });
+    expect(result.total).toBe(120);
+    expect(result.items).toHaveLength(10);
+    expect(result.items[0]).toMatchObject({
+      id: 'tdai-scene-105', title: 'weekly-report.md', layer: 'l2', revision: 'scene-revision',
+    });
+  });
+
   it('aborts a recall that exceeds its own short timeout', async () => {
     vi.useFakeTimers();
     try {
@@ -183,6 +217,33 @@ describe('TdaiMemoryAdapter', () => {
       await vi.advanceTimersByTimeAsync(100);
       const result = await pending;
       expect(result.degraded).toBe(true);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('bounds L2/L3 reads to one independent short request without retrying', async () => {
+    vi.useFakeTimers();
+    try {
+      let calls = 0;
+      const adapter = new TdaiMemoryAdapter({
+        baseUrl: 'http://127.0.0.1:8420',
+        serviceId: 'metawork',
+        timeoutMs: 10_000,
+        searchTimeoutMs: 50,
+        retries: 1,
+        fetchImpl: ((_url: string, init: RequestInit) => new Promise((_resolve, reject) => {
+          calls += 1;
+          init.signal?.addEventListener('abort', () => reject(new Error('aborted')));
+        })) as unknown as typeof fetch,
+      });
+      const pending = adapter.readPersona(scope).then(
+        () => null,
+        error => error as unknown,
+      );
+      await vi.advanceTimersByTimeAsync(100);
+      await expect(pending).resolves.toMatchObject({ code: 'memory_engine_unavailable' });
+      expect(calls).toBe(1);
     } finally {
       vi.useRealTimers();
     }

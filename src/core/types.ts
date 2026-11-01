@@ -62,7 +62,8 @@ export interface PrioritySignals {
 // ─── 任务对象 ───
 export interface Task {
   id: string;
-  executionMode?: 'worktree' | 'in_place';
+  /** New Tasks use conversation_git; the other values are historical reads. */
+  executionMode?: 'conversation_git' | 'service_git' | 'worktree' | 'in_place';
   /**
    * Kernel-authorized Workspace execution facts fixed at admission
    * (2026-10-25 design §10). Retry, recovery and follow-up rounds inherit them;

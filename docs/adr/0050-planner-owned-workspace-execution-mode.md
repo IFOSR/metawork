@@ -1,6 +1,6 @@
-# ADR-0050: 单一 In-place Workspace 执行模型
+# ADR-0050: 单一 Workspace 执行模型
 
-- 状态：已接受并实施
+- 状态：已接受并实施；2026-10-30 起由 Workspace 内部 Git / Conversation Worktree 修订
 - 日期：2026-10-25
 - 取代：[Planner 主导的 Workspace 执行模式设计](../plans/2026-10-25-planner-owned-workspace-mode-design.md)
 - 实施方案：[单一 In-place Workspace 技术实施方案](../plans/2026-10-25-in-place-only-workspace-execution-implementation-plan.md)
@@ -40,3 +40,13 @@ Workspace write lease，也不创建 publication。声明 `fileOutputs` 的报�
 
 schema 58 将未完成的历史 Worktree publication 停放；旧 binding 在恢复时明确拒绝。
 历史 nullable/兼容列可以保留用于诊断，但新代码不得读取其模式选择语义。
+
+## 2026-10-30 修订：Conversation Worktree 唯一新任务路径
+
+Workspace 内部 Git 与会话 Worktree 方案取代本 ADR 中“新任务直接写入用户
+Workspace”的执行细节。所有新 Task 的 Workspace admission 固定为
+`conversation_git`：Executor 写入 Conversation Worktree，结果封存到 Workspace
+私有仓库，再由 Workspace FIFO 合并队列写回用户目录。Planner 不再判断或选择
+`in_place`，Kernel 不再为新 Task 发出 `in_place`。数据库中的旧
+`in_place`/旧 Worktree 值只用于只读展示、恢复和迁移诊断，不会重新成为新任务的
+执行路径。

@@ -62,7 +62,7 @@ interface TaskRow {
   public_delivery_baseline_json: string;
   public_project: number;
   start_service_after_publish: number;
-  execution_mode: 'worktree' | 'in_place' | null;
+  execution_mode: 'conversation_git' | 'service_git' | 'worktree' | 'in_place' | null;
   workspace_execution_source: string | null;
   workspace_delivery_policy: string | null;
   workspace_target_paths_json: string | null;

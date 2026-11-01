@@ -1,3 +1,4 @@
+import { seedAuthoritativeTurn } from '../support/conversation-turn-fixture.js';
 /**
  * Regression tests for the reviewed findings.
  *
@@ -77,6 +78,7 @@ function seedTurn(db: Database.Database, conversationId: string, spec: TurnSpec)
     completedAt: spec.completedAt ?? '2026-10-22T00:01:00.000Z',
     interactionKind: spec.interactionKind ?? 'ai_turn',
   };
+  seedAuthoritativeTurn(db, ACCOUNT, conversationId, body);
   db.prepare(`INSERT INTO conversation_read_turns
     (account_id, conversation_id, epoch, turn_id, first_sequence, revision, active, body_json, byte_length)
     VALUES (?, ?, ?, ?, ?, 1, 0, ?, ?)`)
@@ -142,7 +144,7 @@ describe('P1-4 deposit stays inside the engine message budget', () => {
     db.close();
   });
 
-  it('truncates an over-long answer instead of failing the batch', async () => {
+  it('preserves an over-long answer for the chunked engine protocol', async () => {
     const db = createDb();
     seedTurn(db, 'conv-long', {
       id: 't1', sequence: 1, answer: 'x'.repeat(20_000),
@@ -151,7 +153,7 @@ describe('P1-4 deposit stays inside the engine message budget', () => {
     const { service } = buildService(db, port);
     await service.flushConversation({ accountId: ACCOUNT, conversationId: 'conv-long', force: true });
     const answer = port.deposits[0]!.batch.turns[0]!.assistantAnswer;
-    expect(answer.length).toBeLessThanOrEqual(8_192);
+    expect(answer).toBe('x'.repeat(20_000));
     db.close();
   });
 });

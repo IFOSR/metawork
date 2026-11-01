@@ -2,9 +2,9 @@
  * Per-conversation memory deposition state.
  *
  * Design §5.2: the cursor advances only after the engine has accepted the
- * batch. TDAI's L0 layer has no idempotency key, so the write order must be
- * preserved: a crash between "engine accepted" and "cursor advanced" repeats
- * one batch, a crash in the other direction would lose it.
+ * batch. Per-Turn input/answer hash receipts determine delivery, including
+ * late completions and revisions behind the legacy sequence cursor. Stable
+ * TDAI message IDs make a retry after engine acceptance idempotent.
  *
  * The same row also records whether the last deposited segment contained
  * sanitized content, which is what marks a memory asset with
@@ -12,6 +12,7 @@
  */
 
 import type Database from 'better-sqlite3';
+import type { MemoryTurnCandidate } from '../memory/memory-types.js';
 
 /** Upper bound on the turns inspected by one scheduler tick. */
 const MAX_SCANNED_TURNS = 5_000;
@@ -24,6 +25,23 @@ const COMPLETED_TURN_PREDICATE = `
 
 export class MemoryFlushCursorRepo {
   constructor(private readonly db: Database.Database, private readonly now: () => Date = () => new Date()) {}
+
+  markAttempt(accountId: string, conversationId: string): void {
+    this.db.prepare('INSERT OR IGNORE INTO conversation_memory_attempts VALUES (?, ?, ?)')
+      .run(accountId, conversationId, this.now().toISOString());
+  }
+
+  /** Record exactly the versions read before I/O, never a newer answer that arrived in flight. */
+  acknowledge(accountId: string, conversationId: string, turns: readonly MemoryTurnCandidate[]): void {
+    this.db.transaction(() => {
+      const insert = this.db.prepare(`INSERT OR IGNORE INTO conversation_memory_receipts
+        VALUES (?, ?, ?, ?, ?, ?)`);
+      for (const turn of turns) {
+        if (!turn.inputHash || !turn.answerHash) continue;
+        insert.run(accountId, conversationId, turn.turnId, turn.inputHash, turn.answerHash, this.now().toISOString());
+      }
+    }).immediate();
+  }
 
   /** Highest deposited sequence for a conversation; 0 when nothing was deposited. */
   lastSequence(accountId: string, conversationId: string): number {
@@ -104,12 +122,11 @@ export class MemoryFlushCursorRepo {
     // history cannot turn one scheduler tick into a full table scan.
     const rows = this.db.prepare(`
       SELECT t.conversation_id AS conversation_id, MAX(t.first_sequence) AS newest_sequence
-      FROM conversation_read_turns t
+      FROM conversation_memory_turns t
       WHERE t.account_id = ?
-        AND t.first_sequence > COALESCE((
-          SELECT s.last_sequence FROM memory_flush_state s
-          WHERE s.account_id = t.account_id AND s.conversation_id = t.conversation_id
-        ), 0)
+        AND (t.deposited = 0 AND json_extract(t.body_json, '$.status') = 'completed'
+          OR t.first_sequence > COALESCE((SELECT s.last_sequence FROM memory_flush_state s
+            WHERE s.account_id = t.account_id AND s.conversation_id = t.conversation_id), 0))
       GROUP BY t.conversation_id
       ORDER BY newest_sequence DESC
       LIMIT ?
@@ -153,12 +170,11 @@ export class MemoryFlushCursorRepo {
              (SELECT s.updated_at FROM memory_flush_state s
               WHERE s.account_id = t.account_id AND s.conversation_id = t.conversation_id
              ) AS last_deposition_at
-      FROM conversation_read_turns t
+      FROM conversation_memory_turns t
       WHERE t.account_id = ?
-        AND t.first_sequence > COALESCE((
-          SELECT s.last_sequence FROM memory_flush_state s
-          WHERE s.account_id = t.account_id AND s.conversation_id = t.conversation_id
-        ), 0)
+        AND (t.deposited = 0 AND json_extract(t.body_json, '$.status') = 'completed'
+          OR t.first_sequence > COALESCE((SELECT s.last_sequence FROM memory_flush_state s
+            WHERE s.account_id = t.account_id AND s.conversation_id = t.conversation_id), 0))
         AND ${COMPLETED_TURN_PREDICATE}
       GROUP BY t.conversation_id
       ORDER BY pending DESC
@@ -192,12 +208,11 @@ export class MemoryFlushCursorRepo {
   listConversationsWithUndepositedTurns(input: { accountId: string; limit: number }): string[] {
     const rows = this.db.prepare(`
       SELECT t.conversation_id AS conversation_id, MAX(t.first_sequence) AS newest_sequence
-      FROM conversation_read_turns t
+      FROM conversation_memory_turns t
       WHERE t.account_id = ?
-        AND t.first_sequence > COALESCE((
-          SELECT s.last_sequence FROM memory_flush_state s
-          WHERE s.account_id = t.account_id AND s.conversation_id = t.conversation_id
-        ), 0)
+        AND (t.deposited = 0 AND json_extract(t.body_json, '$.status') = 'completed'
+          OR t.first_sequence > COALESCE((SELECT s.last_sequence FROM memory_flush_state s
+            WHERE s.account_id = t.account_id AND s.conversation_id = t.conversation_id), 0))
       GROUP BY t.conversation_id
       ORDER BY newest_sequence DESC
       LIMIT ?
@@ -211,7 +226,7 @@ export class MemoryFlushCursorRepo {
   /** Newest turn sequence of a conversation, including ineligible turns. */
   newestSequence(accountId: string, conversationId: string): number {
     const row = this.db.prepare(`
-      SELECT MAX(first_sequence) AS newest_sequence FROM conversation_read_turns
+      SELECT MAX(first_sequence) AS newest_sequence FROM conversation_memory_turns
       WHERE account_id = ? AND conversation_id = ?
     `).get(accountId, conversationId) as { newest_sequence: number | null } | undefined;
     return row?.newest_sequence ?? 0;
@@ -222,7 +237,7 @@ export class MemoryFlushCursorRepo {
     const row = this.db.prepare(`
       SELECT COALESCE(json_extract(body_json, '$.completedAt'),
                       json_extract(body_json, '$.startedAt')) AS last_turn_at
-      FROM conversation_read_turns
+      FROM conversation_memory_turns
       WHERE account_id = ? AND conversation_id = ? AND first_sequence = ?
       LIMIT 1
     `).get(accountId, conversationId, sequence) as { last_turn_at: string | null } | undefined;

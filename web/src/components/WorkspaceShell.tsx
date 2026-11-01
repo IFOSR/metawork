@@ -21,8 +21,7 @@ export function WorkspaceShell({
   workspaces,
   activeWorkspaceId,
   pendingWorkspaceId,
-  activeSessionId,
-  selectedSessionId,
+  currentSessionId,
   workspaceSwitching,
   newSessionPending,
   pendingDeleteSessionIds,
@@ -73,8 +72,7 @@ export function WorkspaceShell({
   workspaces: WorkspaceSummary[];
   activeWorkspaceId: string | null;
   pendingWorkspaceId?: string | null;
-  activeSessionId: string | null;
-  selectedSessionId: string | null;
+  currentSessionId: string | null;
   workspaceSwitching: boolean;
   newSessionPending: boolean;
   pendingDeleteSessionIds: ReadonlySet<string>;
@@ -152,10 +150,8 @@ export function WorkspaceShell({
         workspaces={workspaces}
         activeWorkspaceId={activeWorkspaceId}
         pendingWorkspaceId={pendingWorkspaceId}
-        activeSessionId={activeSessionId}
+        currentSessionId={currentSessionId}
         connected={connected}
-        runningSessionId={running ? activeSessionId : null}
-        selectedSessionId={selectedSessionId}
         workspaceSwitching={workspaceSwitching}
         newSessionPending={newSessionPending}
         pendingDeleteSessionIds={pendingDeleteSessionIds}
@@ -196,7 +192,7 @@ export function WorkspaceShell({
           <Composer
             draft={draft}
             commandClient={commandClient}
-            conversationId={selectedSessionId}
+            conversationId={currentSessionId}
             disabled={composerDisabled}
             running={running}
             blockedReason={blockedReason}

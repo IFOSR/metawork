@@ -20,7 +20,7 @@ describe('Workspace admission resolver', () => {
       .toMatchObject({
         status: 'resolved',
         admission: { kind: 'write', workspaceId: 'workspace_main', targetPaths: ['src/app.ts'] },
-        decision: { executionMode: 'in_place', source: 'planner', deliveryPolicy: 'none' },
+        decision: { executionMode: 'conversation_git', source: 'planner', deliveryPolicy: 'none' },
       });
   });
 

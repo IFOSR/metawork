@@ -240,7 +240,7 @@ describe('Conversation live Turn ownership', () => {
     const replayed = liveTurn(targetSessionId);
     current = replayed;
 
-    // active_session_changed or HTTP attach completion may arrive after replay.
+    // current_session_changed or HTTP attach completion may arrive after replay.
     current = retainLiveTurnForConversation(current, targetSessionId);
     expect(current).toBe(replayed);
   });
@@ -250,21 +250,21 @@ describe('Conversation live Turn ownership', () => {
       requestId: 7,
       latestRequestId: 7,
       requestedSessionId: 'conversation-a',
-      browsedSessionId: 'conversation-a',
+      currentSessionId: 'conversation-a',
     })).toBe(true);
 
     expect(isCurrentConversationRecordRequest({
       requestId: 6,
       latestRequestId: 7,
       requestedSessionId: 'conversation-a',
-      browsedSessionId: 'conversation-a',
+      currentSessionId: 'conversation-a',
     })).toBe(false);
 
     expect(isCurrentConversationRecordRequest({
       requestId: 7,
       latestRequestId: 7,
       requestedSessionId: 'conversation-a',
-      browsedSessionId: 'conversation-b',
+      currentSessionId: 'conversation-b',
     })).toBe(false);
   });
 

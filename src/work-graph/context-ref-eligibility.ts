@@ -1,3 +1,4 @@
+import { verifyInteractionContent } from '../storage/conversation-content-references.js';
 import type Database from 'better-sqlite3';
 import { lstatSync, readFileSync } from 'node:fs';
 import { isAbsolute } from 'node:path';
@@ -15,6 +16,7 @@ interface InteractionReferenceRow {
   id: string;
   session_id: string | null;
   user_input: string;
+  input_kind?: string | null;
   system_output: string;
   created_at: string;
 }
@@ -34,17 +36,18 @@ export function readAuthorizedInteraction(input: {
   side: 'user' | 'assistant';
 }): InteractionReferenceRow {
   const row = input.db.prepare(`
-    SELECT id, session_id, user_input, system_output, created_at
-    FROM interactions WHERE id = ?
+    SELECT id, session_id, user_input, system_output, input_kind, created_at
+    FROM interaction_contents WHERE id = ?
   `).get(input.interactionId) as InteractionReferenceRow | undefined;
   if (!row) throw new InteractionReferenceError('interaction_source_missing', input.interactionId);
   if (row.session_id !== input.sessionId) {
     throw new InteractionReferenceError('interaction_not_authorized', input.interactionId);
   }
-  if (input.side === 'assistant' && !row.system_output.trim()) {
+  const verified = verifyInteractionContent(input.db, row);
+  if (input.side === 'assistant' && !verified.system_output.trim()) {
     throw new InteractionReferenceError('interaction_content_unavailable', input.interactionId);
   }
-  return row;
+  return verified;
 }
 
 export function buildEligibleContextRefKeys(input: {
@@ -100,9 +103,15 @@ export function buildEligibleContextRefKeys(input: {
       if (!accountId) continue;
       // The account is the only isolation boundary; a disabled asset is not
       // eligible and can never be materialized into evidence.
-      const row = input.db.prepare(
-        'SELECT 1 FROM memory_bindings WHERE memory_id = ? AND account_id = ? AND enabled = 1',
-      ).get(ref.memoryId, accountId);
+      const row = input.db.prepare(`
+        SELECT 1 FROM memory_bindings b
+        WHERE b.memory_id = ? AND b.account_id = ? AND b.enabled = 1
+          AND (? IS NULL OR EXISTS (
+            SELECT 1 FROM memory_recall_candidates c
+            WHERE c.memory_id = b.memory_id AND c.account_id = b.account_id
+              AND c.conversation_id = ? AND c.revision = ?
+          ))
+      `).get(ref.memoryId, accountId, ref.revision ?? null, input.conversationId ?? '', ref.revision ?? '') as { 1: number } | undefined;
       if (row) eligible.add(contextRefKey(ref));
       continue;
     }

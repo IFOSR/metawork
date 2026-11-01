@@ -39,7 +39,7 @@ export const IN_PLACE_DELIVERY_LABELS: Record<PublicDeliveryView['state'], strin
 
 const MODE_LABELS: Record<PublicDeliveryView['mode'], string> = {
   in_place: '目标 Workspace 就地执行',
-  worktree: '任务目录隔离交付',
+  worktree: 'Conversation Worktree 执行',
 };
 
 const SOURCE_LABELS: Record<NonNullable<PublicDeliveryView['modeSource']>, string> = {
@@ -72,7 +72,7 @@ export function projectPublicDelivery(input: {
 }): PublicDeliveryView | null {
   // Public projections expose the single current Workspace model and never
   // present a candidate lifecycle.
-  const mode = 'in_place' as const;
+  const mode: PublicDeliveryView['mode'] = input.task.executionMode === 'in_place' ? 'in_place' : 'worktree';
   if (!input.workspace) return null;
   const workspace = resolve(input.workspace);
   // Historical rows created before the Conversation Git protocol may still
@@ -97,10 +97,17 @@ export function projectPublicDelivery(input: {
     const rel = relative(workspace, taskDirectory);
     if (!rel || rel.split(/[\\/]/u).includes('..') || isAbsolute(rel)) return null;
   }
-  // Publication rows belong to the retired Worktree lifecycle. They remain
-  // queryable for migration/audit, but never affect the current In-place view.
-  const publications: WorkspacePublicationRecord[] = [];
-  const deliveries: NonNullable<ReturnType<WorkspacePublicationRepo['delivery']>>[] = [];
+  const worktreeMode = input.task.executionMode !== 'in_place';
+  // Publication rows from the old managed Worktree lifecycle remain queryable
+  // for audit. Conversation Git delivery is represented by the same public
+  // artifact records after the Workspace merge has completed.
+  const publications: readonly WorkspacePublicationRecord[] = worktreeMode ? input.publications : [];
+  const deliveries: NonNullable<ReturnType<WorkspacePublicationRepo['delivery']>>[] = worktreeMode
+    ? input.publications.flatMap(item => {
+      const delivery = input.delivery(item.id);
+      return delivery ? [delivery] : [];
+    })
+    : [];
   const files = [...new Set(input.artifacts.filter(item => item.status === 'published' && item.taskId === input.task.id
     && (taskDirectory === null || item.publishedPath === resolve(taskDirectory, item.relativePath)))
     .map(item => item.relativePath))].sort();
@@ -125,7 +132,7 @@ export function projectPublicDelivery(input: {
     files,
     state,
     candidate,
-    stateLabel: IN_PLACE_DELIVERY_LABELS[state],
+    stateLabel: worktreeMode ? PUBLIC_DELIVERY_LABELS[state] : IN_PLACE_DELIVERY_LABELS[state],
     conflicts: [...new Set(deliveries.flatMap(item => item.failures.map(failure => failure.sourceRelativePath)).filter(Boolean))],
   };
 }

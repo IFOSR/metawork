@@ -165,7 +165,14 @@ async function runNativeMultiClientAcceptance() {
         throw new Error('Clients in Workspace A resolved different workspaceId values');
       }
 
-      const created = await clientA.client.createConversation(selectedA.workspaceId);
+      let created;
+      const workspaceReadyDeadline = Date.now() + 30_000;
+      do {
+        created = await clientA.client.createConversation(selectedA.workspaceId);
+        if (created.status !== 'rejected' || created.reason !== 'workspace_initializing') break;
+        if (Date.now() >= workspaceReadyDeadline) throw new Error('Workspace initialization timed out');
+        await new Promise(resolve => setTimeout(resolve, 100));
+      } while (true);
       assertAccepted(created, 'Workspace A Conversation creation');
       if (!created.conversationId) throw new Error('Conversation creation returned no ID');
       await waitForEvent(clientB.events, event => (
@@ -173,22 +180,27 @@ async function runNativeMultiClientAcceptance() {
         && event.payload?.conversation?.conversationId === created.conversationId
       ));
 
-      await clientA.client.resume(created.conversationId);
+      const viewsA = [];
+      const stopA = await clientA.client.followConversation(created.conversationId, view => viewsA.push(view));
       const helpReceipt = await clientA.client.submitSlashCommand('/help', {
         mode: 'attach',
         conversationId: created.conversationId,
       });
       assertAccepted(helpReceipt, 'attached Client command');
-      await waitForEvent(clientA.events, event => (
-        event.requestId === helpReceipt.requestId
-        && (event.kind === 'final_answer' || event.kind === 'conversation_snapshot')
-      ));
+      await waitFor(() => viewsA.some(view => view.turns.some(turn => turn.requestId === helpReceipt.requestId
+        && turn.status === 'completed' && turn.answerRef)), 15_000);
       if (clientB.events.some(event => event.requestId === helpReceipt.requestId)) {
         throw new Error('Unattached Client B received Conversation detail');
       }
 
-      await clientB.client.resume(created.conversationId);
-      await waitForEvent(clientB.events, event => event.requestId === helpReceipt.requestId);
+      const viewsB = [];
+      const stopB = await clientB.client.followConversation(created.conversationId, view => viewsB.push(view));
+      await waitFor(() => viewsB.some(view => view.turns.some(turn => turn.requestId === helpReceipt.requestId
+        && turn.status === 'completed' && turn.answerRef)), 15_000);
+      const answerA = viewsA.at(-1).turns.find(turn => turn.requestId === helpReceipt.requestId).answerRef;
+      const answerB = viewsB.at(-1).turns.find(turn => turn.requestId === helpReceipt.requestId).answerRef;
+      if (answerA.hash !== answerB.hash) throw new Error('Cross-client answer authority mismatch');
+      stopA(); stopB();
 
       const selectedC = await clientC.client.initializeWorkspace(`/workspace ${workspaceB}`);
       assertAccepted(selectedC, 'TUI Client C Workspace selection');

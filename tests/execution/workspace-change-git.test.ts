@@ -82,6 +82,19 @@ describe('Git snapshot channel', () => {
     expect(after.snapshot.files.map(file => file.path)).toEqual(['notes.md']);
   });
 
+  it('keeps UTF-8 filenames as paths instead of Git octal escapes', () => {
+    const root = repository();
+    const before = captureGitSnapshot({ workspaceRoot: root });
+    if (before.status !== 'ok') throw new Error('baseline capture failed');
+
+    writeFileSync(join(root, '北京明日天气.pptx'), Buffer.from([0, 1, 2]));
+    const after = captureGitSnapshot({ workspaceRoot: root, baselineTree: before.snapshot.tree });
+    if (after.status !== 'ok') throw new Error('capture failed');
+
+    expect(after.snapshot.files.map(file => file.path)).toContain('北京明日天气.pptx');
+    expect(after.snapshot.files.map(file => file.path).some(path => /\\[0-7]{3}/u.test(path))).toBe(false);
+  });
+
   it('reports ignored paths so coverage cannot claim completeness', () => {
     const root = repository();
     const before = captureGitSnapshot({ workspaceRoot: root });

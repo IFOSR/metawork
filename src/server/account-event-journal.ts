@@ -1,3 +1,5 @@
+import { SqliteConversationTurnMigration } from '../storage/conversation-turn-migration.js';
+import { SqliteConversationTurnStore } from '../storage/conversation-turn-repo.js';
 import { SqliteConversationHistorySearch } from '../storage/conversation-history-search-repo.js';
 import type Database from 'better-sqlite3';
 import { FileEventJournal } from '../gateway/file-event-journal.js';
@@ -27,6 +29,7 @@ export function createAccountEventJournal(input: {
   readModel?: ConversationReadModel;
   /** Legacy import is maintenance work, never part of an observation request. */
   prepareHistory?: (conversationId: string) => Promise<void>;
+  retireLegacyFiles?: (conversationId: string) => Promise<void>;
   historyWorkerUrl?: URL;
 }) {
   const index = new SqliteEventJournalSegmentIndex(input.db);
@@ -44,7 +47,28 @@ export function createAccountEventJournal(input: {
     historyWorker ? (conversationId, epoch) => historyWorker.run(conversationId, epoch) : undefined);
   /** The single bounded maintenance pass shared by the loop and diagnostics. */
   const maintain = async (accountId: string, conversationId: string) => {
+    if (new SqliteConversationTurnStore(input.db).deletionState(accountId, conversationId)) return { done: true, didWork: false };
     await input.prepareHistory?.(conversationId);
+    // Legacy provenance is assessed once per unchanged stream, off the client
+    // request path. Unresolved bytes remain legacy-only and never enter Memory.
+    const legacy = input.db.prepare(`SELECT 1 FROM conversation_history_turns h WHERE h.account_id = ?
+      AND h.conversation_id = ? AND h.kind = 'conversation'
+      AND NOT EXISTS (SELECT 1 FROM conversation_turns t WHERE t.account_id = h.account_id
+        AND t.conversation_id = h.conversation_id AND t.turn_id = h.turn_id)
+      AND NOT EXISTS (SELECT 1 FROM conversation_turn_migration m WHERE m.account_id = h.account_id
+        AND m.conversation_id = h.conversation_id AND m.turn_id = h.turn_id) LIMIT 1`).get(accountId, conversationId);
+    if (legacy) {
+      const replay = await journal.replay(accountId, conversationId);
+      const migration = new SqliteConversationTurnMigration(input.db);
+      const events = [...replay.snapshot, ...replay.deltas];
+      migration.review(accountId, conversationId, events);
+      migration.migrate(accountId, conversationId, events);
+    }
+    const migration = new SqliteConversationTurnMigration(input.db);
+    if (input.retireLegacyFiles && migration.canRetire(accountId, conversationId)) {
+      await input.retireLegacyFiles(conversationId);
+      migration.retireCopies(accountId, conversationId);
+    }
     const started = performance.now();
     let historyWorked = false;
     if (historyWorker) historyWorked = await historyWorker.run(conversationId);

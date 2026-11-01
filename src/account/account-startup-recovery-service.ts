@@ -85,6 +85,7 @@ export class AccountStartupRecoveryService {
   }
 
   constructor(private readonly deps: {
+    readonly accountId: string;
     readonly productionAuthorization?: () => { allowed: boolean; reason?: string };
     readonly db: Database.Database;
     readonly recoveryReplan?: RecoveryReplan;
@@ -1338,6 +1339,7 @@ export class AccountStartupRecoveryService {
           db: this.deps.db,
           sessionId: event.sessionId,
           conversationId: event.conversationId ?? event.sessionId,
+          accountId: this.deps.accountId,
           refs: event.proposal.workGraph?.subtasks.flatMap(subtask => subtask.contextRefs) ?? [],
           targetTask: event.proposal.task.taskId
             ? this.deps.taskServices.taskRuntimeService.findTask(event.proposal.task.taskId)

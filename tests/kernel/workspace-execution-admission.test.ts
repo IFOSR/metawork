@@ -16,12 +16,12 @@ function resolve(input: Partial<Parameters<typeof resolveWorkspaceAdmission>[0]>
 }
 
 describe('Kernel Workspace admission', () => {
-  it('authorizes ordinary edits as in-place writes', () => {
+  it('authorizes ordinary edits as Conversation Git Worktree writes', () => {
     const result = resolve({ intent: workspaceIntentFixture({ operation: 'modify_existing', targetPaths: ['src/app.ts'] }) });
     expect(result).toMatchObject({
       status: 'resolved',
       admission: { kind: 'write', workspaceId: 'workspace_main', targetPaths: ['src/app.ts'] },
-      decision: { executionMode: 'in_place', deliveryPolicy: 'none' },
+      decision: { executionMode: 'conversation_git', deliveryPolicy: 'none' },
     });
   });
 

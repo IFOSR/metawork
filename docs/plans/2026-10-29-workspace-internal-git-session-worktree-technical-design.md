@@ -649,3 +649,10 @@ AGENTS.md 仅在导航入口变动时更新，不塞入运行时字段细节。�
 - 已通过：`npm run lint`、`npm run build:web`、Workspace Git、Workspace 合并、Workspace Directory、Gateway focused tests，以及 `git diff --check`。
 - 全量 `npm test -- --run` 已执行；当前仓库仍有 63 项失败，集中在旧 In-place/Kernel 行为断言、迁移基线和缺失发布环境文件，未将其伪报为本轮通过。
 - 原生/Docker 安装验收与 closing commit：未完成。
+
+### 2026-10-30 执行模式收敛修订
+
+补齐实现与确定性设计之间的残余漂移：新 Workspace admission 返回
+`conversation_git`，新 Task 保存该值，Conversation Worktree Attempt 不再同时
+进入 in-place 写入分支，交付视图和 Web/TUI/Gateway 文案统一显示
+Conversation Worktree。`in_place` 代码仅作为历史数据兼容，不参与新任务准入。

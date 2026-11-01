@@ -3,10 +3,12 @@ import type { ConversationResultDelivery } from '../session/conversation-session
 import type { ConversationTurn, WebSessionRecord } from '../management/web-session-types.js';
 import type { QueryUsageContext } from '../metering/ports.js';
 import type { ExecutionTimeline } from '../management/execution-projector.js';
+import type { ConversationTurnStore } from '../session/conversation-turn-store.js';
 import type { GatewayReplay } from './client-events.js';
 
 export interface BackgroundResultDeliveryDeps {
   readonly accountId: string;
+  readonly turnStore?: ConversationTurnStore;
   resolveTask(resultId: string): Task | null;
   resolveQuery(taskId: string): QueryUsageContext | null;
   taskForQuery(queryId: string): string | null;
@@ -19,6 +21,7 @@ export interface BackgroundResultDeliveryDeps {
     conversationId: string; turnId: string; requestId: string;
     delivery: ConversationResultDelivery; backgroundWorkPending: boolean;
     originTurnId?: string;
+    sourceTaskId?: string;
   }): Promise<void>;
 }
 
@@ -33,17 +36,27 @@ export function createBackgroundResultDelivery(deps: BackgroundResultDeliveryDep
       || deps.taskForQuery(query.queryId) !== task.id) return;
     const replay = await deps.replay(sessionId);
     const alreadyDelivered = [...replay.snapshot, ...replay.deltas].some(event => (
-      event.turnId === query.turnId && event.kind === 'result_completed'
+      event.turnId === query.turnId && ['result_completed', 'final_answer'].includes(event.kind)
       && (event.payload as { resultId?: string } | null)?.resultId === delivery.resultId
     ));
     const old = (await deps.read(sessionId))?.turns.find(turn => turn.id === query.turnId);
-    const userInput = old?.userInput ?? deps.requestText(task.id);
+    const authoritative = deps.turnStore?.find({ accountId: deps.accountId, conversationId: sessionId, turnId: query.turnId });
+    const userInput = deps.turnStore
+      ? authoritative && deps.turnStore.readBody(deps.accountId, authoritative.input.hash).text
+      : old?.userInput ?? deps.requestText(task.id);
     if (!userInput) return;
     // Only an active Task keeps the Conversation doing background work. A
     // needs-action Task waits for the user and is not "running".
     const backgroundWorkPending = task.status === 'running';
+    // The Gateway commits the answer before metadata is updated. Never let a
+    // legacy history writer choose the answer or the original user input.
+    if (deps.turnStore && !alreadyDelivered) await deps.publish({
+      conversationId: sessionId, turnId: query.turnId, requestId: query.requestId,
+      delivery, backgroundWorkPending, sourceTaskId: task.id,
+      ...(originTurnId ? { originTurnId } : {}),
+    });
     // Store the answer before publishing, including when the original client disconnected.
-    if (old?.finalAnswer !== delivery.content) await deps.append(sessionId, {
+    if (deps.turnStore || old?.finalAnswer !== delivery.content) await deps.append(sessionId, {
       id: query.turnId, sessionId, userInput, interactionKind: 'ai_turn',
       status: task.status === 'needs_action' ? 'blocked'
         : task.status === 'cancelled' ? 'cancelled'
@@ -55,7 +68,7 @@ export function createBackgroundResultDelivery(deps: BackgroundResultDeliveryDep
       traceEvents: old?.traceEvents ?? [], executionTimeline: deps.project(task),
       artifactRefs: old?.artifactRefs ?? [], artifacts: old?.artifacts ?? [],
     });
-    if (!alreadyDelivered) await deps.publish({
+    if (!deps.turnStore && !alreadyDelivered) await deps.publish({
       conversationId: sessionId, turnId: query.turnId, requestId: query.requestId,
       delivery, backgroundWorkPending,
       ...(originTurnId ? { originTurnId } : {}),

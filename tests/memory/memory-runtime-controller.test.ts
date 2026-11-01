@@ -145,6 +145,13 @@ describe('memory switch owns the Planner-facing recall read model', () => {
     expect(recall.list({ accountId: 'local-default', conversationId: 'conv-1', limit: 10 })).toEqual([]);
     expect(recall.readDegraded({ accountId: 'local-default', conversationId: 'conv-1' }))
       .toEqual({ degraded: true, reason: 'memory_disabled' });
+    expect(db.prepare(`SELECT layer, status, duration_ms, candidate_count
+      FROM memory_recall_layers WHERE account_id = ? AND conversation_id = ? ORDER BY layer`)
+      .all('local-default', 'conv-1')).toEqual([
+      { layer: 'l1', status: 'degraded', duration_ms: 0, candidate_count: 0 },
+      { layer: 'l2', status: 'degraded', duration_ms: 0, candidate_count: 0 },
+      { layer: 'l3', status: 'degraded', duration_ms: 0, candidate_count: 0 },
+    ]);
 
     // Turning it back on does not restore the retired projection. The enabled
     // runtime has no extraction credential here, so the blocking gate leaves it

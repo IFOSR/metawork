@@ -15,7 +15,7 @@ function legacyDatabase() {
       FOREIGN KEY (task_id) REFERENCES tasks(id)
     );
     CREATE INDEX idx_task_execution_evidence_task ON task_execution_evidence(task_id, created_at, id);
-    UPDATE schema_version SET version = 47;
+    DROP VIEW IF EXISTS conversation_memory_turns; UPDATE schema_version SET version = 47;
     INSERT INTO tasks (id, title, goal, status, created_at, updated_at) VALUES ('b', 'B', 'goal', 'queued', '2026-10-13', '2026-10-13'),
              ('c', 'C', 'goal', 'queued', '2026-10-13', '2026-10-13');
     INSERT INTO task_execution_evidence VALUES
@@ -29,11 +29,11 @@ describe('schema 48 task-scoped evidence migration', () => {
   it('preserves all old columns and IDs, permits another association, and is idempotent', () => {
     const db = legacyDatabase();
     try {
-      const before = db.prepare('SELECT * FROM task_execution_evidence ORDER BY id').all();
+      const before = db.prepare('SELECT id, task_id, kind, source_id, title, content, exact_only, created_at FROM task_execution_evidence ORDER BY id').all();
       runMigrations(db);
       expect(db.prepare('SELECT version FROM schema_version').get()).toEqual({ version: CURRENT_SCHEMA_VERSION });
-      expect(db.prepare('SELECT * FROM task_execution_evidence ORDER BY id').all()).toEqual(before);
-      db.exec(`INSERT INTO task_execution_evidence
+      expect(db.prepare('SELECT id, task_id, kind, source_id, title, content, exact_only, created_at FROM task_execution_evidence ORDER BY id').all()).toEqual(before);
+      db.exec(`INSERT INTO task_execution_evidence(id, task_id, kind, source_id, title, content, exact_only, created_at)
         SELECT id, 'c', kind, source_id, title, content, exact_only, created_at FROM task_execution_evidence WHERE task_id = 'b'`);
       runMigrations(db);
       expect(db.prepare('SELECT COUNT(*) AS count FROM task_execution_evidence').get()).toEqual({ count: 4 });
@@ -47,12 +47,12 @@ describe('schema 48 task-scoped evidence migration', () => {
   it('rolls the whole table rebuild back if committing the version fails', () => {
     const db = legacyDatabase();
     try {
-      const before = db.prepare('SELECT * FROM task_execution_evidence ORDER BY id').all();
+      const before = db.prepare('SELECT id, task_id, kind, source_id, title, content, exact_only, created_at FROM task_execution_evidence ORDER BY id').all();
       db.exec(`CREATE TRIGGER fail_migration BEFORE UPDATE ON schema_version
         WHEN NEW.version = 48 BEGIN SELECT RAISE(ABORT, 'injected migration failure'); END;`);
       expect(() => runMigrations(db)).toThrow('injected migration failure');
       expect(db.prepare('SELECT version FROM schema_version').get()).toEqual({ version: 47 });
-      expect(db.prepare('SELECT * FROM task_execution_evidence ORDER BY id').all()).toEqual(before);
+      expect(db.prepare('SELECT id, task_id, kind, source_id, title, content, exact_only, created_at FROM task_execution_evidence ORDER BY id').all()).toEqual(before);
       expect((db.pragma('table_info(task_execution_evidence)') as Array<{ name: string; pk: number }>)
         .filter(column => column.pk).map(column => column.name)).toEqual(['id']);
       db.exec('DROP TRIGGER fail_migration');

@@ -66,7 +66,7 @@ export class TaskEngine {
     publicTaskDirectory?: string;
     publicDeliveryBaseline?: Record<string, string>;
     startServiceAfterPublish?: boolean;
-    executionMode?: 'worktree' | 'in_place';
+    executionMode?: 'conversation_git' | 'service_git' | 'worktree' | 'in_place';
     workspaceExecutionSource?: Task['workspaceExecutionSource'];
     workspaceDeliveryPolicy?: Task['workspaceDeliveryPolicy'];
     workspaceTargetPaths?: string[];

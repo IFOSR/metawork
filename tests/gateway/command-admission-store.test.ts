@@ -61,6 +61,9 @@ describe('FileCommandAdmissionStore', () => {
 
     const migrated = JSON.parse(await readFile(path, 'utf8')) as Record<string, unknown>;
     expect(migrated).toMatchObject({ version: 2 });
+    await store.eraseConversation('local-default', 'conv_legacy');
+    expect(await store.find('local-default', 'idem_legacy')).toBeNull();
+    expect(await readFile(path, 'utf8')).not.toContain('legacy query');
     expect((migrated.admissions as Array<Record<string, unknown>>)[0]).not.toHaveProperty(
       'conversation',
     );

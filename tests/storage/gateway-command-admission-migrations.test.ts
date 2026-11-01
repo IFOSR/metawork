@@ -286,6 +286,46 @@ function open(path = ':memory:'): Database.Database {
 function schema43(path?: string): Database.Database {
   const db = open(path);
   runMigrations(db);
+  db.exec(`
+    DROP VIEW IF EXISTS interaction_contents;
+    DROP VIEW IF EXISTS conversation_memory_turns;
+    DROP TRIGGER trg_task_search_index_interactions_insert;
+    ALTER TABLE interactions DROP COLUMN input_content_ref;
+    ALTER TABLE interactions DROP COLUMN output_content_ref;
+    ALTER TABLE interactions DROP COLUMN derived_from_turn_id;
+    ALTER TABLE planner_proposal_turns DROP COLUMN input_hash;
+    ALTER TABLE planner_proposal_turns DROP COLUMN source_turn_id;
+    DROP TABLE conversation_result_content_refs;
+    DROP TABLE conversation_memory_attempts;
+    DROP TABLE planner_transcript_turns;
+    DROP TABLE conversation_memory_receipts;
+    DROP TABLE conversation_derived_content;
+    DROP TABLE conversation_turn_answers;
+    DROP TABLE conversation_turns;
+    DROP TABLE conversation_turn_bodies;
+    DROP TABLE conversation_turn_outbox;
+    DROP TABLE conversation_turn_migration;
+    DROP TABLE conversation_deletions;
+CREATE TRIGGER trg_task_search_index_interactions_insert
+      AFTER INSERT ON interactions
+      WHEN NEW.task_id IS NOT NULL
+      BEGIN
+        DELETE FROM task_search_index
+          WHERE source_kind = 'interaction' AND source_id = NEW.id;
+        INSERT INTO task_search_index (
+          task_id, source_kind, source_id, title, body, tags, created_at, updated_at
+        ) VALUES (
+          NEW.task_id,
+          'interaction',
+          NEW.id,
+          '',
+          substr(COALESCE(NEW.user_input, '') || char(10) || COALESCE(NEW.system_output, ''), 1, 4000),
+          'interaction',
+          NEW.created_at,
+          NEW.created_at
+        );
+      END;
+  `);
   const triggers = db.prepare("SELECT name FROM sqlite_master WHERE type = 'trigger' AND name LIKE 'observation_%'").all() as { name: string }[];
   for (const { name } of triggers) db.exec(`DROP TRIGGER "${name}"`);
   const witnessIndexes = db.prepare("SELECT name FROM sqlite_master WHERE type = 'index' AND name LIKE 'observation_witness_%'").all() as { name: string }[];
@@ -294,6 +334,7 @@ function schema43(path?: string): Database.Database {
   // The long-term memory index arrived after schema 43; drop it so the captured
   // schema43 hash keeps describing the historical state.
   db.exec(`
+    DROP TABLE IF EXISTS memory_recall_layers;
     DROP TABLE IF EXISTS memory_recall_state;
     DROP TABLE IF EXISTS memory_flush_state;
     DROP TABLE IF EXISTS memory_recall_candidates;
@@ -396,7 +437,7 @@ function facts(db: Database.Database, tables?: string[]): Record<string, string[
   return Object.fromEntries(names.map(name => [
     name, db.prepare(`SELECT * FROM "${name}"`).all().map(row => {
       const original = { ...(row as Record<string, unknown>) };
-      if (name === 'tasks') for (const key of ['public_task_directory', 'public_delivery_baseline_json', 'start_service_after_publish', 'public_project']) delete original[key];
+      if (name === 'tasks') for (const key of ['public_task_directory', 'public_delivery_baseline_json', 'start_service_after_publish', 'public_project', 'execution_mode']) delete original[key];
       return JSON.stringify(original);
     }).sort(),
   ]));

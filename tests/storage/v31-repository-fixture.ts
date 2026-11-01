@@ -5,8 +5,10 @@ export function createV31RepositoryDb(): Database.Database {
   db.exec(`
     CREATE TABLE tasks (
       id TEXT PRIMARY KEY,
-      status TEXT NOT NULL
+      status TEXT NOT NULL,
+      account_id TEXT, conversation_id TEXT
     );
+    CREATE TABLE conversation_deletions (account_id TEXT, conversation_id TEXT);
     CREATE TABLE work_units (
       id TEXT PRIMARY KEY
     );
