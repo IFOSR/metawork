@@ -43,32 +43,8 @@ describe('Provider model discovery', () => {
     });
   });
 
-  it('keeps configured models when live discovery is unavailable', async () => {
-    const catalog = await buildProviderCompletionCatalog({
-      providers: {
-        code: {
-          baseUrl: 'https://provider.example/v1',
-          apiKeyRef: 'file-secret:anyfusion/providers/code',
-        },
-      },
-      models: {
-        configured: { providerRef: 'code', modelId: 'configured-model' },
-      },
-      readSecret: async () => 'secret',
-      fetchImpl: async () => new Response('upstream failure', { status: 503 }),
-    });
-
-    expect(catalog).toEqual([{
-      providerRef: 'code',
-      baseUrl: 'https://provider.example/v1',
-      credentialAvailable: true,
-      credentialFingerprint: 'sha256:2bb80d537b1da3e38bd30361aa855686bde0eacd7162fef6a25fe97bf527a25b',
-      modelIds: ['configured-model'],
-    }]);
-  });
-
-  it('does not call the Provider when its credential is unavailable', async () => {
-    let requests = 0;
+  it('completes configured models without probing the Provider model endpoint', async () => {
+    let secretReads = 0;
     const catalog = await buildProviderCompletionCatalog({
       providers: {
         code: {
@@ -80,26 +56,47 @@ describe('Provider model discovery', () => {
         configured: { providerRef: 'code', modelId: 'configured-model' },
       },
       readSecret: async () => {
-        throw new Error('secret missing');
-      },
-      fetchImpl: async () => {
-        requests += 1;
-        return new Response('{}');
+        secretReads += 1;
+        return 'secret';
       },
     });
 
-    expect(requests).toBe(0);
+    expect(secretReads).toBe(1);
+    expect(catalog).toEqual([{
+      providerRef: 'code',
+      baseUrl: 'https://provider.example/v1',
+      credentialAvailable: true,
+      credentialFingerprint: 'sha256:2bb80d537b1da3e38bd30361aa855686bde0eacd7162fef6a25fe97bf527a25b',
+      modelIds: ['configured-model'],
+    }]);
+  });
+
+  it('does not call the Provider when its credential is unavailable', async () => {
+    let secretReads = 0;
+    const catalog = await buildProviderCompletionCatalog({
+      providers: {
+        code: {
+          baseUrl: 'https://provider.example/v1',
+          apiKeyRef: 'file-secret:anyfusion/providers/code',
+        },
+      },
+      models: {
+        configured: { providerRef: 'code', modelId: 'configured-model' },
+      },
+      readSecret: async () => {
+        secretReads += 1;
+        throw new Error('secret missing');
+      },
+    });
+
+    expect(secretReads).toBe(1);
     expect(catalog[0]).toMatchObject({
       credentialAvailable: false,
       modelIds: ['configured-model'],
     });
   });
 
-  it.each([
-    ['malformed JSON', '{not-json', {}],
-    ['oversized body', JSON.stringify({ data: [{ id: 'x'.repeat(1_000_001) }] }), {}],
-    ['oversized declared response', '{}', { 'content-length': '1000001' }],
-  ])('retains configured models for %s', async (_name, body, headers) => {
+  it('does not expose credential material while completing configured models', async () => {
     const catalog = await buildProviderCompletionCatalog({
       providers: {
         code: {
@@ -111,11 +108,25 @@ describe('Provider model discovery', () => {
         configured: { providerRef: 'code', modelId: 'configured-model' },
       },
       readSecret: async () => 'highly-sensitive-key',
-      fetchImpl: async () => new Response(body, { status: 200, headers }),
     });
 
     expect(catalog[0]?.modelIds).toEqual(['configured-model']);
     expect(JSON.stringify(catalog)).not.toContain('highly-sensitive-key');
+  });
+
+  it.each([
+    ['malformed JSON', '{not-json', {}],
+    ['oversized body', JSON.stringify({ data: [{ id: 'x'.repeat(1_000_001) }] }), {}],
+    ['oversized declared response', '{}', { 'content-length': '1000001' }],
+  ])('rejects %s during explicit model discovery', async (_name, body, headers) => {
+    const result = await discoverOpenAiCompatibleModels({
+      baseUrl: 'https://provider.example/v1',
+      apiKey: 'highly-sensitive-key',
+      fetchImpl: async () => new Response(body, { status: 200, headers }),
+    });
+
+    expect(result).toEqual({ status: 'unavailable', modelIds: [] });
+    expect(JSON.stringify(result)).not.toContain('highly-sensitive-key');
   });
 
   it('sends the credential only in the upstream Authorization header', async () => {

@@ -84,7 +84,6 @@ export async function buildProviderCompletionCatalog(input: {
   providers: Record<string, ProviderDefinition>;
   models: Record<string, ModelDefinition>;
   readSecret(reference: string): Promise<string>;
-  fetchImpl?: typeof fetch;
 }): Promise<ProviderCompletionCatalogEntry[]> {
   return Promise.all(Object.entries(input.providers).map(async ([providerRef, provider]) => {
     const configuredModelIds = Object.values(input.models)
@@ -96,20 +95,12 @@ export async function buildProviderCompletionCatalog(input: {
     } catch {
       apiKey = '';
     }
-    const discovery = apiKey
-      ? await discoverOpenAiCompatibleModels({
-        protocol: provider.protocol,
-        baseUrl: provider.baseUrl,
-        apiKey,
-        fetchImpl: input.fetchImpl,
-      })
-      : { status: 'unavailable' as const, modelIds: [] };
     return {
       providerRef,
       baseUrl: provider.baseUrl,
       credentialAvailable: apiKey.length > 0,
       ...(apiKey ? { credentialFingerprint: fingerprintProviderCredential(apiKey) } : {}),
-      modelIds: [...new Set([...configuredModelIds, ...discovery.modelIds])]
+      modelIds: [...new Set(configuredModelIds)]
         .sort((left, right) => left.localeCompare(right)),
     };
   }));
