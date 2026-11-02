@@ -12,6 +12,7 @@ import { ConversationTurnView } from '../components/ConversationTurn';
 import { useCompleteContent } from './use-complete-content';
 import { useTurnPresentation } from './use-turn-presentation';
 import { LiveExecutionPanel } from '../components/LiveExecutionPanel';
+import { TurnExecutionRecap } from '../components/TurnExecutionRecap';
 import { LivePlanningPanel, plannerActivity } from '../components/LivePlanningPanel';
 import type { ArtifactProjection, ConversationTurnProjection } from '../api/session-types';
 import { desktopBridge, reportPersistenceError } from '../platform/services';
@@ -424,7 +425,10 @@ const ObservedTurn = memo(function ObservedTurn({ store, conversationId, id, htt
   const root = useRef<HTMLDivElement>(null);
   const answer = useCompleteContent(http, store, conversationId, turn?.answerRef, turn?.answer ?? '');
   const prompt = useCompleteContent(http, store, conversationId, turn?.userInputRef, turn?.userInput ?? '');
+  // Trace facts are loaded for the live Turn and for the newest Turn; a settled
+  // Turn keeps its record in the recap below instead of a live panel.
   const showExecution = latest || turn?.status === 'running' || turn?.status === 'blocked';
+  const turnIsLive = turn?.status === 'running' || turn?.status === 'blocked';
   const details = useTurnPresentation(ws, http, conversationId, turn, showExecution);
   useLayoutEffect(() => {
     const node = root.current; if (!node) return;
@@ -443,12 +447,21 @@ const ObservedTurn = memo(function ObservedTurn({ store, conversationId, id, htt
   return <div ref={root} data-observed-turn={id}>
     <ConversationTurnView turn={projection} onOpenTrajectory={onOpenTrajectory} onOpenBilling={onOpenBilling}
       onOpenArtifact={onOpenArtifact} onOpenAttachment={onOpenAttachment}
-      liveExecutionPanel={showExecution ? (plannerActivity(projection)
+      liveExecutionPanel={showExecution && turnIsLive ? (plannerActivity(projection)
         ? <LivePlanningPanel turn={projection} />
         : <LiveExecutionPanel turn={projection} onSelectSubtask={(subtaskId, title) => onOpenSubtaskDetail(projection, subtaskId, title)} />) : undefined}
       blockedActions={<BlockedActions ws={ws} http={http} conversationId={conversationId} taskId={turn.taskId ?? null}
         fallbackStatus={projection.status === 'blocked' || projection.status === 'failed' ? projection.status : null}
         lifecycle={details.taskLifecycle} permission={details.pendingPermission} refresh={details.refresh} />} />
+    {!turnIsLive && turn.taskId && (
+      // A settled Turn keeps its own execution record: the live panel steps
+      // aside, but its DAG and Subtask states remain readable for recall.
+      <TurnExecutionRecap
+        taskId={turn.taskId}
+        http={http}
+        statusLabel={executionRecapStatusLabel(projection)}
+      />
+    )}
     {details.workspaceMerge && details.workspaceId && <WorkspaceMergeCard ws={ws} workspaceId={details.workspaceId}
       summary={details.workspaceMerge} refresh={details.refresh} />}
     <TaskResultActions delivery={details.publicDelivery} workspaceChanges={details.workspaceChanges} />
@@ -458,3 +471,13 @@ const ObservedTurn = memo(function ObservedTurn({ store, conversationId, id, htt
     {(answer.error || prompt.error) && <p role="alert">{answer.error ?? prompt.error}</p>}
   </div>;
 });
+
+/** Conclusion shown on a settled Turn's execution record. */
+function executionRecapStatusLabel(turn: ConversationTurnProjection): string {
+  const timeline = turn.executionTimeline;
+  if (turn.status === 'failed') return '任务失败';
+  if (turn.status === 'blocked') return '任务需要处理';
+  if (timeline?.status === 'succeeded' || turn.status === 'completed') return '任务已完成';
+  if (timeline?.status === 'cancelled') return '任务已取消';
+  return '任务已结束';
+}

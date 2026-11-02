@@ -9134,3 +9134,48 @@ html[data-platform='desktop'] .workspace-header { column-gap: 16px; }
   .memory-detail-dialog header, .memory-detail-dialog footer, .memory-detail-body { padding: 20px; }
 }
 .memory-panel .sr-only { position: absolute; width: 1px; height: 1px; padding: 0; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
+
+/* Historical Turns keep an explicit execution record instead of silently
+   dropping their DAG once a newer Turn becomes the live one. */
+.turn-execution-recap {
+  margin: 6px 0 12px;
+}
+
+.turn-execution-recap-toggle {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  width: 100%;
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: transparent;
+  color: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.turn-execution-recap-toggle:hover {
+  border-color: color-mix(in srgb, var(--accent) 50%, var(--border));
+}
+
+.turn-execution-recap-toggle strong {
+  font-size: 12px;
+}
+
+.turn-execution-recap-toggle small {
+  color: var(--text-dim);
+  font-size: 11px;
+}
+
+.turn-execution-recap-toggle span[aria-hidden] {
+  margin-left: auto;
+  color: var(--text-dim);
+  font-size: 11px;
+}
+
+.turn-execution-recap-loading {
+  margin: 8px 0 0;
+  color: var(--text-dim);
+  font-size: 11px;
+}

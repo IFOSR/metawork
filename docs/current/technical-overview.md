@@ -1860,6 +1860,13 @@ The index is a deterministic read model, not a semantic router. The PlanningAgen
 
 ## Single-Task Concurrent Kernel Control Model
 
+Every Conversation Turn keeps its own execution record: its execution plan is
+resolved from that Turn's Task identity (`get_task_work_graph`), the live
+execution panel only narrates work in progress, and a settled Turn shows a
+collapsible DAG plus Subtask outcomes that is loaded on demand. Bounded client
+read models therefore never drop historical execution facts, and a Subtask card
+always names its execution state.
+
 MetaWork admits one executing or cleaning-up top-level Task per Conversation. Promotion is Workspace-scoped: the scheduler selects Tasks from different Conversations while that Workspace has fewer than `maxConcurrentConversationsPerWorkspace` executing Conversations (default 2), using aging and fair-share ordering; there is no account-wide Task or Attempt ceiling and same-Conversation Tasks remain queued. Within each Task, Work Graph facts derive a stable runnable frontier, one Task may run up to 10 Attempts concurrently (internal budget), and Kernel v5 may authorize up to four independent attempt items in one batch. Scheduling is non-preemptive; clarifications, status/query commands and explicit task-control commands remain available, while new semantic Planner turns cannot complete through `direct_reply`. This parallel rollout is governed by ADR-0037 and is implemented incrementally under the active implementation plan.
 
 Every natural-language proposal and deterministic execution entrypoint enters the same persisted coordination chain: `event → bounded graph/task facts → durable coordination command → Runtime apply → normalized event`. The current `KernelWorkflow` remains serial during migration, but applying `dispatch_batch` only persists `kernel_dispatch_items`; an Execution-owned supervisor launches them asynchronously and submits each outcome independently. A sibling failure never cancels the rest of the batch. Within one Conversation, explicitly declared text-only read Subtasks may hold compatible durable read ownership concurrently; write and unknown effects retain the exclusive Workspace fence.

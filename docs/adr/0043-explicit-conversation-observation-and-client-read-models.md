@@ -134,3 +134,22 @@ per-Turn input/answer-hash receipts; the sequence cursor alone is insufficient
 for late completion or revised answers. Deletion is a fenced retryable workflow
 and remains pending until the external L0 service confirms complete erasure.
 Task lifecycle and L1/L2/L3 asset ownership remain unchanged.
+
+### 2026-11-02: Every Turn keeps its own execution record
+
+A Turn's execution plan and Subtask states belong to that Turn's own Task
+(`get_task_work_graph` already resolves per Task identity), so the client must
+never substitute the conversation's newest Task for a historical Turn. Read
+models stay bounded, but boundedness must not delete facts: a settled Turn keeps
+an explicit, collapsible execution record (DAG plus Subtask outcomes) instead of
+disappearing when a newer Turn becomes the live one.
+
+Presentation rules that follow:
+
+- the live execution panel narrates only work in progress (`running`/`blocked`);
+- a settled Turn shows its own record, loaded lazily so reopening a long
+  conversation costs no extra request per Turn;
+- a Subtask card always names its execution state, so a finished card is never
+  indistinguishable from a running one;
+- Task conclusions stay the only authority for task status; per-card badges
+  describe execution state only.
