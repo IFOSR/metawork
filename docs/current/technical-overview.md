@@ -345,6 +345,24 @@ interrupt the Harness loop or turn the first recoverable error into a Task
 failure. `executor_failed` is emitted only after the Harness has ended its own
 recoverable loop or reached a non-recoverable boundary.
 
+A stalled tool call belongs to that loop. An extension seeded into every
+attempt home (`src/executor/pi-tool-stall`, judged by
+`src/executor/tool-stall-core.ts`) samples each in-flight call's output bytes,
+its own process group's cumulative CPU time and a workspace fingerprint. Only
+when all three stop for 5 minutes does it judge the call stalled; the window is
+global, never per-AgentClass, and it is not a task deadline. Because Pi starts
+each shell tool call as a detached group, the guard interrupts exactly that
+group (SIGTERM, bounded grace, then SIGKILL only while the recorded members are
+alive) and rewrites the tool result into an explicit error, so the model picks
+another route without the Attempt ending. An unattributable stall is reported
+rather than guessed, and the Attempt then stops with a structured failure.
+Stall facts travel over an attempt-scoped JSONL channel
+(`METACLAW_TOOL_STALL_FACTS`) to the Adapter, which projects each one as a
+durable progress fact and trips an Attempt-level fuse after three interruptions,
+reporting a failure that names the tool, command, silence and process group so
+the user re-runs. No default bash timeout is injected: a call that keeps making
+progress is never cut off by elapsed time.
+
 Runtime verification is a supervisory boundary. If a service, test, Workspace
 or acceptance postcondition fails after an otherwise successful Attempt, the
 default action is to produce bounded Mentor feedback and let Kernel authorize a

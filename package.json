@@ -49,6 +49,7 @@
     "dev:desktop": "node scripts/dev-desktop.mjs",
     "smoke:desktop": "node apps/desktop/tests/electron-smoke.mjs",
     "smoke:pi-pdf": "node scripts/smoke-pi-pdf.mjs",
+    "check:pi-tool-stall": "node scripts/check-pi-tool-stall.mjs",
     "benchmark:desktop": "node apps/desktop/tests/startup-benchmark.mjs",
     "package:desktop": "npm run package:mac --prefix apps/desktop",
     "prepare:memory-engine": "node scripts/prepare-memory-engine.mjs",

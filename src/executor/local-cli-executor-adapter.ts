@@ -22,6 +22,16 @@ import type {
 } from './harness-driver.js';
 import { safeHostEnvironment } from './harness-driver.js';
 import { buildExecutorContextPrompt } from './prompt-builder.js';
+import { readFileSync } from 'node:fs';
+import {
+  ToolStallFuse,
+  TOOL_STALL_FACTS_FILE,
+  describeToolStall,
+  parseToolStallFact,
+  toolStallFailureMessage,
+  toolStallUnrecoverableMessage,
+  type ToolStallFact,
+} from './tool-stall-core.js';
 import type { ExecutorAffordanceId } from '../routing/types.js';
 
 const MAX_CAPTURE_BYTES = 16 * 1024 * 1024;
@@ -39,6 +49,8 @@ export interface LocalCliChildProcessInput extends HarnessLaunchSpec {
   ) => HarnessActivitySignal | null | void;
   onHealth?: (observation: OperationHealth) => void;
   onRawChunk?: (chunk: Buffer | string, stream: 'stdout' | 'stderr') => void;
+  /** Tool-call stall facts the Harness guard recorded during this Attempt. */
+  onToolStall?: (fact: ToolStallFact) => void;
 }
 
 export interface LocalCliChildProcessResult {
@@ -229,6 +241,10 @@ export class LocalCliExecutorAdapter implements ExecutorAdapter {
       if (cancellation.cancelled) return cancelledResult(startedAt);
       let streamedOutput: string | null = null;
       let lastStep: string | undefined;
+      const stallFuse = new ToolStallFuse();
+      const toolStallFacts: ToolStallFact[] = [];
+      /** Set once a stall proved unrecoverable inside this Attempt. */
+      let stallFailure: string | null = null;
       const operationCheckpoints = new Map<string, string>();
       const streamTracker = this.driver.createResultStreamTracker?.();
       const rawResult = await this.processRunner.run({
@@ -287,6 +303,24 @@ export class LocalCliExecutorAdapter implements ExecutorAdapter {
           kind: 'status', operationHealth: observation,
           text: operationHealthText(observation),
         }),
+        onToolStall: fact => {
+          toolStallFacts.push(fact);
+          // Attribution is a durable progress fact, not a health observation:
+          // users must be able to see which call stalled and what was done.
+          input.onProgress?.({ kind: 'status', text: describeToolStall(fact) });
+          if (stallFailure) return;
+          if (fact.event === 'stalled') {
+            // The call owns no provable process group, so it cannot be
+            // interrupted. Waiting longer would hang the Attempt silently.
+            stallFailure = toolStallUnrecoverableMessage(fact);
+            this.processRunner.abort(executionBinding.attemptId);
+            return;
+          }
+          const decision = stallFuse.record();
+          if (!decision.tripped) return;
+          stallFailure = toolStallFailureMessage({ interruptions: decision.count, last: fact });
+          this.processRunner.abort(executionBinding.attemptId);
+        },
         onRawChunk: (chunk, stream) => input.onRawOutput?.(Buffer.from(chunk), stream),
       });
       const streamSnapshot = streamTracker?.snapshot();
@@ -315,7 +349,21 @@ export class LocalCliExecutorAdapter implements ExecutorAdapter {
         harness: streamSnapshot?.diagnostics ?? null,
         provisionalOutput: streamSnapshot?.provisional ?? false,
         workspaceCaptures,
+        ...(toolStallFacts.length > 0 ? { toolStalls: toolStallFacts } : {}),
       };
+      if (stallFailure) {
+        // The Attempt stopped because its own tool calls kept stalling. That is
+        // an honest failure the user re-runs, not a cancellation.
+        return {
+          success: false,
+          output: result.output,
+          error: stallFailure,
+          failure: normalizeExecutorFailure(stallFailure, false, this.failurePassthrough(input)),
+          exitCode: rawResult.exitCode ?? 1,
+          durationMs: Date.now() - startedAt,
+          diagnostics,
+        };
+      }
       if (cancellation.cancelled) {
         return { ...cancelledResult(startedAt), output: result.output, diagnostics };
       }
@@ -557,6 +605,8 @@ export class SpawnLocalCliChildProcessRunner implements LocalCliChildProcessRunn
       let sigtermSentAt: string | null = null;
       let sigkillSentAt: string | null = null;
       let idleTimer: NodeJS.Timeout | null = null;
+      let stallTimer: NodeJS.Timeout | null = null;
+      let stallFactsOffset = 0;
       let forceKillTimer: NodeJS.Timeout | null = null;
       let groupCleanupTimer: NodeJS.Timeout | null = null;
       let residualGroup: ProcessGroupReapResult | null = null;
@@ -577,9 +627,11 @@ export class SpawnLocalCliChildProcessRunner implements LocalCliChildProcessRunn
       };
       const clearWatchdogs = () => {
         if (idleTimer) clearTimeout(idleTimer);
+        if (stallTimer) clearTimeout(stallTimer);
         if (forceKillTimer) clearTimeout(forceKillTimer);
         if (groupCleanupTimer) clearInterval(groupCleanupTimer);
         idleTimer = null;
+        stallTimer = null;
         forceKillTimer = null;
         groupCleanupTimer = null;
         monitor.dispose();
@@ -616,6 +668,39 @@ export class SpawnLocalCliChildProcessRunner implements LocalCliChildProcessRunn
         if (idleTimer || settled || terminationSource === 'abort') return;
         idleTimer = setInterval(() => monitor.tick(), Math.min(1000, input.idleTimeoutMs ?? 1000));
         idleTimer.unref();
+      };
+      /**
+       * The Harness guard records tool-call stalls beside its home. Reading that
+       * file is how the Attempt learns which call stalled, how long it was
+       * silent and whether the interruption actually happened.
+       */
+      const pollToolStallFacts = () => {
+        const factsPath = input.environment?.METACLAW_TOOL_STALL_FACTS;
+        if (!factsPath) return;
+        let content: string;
+        try {
+          content = readFileSync(factsPath, 'utf8');
+        } catch {
+          return;
+        }
+        if (content.length <= stallFactsOffset) {
+          // A truncated or rewritten file restarts observation from its head.
+          if (content.length < stallFactsOffset) stallFactsOffset = 0;
+          else return;
+        }
+        const chunk = content.slice(stallFactsOffset);
+        const lastBreak = chunk.lastIndexOf('\n');
+        if (lastBreak < 0) return;
+        stallFactsOffset += lastBreak + 1;
+        for (const line of chunk.slice(0, lastBreak).split('\n')) {
+          const fact = parseToolStallFact(line);
+          if (fact) input.onToolStall?.(fact);
+        }
+      };
+      const startStallWatch = () => {
+        if (stallTimer || settled || !input.onToolStall) return;
+        stallTimer = setInterval(pollToolStallFacts, 1_000);
+        stallTimer.unref();
       };
       const emitLine = (line: string, stream: 'stdout' | 'stderr') => {
         const activity = input.onLine?.(line, stream);
@@ -697,6 +782,7 @@ export class SpawnLocalCliChildProcessRunner implements LocalCliChildProcessRunn
         },
       });
       resetIdleWatchdog();
+      startStallWatch();
     });
   }
 

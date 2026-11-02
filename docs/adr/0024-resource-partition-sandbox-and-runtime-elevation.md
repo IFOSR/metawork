@@ -158,3 +158,36 @@ separate facts. Runtime persists observations without deciding retries or Task
 status. With insufficient evidence the user retains wait/cancel controls; the
 existing cancellation fence and terminal-outcome Kernel recovery paths apply.
 No new database schema or independent recovery policy is introduced.
+
+### 2026-11-02: Executor-owned tool-call stall autonomy
+
+A tool call the Executor itself started is observed and interrupted at the
+Executor boundary; it is not a recovery decision and does not reach the Kernel.
+
+- **Verdict requires all three signals.** A call is stalled only when it stops
+  producing output, its own process subtree consumes no CPU, and the workspace
+  receives no writes for the 5-minute window. Silence, elapsed time, or the
+  attempt process merely existing never proves death, and no wall-clock limit is
+  imposed on commands that keep making progress.
+- **Ownership decides the victim.** The Harness starts each shell tool call as a
+  detached process group. The guard attributes a group to the in-flight call
+  that owns it and terminates only that group (SIGTERM, then SIGKILL after a
+  bounded grace, and only while the recorded members are still alive). It never
+  signals the attempt group, another attempt, or a host process.
+- **Unattributable stalls fail closed.** When no group can be proven, the guard
+  reports the stall and never guesses a victim; the Attempt stops with an
+  explicit failure instead of hanging indefinitely.
+- **Interruption is a tool error.** An interrupted call returns an explicit
+  error to the model, which then chooses another route. The Attempt keeps
+  running; the Executor never changes Task/Subtask state.
+- **Attempt-level fuse.** Three interrupted stalls inside one Attempt end that
+  Attempt with a structured failure carrying the tool, command, silence duration
+  and process group, and the user re-runs. No retry, fallback, binding switch or
+  replan policy is added here.
+- **Facts are durable and attributable.** Every stall observation and
+  interruption becomes a persisted progress fact naming the tool, command,
+  duration and action, so the UI answers "what is stuck" instead of reporting
+  that no verifiable work state exists.
+
+Runtime keeps enforcement, Kernel keeps durable coordination. This amendment
+adds no Kernel decision, no second recovery policy and no schema change.

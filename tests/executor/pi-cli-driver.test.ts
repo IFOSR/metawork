@@ -131,6 +131,11 @@ describe('PiCliDriver', () => {
         PYTHONDONTWRITEBYTECODE: '1',
         PI_CODING_AGENT_DIR: '/attempt/home/.pi/agent',
         PI_CODING_AGENT_SESSION_DIR: '/attempt/home/.pi/agent/sessions',
+        // The stall guard and the MetaWork host share one window and one fact
+        // channel, so both are pinned on the launch environment.
+        METACLAW_TOOL_STALL_FACTS: '/attempt/home/.metaclaw-tool-stall.jsonl',
+        METACLAW_TOOL_STALL_WINDOW_MS: '300000',
+        METACLAW_TOOL_STALL_SAMPLE_MS: '15000',
       },
     });
     expect(JSON.stringify(launch)).not.toContain('~/.pi');

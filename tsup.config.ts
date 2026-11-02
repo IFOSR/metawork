@@ -2,20 +2,23 @@ import { defineConfig } from 'tsup';
 import { cp } from 'node:fs/promises';
 
 export default defineConfig({
-  entry: [
-    'src/index.ts',
-    'src/install-cli.ts',
-    'src/desktop-install-cli.ts',
-    'src/desktop-update-cli.ts',
-    'src/planner-mcp.ts',
-    'src/generate-planner-schema.ts',
-    'src/capability-request-cli.ts',
-    'src/capability-use-cli.ts',
-    'src/image-api-cli.ts',
-    'src/emit-pi-attempt-extension.ts',
-    'src/prepare-smoke-configuration.ts',
-    'src/conversation-history-worker.ts',
-  ],
+  // Object form so one entry can pin an explicit output name: the Pi
+  // stall-guard extension resolves the stall core as its sibling in `dist`.
+  entry: {
+    index: 'src/index.ts',
+    'install-cli': 'src/install-cli.ts',
+    'desktop-install-cli': 'src/desktop-install-cli.ts',
+    'desktop-update-cli': 'src/desktop-update-cli.ts',
+    'planner-mcp': 'src/planner-mcp.ts',
+    'generate-planner-schema': 'src/generate-planner-schema.ts',
+    'capability-request-cli': 'src/capability-request-cli.ts',
+    'capability-use-cli': 'src/capability-use-cli.ts',
+    'image-api-cli': 'src/image-api-cli.ts',
+    'emit-pi-attempt-extension': 'src/emit-pi-attempt-extension.ts',
+    'tool-stall-core': 'src/executor/tool-stall-core.ts',
+    'prepare-smoke-configuration': 'src/prepare-smoke-configuration.ts',
+    'conversation-history-worker': 'src/conversation-history-worker.ts',
+  },
   format: ['esm'],
   target: 'node22',
   outDir: 'dist',
@@ -26,5 +29,8 @@ export default defineConfig({
   onSuccess: async () => {
     // Ship the PDF fonts and their redistribution license with every runtime.
     await cp('src/management/fonts', 'dist/fonts', { recursive: true });
+    // The Pi tool-call stall guard ships as extension source, resolved by the
+    // attempt home shim written in pi-cli-driver.ts.
+    await cp('src/executor/pi-tool-stall', 'dist/pi-tool-stall', { recursive: true });
   },
 });

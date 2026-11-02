@@ -139,6 +139,10 @@ try {
   run(join(toolRoot, 'executor/bin/pi'), ['--version'], payload, toolEnv);
   const pdfRoot = join(payload, 'metawork/dist/pi-pdf');
   await readFile(join(pdfRoot, 'index.ts'));
+  // The stall guard is an Executor extension too: a payload without it would
+  // silently lose tool-call stall supervision at runtime.
+  await readFile(join(payload, 'metawork/dist/pi-tool-stall/index.ts'));
+  await readFile(join(payload, 'metawork/dist/tool-stall-core.js'));
   run(join(pdfRoot, 'python/bin/python3'), ['-I', '-B', '-c',
     'import sys;sys.path.insert(0,sys.argv[1]);import pypdf,pdfplumber,pypdfium2,PIL',
     join(pdfRoot, 'site-packages')], payload, toolEnv);

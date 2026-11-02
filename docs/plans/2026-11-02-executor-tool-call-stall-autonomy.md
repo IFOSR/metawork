@@ -1,7 +1,8 @@
 # Executor 工具调用级停滞自治与定向中断方案
 
-- Status：Proposed（方案已确认方向，待实施）。
+- Status：Implemented（原子级自治 + 定向中断 + 熔断报失败）；2026-11-02 完成。
 - Plan date：2026-11-02。
+- Completion date：2026-11-02。
 - 触发事故：2026-11-02 会话 `conv_XmMMcT-z8xAE` 的子任务「国内大厂 agents 产品布局、渠道生态与公开定价事实」
   （`..._r1_china-agent-landscape`）在 09:03 后无任何实际进展，持续挂起至 09:46 以上，界面只能显示
   「持续无活动，正在检查执行状态 / 执行状态待确认：暂无可验证的工作状态」，用户无从得知卡住的是哪个进程，
@@ -114,23 +115,30 @@ Pi 的 bash 工具以 `detached: true` 启动 shell（系统安装
 2. 不影响同 attempt 的其他进程，也不影响 attempt 主进程本身。
 3. 归属判定基于进程组而不是命令文本猜测；只有在无法唯一确定归属时才放弃中断（转 D6）。
 
-### D5 判定与中断的执行位置：宿主侧 per-tool-call 观测
+### D5 判定与中断的执行位置：Harness 进程内的 guard 扩展
 
-D4 已确立"三条件是唯一停止条件"，本节给出它的执行位置：
+D4 已确立"三条件是唯一停止条件"。执行位置必须选在 **Harness 自己的进程内**，
+因为只有那里能同时做到三件事：看到每个工具调用的事件流、拿到该调用的进程组、
+把结果改写成工具错误（宿主 Adapter 只能杀掉整个 pi 进程，无法向它的循环里注入工具错误）。
 
-- 宿主已能从 Pi 的 JSON 事件流拿到工具调用边界与流式输出
-  （`src/executor/pi-cli-driver.ts:211` 的 `tool_execution_start` / `tool_execution_update`，
-  operationId 形如 `pi-tool:<toolCallId>`），据此维护每个工具调用的「开始时间 / 最后活动时间」。
-- 当某工具调用满足 D2 的组合证据并超过窗口时，按 D4' 的进程组归属定向中断该调用，
-  并把 `stalled: <tool> 无进展 N 分钟（已中断其进程组）` 以工具错误形式回灌给模型。
-- 归属无法唯一确定时不猜测性 kill，转入 D6。
+- guard 作为 Pi 扩展注入每个 attempt 的运行目录，注册 `tool_execution_start / update / end`
+  与 `tool_result` 钩子。
+- 采样周期 15s，对每个 in-flight 调用读取：该调用进程组的累计 CPU 时间（`ps -o time`）、
+  已收到的输出字节数、工作区指纹（cwd 目录 mtime + 写捕获 spool 大小）。
+- 三信号全不动且持续超过 300s → 按 D4' 的归属中断，并写一条持久事实。
+- 中断后的工具结果被改写为显式工具错误（含工具名、命令、停滞时长、"不要重试同一条命令"），
+  模型据此换路径。
+- 归属无法唯一确定时不猜测性 kill，只报事实；宿主据此立即停止 attempt（D6）。
+- 事实通过 attempt 运行目录旁的 JSONL 侧通道交给宿主：宿主轮询后将其投影为持久 progress 事实，
+  并据此执行熔断。两侧共用同一窗口与同一通道（`METACLAW_TOOL_STALL_*`），不会各算一套。
 
 ### D6 收敛：重复停滞熔断 → 如实报失败 → 用户重新执行
 
 本方案不实现 L2/L3，因此当 Executor 无法在局部自愈时，唯一动作是**停止并如实报失败**：
 
 - 同一 attempt 内工具停滞累计达到阈值（默认 3 次）→ 终止该 attempt，落失败 receipt，
-  失败原因携带停滞证据（工具、命令、停滞时长、已中断的进程树、已尝试的次数）。
+  失败原因携带停滞证据（工具、命令、停滞时长、已中断的进程组、已尝试的次数）。
+- 停滞但**无法中断**（归属不明）时立即停止，不再等待：继续等就是今次事故那种无声挂起。
 - 失败沿既有 receipt 结算路径落地，界面明确显示「执行失败：工具调用反复停滞，已自动中断；请重新执行」。
 - 不做自动重试、不做自动 replan、不做换绑定；用户重新执行即重新生成 attempt。
 
@@ -152,27 +160,25 @@ Executor 只允许：终止自己 attempt 名下的进程树、把失败回给�
 | 参数 | 默认 | 说明 |
 | --- | --- | --- |
 | 工具默认墙钟 timeout | **不注入** | 模型显式传了才生效；系统不替模型设时长上限 |
-| `toolStallWindowMs`（D2 判定窗口） | 300s | 三条件同时成立并持续超过该窗口才判停滞 |
-| `toolStallSampleMs` | 15s | CPU/IO/工作区写入采样周期 |
-| `toolStallMaxPerAttempt`（D6 熔断阈值） | 3 | 达到后终止 attempt 并报失败 |
-| `toolStallCheckTimeoutMs` | 30s | 单次健康检查窗口 |
-| 绝对墙钟上限（可选） | **关闭** | 仅用于"真·死循环"极端场景；开启时需显式配置，默认不启用 |
+| 判定窗口（`TOOL_STALL_WINDOW_MS`） | 300s，全局统一 | 三条件同时成立并持续超过该窗口才判停滞；**不按 AgentClass 区分** |
+| 采样周期（`TOOL_STALL_SAMPLE_MS`） | 15s | CPU / 工作区采样周期 |
+| 熔断阈值（`TOOL_STALL_FUSE_COUNT`） | 3 | 达到后终止 attempt 并报失败 |
+| SIGKILL 宽限 | 5s | 先 SIGTERM；仅当记录的成员仍存活才升级 SIGKILL |
+| 绝对墙钟上限 | **不提供** | 不实现任何"最多跑 N 小时"的限制 |
 
-默认值全部可按 AgentClass / 配置 revision 覆盖。原则：**这些是异常判定与单次调用界限，不是任务总时限**；
-默认不存在任何墙钟上限。
+判定窗口是一个固定值，不按 AgentClass 区分：即使研究型任务，只要它还在读站点、还在思考、
+还在写结论，就有输出/ CPU 活动，不会被误判；连 5 分钟都没有任何信号变化才是真异常。
+不提供绝对墙钟上限：没有任何"跑满 N 小时就断"的路径，长任务只受进展判定约束。
 
 ## 5. 实现落点
 
 | Seam | 文件 | 改动 |
 | --- | --- | --- |
-| Pi 运行时扩展 | `src/executor/pi-agent.ts`（生成 `dist/pi-attempt-tools.ts`） | 发出工具调用级活动事实（开始/输出/结束），供宿主做三条件判定；**不注入默认墙钟 timeout** |
-| Executor Adapter | `src/executor/local-cli-executor-adapter.ts` | per-tool-call 活动跟踪；D2 组合证据采样；按 D4' 进程组定向中断；`terminationSource` 补充停滞终止来源；`probeOperation` 由"进程是否存在"升级为"该调用是否还在推进" |
-| 活动监控 | `src/executor/operation-activity-monitor.ts` | 支持工具调用级 operation 的停滞判定与证据化（`evidence` 需带工具/命令/进程树），`unknown` 之外增加可判定的停滞事实 |
-| Harness 驱动 | `src/executor/pi-cli-driver.ts` | 工具调用事件携带稳定 operationId 与命令摘要，供上两层使用 |
-| 事实落库 | `src/storage/executor-attempt-runtime-repo.ts`、`src/storage/executor-attempt-receipt-repo.ts` | 进展历史与失败事实携带停滞证据（`failure_json` / `error_detail`）；如需新增持久字段，走既有 migration 流程并同步 ADR |
-| 审计事件 | `src/storage/`（task_events 写入路径） | 落 `tool_call_stalled` 事实事件（工具、命令、时长、处置、结果） |
-| 界面 | `web/src/components/LiveExecutionPanel.tsx`、`web/src/executor-health.ts` | 展示归因与处置结论；区分「已自动中断并继续」与「失败请重新执行」 |
-| 提示与能力 | `src/executor/prompt-builder.ts`、能力投影 | 提示模型优先使用有界工具（`web_search` / `web_fetch` 自带超时），避免自造无超时抓取脚本 |
+| 停滞判定与熔断（纯逻辑） | `src/executor/tool-stall-core.ts` | 三信号进度合成、停滞判定、事实解析、熔断、失败文案、`ps` CPU 时间解析、`ToolStallGuard`（归属判定 + 定向中断 + SIGKILL 宽限） |
+| Pi 运行时扩展 | `src/executor/pi-tool-stall/index.ts`（构建复制为 `dist/pi-tool-stall/index.ts`） | 在 Harness 进程内注册 `tool_execution_start/update/end` 与 `tool_result` 钩子；被中断的调用结果改写为显式工具错误 |
+| Harness 驱动 | `src/executor/pi-cli-driver.ts` | 每个 attempt 都装载 guard 扩展；发出 `METACLAW_TOOL_STALL_FACTS / _WINDOW_MS / _SAMPLE_MS` |
+| Executor Adapter | `src/executor/local-cli-executor-adapter.ts` | 轮询停滞事实通道；把事实投影为持久 progress 事实；熔断与不可恢复停滞时停止 attempt 并报失败；`diagnostics.toolStalls` 保留全部事实 |
+| 构建 | `tsup.config.ts` | `src/executor/tool-stall-core.ts` 作为独立 entry 输出到 `dist/tool-stall-core.js`，供扩展按相对路径导入 |
 
 ## 6. 护栏
 
@@ -197,6 +203,7 @@ Executor 只允许：终止自己 attempt 名下的进程树、把失败回给�
 | 模型请求挂起（无工具在跑） | 不误判为工具停滞；按 attempt 级无进展既有观测处理，必要时进入 D6 |
 | 同一 attempt 内停滞 3 次 | attempt 终止，receipt 为失败且携带停滞证据，界面提示重新执行 |
 | 停滞发生在多进程树的深层子进程 | 整棵进程组被清理，无孤儿 Chrome/python 残留 |
+| 无法证明进程组归属的停滞 | 不执行 kill，立即停止 attempt 并报失败（不再无限等） |
 | 正常长任务总时长超过任何阈值 | 不被终止（不引入任务总时限） |
 | 兄弟子任务正常运行 | 不受本 attempt 停滞处置影响 |
 
@@ -230,9 +237,40 @@ Executor 只允许：终止自己 attempt 名下的进程树、把失败回给�
 
 ## 11. 待确认项
 
-1. `toolStallWindowMs` 默认 300s 是否合适（与 2026-10-06 方案的"疑似停滞"阈值一致），是否按 AgentClass 区分。
-2. `toolStallMaxPerAttempt` 熔断阈值（当前建议 3）。
-3. 是否保留"绝对墙钟上限"作为默认关闭的高级开关（当前建议：保留但关闭）。
-4. 停滞事实是否需要新增持久字段（涉及 migration 与 ADR 同步），还是复用现有 `progress_json` / `failure_json` 结构化承载。
-5. 界面文案与"请重新执行"的用户入口（是否需要在失败态直接提供一键重跑）。
-6. 当前那次 attempt 已在 2026-11-02 10:07 被用户取消（子任务转 `cancelled`，挂起的进程已退出），无需额外处置。
+全部已确认并实施，无遗留待定项：
+
+1. 判定窗口：全局固定 300s，不按 AgentClass 区分。
+2. 熔断阈值：3 次。
+3. 绝对墙钟上限：不实现。
+4. 停滞事实：复用既有 progress 事实与 `diagnostics`，未新增持久字段与 migration。
+5. 失败态文案明确提示“请重新执行任务”；界面沿用现有进度区展示，未新增交互。
+6. 2026-11-02 那次挂起已在 10:07 由用户取消收敛（子任务转 `cancelled`，挂起进程已退出）。
+
+## 12. 实施与验收记录（2026-11-02）
+
+交付行为：
+
+- Harness 进程内的 guard 对每个 in-flight 工具调用采样“输出 / CPU / 工作区”三信号；
+  三者持续 300s 不变才判停滞，任一信号变动即清零重计。
+- 停滞时按进程组归属只中断该调用（SIGTERM → 5s 宽限 → 仅当原成员仍活则 SIGKILL），
+  并把结果改写为显式工具错误回给模型。
+- 同一 attempt 内第 3 次中断时停止 attempt，失败文案含工具、命令、停滞时长与
+  “请重新执行任务”；无法证明进程归属时不猜不杀，直接停止并如实报失败。
+- 每次停滞/中断都成为持久 progress 事实，界面可见“哪个调用、多久没动、已怎么处置”。
+
+验证：
+
+- `tests/executor/tool-stall.test.ts`（14 项）：三信号判定、`ps` CPU 解析、事实解析、
+  熔断、归属歧义不杀、长输出/长 CPU 不误杀、已结束调用不再追踪。
+- `tests/executor/pi-tool-stall-guard.test.ts`（4 项）：扩展装配、定向中断与结果改写、
+  持续输出不中断、无法归属只报不杀、开关关闭时不动。
+- `tests/executor/local-cli-executor-adapter.test.ts` 新增 3 项：熔断停止并报失败、
+  不可归属停滞立即停止、单次中断继续执行。
+- `tests/executor` 全量 201 项通过；`npx tsc --noEmit` 通过；`npm run build` 产出
+  `dist/tool-stall-core.js` 与 `dist/pi-tool-stall/index.ts`。
+- 全仓 `npx vitest run` 的失败项与本改动无关（同一批 e2e/web 用例在改动前后同样失败，
+  已用 stash 对照确认）。
+
+ADR 同步：[ADR-0024](../adr/0024-resource-partition-sandbox-and-runtime-elevation.md)
+增补“Executor 工具调用级停滞自治”，[ADR-0028](../adr/0028-agentclass-model-and-harness-routing-contract.md)
+增补“Harness-owned tool-call stall guard”。未改动 Kernel 职责、未新增 schema。

@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import { mkdtemp, rm, stat } from 'node:fs/promises';
+import { mkdtemp, rm, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { RuntimePrivateConfigurationBinding } from '../../src/configuration/types.js';
@@ -16,6 +16,7 @@ import {
   SpawnLocalCliChildProcessRunner,
   type LocalCliChildProcessRunner,
 } from '../../src/executor/local-cli-executor-adapter.js';
+import { TOOL_STALL_FUSE_COUNT } from '../../src/executor/tool-stall-core.js';
 
 describe('LocalCliExecutorAdapter', () => {
   it('launches a Conversation reader in its writable scratch with isolated temporary/cache directories', async () => {
@@ -366,6 +367,103 @@ describe('LocalCliExecutorAdapter', () => {
     });
   });
 
+  it('reports tool-call stalls and stops the Attempt when the same call keeps stalling', async () => {
+    const driver = harnessDriver('pi-cli', { success: false, output: '', error: 'process exited with code null' });
+    const stallFact = (index: number) => ({
+      event: 'interrupted' as const,
+      toolCallId: `call_${index}`,
+      toolName: 'bash',
+      command: 'python3 links.py https://cloud.tencent.com/document/product/1759',
+      stalledMs: 300_000,
+      processGroup: 800 + index,
+      at: '2026-11-02T02:00:00.000Z',
+    });
+    const processRunner: LocalCliChildProcessRunner = {
+      run: vi.fn(async input => {
+        for (let index = 1; index <= TOOL_STALL_FUSE_COUNT; index += 1) input.onToolStall?.(stallFact(index));
+        return { exitCode: null, stdout: '', stderr: '' };
+      }),
+      abort: vi.fn(),
+    };
+    const progress = vi.fn();
+    const adapter = new LocalCliExecutorAdapter({
+      agentClassId: 'quality-beta', driver, runtimeBinding: runtimeBinding(),
+      authorizedBinding: authorizedBinding(), modelId: 'deepseek-v4-pro',
+      attemptsRoot: '/runtime/attempts', processRunner,
+    });
+    const input = executorInput('attempt-stall-fuse');
+    input.onProgress = progress;
+
+    const result = await adapter.execute(input);
+
+    // Every stall is an attributable progress fact, not a health heartbeat.
+    expect(progress).toHaveBeenCalledTimes(TOOL_STALL_FUSE_COUNT);
+    expect(progress).toHaveBeenCalledWith(expect.objectContaining({
+      kind: 'status',
+      text: expect.stringContaining('cloud.tencent.com'),
+    }));
+    expect(progress.mock.calls[0]![0]).not.toHaveProperty('operationHealth');
+    // The Attempt stops on the fuse instead of looping, and names the cause.
+    expect(processRunner.abort).toHaveBeenCalledTimes(1);
+    expect(result).toMatchObject({ success: false });
+    expect(result.error).toContain('执行失败');
+    expect(result.error).toContain(`已中断 ${TOOL_STALL_FUSE_COUNT} 次`);
+    expect(result.error).toContain('请重新执行任务');
+    expect(result.diagnostics?.toolStalls).toHaveLength(TOOL_STALL_FUSE_COUNT);
+  });
+
+  it('stops immediately when a stalled call has no provable process group', async () => {
+    const driver = harnessDriver('pi-cli', { success: false, output: '', error: 'process exited with code null' });
+    const processRunner: LocalCliChildProcessRunner = {
+      run: vi.fn(async input => {
+        input.onToolStall?.({
+          event: 'stalled', toolCallId: 'call_1', toolName: 'bash', command: 'sleep 900',
+          stalledMs: 300_000, skipReason: '未找到属于该工具调用的进程组',
+          at: '2026-11-02T02:00:00.000Z',
+        });
+        return { exitCode: null, stdout: '', stderr: '' };
+      }),
+      abort: vi.fn(),
+    };
+    const adapter = new LocalCliExecutorAdapter({
+      agentClassId: 'quality-beta', driver, runtimeBinding: runtimeBinding(),
+      authorizedBinding: authorizedBinding(), modelId: 'deepseek-v4-pro',
+      attemptsRoot: '/runtime/attempts', processRunner,
+    });
+
+    const result = await adapter.execute(executorInput('attempt-stall-unattributable'));
+
+    // Waiting longer would hang silently, so the Attempt ends with the reason.
+    expect(processRunner.abort).toHaveBeenCalledWith('attempt-stall-unattributable');
+    expect(result.error).toContain('无法确认其进程归属');
+    expect(result.error).toContain('请重新执行任务');
+  });
+
+  it('leaves a single interrupted stall to the guard and keeps the Attempt running', async () => {
+    const driver = harnessDriver('pi-cli');
+    const processRunner: LocalCliChildProcessRunner = {
+      run: vi.fn(async input => {
+        input.onToolStall?.({
+          event: 'interrupted', toolCallId: 'call_1', toolName: 'bash',
+          command: 'curl https://example.com', stalledMs: 300_000, processGroup: 801,
+          at: '2026-11-02T02:00:00.000Z',
+        });
+        return { exitCode: 0, stdout: 'raw output\n', stderr: '' };
+      }),
+      abort: vi.fn(),
+    };
+    const adapter = new LocalCliExecutorAdapter({
+      agentClassId: 'quality-beta', driver, runtimeBinding: runtimeBinding(),
+      authorizedBinding: authorizedBinding(), modelId: 'deepseek-v4-pro',
+      attemptsRoot: '/runtime/attempts', processRunner,
+    });
+
+    const result = await adapter.execute(executorInput('attempt-stall-recovered'));
+
+    expect(processRunner.abort).not.toHaveBeenCalled();
+    expect(result).toMatchObject({ success: true });
+  });
+
   it('returns a separately streamed final answer when bounded stdout no longer contains it', async () => {
     const driver = harnessDriver('pi-cli') as HarnessDriver & {
       parseResultLine?(input: HarnessProgressLineInput): string | null;
@@ -605,6 +703,40 @@ describe('LocalCliExecutorAdapter', () => {
       child.emitExit(0);
       await expect(pending).resolves.toMatchObject({ exitCode: 0, diagnostics: { terminationSource: 'process_exit' } });
     } finally { vi.useRealTimers(); }
+  });
+
+  it('surfaces the Harness guard stall facts recorded beside the attempt Home', async () => {
+    vi.useFakeTimers();
+    const home = await mkdtemp(join(tmpdir(), 'stall-facts-'));
+    try {
+      const child = controllableChildProcess();
+      const factsPath = join(home, '.metaclaw-tool-stall.jsonl');
+      const fact = {
+        event: 'interrupted', toolCallId: 'call_1', toolName: 'bash',
+        command: 'python3 links.py https://cloud.tencent.com/document/product/1759',
+        stalledMs: 300_000, processGroup: 801, at: '2026-11-02T02:00:00.000Z',
+      };
+      const onToolStall = vi.fn();
+      const runner = new SpawnLocalCliChildProcessRunner({
+        processGroupExists: () => false, spawnProcess: () => child, signalProcess: vi.fn(),
+      });
+      const pending = runner.run({
+        attemptId: 'stall-facts', command: 'pi', args: [], cwd: '/workspace',
+        environment: { METACLAW_TOOL_STALL_FACTS: factsPath }, onToolStall,
+      });
+      await writeFile(factsPath, `${JSON.stringify(fact)}\n`);
+      await vi.advanceTimersByTimeAsync(1_500);
+      expect(onToolStall).toHaveBeenCalledWith(fact);
+      // A partially written trailing line is not a fact yet.
+      await writeFile(factsPath, '{"event":"interrup', { flag: 'a' });
+      await vi.advanceTimersByTimeAsync(1_500);
+      expect(onToolStall).toHaveBeenCalledTimes(1);
+      child.emitExit(0);
+      await pending;
+    } finally {
+      vi.useRealTimers();
+      await rm(home, { recursive: true, force: true });
+    }
   });
 
   it('renews the idle timeout when stdout or stderr remains active', async () => {

@@ -11,6 +11,11 @@ import {
 } from '../configuration/agent-runtime-renderer.js';
 import { redactSensitiveText } from '../utils/redact-sensitive-text.js';
 import { RuntimeHomeMaterializer } from './runtime-home-materializer.js';
+import {
+  TOOL_STALL_FACTS_FILE,
+  TOOL_STALL_SAMPLE_MS,
+  TOOL_STALL_WINDOW_MS,
+} from './tool-stall-core.js';
 import type { ExecutorAffordanceId } from '../routing/types.js';
 import type {
   HarnessDriver,
@@ -53,6 +58,8 @@ export class PiCliDriver implements HarnessDriver {
   private readonly fallbackHomeTemplateDir?: string;
   private readonly webExtensionSourcePath?: string;
   private readonly pdfExtensionRoot: string;
+  /** Executor-owned stall guard; always present so every Attempt is protected. */
+  private readonly stallGuardExtensionRoot: string;
   private readonly command: string;
   /**
    * Pi's tool_execution_end event normally omits args. Keep the start facts
@@ -67,11 +74,14 @@ export class PiCliDriver implements HarnessDriver {
     generatedRuntimeRoot?: string;
     webExtensionSourcePath?: string;
     pdfExtensionRoot?: string;
+    stallGuardExtensionRoot?: string;
   } = {}) {
     this.runProbe = dependencies.probeCommand ?? defaultProbeCommand;
     this.command = dependencies.command ?? 'pi';
     this.pdfExtensionRoot = dependencies.pdfExtensionRoot
       ?? join(resolveMetaWorkPaths().appCurrent, 'dist', 'pi-pdf');
+    this.stallGuardExtensionRoot = dependencies.stallGuardExtensionRoot
+      ?? join(resolveMetaWorkPaths().appCurrent, 'dist', 'pi-tool-stall');
     this.explicitHomeTemplateDir = emptyToUndefined(dependencies.homeTemplateDir);
     this.generatedRuntimeRoot = emptyToUndefined(dependencies.generatedRuntimeRoot);
     this.webExtensionSourcePath = emptyToUndefined(
@@ -121,6 +131,13 @@ export class PiCliDriver implements HarnessDriver {
       await writeFile(join(extensions, 'pi-pdf.ts'),
         `export { default } from ${JSON.stringify(join(this.pdfExtensionRoot, 'index.ts'))};\n`, { mode: 0o600 });
     }
+    const stallGuardSource = join(this.stallGuardExtensionRoot, 'index.ts');
+    if (existsSync(stallGuardSource)) {
+      const extensions = join(homePath, '.pi', 'agent', 'extensions');
+      await mkdir(extensions, { recursive: true, mode: 0o700 });
+      await writeFile(join(extensions, 'metawork-tool-stall.ts'),
+        `export { default } from ${JSON.stringify(stallGuardSource)};\n`, { mode: 0o600 });
+    }
     return home;
   }
 
@@ -151,6 +168,11 @@ export class PiCliDriver implements HarnessDriver {
         PI_CODING_AGENT_DIR: agentPath,
         PI_CODING_AGENT_SESSION_DIR: `${agentPath}/sessions`,
         PYTHONDONTWRITEBYTECODE: '1',
+        // The stall guard and the MetaWork host must agree on the window and on
+        // where tool-call stall facts land.
+        METACLAW_TOOL_STALL_FACTS: join(input.runtimeHomePath, TOOL_STALL_FACTS_FILE),
+        METACLAW_TOOL_STALL_WINDOW_MS: String(TOOL_STALL_WINDOW_MS),
+        METACLAW_TOOL_STALL_SAMPLE_MS: String(TOOL_STALL_SAMPLE_MS),
       },
     };
   }

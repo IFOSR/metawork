@@ -27,7 +27,7 @@ This directory contains both current technical documentation and historical plan
 
 - [Conversation Turn 正文单一权威源技术方案](plans/2026-11-01-conversation-turn-single-source-design.md)：2026-11-02 已落地账户 SQLite 正文权威源、引用投影、Memory 完整分段沉淀、迁移和删除流程；454 项专项回归、26 项真实引擎端到端及原生 Gateway 冒烟通过，全仓剩余失败见实施记录。
 
-- [Executor 工具调用级停滞自治与定向中断方案](plans/2026-11-02-executor-tool-call-stall-autonomy.md)：Proposed。Executor 对自己发起的单次工具调用自治判定停滞并定向中断，失败以工具错误回给模型；同一 attempt 反复停滞则如实报失败、由用户重新执行。不新增 Kernel 决策职责（L2/L3 暂不实现）。
+- [Executor 工具调用级停滞自治与定向中断方案](plans/2026-11-02-executor-tool-call-stall-autonomy.md)：2026-11-02 已实施。Harness 进程内的 guard 只在输出、进程组 CPU、工作区写入三信号同时停满 5 分钟时判停滞，按进程组定向中断并把结果改写为工具错误；同一 attempt 中断 3 次则如实报失败由用户重跑。不设默认命令超时与任务总时限，不新增 Kernel 决策职责。
 
 - [会话 Worktree 执行预检修复](plans/2026-10-30-conversation-worktree-dispatch-preflight-fix.md)：修正将内部 executionRoot 当成用户 Workspace 校验而导致所有此类执行被拒绝的问题，已部署；真实模型恢复等待重启后重新登录。
 

@@ -291,3 +291,23 @@ The source integration and platform/license/upgrade constraints are recorded
 in `integrations/pi-pdf/UPSTREAM.md` and the October 6 PDF repair plan. Native
 macOS arm64 is the acceptance target; other prepared platform assets still
 require platform validation before release claims.
+
+### 2026-11-02: Harness-owned tool-call stall guard
+
+The Executor Harness owns the observation and interruption of its own stalled
+tool calls, consistent with ADR-0053's split between Executor tool authority and
+durable coordination.
+
+`PiCliDriver` always seeds a `metawork-tool-stall` extension into the isolated
+attempt home for every Attempt, independent of web or evidence affordances. The
+extension shares one window and one fact channel with the host
+(`METACLAW_TOOL_STALL_WINDOW_MS`, `METACLAW_TOOL_STALL_FACTS`), so the guard and
+the Attempt-level fuse cannot disagree. The stall core is shipped as its own
+`dist` module so the extension is type-checked and unit-tested in this
+repository rather than embedded in a generated string.
+
+The window is a fixed 5 minutes for all AgentClasses; it is not per-class
+configuration and it is not a task deadline. Disabling the guard
+(`METACLAW_TOOL_STALL_GUARD=0`) is an operator escape hatch, not a per-AgentClass
+policy knob. No default bash timeout is injected: a call that keeps making
+progress is never cut off by elapsed time.

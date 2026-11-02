@@ -147,6 +147,20 @@ MetaWork terminal failure after the first error. `executor_failed` means that
 the Harness has exhausted its current execution loop or hit a non-recoverable
 boundary.
 
+A stalled tool call is part of that internal loop. The Harness-owned stall guard
+judges a call stalled only when its output, its own process subtree's CPU time
+and the workspace writes all stop for 5 minutes; the window is global, not
+per-AgentClass, and it is not a task deadline. The guard interrupts only that
+call's process group (SIGTERM, then SIGKILL while the recorded members are still
+alive) and returns an explicit tool error so the model picks another route. It
+never signals the Attempt group, another Attempt, or a host process, and it
+never changes Task state. An unattributable stall is reported, not guessed: the
+Attempt then stops with a structured failure. Three interrupted stalls inside
+one Attempt end that Attempt with a failure naming the tool, command, silence
+and process group, and the user re-runs. No retry, fallback, binding switch or
+replan policy is added, and no default bash timeout is injected: a call that
+keeps making progress is never cut off by elapsed time.
+
 When Runtime verification disagrees with an Executor success, the default
 interpretation is Mentor feedback, not task failure. Runtime records the real
 acceptance failure, Workspace/service facts and bounded diagnostics; Kernel
