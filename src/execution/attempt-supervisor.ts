@@ -5,12 +5,10 @@ import type {
   KernelDispatchItemRepo,
 } from '../storage/kernel-dispatch-item-repo.js';
 import type { AuthorizedExecutorBinding } from '../core/authorized-executor-binding.js';
+import { ATTEMPTS_PER_TASK_BUDGET } from '../core/runtime-limits.js';
 
-/**
- * Attempts a single Task may run at once. Internal execution budget: it is not
- * a user setting and it does not bound the account, only one Task's fan-out.
- */
-export const DEFAULT_ATTEMPTS_PER_TASK = 10;
+/** Attempts a single Task may run at once; internal budget, not a setting. */
+export const DEFAULT_ATTEMPTS_PER_TASK = ATTEMPTS_PER_TASK_BUDGET;
 
 type AttemptSupervisorRepository = Pick<
   KernelDispatchItemRepo,

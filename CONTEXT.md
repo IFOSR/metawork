@@ -402,8 +402,9 @@ staged with compensation inside activation.
 limit the product exposes and it is hot-activatable: subsequent queue promotion
 reads the active limit rather than a startup copy. Account-wide Task and Attempt
 caps are retired (`maxConcurrentTasks`/`maxConcurrentAttempts` stay accepted and
-ignored), and `maxConcurrentAttemptsPerTask` is an internal budget fixed to 10,
-not a setting. Other attempt/backend policy limits remain restart-required.
+ignored), and the per-Task Attempt budget is code-owned
+(`ATTEMPTS_PER_TASK_BUDGET`, 10), so a stored
+`maxConcurrentAttemptsPerTask` is accepted and ignored. Other attempt/backend policy limits remain restart-required.
 
 Routing now compares natural-language duties and detailed model evidence through
 the existing Mercury advisor (`span-fit-v5`). Generic coding/planning/long-context

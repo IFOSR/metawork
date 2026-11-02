@@ -220,7 +220,10 @@ export interface RuntimePolicy {
   maxConcurrentTasks?: number;
   /** @deprecated Account-wide Attempt gate; no longer enforced. */
   maxConcurrentAttempts?: number;
-  /** Attempts a single Task may run at once. Internal, not a user setting. */
+  /**
+   * @deprecated Internal budget, fixed by code (`ATTEMPTS_PER_TASK_BUDGET`).
+   * A stored value is accepted and ignored.
+   */
   maxConcurrentAttemptsPerTask?: number;
   /** Executing Conversations inside one Workspace. The only exposed limit. */
   maxConcurrentConversationsPerWorkspace?: number;

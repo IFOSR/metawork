@@ -55,7 +55,8 @@ arrival never revokes an active attempt. A Conversation slot race is resolved
 by a durable conditional claim; the losing decision is re-evaluated and cannot
 launch work.
 
-The initial runtime policy is:
+The initial runtime policy is (superseded for scheduling by the 2026-11-02
+amendment below, which keeps only the Workspace-scoped limit):
 
 | Field | Default | Range |
 | --- | ---: | ---: |
@@ -154,10 +155,12 @@ The account-wide gates are retired:
 - `runtimePolicy.maxConcurrentAttempts` no longer caps account-wide Attempt
   concurrency; `AttemptSupervisor` has no global ceiling, so an Attempt in one
   Task never blocks an Attempt in another.
-- `runtimePolicy.maxConcurrentAttemptsPerTask` is an internal execution budget
-  fixed to 10 and is not a user setting. It bounds one Task's fan-out only. The
-  Kernel snapshot's `maxConcurrentAttempts`/`availableSlots` facts carry that
-  same per-Task budget, since both describe a single Task's dispatch room.
+- `runtimePolicy.maxConcurrentAttemptsPerTask` is no longer a policy input: the
+  per-Task Attempt budget is code-owned (`ATTEMPTS_PER_TASK_BUDGET`, 10 in
+  `src/core/runtime-limits.ts`) and a stored value is accepted and ignored. It
+  bounds one Task's fan-out only. The Kernel snapshot's
+  `maxConcurrentAttempts`/`availableSlots` facts carry that same per-Task
+  budget, since both describe a single Task's dispatch room.
 
 Promotion stays transactional and fairness-ordered, but the occupancy check is
 Workspace-scoped: `promoteAvailable` counts occupied, releasing and

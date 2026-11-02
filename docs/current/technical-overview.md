@@ -1564,8 +1564,7 @@ read-only discovery. The per-Workspace Conversation concurrency setting
 limit exposed in settings and is hot-activatable; account recovery/queue
 promotion reads the current active Kernel projection. Account-wide Task and
 Attempt caps are retired (`maxConcurrentTasks`/`maxConcurrentAttempts` are
-accepted and ignored) and `maxConcurrentAttemptsPerTask` is an internal budget
-of 10. Other attempt/backend policy limits remain restart-required.
+accepted and ignored) and the per-Task Attempt budget is code-owned (10). Other attempt/backend policy limits remain restart-required.
 Missing model prices are checked at activation. Models'
 Fixed/Auto tool compatibility is
 projected server-side. Disabled assistants remain editable and previewable;

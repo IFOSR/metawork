@@ -57,7 +57,7 @@ import type { QueryUsageLifecycle } from '../metering/query-lifecycle.js';
 import type { ConversationResultDelivery } from '../session/conversation-session.js';
 import type { ExecutionTraceAppendInput } from '../execution/execution-trace.js';
 import type { KernelDecisionAction } from '../kernel/control-kernel.js';
-import { DEFAULT_ATTEMPTS_PER_TASK } from '../execution/attempt-supervisor.js';
+import { ATTEMPTS_PER_TASK_BUDGET } from '../core/runtime-limits.js';
 
 /**
  * Plan-admission decisions that the account coordinator must apply before
@@ -273,8 +273,8 @@ export function buildAccountRuntimeComposition(deps: {
     sourceRoot: deps.sourceRoot,
     orchestration: deps.orchestration,
     notifier: deps.notifier,
-    maxAttemptsPerTask: deps.stagedConfiguration.snapshot.config.runtimePolicy.maxConcurrentAttemptsPerTask
-      ?? DEFAULT_ATTEMPTS_PER_TASK,
+    // Internal budget: configuration values are not a scheduling input.
+    maxAttemptsPerTask: ATTEMPTS_PER_TASK_BUDGET,
     onTaskTerminal: taskId => startupRecovery?.onTaskTerminal(taskId),
     onTaskQueued: taskId => startupRecovery?.onTaskQueued(taskId),
     getConfigurationRevision: deps.getConfigurationRevision,

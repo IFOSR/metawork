@@ -89,7 +89,6 @@ describe('buildStagedLegacyConfiguration', () => {
 
     expect(staged.snapshot.config.runtimePolicy).toMatchObject({
       maxConcurrentConversationsPerWorkspace: 2,
-      maxConcurrentAttemptsPerTask: 10,
       schedulingAgingMs: 300_000,
       sameConversationQueueLimit: 8,
     });

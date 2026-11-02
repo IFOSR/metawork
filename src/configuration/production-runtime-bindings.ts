@@ -1,6 +1,7 @@
 import type { AuthorizedExecutorBinding } from '../core/authorized-executor-binding.js';
 import { buildRuntimeConfigurationView } from './projections.js';
 import { resolveRuntimePrivateConfigurationBinding } from './runtime-private-binding-resolver.js';
+import { ATTEMPTS_PER_TASK_BUDGET } from '../core/runtime-limits.js';
 import type { SecretStore } from './secret-store.js';
 import type {
   ConfigurationSnapshot,
@@ -42,7 +43,9 @@ export function createProductionRuntimeBindings(input: {
       return activeRuntimeConfiguration.runtimePolicy.maxConcurrentConversationsPerWorkspace ?? 2;
     },
     get maxConcurrentAttemptsPerTask() {
-      return activeRuntimeConfiguration.runtimePolicy.maxConcurrentAttemptsPerTask ?? 10;
+      // Internal budget, not a setting: a stored value is ignored so the fan-out
+      // stays predictable across configuration revisions.
+      return ATTEMPTS_PER_TASK_BUDGET;
     },
     get schedulingAgingMs() {
       return activeRuntimeConfiguration.runtimePolicy.schedulingAgingMs ?? 300_000;

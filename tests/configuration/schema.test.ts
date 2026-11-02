@@ -265,12 +265,13 @@ describe('AnyFusion configuration schema v2', () => {
     // Attempt budget have defaults; account-wide gates are not scheduled on.
     expect(parsed.runtimePolicy).toMatchObject({
       maxConcurrentConversationsPerWorkspace: 2,
-      maxConcurrentAttemptsPerTask: 10,
       schedulingAgingMs: 300_000,
       sameConversationQueueLimit: 8,
     });
     expect(parsed.runtimePolicy.maxConcurrentTasks).toBeUndefined();
     expect(parsed.runtimePolicy.maxConcurrentAttempts).toBeUndefined();
+    // The per-Task Attempt budget is code-owned, so it has no schema default.
+    expect(parsed.runtimePolicy.maxConcurrentAttemptsPerTask).toBeUndefined();
   });
 
   it('accepts configured parallel scheduling bounds', () => {

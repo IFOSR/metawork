@@ -482,8 +482,11 @@ const RuntimePolicySchema = z.object({
   // per-Task budget, and capacity is limited per Workspace instead.
   maxConcurrentTasks: z.number().int().min(1).max(64).optional(),
   maxConcurrentAttempts: z.number().int().min(1).max(512).optional(),
-  /** Attempts a single Task may run at once. Internal budget, not a user knob. */
-  maxConcurrentAttemptsPerTask: z.number().int().min(1).max(64).default(10),
+  /**
+   * @deprecated Internal budget fixed by `ATTEMPTS_PER_TASK_BUDGET`. Accepted so
+   * existing configurations keep parsing; the value is never used.
+   */
+  maxConcurrentAttemptsPerTask: z.number().int().min(1).max(64).optional(),
   /** Executing Conversations inside one Workspace. The only exposed limit. */
   maxConcurrentConversationsPerWorkspace: z.number().int().min(1).max(32).default(2),
   schedulingAgingMs: z.number().int().min(0).max(86_400_000).default(300_000),
