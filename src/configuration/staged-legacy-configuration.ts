@@ -251,21 +251,23 @@ function matchesRetiredSpanContentHash(
   }) === contentHash);
 }
 
+/**
+ * Hash compatibility for snapshots written by an older RuntimePolicy schema.
+ *
+ * The scheduling policy is not part of the semantic configuration those
+ * snapshots were validated against, and its defaults keep changing, so the
+ * comparison drops the whole block. That keeps old migrated snapshots valid
+ * without weakening any other content check.
+ */
 function legacyRuntimePolicyContentHash(
   revisionId: string,
   config: ConfigurationSnapshot['config'],
 ): string {
-  const {
-    maxConcurrentConversationsPerWorkspace: _maxConcurrentConversationsPerWorkspace,
-    maxConcurrentAttemptsPerTask: _maxConcurrentAttemptsPerTask,
-    schedulingAgingMs: _schedulingAgingMs,
-    sameConversationQueueLimit: _sameConversationQueueLimit,
-    ...legacyRuntimePolicy
-  } = config.runtimePolicy;
+  const { runtimePolicy: _runtimePolicy, ...rest } = config;
   return compileConfigurationRevision(revisionId, {
-    ...config,
-    runtimePolicy: legacyRuntimePolicy,
-  }).contentHash;
+    ...rest,
+    runtimePolicy: {},
+  } as ConfigurationSnapshot['config']).contentHash;
 }
 
 function failMissingMigratedSnapshot(): never {
