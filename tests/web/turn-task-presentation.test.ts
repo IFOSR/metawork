@@ -181,9 +181,13 @@ describe('Turn Task presentation', () => {
     expect(html).toContain('data-state="completed"');
     expect(html).toContain('data-state="running"');
     expect(html).toContain('data-state="waiting"');
-    // Card state is a visual mechanic only: no per-card status vocabulary may
-    // impersonate the Task's six-state conclusion.
-    expect(html).not.toContain('class="execution-card-state"');
+    // Every card names its execution state, so a finished Subtask is never
+    // indistinguishable from a running one. The badge describes execution only;
+    // the Task's own status remains the conclusion.
+    expect(html).toContain('class="execution-card-state"');
+    expect(html).toContain('已完成');
+    expect(html).toContain('执行中');
+    expect(html).toContain('等待中');
     expect(html).not.toContain('等待启动');
   });
 
@@ -403,7 +407,7 @@ describe('Turn Task presentation', () => {
         },
       } as unknown as ConversationTurnProjection,
     }));
-    expect(html).not.toContain('class="execution-card-state"');
+    // A Subtask that never ran is not complete: its badge must not claim it.
     expect(html).not.toContain('已完成');
     expect(html).not.toContain('0s');
     expect(html).toContain('尚未启动');

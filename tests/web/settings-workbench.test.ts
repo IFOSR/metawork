@@ -484,11 +484,15 @@ describe('Settings workbench model semantics', () => {
     expect(styles).toContain('overflow-x: hidden');
   });
 
-  it('exposes one user-facing parallel task limit and refreshes local configuration after activation', async () => {
+  it('exposes only the per-Workspace conversation limit and refreshes local configuration after activation', async () => {
     const panel = await readFile(new URL('components/SettingsPanel.tsx', webRoot), 'utf8');
 
-    expect(panel).toContain('同时运行任务数');
-    expect(panel).toContain('同一会话内仍按顺序执行');
+    // One scheduling knob: Conversations executing inside one Workspace.
+    expect(panel).toContain('同一 Workspace 内并发会话数');
+    expect(panel).toContain('同一个 Workspace 下最多几个会话同时执行');
+    expect(panel).not.toContain('同时运行任务数');
+    expect(panel).not.toContain('maxConcurrentTasks');
+    expect(panel).not.toContain('maxConcurrentAttemptsPerTask');
     expect(panel).not.toContain('最大并行 Attempt');
     expect(panel).not.toContain('每 Task 最大 Attempt');
     expect(panel).not.toContain('调度老化时间');

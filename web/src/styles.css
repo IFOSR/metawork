@@ -6157,8 +6157,15 @@ select:focus-visible {
   padding: 3px 7px;
   color: var(--text-dim);
   font-size: 10px;
+  font-weight: 600;
   line-height: 1;
   white-space: nowrap;
+}
+
+/* A finished card must not read like a running one: the label carries the
+   state even when color is unavailable. */
+.execution-card-state[data-state='completed'] {
+  background: color-mix(in srgb, var(--status-success, var(--green)) 16%, transparent);
 }
 
 .execution-card-state[data-state='completed'] { color: var(--status-success, var(--green)); }
@@ -6191,6 +6198,12 @@ select:focus-visible {
   margin: 10px 0 8px;
   color: var(--accent);
   font-size: 12px;
+}
+
+/* Settled cards keep their final output visible but no longer present it as
+   live narration. */
+.execution-card[data-state='completed'] .execution-card-step {
+  color: var(--text-dim);
 }
 
 .execution-card-health {

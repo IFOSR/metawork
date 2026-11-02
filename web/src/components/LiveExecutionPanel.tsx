@@ -36,12 +36,24 @@ interface ExecutionCard {
 }
 
 /**
- * Card state is an internal presentation mechanic: it selects the visual
- * treatment and whether the card folds into a summary. It is never rendered as
- * a status label — the owning Task's six-state conclusion is the only status a
- * user sees (2026-10-28 transparent execution §status consistency).
+ * Card state drives both the visual treatment and an execution-state badge.
+ *
+ * The badge reports what the Subtask's execution is doing — it never claims a
+ * Task conclusion. The Task's six-state status stays authoritative; the badge
+ * exists because a finished card otherwise looked identical to a running one
+ * (same border, frozen timer, no label), which users read as "stuck".
  */
 type ExecutionCardState = 'completed' | 'running' | 'waiting' | 'blocked' | 'failed' | 'unknown';
+
+/** Short execution-state label rendered in the card header. */
+const EXECUTION_STATE_LABEL: Record<ExecutionCardState, string> = {
+  completed: '已完成',
+  running: '执行中',
+  waiting: '等待中',
+  blocked: '已阻塞',
+  failed: '已失败',
+  unknown: '状态待确认',
+};
 
 /**
  * 当前执行卡片：把安全的 InteractionTrace 里程碑按 Subtask 分组展示，
@@ -126,6 +138,13 @@ function CardBody({ card, completed, nowMs }: { card: ExecutionCard; completed: 
     <>
       <div className="execution-card-title-row">
         <h4 title={card.subtaskTitle}>{card.subtaskTitle}</h4>
+        <span
+          className="execution-card-state"
+          data-state={card.state}
+          title={`执行状态：${EXECUTION_STATE_LABEL[card.state]}`}
+        >
+          {EXECUTION_STATE_LABEL[card.state]}
+        </span>
       </div>
       <dl>
         <dt>Executor</dt><dd>{card.executorDisplayName || '—'}</dd>
@@ -145,7 +164,7 @@ function CardBody({ card, completed, nowMs }: { card: ExecutionCard; completed: 
         </p>
       )}
       <footer>
-        {elapsedText && <time>{elapsedText}</time>}
+        {elapsedText && <time>{completed ? `用时 ${elapsedText}` : elapsedText}</time>}
         {completed
           ? <span className="execution-card-open-hint">查看执行详情 →</span>
           : card.progress !== null && <progress value={Math.min(1, card.progress)} max={1} />}
