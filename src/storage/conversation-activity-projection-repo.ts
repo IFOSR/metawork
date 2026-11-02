@@ -37,10 +37,24 @@ export class SqliteConversationActivityProjection implements ConversationActivit
         this.db.prepare('DELETE FROM conversation_activity_views WHERE task_id = ?').run(row.task_id);
         this.db.prepare('DELETE FROM conversation_activity_dirty WHERE task_id = ?').run(row.task_id);
       }
+      // A Conversation erased by the deletion workflow keeps no activity
+      // projection: its Tasks are audit rows only, so projecting them would fail
+      // (conversation_deleted) on every pass instead of making progress.
+      const erased = this.db.prepare(`SELECT dirty.task_id FROM conversation_activity_dirty dirty
+        JOIN tasks ON tasks.id = dirty.task_id
+        JOIN conversation_deletions deletion
+          ON deletion.account_id = tasks.account_id AND deletion.conversation_id = tasks.conversation_id
+        LIMIT 64`).all() as Array<{ task_id: string }>;
+      for (const row of erased) {
+        this.db.prepare('DELETE FROM conversation_activity_views WHERE task_id = ?').run(row.task_id);
+        this.db.prepare('DELETE FROM conversation_activity_dirty WHERE task_id = ?').run(row.task_id);
+      }
     }).immediate();
     const row = this.db.prepare(`SELECT tasks.id, substr(tasks.title, 1, 160) AS title,
       tasks.status, tasks.updated_at AS updatedAt, dirty.version
       FROM conversation_activity_dirty dirty JOIN tasks ON tasks.id = dirty.task_id
+      WHERE NOT EXISTS (SELECT 1 FROM conversation_deletions deletion
+        WHERE deletion.account_id = tasks.account_id AND deletion.conversation_id = tasks.conversation_id)
       ORDER BY dirty.rowid LIMIT 1`).get() as (ConversationActivityTask & { version: number }) | undefined;
     if (!row) return null;
     const { version, ...task } = row;

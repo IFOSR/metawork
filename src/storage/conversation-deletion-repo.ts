@@ -83,6 +83,13 @@ export class SqliteConversationDeletionStore implements ConversationDeletionPort
         this.db.prepare('DELETE FROM task_memory_cards WHERE task_id = ?').run(id);
         this.db.prepare('DELETE FROM task_search_index WHERE task_id = ?').run(id);
         this.db.prepare('DELETE FROM conversation_activity_views WHERE task_id = ?').run(id);
+        // Derived projections must stop retrying an erased Task. Leaving the
+        // outbox and activity queue rows behind made the projector re-queue the
+        // Conversation every 100ms and fail with conversation_deleted forever.
+        this.db.prepare('DELETE FROM conversation_activity_dirty WHERE task_id = ?').run(id);
+        this.db.prepare(`UPDATE task_state_projection_outbox
+          SET dispatched_at = COALESCE(dispatched_at, datetime('now')), detail_json = '{}'
+          WHERE task_id = ?`).run(id);
       }
       for (const guard of guards) this.db.exec(guard.sql);
       if (metadata) {
@@ -102,6 +109,14 @@ export class SqliteConversationDeletionStore implements ConversationDeletionPort
       this.db.prepare(`DELETE FROM client_action_references WHERE json_extract(body_json, '$.accountId') = ?
         AND json_extract(body_json, '$.conversationId') = ?`).run(accountId, conversationId);
       this.db.prepare('DELETE FROM workspace_directory_projection WHERE account_id = ? AND conversation_id = ?').run(accountId, conversationId);
+      // A deleted Conversation owns no execution capacity any more, and its
+      // scheduling entry must not keep a slot occupied for recovery to trip on.
+      this.db.prepare(`UPDATE conversation_task_slots
+        SET active_task_id = NULL, state = 'free', reservation_id = NULL, updated_at = datetime('now')
+        WHERE conversation_id = ? AND active_task_id IS NOT NULL`).run(conversationId);
+      this.db.prepare(`UPDATE task_schedule_entries SET state = 'terminal', payload_json = '{}'
+        WHERE task_id IN (SELECT id FROM tasks WHERE account_id = ? AND conversation_id = ?)
+          AND state <> 'terminal'`).run(accountId, conversationId);
       this.db.prepare('DELETE FROM interactions WHERE session_id = ?').run(conversationId);
       this.db.prepare('DELETE FROM planner_proposal_submissions WHERE session_id = ?').run(conversationId);
       this.db.prepare('DELETE FROM planner_proposal_turns WHERE session_id = ?').run(conversationId);
@@ -124,6 +139,20 @@ export class SqliteConversationDeletionStore implements ConversationDeletionPort
         AND NOT EXISTS (SELECT 1 FROM conversation_result_content_refs r WHERE r.account_id = conversation_turn_bodies.account_id AND r.body_hash = conversation_turn_bodies.body_hash)
         AND NOT EXISTS (SELECT 1 FROM conversation_derived_content d WHERE d.account_id = conversation_turn_bodies.account_id AND d.body_hash = conversation_turn_bodies.body_hash)`)
         .run(accountId);
+      // `observation_dirty_*` triggers re-queue projection work for every
+      // sub-task and dispatch row this transaction touched, so the erasure has
+      // to clear that queue last. Otherwise the activity projector wakes every
+      // 100ms for a Conversation that no longer exists and fails forever.
+      this.db.prepare(`DELETE FROM conversation_activity_dirty WHERE task_id IN
+        (SELECT id FROM tasks WHERE account_id = ? AND conversation_id = ?)`)
+        .run(accountId, conversationId);
+      this.db.prepare(`DELETE FROM conversation_activity_views WHERE task_id IN
+        (SELECT id FROM tasks WHERE account_id = ? AND conversation_id = ?)`)
+        .run(accountId, conversationId);
+      this.db.prepare(`UPDATE task_state_projection_outbox
+        SET dispatched_at = COALESCE(dispatched_at, datetime('now')), detail_json = '{}'
+        WHERE task_id IN (SELECT id FROM tasks WHERE account_id = ? AND conversation_id = ?)`)
+        .run(accountId, conversationId);
     }).immediate();
   }
 }
