@@ -4,6 +4,7 @@ import type { WsClient } from '../api/ws';
 import type { ArtifactProjection, ConversationTurnProjection, QueryBillProjection } from '../api/session-types';
 import type { InteractionTraceEvent, WorkGraphPresentationProjection } from '../api/types';
 import { useConversationTurn } from './use-conversation';
+import { useLocatedTurn } from './use-located-turn';
 import { turnProjection } from './turn-projection';
 import { TrajectoryView } from '../components/TrajectoryView';
 import { BillingView } from '../components/BillingView';
@@ -15,17 +16,21 @@ export function ObservedExecutionDetail({ conversationId, initial, subtaskId, fa
   ws: WsClient; http: HttpClient; onClose(): void;
 }) {
   const summary = useConversationTurn(ws.conversations, conversationId, initial.id);
-  const details = useTurnPresentation(ws, http, conversationId, summary, true);
+  const located = useLocatedTurn(http, conversationId, initial.id, summary);
+  // The drawer addresses one Turn by id: a Turn that left the store window is
+  // read from the server so its graph and progress stay reachable.
+  const resolved = located.turn ?? summary ?? null;
+  const details = useTurnPresentation(ws, http, conversationId, resolved ?? undefined, true);
   const [workGraph, setWorkGraph] = useState<WorkGraphPresentationProjection | null>(null);
   useEffect(() => {
-    const taskId = summary?.taskId ?? initial.taskId;
+    const taskId = resolved?.taskId ?? initial.taskId;
     if (!taskId) { setWorkGraph(null); return; }
     let active = true;
     void http.getTaskWorkGraph(taskId).then(value => { if (active) setWorkGraph(value); })
       .catch(() => { if (active) setWorkGraph(null); });
     return () => { active = false; };
-  }, [http, summary?.taskId, initial.taskId]);
-  return <ExecutionDetailDrawer turn={summary ? { ...turnProjection(summary), ...details } : initial}
+  }, [http, resolved?.taskId, initial.taskId]);
+  return <ExecutionDetailDrawer turn={resolved ? { ...turnProjection(resolved), ...details } : initial}
     subtaskId={subtaskId} fallbackTitle={fallbackTitle} workGraph={workGraph} onClose={onClose} />;
 }
 
@@ -35,7 +40,9 @@ export function ObservedTurnDetails({ conversationId, turnId, ws, http, tab, onO
   onOpenArtifact(artifact: ArtifactProjection): void;
   onOpenSubtaskDetail(turn: ConversationTurnProjection, subtaskId: string): void;
 }) {
-  const summary = useConversationTurn(ws.conversations, conversationId, turnId);
+  const liveSummary = useConversationTurn(ws.conversations, conversationId, turnId);
+  const located = useLocatedTurn(http, conversationId, turnId, liveSummary);
+  const summary = located.turn ?? liveSummary;
   const [detail, setDetail] = useState<Partial<ConversationTurnProjection>>({});
   const [trace, setTrace] = useState<InteractionTraceEvent[]>([]);
   const [cursor, setCursor] = useState<string | null>(null);
@@ -84,7 +91,13 @@ export function ObservedTurnDetails({ conversationId, turnId, ws, http, tab, onO
     const timer = setInterval(() => void refresh(), 5_000);
     return () => { active = false; clearInterval(timer); if (lifetime.current === ticket) lifetime.current++; };
   }, [conversationId, turnId, summary?.taskId, tab, ws, http]);
-  if (!summary) return <p>正在读取轮次…</p>;
+  if (!summary) {
+    // A Turn outside the bounded store window is read from the server instead
+    // of leaving this surface stuck on a loading line forever.
+    return located.error
+      ? <p role="alert">无法读取该轮次：{located.error}</p>
+      : <p>正在读取轮次…</p>;
+  }
   const turn = { ...turnProjection(summary), ...detail, traceEvents: trace };
   const loadMore = () => {
     if (!cursor || loading) return;
