@@ -226,6 +226,7 @@ function validateMigratedSnapshot(
   if (compiled.contentHash === snapshot.contentHash) return snapshot;
   if (
     legacyRuntimePolicyContentHash(snapshot.revisionId, config) !== snapshot.contentHash
+    && previousRuntimePolicySchemaContentHash(snapshot.revisionId, config) !== snapshot.contentHash
     && !matchesRetiredSpanContentHash(config, snapshot.contentHash)
   ) {
     throw new Error(
@@ -252,12 +253,38 @@ function matchesRetiredSpanContentHash(
 }
 
 /**
- * Hash compatibility for snapshots written by an older RuntimePolicy schema.
+ * Rebuild the policy the previous schema version would have parsed.
  *
- * The scheduling policy is not part of the semantic configuration those
- * snapshots were validated against, and its defaults keep changing, so the
- * comparison drops the whole block. That keeps old migrated snapshots valid
- * without weakening any other content check.
+ * A snapshot written before the Workspace-scoped capacity change was hashed
+ * with the retired account-wide defaults present and without the new key, so
+ * reproducing that exact shape is what makes an existing activation still
+ * verify. Everything outside the policy block keeps its full integrity check.
+ */
+function previousRuntimePolicySchemaContentHash(
+  revisionId: string,
+  config: ConfigurationSnapshot['config'],
+): string {
+  const policy = config.runtimePolicy;
+  const {
+    maxConcurrentConversationsPerWorkspace: _maxConcurrentConversationsPerWorkspace,
+    ...rest
+  } = policy;
+  return compileConfigurationRevision(revisionId, {
+    ...config,
+    runtimePolicy: {
+      ...rest,
+      maxConcurrentTasks: policy.maxConcurrentTasks ?? 2,
+      maxConcurrentAttempts: policy.maxConcurrentAttempts ?? 4,
+      maxConcurrentAttemptsPerTask: policy.maxConcurrentAttemptsPerTask ?? 2,
+      schedulingAgingMs: policy.schedulingAgingMs ?? 300_000,
+      sameConversationQueueLimit: policy.sameConversationQueueLimit ?? 8,
+    },
+  }).contentHash;
+}
+
+/**
+ * Hash compatibility for snapshots written before RuntimePolicy had defaults
+ * at all: compare with the whole block removed.
  */
 function legacyRuntimePolicyContentHash(
   revisionId: string,
