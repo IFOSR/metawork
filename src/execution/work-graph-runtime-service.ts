@@ -3,6 +3,7 @@ import type { AuthorizedExecutorBinding } from '../core/authorized-executor-bind
 import type { Subtask, Task } from '../core/types.js';
 import type { WorkGraphSubtask as SubtaskProposal, WorkGraphProposal } from '../work-graph/types.js';
 import { buildCanonicalSubtaskIdentityMap } from '../work-graph/subtask-identity.js';
+import { supportsSharedWorkspaceRead } from '../work-graph/workspace-effect.js';
 import { SubtaskRepo } from '../storage/subtask-repo.js';
 import { TaskEventRepo } from '../storage/task-event-repo.js';
 import { TaskEventRecorder } from '../storage/task-event-recorder.js';
@@ -272,6 +273,25 @@ export class WorkGraphRuntimeService {
       configurationRevision: workGraph.configurationRevision,
       authorizedDecisionId: authorization.decisionId,
     });
+    // A text-only report reader that stays exclusive is legal but serializes
+    // independent roots. Record it so "this graph could have run in parallel"
+    // is a visible fact instead of an invisible omission.
+    const exclusiveReaders = subtasks.filter(subtask => (
+      supportsSharedWorkspaceRead({ ...subtask, workspaceEffect: 'read_only' }, subtasks)
+      && subtask.workspaceEffect !== 'read_only'
+    ));
+    if (exclusiveReaders.length > 0) {
+      this.taskEvents.record(taskId, null, 'work_graph_parallelism_not_used',
+        `${exclusiveReaders.length} 个纯文本报告子任务未声明 workspaceEffect=read_only，将独占串行执行`, {
+          subtaskIds: exclusiveReaders.map(subtask => subtask.id),
+          ...(exclusiveReaders.some(subtask => subtask.workspaceEffect === undefined)
+            ? { missingEffectSubtaskIds: exclusiveReaders
+              .filter(subtask => subtask.workspaceEffect === undefined).map(subtask => subtask.id) }
+            : {}),
+          graphRevision: authorization.revision,
+          generationId: authorization.generationId,
+        });
+    }
     return subtasks;
   }
 }
