@@ -6,6 +6,7 @@ import {
 import { PlanningAgentPlanSchema } from './planning-agent-plan-schema.js';
 import type { PlanningAgentPlan, PlanningContext, SubtaskProposal } from './planning-types.js';
 import { validateWorkGraph } from '../work-graph/index.js';
+import { isSharedReadCandidate } from '../work-graph/workspace-effect.js';
 
 export interface PlanningAgentPlanValidationResult {
   valid: boolean;
@@ -216,6 +217,18 @@ function validateWorkspaceIntent(plan: PlanningAgentPlan, errors: string[]): voi
       if (!targetPaths.some(target => output === target || output.startsWith(`${target}/`))) {
         errors.push(`subtask.fileOutputs must be covered by workspaceIntent.targetPaths: ${output}`);
       }
+    }
+    // A text-only report reader that says nothing about its Workspace effect
+    // would silently take the exclusive lease and serialize independent roots.
+    // Require an explicit decision instead of guessing one for the model.
+    const subtasks = plan.workGraph?.subtasks ?? [];
+    const undeclaredReaders = subtasks.filter(subtask => (
+      subtask.workspaceEffect === undefined && isSharedReadCandidate(subtask, subtasks)
+    ));
+    if (undeclaredReaders.length > 0) {
+      errors.push('these text-only report subtasks must declare workspaceEffect '
+        + '(read_only to run beside other readers, write if they change business files, unknown if undecidable): '
+        + undeclaredReaders.map(subtask => subtask.id).join(', '));
     }
     if (intent.targetWorkspaceId !== null && !/^workspace_[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/u.test(intent.targetWorkspaceId)) {
       errors.push('workspaceIntent.targetWorkspaceId must be a supplied Workspace identity');

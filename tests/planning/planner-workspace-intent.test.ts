@@ -111,10 +111,50 @@ describe('Planner Workspace intent contract (schema 9)', () => {
     const plan: PlanningAgentPlan = {
       ...base,
       schemaVersion: 9,
-      workGraph: base.workGraph ? { ...base.workGraph, configurationRevision: 'revision-test' } : null,
+      workGraph: base.workGraph
+        ? {
+          ...base.workGraph,
+          configurationRevision: 'revision-test',
+          // A text-only report reader must state its effect, otherwise it would
+          // silently serialize against other readers.
+          subtasks: base.workGraph.subtasks.map(subtask => ({ ...subtask, workspaceEffect: 'read_only' as const })),
+        }
+        : null,
       workspaceIntent: workspaceIntentFixture({ operation: 'read_only' }),
     };
     expect(validatePlanningAgentPlan(plan, configuration)).toEqual({ valid: true, errors: [] });
+  });
+
+  it('rejects a text-only report reader that declares no Workspace effect', () => {
+    const base = workGraphPlan({ goal: '分析依赖', deliveryKind: 'report', fileOutputs: [] });
+    const plan: PlanningAgentPlan = {
+      ...base,
+      schemaVersion: 9,
+      workGraph: base.workGraph ? { ...base.workGraph, configurationRevision: 'revision-test' } : null,
+      workspaceIntent: workspaceIntentFixture({ operation: 'read_only' }),
+    };
+    const errors = validatePlanningAgentPlan(plan, configuration).errors.join('\n');
+    expect(errors).toContain('must declare workspaceEffect');
+    expect(errors).toContain('subtask_execute');
+  });
+
+  it('accepts an explicit exclusive decision for a text-only report reader', () => {
+    const base = workGraphPlan({ goal: '分析依赖', deliveryKind: 'report', fileOutputs: [] });
+    const plan: PlanningAgentPlan = {
+      ...base,
+      schemaVersion: 9,
+      workGraph: base.workGraph
+        ? {
+          ...base.workGraph,
+          configurationRevision: 'revision-test',
+          subtasks: base.workGraph.subtasks.map(subtask => ({ ...subtask, workspaceEffect: 'write' as const })),
+        }
+        : null,
+      workspaceIntent: workspaceIntentFixture({ operation: 'read_only' }),
+    };
+    // Declaration is a decision, not an order to parallelize: an explicit write
+    // stays legal even though the node only reports.
+    expect(validatePlanningAgentPlan(plan, configuration).errors.join('\n')).not.toContain('must declare workspaceEffect');
   });
 
   it('rejects a fabricated target Workspace identity', () => {
