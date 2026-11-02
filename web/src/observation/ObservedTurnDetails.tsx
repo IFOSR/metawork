@@ -7,6 +7,7 @@ import { useConversationTurn } from './use-conversation';
 import { useLocatedTurn } from './use-located-turn';
 import { turnProjection } from './turn-projection';
 import { TrajectoryView } from '../components/TrajectoryView';
+import { TrajectoryTurnRail } from '../components/TrajectoryTurnRail';
 import { BillingView } from '../components/BillingView';
 import { ExecutionDetailDrawer } from '../components/ExecutionDetailDrawer';
 import { useTurnPresentation } from './use-turn-presentation';
@@ -35,8 +36,10 @@ export function ObservedExecutionDetail({ conversationId, initial, subtaskId, fa
 }
 
 /** Separate, bounded detail requests never block the Conversation baseline. */
-export function ObservedTurnDetails({ conversationId, turnId, ws, http, tab, onOpenArtifact, onOpenSubtaskDetail }: {
+export function ObservedTurnDetails({ conversationId, turnId, ws, http, tab, onSelectTurn, onOpenArtifact, onOpenSubtaskDetail }: {
   conversationId: string; turnId: string; ws: WsClient; http: HttpClient; tab: 'trajectory' | 'billing';
+  /** Switch which Turn this surface reads; history must stay reachable. */
+  onSelectTurn?: (turnId: string) => void;
   onOpenArtifact(artifact: ArtifactProjection): void;
   onOpenSubtaskDetail(turn: ConversationTurnProjection, subtaskId: string): void;
 }) {
@@ -113,6 +116,15 @@ export function ObservedTurnDetails({ conversationId, turnId, ws, http, tab, onO
       .finally(() => { if (ticket === lifetime.current) setLoading(false); });
   };
   return <>
+    {tab === 'trajectory' && onSelectTurn && (
+      <TrajectoryTurnRail
+        conversationId={conversationId}
+        ws={ws}
+        http={http}
+        selectedTurnId={turnId}
+        onSelectTurn={onSelectTurn}
+      />
+    )}
     {error && <p role="alert">{error}</p>}
     {tab === 'billing' ? <BillingView bill={turn.queryBill ?? null} requestSummary={turn.userInput} />
       : <TrajectoryView turn={turn} http={http} onOpenArtifact={onOpenArtifact}

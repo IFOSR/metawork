@@ -108,7 +108,8 @@ export function App() {
         onSettings={handleOpenAgentSettings}
         onRefreshAgentReadiness={handleRefreshAgentReadiness}
         onTabChange={nextTab => {
-          if (nextTab === 'trajectory') setSelectedTrajectoryTurnId(null);
+          // The trajectory tab keeps the Turn being read instead of snapping
+          // back to the newest one; with no selection it falls back to latest.
           setTab(nextTab);
         }}
         onThemeChange={setThemePreference}
@@ -168,6 +169,7 @@ export function App() {
               conversationId={selectedId}
               turnId={(tab === 'billing' ? selectedBillingTurn : selectedTrajectoryTurn)!.id}
               ws={observationClient} http={httpRef.current} tab={tab}
+              onSelectTurn={setSelectedTrajectoryTurnId}
               onOpenArtifact={handleOpenArtifact}
               onOpenSubtaskDetail={(turn, subtaskId) => setExecutionDetail({ turn, turnId: turn.id, subtaskId, subtaskTitle: '' })}
             />

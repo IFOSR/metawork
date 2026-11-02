@@ -9179,3 +9179,94 @@ html[data-platform='desktop'] .workspace-header { column-gap: 16px; }
   color: var(--text-dim);
   font-size: 11px;
 }
+
+/* Trajectory turn switcher: a conversation keeps one trace per Turn, and the
+   reader must be able to walk back through all of them. */
+.trajectory-turn-rail {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin: 0 0 12px;
+  padding: 10px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+}
+
+.trajectory-turn-rail-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  color: var(--text-dim);
+  font-size: 11px;
+}
+
+.trajectory-turn-rail ol {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin: 0;
+  padding: 0;
+  max-height: 240px;
+  overflow-y: auto;
+  list-style: none;
+}
+
+.trajectory-turn-rail li button {
+  display: grid;
+  grid-template-columns: 62px minmax(0, 1fr) auto;
+  gap: 8px;
+  align-items: baseline;
+  width: 100%;
+  padding: 5px 7px;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  background: transparent;
+  color: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.trajectory-turn-rail li button:hover {
+  border-color: color-mix(in srgb, var(--accent) 40%, var(--border));
+}
+
+.trajectory-turn-rail li button[aria-current='true'] {
+  border-color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
+}
+
+.trajectory-turn-rail-time {
+  color: var(--text-dim);
+  font-family: 'SFMono-Regular', Consolas, monospace;
+  font-size: 10px;
+}
+
+.trajectory-turn-rail-label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 12px;
+}
+
+.trajectory-turn-rail-status {
+  color: var(--text-dim);
+  font-size: 10px;
+}
+
+.trajectory-turn-rail-more {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 11px;
+  color: var(--text-dim);
+}
+
+.trajectory-turn-rail-more button {
+  padding: 3px 8px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: transparent;
+  color: inherit;
+  font-size: 11px;
+  cursor: pointer;
+}
