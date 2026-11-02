@@ -155,9 +155,10 @@ function isHotPath(path: string): boolean {
     // same reason as Provider/Model catalog changes.
     || path === 'routing'
     || path.startsWith('routing.')
-    // The settings task limit is read from the active policy at admission and
-    // queue promotion; attempt/backend limits still require a process restart.
-    || path === 'runtimePolicy.maxConcurrentTasks'
+    // Workspace-scoped Conversation capacity is read from the active policy at
+    // admission and queue promotion; the internal per-Task attempt budget still
+    // requires a process restart.
+    || path === 'runtimePolicy.maxConcurrentConversationsPerWorkspace'
     || /^agentClasses\.[^.]+\.modelPolicy(?:\.|$)/u.test(path)
     || /^agentClasses\.[^.]+\.enabled$/u.test(path)
     // Routing use-case hints guide AgentClass choice and are resolved from the

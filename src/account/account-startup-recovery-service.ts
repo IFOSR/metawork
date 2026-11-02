@@ -145,17 +145,18 @@ export class AccountStartupRecoveryService {
       scheduler.releaseSlotAndPromote(conversationId, taskId, finalizedAt, true);
       return;
     }
-    const occupiedOtherCount = scheduler.listSlots().filter(slot => (
-      slot.activeTaskId !== taskId
-      && (slot.state === 'occupied' || slot.state === 'releasing')
-    )).length;
-    const maxConcurrentTasks = this.deps.kernelConfiguration.runtimePolicy.maxConcurrentTasks ?? 2;
+    // Capacity is Workspace-scoped: releasing this Task may promote the next
+    // queued Task in the same Conversation only while the Workspace still has
+    // room for another executing Conversation.
+    const workspaceId = task.workspaceId ?? '';
+    const occupiedInWorkspace = scheduler.occupiedSlotCountsByWorkspace(workspaceId).get(workspaceId) ?? 0;
+    const workspaceLimit = this.workspaceConversationLimit();
     const promotion = scheduler.releaseSlotAndPromote(
       conversationId,
       taskId,
       new Date().toISOString(),
       () => this.hasReleasableResidue(taskId, this.activeGenerationId(taskId)),
-      occupiedOtherCount < maxConcurrentTasks,
+      Math.max(0, occupiedInWorkspace - 1) < workspaceLimit,
     );
     if (promotion) {
       await this.promoteConversationTask(promotion.taskId, conversationId);
@@ -179,8 +180,7 @@ export class AccountStartupRecoveryService {
     const entry = this.deps.repositories.conversationTaskSchedulerRepo.getQueuedPayload(taskId);
     if (!entry) return;
     const scheduler = this.deps.repositories.conversationTaskSchedulerRepo;
-    const maxConcurrentTasks = this.deps.kernelConfiguration.runtimePolicy.maxConcurrentTasks ?? 2;
-    const promotions = scheduler.promoteAvailable(maxConcurrentTasks, new Date().toISOString());
+    const promotions = scheduler.promoteAvailable(this.workspaceConversationLimit(), new Date().toISOString());
     for (const promotion of promotions) {
       // Do not await the execution from the caller that is currently draining
       // the same continuation; the promoted execution owns its own idempotent
@@ -792,10 +792,18 @@ export class AccountStartupRecoveryService {
     return null;
   }
 
+  /**
+   * How many Conversations in one Workspace may execute at once. This is the
+   * only scheduling limit in the product; there is no account-wide Task or
+   * Attempt ceiling.
+   */
+  private workspaceConversationLimit(): number {
+    return this.deps.kernelConfiguration.runtimePolicy.maxConcurrentConversationsPerWorkspace ?? 2;
+  }
+
   private async promoteAvailableQueuedTasks(now: string): Promise<void> {
     const scheduler = this.deps.repositories.conversationTaskSchedulerRepo;
-    const maxConcurrentTasks = this.deps.kernelConfiguration.runtimePolicy.maxConcurrentTasks ?? 2;
-    const promotions = scheduler.promoteAvailable(maxConcurrentTasks, now);
+    const promotions = scheduler.promoteAvailable(this.workspaceConversationLimit(), now);
     await Promise.all(promotions.map(promotion =>
       this.promoteConversationTask(promotion.taskId, promotion.conversationId)));
   }

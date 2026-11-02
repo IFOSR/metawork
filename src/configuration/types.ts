@@ -216,9 +216,14 @@ export interface PermissionProfile {
 }
 
 export interface RuntimePolicy {
-  maxConcurrentAttempts?: number;
+  /** @deprecated Account-wide Task gate; no longer enforced (see ADR-0037 amendment). */
   maxConcurrentTasks?: number;
+  /** @deprecated Account-wide Attempt gate; no longer enforced. */
+  maxConcurrentAttempts?: number;
+  /** Attempts a single Task may run at once. Internal, not a user setting. */
   maxConcurrentAttemptsPerTask?: number;
+  /** Executing Conversations inside one Workspace. The only exposed limit. */
+  maxConcurrentConversationsPerWorkspace?: number;
   schedulingAgingMs?: number;
   sameConversationQueueLimit?: number;
   executorIdleTimeoutMs?: number;

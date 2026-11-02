@@ -57,6 +57,7 @@ import type { QueryUsageLifecycle } from '../metering/query-lifecycle.js';
 import type { ConversationResultDelivery } from '../session/conversation-session.js';
 import type { ExecutionTraceAppendInput } from '../execution/execution-trace.js';
 import type { KernelDecisionAction } from '../kernel/control-kernel.js';
+import { DEFAULT_ATTEMPTS_PER_TASK } from '../execution/attempt-supervisor.js';
 
 /**
  * Plan-admission decisions that the account coordinator must apply before
@@ -272,10 +273,8 @@ export function buildAccountRuntimeComposition(deps: {
     sourceRoot: deps.sourceRoot,
     orchestration: deps.orchestration,
     notifier: deps.notifier,
-    maxConcurrentAttempts: deps.stagedConfiguration.snapshot.config.runtimePolicy.maxConcurrentAttempts
-      ?? 4,
-    maxConcurrentAttemptsPerTask: deps.stagedConfiguration.snapshot.config.runtimePolicy.maxConcurrentAttemptsPerTask
-      ?? 2,
+    maxAttemptsPerTask: deps.stagedConfiguration.snapshot.config.runtimePolicy.maxConcurrentAttemptsPerTask
+      ?? DEFAULT_ATTEMPTS_PER_TASK,
     onTaskTerminal: taskId => startupRecovery?.onTaskTerminal(taskId),
     onTaskQueued: taskId => startupRecovery?.onTaskQueued(taskId),
     getConfigurationRevision: deps.getConfigurationRevision,

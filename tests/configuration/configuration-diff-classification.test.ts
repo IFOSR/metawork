@@ -18,13 +18,14 @@ describe('configuration diff classification', () => {
     harness.args = ['--unreviewed'];
     expect(classifyConfigurationDiff(base, next).classification).toBe('restart_required');
   });
-  it('hot activates the settings task limit without allowing unrelated runtime policy changes', () => {
+  it('hot activates the Workspace concurrency limit while the internal attempt budget stays restart-required', () => {
     const base = buildStagedLegacyConfiguration({ testMode: true }).snapshot.config;
     const next = structuredClone(base);
-    next.runtimePolicy.maxConcurrentTasks = 3;
+    next.runtimePolicy.maxConcurrentConversationsPerWorkspace = 3;
     expect(classifyConfigurationDiff(base, next).classification).toBe('hot');
-    next.runtimePolicy.maxConcurrentAttempts = 8;
-    expect(classifyConfigurationDiff(base, next).restartPaths).toContain('runtimePolicy.maxConcurrentAttempts');
+    next.runtimePolicy.maxConcurrentAttemptsPerTask = 8;
+    expect(classifyConfigurationDiff(base, next).restartPaths)
+      .toContain('runtimePolicy.maxConcurrentAttemptsPerTask');
   });
   it('hot activates an agent bound to a model added in the same transaction', () => {
     const base = buildStagedLegacyConfiguration({ testMode: true }).snapshot;

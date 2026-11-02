@@ -35,9 +35,8 @@ describe('production runtime configuration bindings', () => {
       },
     });
     expect(bindings.runtimeConfiguration.revisionId).toBe('revision-production');
-    expect(bindings.maxConcurrentAttempts).toBe(2);
-    expect(bindings.maxConcurrentTasks).toBe(2);
-    expect(bindings.maxConcurrentAttemptsPerTask).toBe(2);
+    expect(bindings.maxConcurrentConversationsPerWorkspace).toBe(2);
+    expect(bindings.maxConcurrentAttemptsPerTask).toBe(10);
     expect(bindings.schedulingAgingMs).toBe(300_000);
     expect(bindings.sameConversationQueueLimit).toBe(8);
   });

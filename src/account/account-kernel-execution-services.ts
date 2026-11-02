@@ -75,8 +75,8 @@ export function buildAccountKernelExecutionServices(deps: {
   sourceRoot: string;
   orchestration: OrchestrationEngine;
   notifier: NotificationService;
-  maxConcurrentAttempts: number;
-  maxConcurrentAttemptsPerTask?: number;
+  /** Attempts a single Task may run at once; there is no account-wide cap. */
+  maxAttemptsPerTask?: number;
   onTaskTerminal?: (taskId: string) => void | Promise<void>;
   onTaskQueued?: (taskId: string) => void | Promise<void>;
   getConfigurationRevision: () => string;
@@ -159,8 +159,7 @@ export function buildAccountKernelExecutionServices(deps: {
     kernelWorkflowStore: deps.kernelWorkflowRepo,
     kernelDecisionRepo: deps.kernelDecisionRepo,
     dispatchItemRepo: deps.dispatchItemRepo,
-    maxConcurrentAttempts: deps.maxConcurrentAttempts,
-    maxConcurrentAttemptsPerTask: deps.maxConcurrentAttemptsPerTask,
+    maxAttemptsPerTask: deps.maxAttemptsPerTask,
     conversationTaskSchedulerRepo: deps.conversationTaskSchedulerRepo,
     onTaskTerminal: deps.onTaskTerminal,
     onTaskQueued: deps.onTaskQueued,

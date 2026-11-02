@@ -81,7 +81,11 @@ import type { ResultObjectRepo } from '../storage/result-object-repo.js';
 import type { WorkspaceRepositoryPort } from './repositories.js';
 import type { GenerationReplanRequestRepo } from '../storage/generation-replan-request-repo.js';
 import type { ConversationTaskSchedulerRepo } from '../storage/conversation-task-scheduler-repo.js';
-import { AttemptSupervisor, type AttemptSupervisorContext } from './attempt-supervisor.js';
+import {
+  AttemptSupervisor,
+  DEFAULT_ATTEMPTS_PER_TASK,
+  type AttemptSupervisorContext,
+} from './attempt-supervisor.js';
 import type {
   CancellationReceipt,
   TaskCancellationCoordinator,
@@ -612,8 +616,11 @@ export interface KernelExecutionRuntimeDeps {
   };
   kernelDecisionRepo?: Pick<KernelDecisionRepo, 'findById'>;
   dispatchItemRepo: KernelDispatchItemRepo;
-  maxConcurrentAttempts: number;
-  maxConcurrentAttemptsPerTask?: number;
+  /**
+   * Attempts a single Task may run at once. There is no account-wide Attempt
+   * ceiling; capacity is bounded per Workspace by the Conversation scheduler.
+   */
+  maxAttemptsPerTask?: number;
   conversationTaskSchedulerRepo?: ConversationTaskSchedulerRepo;
   onTaskTerminal?(taskId: string): void | Promise<void>;
   /** Wake the account scheduler after a durable continuation is queued. */
@@ -691,10 +698,13 @@ export class KernelExecutionRuntime {
     this.lifecycle = createSubtaskLifecyclePort({ subtaskRepo: deps.subtaskRepo });
     this.attemptSupervisor = new AttemptSupervisor(
       deps.dispatchItemRepo,
-      deps.maxConcurrentAttempts,
-      deps.maxConcurrentAttemptsPerTask ?? deps.maxConcurrentAttempts,
+      this.maxAttemptsPerTask,
       {}, deps.productionAuthorization,
     );
+  }
+
+  private get maxAttemptsPerTask(): number {
+    return this.deps.maxAttemptsPerTask ?? DEFAULT_ATTEMPTS_PER_TASK;
   }
 
   private get sessionId(): string {
@@ -2159,10 +2169,10 @@ export class KernelExecutionRuntime {
         status: item.status,
         order: item.batchOrder,
       })),
-      maxConcurrentAttempts: this.deps.maxConcurrentAttempts,
+      maxConcurrentAttempts: this.maxAttemptsPerTask,
       availableSlots: Math.max(
         0,
-        this.deps.maxConcurrentAttempts - dispatchItems.filter(item =>
+        this.maxAttemptsPerTask - dispatchItems.filter(item =>
           ['pending_launch', 'launching', 'running', 'cancelling'].includes(item.status)
         ).length,
       ),

@@ -210,7 +210,7 @@ function neverStartedEvent(item: KernelDispatchItemRecord): KernelEvent {
 describe('AttemptSupervisor', () => {
   it.each([2, 3])('runs %i of three independent attempts and starts the queued one after release', async capacity => {
     const repository = new MemoryDispatchItems();
-    const supervisor = new AttemptSupervisor(repository, 4, capacity);
+    const supervisor = new AttemptSupervisor(repository, capacity);
     const decision = batchDecisionForTask('task-a', 'attempt-a');
     for (const suffix of ['b', 'c']) decision.action.items.push({...decision.action.items[0]!,
       attemptId: `attempt-${suffix}`, subtaskId: `subtask-${suffix}`});
@@ -240,7 +240,7 @@ describe('AttemptSupervisor', () => {
     // scheduling yield, not an execution result. The dispatch item must stop
     // being active without pretending the Attempt completed.
     const repository = new MemoryDispatchItems();
-    const supervisor = new AttemptSupervisor(repository, 1, 1);
+    const supervisor = new AttemptSupervisor(repository, 1);
     const decision = {
       ...batchDecision(),
       action: { ...batchDecision().action, items: [batchDecision().action.items[0]!] },
@@ -264,7 +264,7 @@ describe('AttemptSupervisor', () => {
   it('records a pre-launch execution outcome as not started on both return and launch-error paths', async () => {
     for (const mode of ['returned', 'thrown'] as const) {
       const repository = new MemoryDispatchItems();
-      const supervisor = new AttemptSupervisor(repository, 1, 1);
+      const supervisor = new AttemptSupervisor(repository, 1);
       const decision = {
         ...batchDecision(),
         action: { ...batchDecision().action, items: [batchDecision().action.items[0]!] },
@@ -287,7 +287,7 @@ describe('AttemptSupervisor', () => {
   it('finishes an active attempt but defers queued launch after authorization closes, including recovery', async () => {
     const repository = new MemoryDispatchItems();
     let allowed = true;
-    const supervisor = new AttemptSupervisor(repository, 1, 1, {}, () => ({ allowed }));
+    const supervisor = new AttemptSupervisor(repository, 1, {}, () => ({ allowed }));
     let release!: () => void;
     const gate = new Promise<void>(resolve => { release = resolve; });
     const started: string[] = [];
@@ -306,9 +306,11 @@ describe('AttemptSupervisor', () => {
     expect(started).toEqual(['attempt-a', 'attempt-b']);
   });
 
-  it('kicks a queued Task when another Task releases the account slot', async () => {
+  it('runs two Tasks at once because there is no account-wide Attempt ceiling', async () => {
+    // Capacity is bounded per Workspace by the Conversation scheduler; an
+    // Attempt in task-a must not block an independent Attempt in task-b.
     const repository = new MemoryDispatchItems();
-    const supervisor = new AttemptSupervisor(repository, 1, 1);
+    const supervisor = new AttemptSupervisor(repository, 1);
     let releaseA!: () => void;
     const gateA = new Promise<void>(resolve => { releaseA = resolve; });
     let taskBStarted!: () => void;
@@ -333,16 +335,16 @@ describe('AttemptSupervisor', () => {
       onLaunchError: async item => outcomeEvent(item),
     }, new Date().toISOString());
 
-    expect(supervisor.activeCount()).toBe(1);
-    releaseA();
     await bStarted;
+    expect(supervisor.activeCount('task-a')).toBe(1);
     expect(supervisor.activeCount('task-b')).toBe(1);
+    releaseA();
     await Promise.all([supervisor.drain('task-a'), supervisor.drain('task-b')]);
   });
 
   it('enforces the per-Task attempt cap while allowing other Tasks to run', async () => {
     const repository = new MemoryDispatchItems();
-    const supervisor = new AttemptSupervisor(repository, 3, 1);
+    const supervisor = new AttemptSupervisor(repository, 1);
     let maximumTaskARunning = 0;
     let taskARunning = 0;
     let release!: () => void;
@@ -449,7 +451,7 @@ describe('AttemptSupervisor', () => {
     // A fence-blocked item that stays pending_launch forever: claim always
     // refuses and the item is never terminalized (the historical race shape).
     repository.claimRefused = new Set(['attempt-a']);
-    const supervisor = new AttemptSupervisor(repository, 1, 1, { idleSpinLimit: 3, spinDelayMs: 1 });
+    const supervisor = new AttemptSupervisor(repository, 1, { idleSpinLimit: 3, spinDelayMs: 1 });
 
     const decision = {
       ...batchDecision(),
@@ -470,7 +472,7 @@ describe('AttemptSupervisor', () => {
 
   it('keeps each attempt bound to the context of its dispatch batch', async () => {
     const repository = new MemoryDispatchItems();
-    const supervisor = new AttemptSupervisor(repository, 1, 1);
+    const supervisor = new AttemptSupervisor(repository, 1);
     let releaseBlocker!: () => void;
     const blocker = new Promise<void>(resolve => { releaseBlocker = resolve; });
     const observed: string[] = [];

@@ -1,9 +1,10 @@
 import type { Config } from '../core/types.js';
 import type { ConfigurationSnapshot, HarnessDefinition } from './types.js';
 
+/** Deprecated account-wide gates, kept only for the legacy Config projection. */
 const DEFAULT_MAX_CONCURRENT_ATTEMPTS = 4;
 const DEFAULT_MAX_CONCURRENT_TASKS = 2;
-const DEFAULT_MAX_CONCURRENT_ATTEMPTS_PER_TASK = 2;
+const DEFAULT_MAX_CONCURRENT_ATTEMPTS_PER_TASK = 10;
 const DEFAULT_SCHEDULING_AGING_MS = 300_000;
 const DEFAULT_SAME_CONVERSATION_QUEUE_LIMIT = 8;
 

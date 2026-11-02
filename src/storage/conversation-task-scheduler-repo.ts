@@ -63,6 +63,8 @@ interface CandidateRow {
   enqueued_at: string;
   priority_json: string | null;
   fairness_sequence: number;
+  /** Present only on rows joined with `tasks` for Workspace-scoped capacity. */
+  workspace_id?: string | null;
 }
 
 const PRIORITY_RANK: Record<string, number> = { normal: 0, high: 1, urgent: 2 };
@@ -202,38 +204,40 @@ export class ConversationTaskSchedulerRepo {
   }
 
   /**
-   * Promote the oldest fair queued Task whose Conversation is free. This is
-   * the account-level wakeup primitive used after any slot release; callers
+   * Promote the oldest fair queued Task whose Conversation is free. This is the
+   * Workspace-scoped wakeup primitive used after any slot release; callers
    * still own the Kernel-authorized launch that follows the reservation.
    */
   promoteNextAvailable(
-    maxConcurrentTasks: number,
+    limitPerWorkspace: number,
     now: string,
   ): { taskId: string; conversationId: string; reservationId: string } | null {
-    return this.promoteAvailable(maxConcurrentTasks, now)[0] ?? null;
+    return this.promoteAvailable(limitPerWorkspace, now)[0] ?? null;
   }
 
+  /**
+   * Promote every queued Task that fits its own Workspace budget.
+   *
+   * Capacity is scoped to a Workspace: `limitPerWorkspace` bounds how many
+   * Conversations in the same Workspace may execute at once, and there is no
+   * account-wide Task gate. A Conversation still owns one executing Task.
+   */
   promoteAvailable(
-    maxConcurrentTasks: number,
+    limitPerWorkspace: number,
     now: string,
   ): Array<{ taskId: string; conversationId: string; reservationId: string }> {
     return this.db.transaction(() => {
-      const occupied = this.db.prepare(`
-        SELECT COUNT(*) AS count
-        FROM conversation_task_slots
-        WHERE active_task_id IS NOT NULL
-          AND state IN ('occupied', 'releasing', 'recovery_blocked')
-      `).get() as { count: number };
+      const occupiedByWorkspace = this.occupiedSlotCountsByWorkspace();
       const result: Array<{
         taskId: string;
         conversationId: string;
         reservationId: string;
       }> = [];
-      const limit = Math.max(0, maxConcurrentTasks - occupied.count);
-      for (let index = 0; index < limit; index += 1) {
+      const limit = Math.max(0, limitPerWorkspace);
+      for (;;) {
         const candidates = this.db.prepare(`
           SELECT entry.task_id, entry.conversation_id, entry.eligible_since,
-                 entry.enqueued_at, tasks.priority_json,
+                 entry.enqueued_at, tasks.priority_json, tasks.workspace_id,
                  slot.fairness_sequence
           FROM task_schedule_entries entry
           JOIN tasks ON tasks.id = entry.task_id
@@ -245,6 +249,13 @@ export class ConversationTaskSchedulerRepo {
         `).all() as CandidateRow[];
         const candidate = selectCandidate(candidates, now);
         if (!candidate) break;
+        const workspaceId = candidate.workspace_id ?? '';
+        const occupied = occupiedByWorkspace.get(workspaceId) ?? 0;
+        if (occupied >= limit) {
+          // Full Workspace: stop this sweep instead of promoting a Task that
+          // would exceed the only capacity limit that exists.
+          break;
+        }
         const reservationId = `reservation_${randomUUID()}`;
         const claimed = this.db.prepare(`
           UPDATE conversation_task_slots
@@ -265,6 +276,7 @@ export class ConversationTaskSchedulerRepo {
           SET state = 'reserved', last_scheduled_at = ?
           WHERE task_id = ? AND state = 'queued'
         `).run(now, candidate.task_id);
+        occupiedByWorkspace.set(workspaceId, occupied + 1);
         result.push({
           taskId: candidate.task_id,
           conversationId: candidate.conversation_id,
@@ -273,6 +285,23 @@ export class ConversationTaskSchedulerRepo {
       }
       return result;
     }).immediate();
+  }
+
+  /** Executing Conversations per Workspace, keyed by the Workspace identity. */
+  occupiedSlotCountsByWorkspace(workspaceId?: string): Map<string, number> {
+    const rows = this.db.prepare(`
+      SELECT tasks.workspace_id AS workspace_id, COUNT(*) AS count
+      FROM conversation_task_slots slot
+      JOIN tasks ON tasks.id = slot.active_task_id
+      WHERE slot.active_task_id IS NOT NULL
+        AND slot.state IN ('occupied', 'releasing', 'recovery_blocked')
+        ${workspaceId === undefined ? '' : 'AND tasks.workspace_id = ?'}
+      GROUP BY tasks.workspace_id
+    `).all(...(workspaceId === undefined ? [] : [workspaceId])) as Array<{
+      workspace_id: string | null;
+      count: number;
+    }>;
+    return new Map(rows.map(row => [row.workspace_id ?? '', row.count]));
   }
 
   markRecoveryBlocked(conversationId: string, taskId: string, now: string): boolean {

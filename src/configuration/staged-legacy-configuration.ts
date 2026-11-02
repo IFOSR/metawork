@@ -256,8 +256,7 @@ function legacyRuntimePolicyContentHash(
   config: ConfigurationSnapshot['config'],
 ): string {
   const {
-    maxConcurrentTasks: _maxConcurrentTasks,
-    maxConcurrentAttempts: _maxConcurrentAttempts,
+    maxConcurrentConversationsPerWorkspace: _maxConcurrentConversationsPerWorkspace,
     maxConcurrentAttemptsPerTask: _maxConcurrentAttemptsPerTask,
     schedulingAgingMs: _schedulingAgingMs,
     sameConversationQueueLimit: _sameConversationQueueLimit,

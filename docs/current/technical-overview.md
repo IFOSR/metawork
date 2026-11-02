@@ -1559,9 +1559,13 @@ candidate. Busy accounts can edit drafts, while the final activation retains
 the strict idle gate. Provider/Span Keys are staged with compensation in that
 same transaction; the standalone credential-write and configuration-rollback
 HTTP routes are retired. Model connection dialogs only save drafts and perform
-read-only discovery. The task concurrency setting (`runtimePolicy.maxConcurrentTasks`)
-is hot-activatable; account recovery/queue promotion reads the current active
-Kernel projection. Other attempt/backend policy limits remain restart-required.
+read-only discovery. The per-Workspace Conversation concurrency setting
+(`runtimePolicy.maxConcurrentConversationsPerWorkspace`) is the only scheduling
+limit exposed in settings and is hot-activatable; account recovery/queue
+promotion reads the current active Kernel projection. Account-wide Task and
+Attempt caps are retired (`maxConcurrentTasks`/`maxConcurrentAttempts` are
+accepted and ignored) and `maxConcurrentAttemptsPerTask` is an internal budget
+of 10. Other attempt/backend policy limits remain restart-required.
 Missing model prices are checked at activation. Models'
 Fixed/Auto tool compatibility is
 projected server-side. Disabled assistants remain editable and previewable;
@@ -1857,7 +1861,7 @@ The index is a deterministic read model, not a semantic router. The PlanningAgen
 
 ## Single-Task Concurrent Kernel Control Model
 
-MetaWork admits one executing or cleaning-up top-level Task per Conversation. An account-scoped scheduler selects Tasks from different Conversations under `maxConcurrentTasks`, `maxConcurrentAttempts`, `maxConcurrentAttemptsPerTask`, aging and fair-share policy; same-Conversation Tasks remain queued. Within each Task, Work Graph facts derive a stable runnable frontier and Kernel v5 may authorize up to four independent attempt items in one batch. Scheduling is non-preemptive; clarifications, status/query commands and explicit task-control commands remain available, while new semantic Planner turns cannot complete through `direct_reply`. This parallel rollout is governed by ADR-0037 and is implemented incrementally under the active implementation plan.
+MetaWork admits one executing or cleaning-up top-level Task per Conversation. Promotion is Workspace-scoped: the scheduler selects Tasks from different Conversations while that Workspace has fewer than `maxConcurrentConversationsPerWorkspace` executing Conversations (default 2), using aging and fair-share ordering; there is no account-wide Task or Attempt ceiling and same-Conversation Tasks remain queued. Within each Task, Work Graph facts derive a stable runnable frontier, one Task may run up to 10 Attempts concurrently (internal budget), and Kernel v5 may authorize up to four independent attempt items in one batch. Scheduling is non-preemptive; clarifications, status/query commands and explicit task-control commands remain available, while new semantic Planner turns cannot complete through `direct_reply`. This parallel rollout is governed by ADR-0037 and is implemented incrementally under the active implementation plan.
 
 Every natural-language proposal and deterministic execution entrypoint enters the same persisted coordination chain: `event → bounded graph/task facts → durable coordination command → Runtime apply → normalized event`. The current `KernelWorkflow` remains serial during migration, but applying `dispatch_batch` only persists `kernel_dispatch_items`; an Execution-owned supervisor launches them asynchronously and submits each outcome independently. A sibling failure never cancels the rest of the batch. Within one Conversation, explicitly declared text-only read Subtasks may hold compatible durable read ownership concurrently; write and unknown effects retain the exclusive Workspace fence.
 

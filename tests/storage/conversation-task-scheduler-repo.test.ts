@@ -134,6 +134,36 @@ describe('ConversationTaskSchedulerRepo', () => {
     expect(repository.listQueuedTasks('conversation-b')).toEqual(['task-b']);
   });
 
+  it('scopes capacity to a Workspace so independent Workspaces promote in parallel', () => {
+    const database = db();
+    const repository = new ConversationTaskSchedulerRepo(database);
+    // task-b moves to its own Workspace; the limit must apply per Workspace,
+    // not account-wide.
+    database.prepare('UPDATE tasks SET workspace_id = ? WHERE id = ?').run('workspace-two', 'task-b');
+    repository.enqueueTask('task-a', 'conversation-a', '2026-08-29T00:00:00.000Z');
+    repository.enqueueTask('task-b', 'conversation-b', '2026-08-29T00:01:00.000Z');
+    repository.claimSlot('conversation-a', 'task-a', 'reservation-a', '2026-08-29T00:02:00.000Z');
+
+    expect(repository.promoteAvailable(1, '2026-08-29T00:03:00.000Z')).toMatchObject([
+      { taskId: 'task-b', conversationId: 'conversation-b' },
+    ]);
+    expect(repository.occupiedSlotCountsByWorkspace()).toEqual(new Map([
+      ['workspace', 1],
+      ['workspace-two', 1],
+    ]));
+  });
+
+  it('stops promoting inside a Workspace that already reached its limit', () => {
+    const database = db();
+    const repository = new ConversationTaskSchedulerRepo(database);
+    repository.enqueueTask('task-a', 'conversation-a', '2026-08-29T00:00:00.000Z');
+    repository.enqueueTask('task-b', 'conversation-b', '2026-08-29T00:01:00.000Z');
+    repository.claimSlot('conversation-a', 'task-a', 'reservation-a', '2026-08-29T00:02:00.000Z');
+
+    // Both Conversations live in the same Workspace, so the limit blocks task-b.
+    expect(repository.promoteAvailable(1, '2026-08-29T00:03:00.000Z')).toEqual([]);
+  });
+
   it('uses persisted priority before aging and stable queue order', () => {
     const database = db();
     const repository = new ConversationTaskSchedulerRepo(database);

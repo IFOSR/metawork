@@ -394,12 +394,16 @@ that draft. Read-only preparation uses the page's unactivated models/agents and
 does not compile, probe, write a revision or require an idle account. The final
 page action alone validates the combined candidate and enters the existing
 strict-idle activation transaction; missing prices still block that activation.
-Provider connections, Provider/Span Keys, model edits and the task concurrency
-limit join this same draft. Management exposes no standalone credential-write
-or configuration-rollback route; credentials are staged with compensation
-inside activation. `runtimePolicy.maxConcurrentTasks` is hot-activatable, and
-subsequent queue promotion reads the active limit rather than a startup copy.
-Other attempt/backend policy limits remain restart-required.
+Provider connections, Provider/Span Keys, model edits and the per-Workspace
+Conversation concurrency limit join this same draft. Management exposes no
+standalone credential-write or configuration-rollback route; credentials are
+staged with compensation inside activation.
+`runtimePolicy.maxConcurrentConversationsPerWorkspace` is the only scheduling
+limit the product exposes and it is hot-activatable: subsequent queue promotion
+reads the active limit rather than a startup copy. Account-wide Task and Attempt
+caps are retired (`maxConcurrentTasks`/`maxConcurrentAttempts` stay accepted and
+ignored), and `maxConcurrentAttemptsPerTask` is an internal budget fixed to 10,
+not a setting. Other attempt/backend policy limits remain restart-required.
 
 Routing now compares natural-language duties and detailed model evidence through
 the existing Mercury advisor (`span-fit-v5`). Generic coding/planning/long-context
@@ -776,9 +780,13 @@ state. Sharing an Account never implicitly merges Planner history.
 Runtime-wide KernelWorkflow, Execution Runtime, startup recovery, attempt,
 publication and timer services are single-owner AccountRuntime services. One
 account-scoped Kernel coordinator is the only Application-layer drainer of
-durable Kernel events and applications. AccountRuntime scheduling is
-Account-wide, but each Conversation owns one durable Task execution slot;
-different Conversations may run in parallel and same-Conversation Tasks queue.
+durable Kernel events and applications. Scheduling capacity is Workspace-scoped:
+up to `maxConcurrentConversationsPerWorkspace` Conversations in the same
+Workspace execute at once (default 2), with no account-wide Task or Attempt
+ceiling. Each Conversation owns one durable Task execution slot, so
+same-Conversation Tasks queue, and a single Task may run up to 10 Attempts
+concurrently (internal budget) because independent Subtasks, including
+shared-read research roots, run side by side.
 
 Accounts use physically separate data roots and SQLite databases. The existing
 installation migrates transactionally into the reserved `local-default`

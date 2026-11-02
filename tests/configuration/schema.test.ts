@@ -261,13 +261,16 @@ describe('AnyFusion configuration schema v2', () => {
 
   it('accepts the complete empty v2 document shape', () => {
     const parsed = AnyFusionConfigurationV2Schema.parse(minimalConfiguration());
+    // Only the Workspace-scoped Conversation limit and the internal per-Task
+    // Attempt budget have defaults; account-wide gates are not scheduled on.
     expect(parsed.runtimePolicy).toMatchObject({
-      maxConcurrentTasks: 2,
-      maxConcurrentAttempts: 4,
-      maxConcurrentAttemptsPerTask: 2,
+      maxConcurrentConversationsPerWorkspace: 2,
+      maxConcurrentAttemptsPerTask: 10,
       schedulingAgingMs: 300_000,
       sameConversationQueueLimit: 8,
     });
+    expect(parsed.runtimePolicy.maxConcurrentTasks).toBeUndefined();
+    expect(parsed.runtimePolicy.maxConcurrentAttempts).toBeUndefined();
   });
 
   it('accepts configured parallel scheduling bounds', () => {
@@ -323,19 +326,21 @@ describe('AnyFusion configuration schema v2', () => {
     })).toThrow();
   });
 
-  it('rejects invalid parallel scheduling values and inconsistent attempt caps', () => {
+  it('rejects invalid parallel scheduling values and still accepts deprecated caps', () => {
     expect(AnyFusionConfigurationV2Schema.safeParse({
       ...minimalConfiguration(),
-      runtimePolicy: { maxConcurrentTasks: 0 },
+      runtimePolicy: { maxConcurrentConversationsPerWorkspace: 0 },
     }).success).toBe(false);
     expect(AnyFusionConfigurationV2Schema.safeParse({
       ...minimalConfiguration(),
       runtimePolicy: { sameConversationQueueLimit: 33 },
     }).success).toBe(false);
+    // A per-Task budget above the retired account cap is no longer a conflict:
+    // the account cap is accepted for compatibility but never gates anything.
     expect(AnyFusionConfigurationV2Schema.safeParse({
       ...minimalConfiguration(),
       runtimePolicy: { maxConcurrentAttempts: 2, maxConcurrentAttemptsPerTask: 3 },
-    }).success).toBe(false);
+    }).success).toBe(true);
   });
 
   it('accepts Auto objectives for Executors and model economics metadata', () => {

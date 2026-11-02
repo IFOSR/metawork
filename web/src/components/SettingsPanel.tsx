@@ -77,7 +77,7 @@ type CatalogDraft = {
 type RoutingDraft = RoutingDraftMap;
 type RoutingFacts = Record<string, AgentClassRoutingFacts>;
 type RuntimePolicyDraft = {
-  maxConcurrentTasks: number;
+  maxConcurrentConversationsPerWorkspace: number;
 };
 
 type RawRecord = Record<string, unknown>;
@@ -279,8 +279,13 @@ function loadCatalog(config: RawRecord, completion?: ConfigurationCompletionResu
 
 function loadRuntimePolicy(config: RawRecord): RuntimePolicyDraft {
   const policy = asRecord(config.runtimePolicy);
+  // One visible scheduling limit: Conversations executing inside a Workspace.
+  // Attempt budgets and account-wide caps are internal and never surfaced.
   return {
-    maxConcurrentTasks: typeof policy.maxConcurrentTasks === 'number' ? policy.maxConcurrentTasks : 2,
+    maxConcurrentConversationsPerWorkspace:
+      typeof policy.maxConcurrentConversationsPerWorkspace === 'number'
+        ? policy.maxConcurrentConversationsPerWorkspace
+        : 2,
   };
 }
 
@@ -920,7 +925,7 @@ export function SettingsPanel({
         ...(memorySection ? { memory: memorySection } : {}),
         runtimePolicy: {
           ...asRecord(originalConfig.runtimePolicy),
-          maxConcurrentTasks: runtimePolicy.maxConcurrentTasks,
+          maxConcurrentConversationsPerWorkspace: runtimePolicy.maxConcurrentConversationsPerWorkspace,
         },
       },
       activationSecrets,
@@ -2547,24 +2552,24 @@ export function SettingsPanel({
                     <div className="section-heading">
                       <div>
                         <h3 id="runtime-policy-heading">并行与队列</h3>
-                        <p>不同会话可并行执行；同一会话的后续任务会排队。</p>
+                        <p>同一 Workspace 内的多个会话可并行执行；同一会话的后续任务会排队。</p>
                       </div>
                     </div>
                     <div className="runtime-policy-grid">
                       <label className="settings-field">
-                        <span>同时运行任务数</span>
+                        <span>同一 Workspace 内并发会话数</span>
                         <input
                           className="text-input"
                           type="number"
                           min={1}
-                          max={8}
-                          value={runtimePolicy.maxConcurrentTasks}
+                          max={32}
+                          value={runtimePolicy.maxConcurrentConversationsPerWorkspace}
                           onChange={event => setRuntimePolicy(current => current ? {
                             ...current,
-                            maxConcurrentTasks: Number(event.target.value),
+                            maxConcurrentConversationsPerWorkspace: Number(event.target.value),
                           } : current)}
                         />
-                        <small>最多同时运行多少个会话任务；同一会话内仍按顺序执行。</small>
+                        <small>同一个 Workspace 下最多几个会话同时执行；同一会话内仍按顺序执行。</small>
                       </label>
                     </div>
                     <div className="routing-section-note">

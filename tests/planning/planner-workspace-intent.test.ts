@@ -125,7 +125,7 @@ describe('Planner Workspace intent contract (schema 9)', () => {
     expect(validatePlanningAgentPlan(plan, configuration)).toEqual({ valid: true, errors: [] });
   });
 
-  it('rejects a text-only report reader that declares no Workspace effect', () => {
+  it('leaves a single text-only report reader optional because it cannot run in parallel', () => {
     const base = workGraphPlan({ goal: '分析依赖', deliveryKind: 'report', fileOutputs: [] });
     const plan: PlanningAgentPlan = {
       ...base,
@@ -133,9 +133,29 @@ describe('Planner Workspace intent contract (schema 9)', () => {
       workGraph: base.workGraph ? { ...base.workGraph, configurationRevision: 'revision-test' } : null,
       workspaceIntent: workspaceIntentFixture({ operation: 'read_only' }),
     };
+    expect(validatePlanningAgentPlan(plan, configuration).errors.join('\n'))
+      .not.toContain('must declare workspaceEffect');
+  });
+
+  it('rejects parallel text-only report roots that declare no Workspace effect', () => {
+    const base = workGraphPlan({ goal: '分析依赖', deliveryKind: 'report', fileOutputs: [] });
+    const subtasks = base.workGraph!.subtasks;
+    const plan: PlanningAgentPlan = {
+      ...base,
+      schemaVersion: 9,
+      workGraph: base.workGraph
+        ? {
+          ...base.workGraph,
+          configurationRevision: 'revision-test',
+          subtasks: [...subtasks, { ...subtasks[0]!, id: 'subtask_second', title: '第二条并行调研' }],
+        }
+        : null,
+      workspaceIntent: workspaceIntentFixture({ operation: 'read_only' }),
+    };
     const errors = validatePlanningAgentPlan(plan, configuration).errors.join('\n');
     expect(errors).toContain('must declare workspaceEffect');
     expect(errors).toContain('subtask_execute');
+    expect(errors).toContain('subtask_second');
   });
 
   it('accepts an explicit exclusive decision for a text-only report reader', () => {

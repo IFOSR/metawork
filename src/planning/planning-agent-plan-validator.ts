@@ -218,13 +218,15 @@ function validateWorkspaceIntent(plan: PlanningAgentPlan, errors: string[]): voi
         errors.push(`subtask.fileOutputs must be covered by workspaceIntent.targetPaths: ${output}`);
       }
     }
-    // A text-only report reader that says nothing about its Workspace effect
-    // would silently take the exclusive lease and serialize independent roots.
-    // Require an explicit decision instead of guessing one for the model.
+    // Two or more text-only report roots could run side by side, but an
+    // undeclared effect silently takes the exclusive lease and serializes them.
+    // Require an explicit decision exactly when parallelism is available; a
+    // single-node graph gains nothing from the field, so it stays optional there.
     const subtasks = plan.workGraph?.subtasks ?? [];
-    const undeclaredReaders = subtasks.filter(subtask => (
-      subtask.workspaceEffect === undefined && isSharedReadCandidate(subtask, subtasks)
-    ));
+    const readableRoots = subtasks.filter(subtask => isSharedReadCandidate(subtask, subtasks));
+    const undeclaredReaders = readableRoots.length >= 2
+      ? readableRoots.filter(subtask => subtask.workspaceEffect === undefined)
+      : [];
     if (undeclaredReaders.length > 0) {
       errors.push('these text-only report subtasks must declare workspaceEffect '
         + '(read_only to run beside other readers, write if they change business files, unknown if undecidable): '

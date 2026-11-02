@@ -477,22 +477,20 @@ const PermissionProfileSchema = z.discriminatedUnion('profileId', [
 ]);
 
 const RuntimePolicySchema = z.object({
-  maxConcurrentTasks: z.number().int().min(1).max(8).default(2),
-  maxConcurrentAttempts: z.number().int().min(1).max(32).default(4),
-  maxConcurrentAttemptsPerTask: z.number().int().min(1).max(32).default(2),
+  // Deprecated account-wide gates. Accepted so existing configurations keep
+  // parsing, but they no longer gate scheduling: one Task may use the whole
+  // per-Task budget, and capacity is limited per Workspace instead.
+  maxConcurrentTasks: z.number().int().min(1).max(64).optional(),
+  maxConcurrentAttempts: z.number().int().min(1).max(512).optional(),
+  /** Attempts a single Task may run at once. Internal budget, not a user knob. */
+  maxConcurrentAttemptsPerTask: z.number().int().min(1).max(64).default(10),
+  /** Executing Conversations inside one Workspace. The only exposed limit. */
+  maxConcurrentConversationsPerWorkspace: z.number().int().min(1).max(32).default(2),
   schedulingAgingMs: z.number().int().min(0).max(86_400_000).default(300_000),
   sameConversationQueueLimit: z.number().int().min(0).max(32).default(8),
   executorIdleTimeoutMs: z.number().int().min(1_000).max(86_400_000).optional(),
   probeTimeoutMs: z.number().int().min(1_000).max(300_000).optional(),
-}).strict().superRefine((policy, context) => {
-  if (policy.maxConcurrentAttemptsPerTask > policy.maxConcurrentAttempts) {
-    context.addIssue({
-      code: z.ZodIssueCode.custom,
-      path: ['maxConcurrentAttemptsPerTask'],
-      message: 'maxConcurrentAttemptsPerTask must not exceed maxConcurrentAttempts',
-    });
-  }
-});
+}).strict();
 
 const FeishuGatewayAccessPolicySchema = z.object({
   dm_policy: z.enum(['pairing', 'allow_all', 'allowlist']),

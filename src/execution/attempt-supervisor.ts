@@ -6,6 +6,12 @@ import type {
 } from '../storage/kernel-dispatch-item-repo.js';
 import type { AuthorizedExecutorBinding } from '../core/authorized-executor-binding.js';
 
+/**
+ * Attempts a single Task may run at once. Internal execution budget: it is not
+ * a user setting and it does not bound the account, only one Task's fan-out.
+ */
+export const DEFAULT_ATTEMPTS_PER_TASK = 10;
+
 type AttemptSupervisorRepository = Pick<
   KernelDispatchItemRepo,
   | 'insertBatch'
@@ -45,22 +51,17 @@ export class AttemptSupervisor {
 
   constructor(
     private readonly repository: AttemptSupervisorRepository,
-    private readonly maxConcurrentAttempts: number,
-    private readonly maxConcurrentAttemptsPerTask = maxConcurrentAttempts,
+    /**
+     * Attempts one Task may run at once. There is deliberately no account-wide
+     * Attempt ceiling: capacity is bounded per Workspace by the Conversation
+     * scheduler, not by a global counter that starves a multi-subtask graph.
+     */
+    private readonly attemptsPerTask: number = DEFAULT_ATTEMPTS_PER_TASK,
     private readonly drainTuning: { idleSpinLimit?: number; spinDelayMs?: number } = {},
     private readonly productionAuthorization?: () => ProductionAuthorizationFact,
   ) {
-    if (!Number.isInteger(maxConcurrentAttempts) || maxConcurrentAttempts <= 0) {
-      throw new Error('maxConcurrentAttempts must be a positive integer');
-    }
-    if (
-      !Number.isInteger(maxConcurrentAttemptsPerTask)
-      || maxConcurrentAttemptsPerTask <= 0
-      || maxConcurrentAttemptsPerTask > maxConcurrentAttempts
-    ) {
-      throw new Error(
-        'maxConcurrentAttemptsPerTask must be a positive integer no greater than maxConcurrentAttempts',
-      );
+    if (!Number.isInteger(attemptsPerTask) || attemptsPerTask <= 0) {
+      throw new Error('attemptsPerTask must be a positive integer');
     }
   }
 
@@ -127,10 +128,7 @@ export class AttemptSupervisor {
 
   private kick(taskId: string): void {
     if (!allowsProduction(this.productionAuthorization?.())) return;
-    const slots = Math.min(
-      this.maxConcurrentAttempts - this.active.size,
-      this.maxConcurrentAttemptsPerTask - this.activeCount(taskId),
-    );
+    const slots = this.attemptsPerTask - this.activeCount(taskId);
     if (slots <= 0) return;
     for (const pending of this.repository.listPending(taskId).slice(0, slots)) {
       if (this.active.has(pending.attemptId)) continue;

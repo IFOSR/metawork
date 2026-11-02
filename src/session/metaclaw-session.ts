@@ -629,7 +629,7 @@ export class MetaclawSession {
       sourceRoot,
       orchestration: deps.orchestration,
       notifier: this.notifier,
-      maxConcurrentAttempts: deps.config.orchestration.max_concurrent_attempts,
+      maxAttemptsPerTask: deps.config.orchestration.max_concurrent_attempts,
       getConfigurationRevision: () => this.kernelConfiguration.revisionId,
       taskRuntimeService: this.taskRuntimeService,
       taskStateAuthority: this.taskStateAuthority,

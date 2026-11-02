@@ -137,3 +137,34 @@ Slot release and Task status are different facts and stay with different owners.
 
 A released slot promotes the next same-Conversation Task exactly once; the
 existing reservation epoch and promotion fence remain authoritative.
+
+### 2026-11-02: Workspace-scoped capacity and an internal per-Task attempt budget
+
+Concurrency is bounded in exactly one place: how many Conversations inside the
+same Workspace may execute at once
+(`runtimePolicy.maxConcurrentConversationsPerWorkspace`, default 2, the only
+scheduling limit exposed in settings). A Conversation still owns one executing
+Task and queues its own follow-ups.
+
+The account-wide gates are retired:
+
+- `runtimePolicy.maxConcurrentTasks` no longer caps account-wide Task
+  concurrency. It stays accepted in the schema so existing configurations keep
+  parsing, and it is ignored.
+- `runtimePolicy.maxConcurrentAttempts` no longer caps account-wide Attempt
+  concurrency; `AttemptSupervisor` has no global ceiling, so an Attempt in one
+  Task never blocks an Attempt in another.
+- `runtimePolicy.maxConcurrentAttemptsPerTask` is an internal execution budget
+  fixed to 10 and is not a user setting. It bounds one Task's fan-out only. The
+  Kernel snapshot's `maxConcurrentAttempts`/`availableSlots` facts carry that
+  same per-Task budget, since both describe a single Task's dispatch room.
+
+Promotion stays transactional and fairness-ordered, but the occupancy check is
+Workspace-scoped: `promoteAvailable` counts occupied, releasing and
+recovery-blocked slots per Workspace and refuses to promote past that Workspace's
+limit. Changing the exposed limit stays hot (`runtimePolicy.
+maxConcurrentConversationsPerWorkspace`); the per-Task Attempt budget still
+requires a restart.
+
+No Task, Subtask or Attempt status semantics change, and the single-executing-Task
+per Conversation invariant is unchanged.

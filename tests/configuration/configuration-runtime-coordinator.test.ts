@@ -83,10 +83,10 @@ describe('ConfigurationRuntimeCoordinator', () => {
     expect(coordinator.getState().workConfigurationReady).toBe(true);
     expect(onActivated).toHaveBeenCalledOnce();
   });
-  it('publishes a settings task-limit change through the same hot activation transaction', async () => {
+  it('publishes a settings Workspace-concurrency change through the same hot activation transaction', async () => {
     const before = snapshot('revision-1', {});
     const after = snapshot('revision-2', {});
-    after.config.runtimePolicy.maxConcurrentTasks = 3;
+    after.config.runtimePolicy.maxConcurrentConversationsPerWorkspace = 3;
     const onActivated = vi.fn();
     const coordinator = new ConfigurationRuntimeCoordinator({
       service: fakeService(before, after), initialSnapshot: before, onActivated,
@@ -97,7 +97,7 @@ describe('ConfigurationRuntimeCoordinator', () => {
     });
     expect(await coordinator.activate({ config: after.config, expectedRevisionId: before.revisionId }))
       .toMatchObject({ ok: true, classification: 'hot' });
-    expect(coordinator.getKernelView().runtimePolicy.maxConcurrentTasks).toBe(3);
+    expect(coordinator.getKernelView().runtimePolicy.maxConcurrentConversationsPerWorkspace).toBe(3);
     expect(onActivated).toHaveBeenCalledOnce();
   });
   it.each(['revision-1', 'revision-2'])(

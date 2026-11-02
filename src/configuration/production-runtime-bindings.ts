@@ -9,8 +9,9 @@ import type {
 
 export interface ProductionRuntimeBindings {
   runtimeConfiguration: ReturnType<typeof buildRuntimeConfigurationView>;
-  maxConcurrentTasks: number;
-  maxConcurrentAttempts: number;
+  /** Executing Conversations inside one Workspace; the only scheduling limit. */
+  maxConcurrentConversationsPerWorkspace: number;
+  /** Attempts a single Task may run at once. Internal budget. */
   maxConcurrentAttemptsPerTask: number;
   schedulingAgingMs: number;
   sameConversationQueueLimit: number;
@@ -37,14 +38,11 @@ export function createProductionRuntimeBindings(input: {
     get runtimeConfiguration() {
       return activeRuntimeConfiguration;
     },
-    get maxConcurrentTasks() {
-      return activeRuntimeConfiguration.runtimePolicy.maxConcurrentTasks ?? 2;
-    },
-    get maxConcurrentAttempts() {
-      return activeRuntimeConfiguration.runtimePolicy.maxConcurrentAttempts ?? 4;
+    get maxConcurrentConversationsPerWorkspace() {
+      return activeRuntimeConfiguration.runtimePolicy.maxConcurrentConversationsPerWorkspace ?? 2;
     },
     get maxConcurrentAttemptsPerTask() {
-      return activeRuntimeConfiguration.runtimePolicy.maxConcurrentAttemptsPerTask ?? 2;
+      return activeRuntimeConfiguration.runtimePolicy.maxConcurrentAttemptsPerTask ?? 10;
     },
     get schedulingAgingMs() {
       return activeRuntimeConfiguration.runtimePolicy.schedulingAgingMs ?? 300_000;

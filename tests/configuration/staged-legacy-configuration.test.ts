@@ -68,8 +68,7 @@ describe('buildStagedLegacyConfiguration', () => {
   it('accepts the exact legacy hash from before parallel policy defaults were added', () => {
     const migratedSnapshot = migratedSnapshotFixture();
     const {
-      maxConcurrentTasks: _maxConcurrentTasks,
-      maxConcurrentAttempts: _maxConcurrentAttempts,
+      maxConcurrentConversationsPerWorkspace: _maxConcurrentConversationsPerWorkspace,
       maxConcurrentAttemptsPerTask: _maxConcurrentAttemptsPerTask,
       schedulingAgingMs: _schedulingAgingMs,
       sameConversationQueueLimit: _sameConversationQueueLimit,
@@ -89,9 +88,8 @@ describe('buildStagedLegacyConfiguration', () => {
     });
 
     expect(staged.snapshot.config.runtimePolicy).toMatchObject({
-      maxConcurrentTasks: 2,
-      maxConcurrentAttempts: 4,
-      maxConcurrentAttemptsPerTask: 2,
+      maxConcurrentConversationsPerWorkspace: 2,
+      maxConcurrentAttemptsPerTask: 10,
       schedulingAgingMs: 300_000,
       sameConversationQueueLimit: 8,
     });
