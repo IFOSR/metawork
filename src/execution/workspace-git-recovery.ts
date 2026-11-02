@@ -71,25 +71,49 @@ export class WorkspaceGitRecovery {
         // Only durable backend removal proves that an old writer is gone.
         // Sealing retains its exact bytes; it never fabricates an Executor result.
         for (const owner of repo.stoppedOwners(root.workspaceId)) {
-          const binding=repo.binding(owner.taskId,owner.generationId);
-          if (!binding) throw new Error('recovery_conversation_binding_missing');
-          root={...root,state:'ready'};
-          repo.saveRoot(root);
-          if (owner.access === 'read') {
-            // Never capture a reader's unexpected writes as legitimate output.
-            if (repo.operationRecord(`read_${owner.attemptId}`)) {
-              try { await this.conversations.finishRead(binding, owner.attemptId); }
-              catch { repo.setConversationState(binding.worktreeId, 'failed'); }
+          try {
+            const binding=repo.binding(owner.taskId,owner.generationId);
+            if (!binding) throw new Error('recovery_conversation_binding_missing');
+            root={...root,state:'ready'};
+            repo.saveRoot(root);
+            if (owner.access === 'read') {
+              // Never capture a reader's unexpected writes as legitimate output.
+              if (repo.operationRecord(`read_${owner.attemptId}`)) {
+                try { await this.conversations.finishRead(binding, owner.attemptId); }
+                catch { repo.setConversationState(binding.worktreeId, 'failed'); }
+              }
+            } else {
+              await this.conversations.sealAttempt(binding,owner.attemptId);
             }
-          } else {
-            await this.conversations.sealAttempt(binding,owner.attemptId);
+          } catch (error) {
+            // One session that can no longer be sealed (its Conversation or
+            // binding is gone) must not fail the whole Workspace root: that
+            // would block every new Conversation in the Workspace. Keep the
+            // durable operation for a later pass and release the claim.
+            const operationId = `seal_${owner.attemptId}`;
+            repo.operation({operationId,workspaceId:root.workspaceId,kind:'seal',
+              payload:{conversationId:owner.conversationId,attemptId:owner.attemptId}});
+            repo.operationState(operationId,'needs_recovery');
+            const worktree = repo.conversation(owner.conversationId);
+            if (worktree) repo.setConversationState(worktree.worktreeId, 'failed');
+            void error;
           }
           repo.releaseConversation(owner.conversationId,owner.token);
         }
         let after = 0;
         for (;;) {
           const page = repo.queue(root.workspaceId, after);
-          for (const job of page) await observe(job);
+          for (const job of page) {
+            try {
+              await observe(job);
+            } catch {
+              // Publication and delivery are Conversation-scoped. A deleted or
+              // unwritable Conversation leaves that job for a later pass
+              // instead of poisoning the Workspace root for everyone: a failed
+              // root blocks every new Conversation in the Workspace.
+              continue;
+            }
+          }
           if (page.length < 100) break;
           after = page[page.length - 1]!.sequence;
         }
@@ -108,7 +132,12 @@ export class WorkspaceGitRecovery {
         }
       } catch (error) {
         // Persist the observable fault; unrelated Workspaces still recover.
-        repo.failRoot(root.workspaceId, error instanceof Error ? error.message : String(error));
+        const message = error instanceof Error ? error.message : String(error);
+        repo.failRoot(root.workspaceId, message);
+        // The stored message is what the UI will surface later, so keep the
+        // trace in the log instead of losing the only reproduction evidence.
+        console.error(`Workspace root recovery failed (${root.workspaceId}): ${message}`,
+          error instanceof Error ? error.stack ?? '' : '');
       }
     }
   }

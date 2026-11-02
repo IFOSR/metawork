@@ -257,7 +257,13 @@ export class WorkspaceDirectoryService {
       throw new Error('workspace_unavailable');
     }
     const gitState = this.deps.gitLifecycle?.state?.(workspaceId);
-    if (gitState && gitState !== 'ready') throw new Error(gitState === 'initializing' ? 'workspace_initializing' : 'workspace_unavailable');
+    if (gitState && gitState !== 'ready') {
+      // Name the real fault: an unavailable Workspace Git root used to surface
+      // as an opaque 500 that the user could not act on.
+      throw new Error(gitState === 'initializing'
+        ? 'workspace_initializing'
+        : `workspace_git_${gitState}: ${this.deps.gitLifecycle?.error?.(workspaceId) ?? 'unknown'}`);
+    }
     const now = this.deps.now?.() ?? new Date().toISOString();
     const id = this.deps.createConversationId?.() ?? `conv_${randomUUID()}`;
     const metadata: ConversationMetadata = {

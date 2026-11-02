@@ -28,3 +28,7 @@ tests/fixtures/workspace-source/.git/
 
 # Fetched TDAI memory engine (pinned by memory/engine.lock.json, built in CI)
 memory/tdai/
+
+# Local release verification artifacts (large binaries, never committed)
+dist-release-local/
+*.dmg
