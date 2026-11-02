@@ -23,7 +23,8 @@ export type WorkGraphViolationCode =
   | 'missing_entry_node'
   | 'self_dependency'
   | 'too_many_context_refs'
-  | 'unknown_dependency';
+  | 'unknown_dependency'
+  | 'workspace_effect_invalid';
 
 export interface WorkGraphViolation {
   code: WorkGraphViolationCode;
@@ -118,6 +119,9 @@ function validateSubtaskContract(
   violations: WorkGraphViolation[],
 ): void {
   const base = `subtasks.${index}`;
+  if (subtask.workspaceEffect !== undefined && !['read_only', 'write', 'unknown'].includes(subtask.workspaceEffect)) {
+    violations.push(violation('workspace_effect_invalid', [subtask.id], `${base}.workspaceEffect`, 'Invalid node Workspace effect'));
+  }
   if (subtask.fileOutputs !== undefined) {
     const outputs = subtask.fileOutputs;
     if (outputs.length > 100 || outputs.some(path => !isValidFileOutput(path))

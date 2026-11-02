@@ -182,7 +182,69 @@ export class ConversationWorktreeService {
       executionRoot:worktree.rootPath,taskBaseCommit};
     return this.repo.bind({...facts,bindingFingerprint:conversationBindingFingerprint(facts),createdAt:new Date().toISOString()});
   }
+  /** Durable input witness. A reader never moves Git refs or captures a candidate. */
+  async beginRead(binding: ConversationExecutionBinding, attemptId: string, sourceAttemptId?: string | null): Promise<void> {
+    await this.validateBinding(binding);
+    const worktree = this.repo.conversation(binding.conversationId)!;
+    const source = sourceAttemptId ? this.repo.operationRecord(`read_${sourceAttemptId}`) : null;
+    if (source && source.expectedRef !== worktree.headCommit) throw new Error('read_only_input_changed');
+    const previous = this.repo.operationRecord(`read_${attemptId}`);
+    this.repo.operation({operationId: `read_${attemptId}`, workspaceId: binding.workspaceId,
+      kind: 'read_observation', expectedRef: previous?.expectedRef ?? worktree.headCommit,
+      payload: {attemptId, conversationId: binding.conversationId}});
+    await this.verifyRead(binding, attemptId);
+  }
+  async verifyRead(binding: ConversationExecutionBinding, attemptId: string): Promise<string> {
+    const operation = this.repo.operationRecord(`read_${attemptId}`);
+    const state = this.repo.conversationState(binding.worktreeId);
+    const head = operation?.expectedRef;
+    try {
+      if (!head || state.state === 'failed'
+        || !(await this.git.isWorktreeClean(binding.executionRoot, head))) {
+        throw new Error('read_only_workspace_changed');
+      }
+    } catch (error) {
+      this.repo.setConversationState(binding.worktreeId, 'failed');
+      if (operation) this.repo.operationState(`read_${attemptId}`, 'needs_recovery');
+      throw error;
+    }
+    return head;
+  }
+  async finishRead(binding: ConversationExecutionBinding, attemptId: string): Promise<string> {
+    const head = await this.verifyRead(binding, attemptId);
+    this.repo.recordAttemptCommit(attemptId, {...this.repo.conversation(binding.conversationId)!, headCommit: head}, head);
+    this.repo.operationState(`read_${attemptId}`, 'applied');
+    return head;
+  }
+  /** Corrections/acceptance use the settled witness, never reread or seal later edits. */
+  readResultCommit(binding: ConversationExecutionBinding, attemptId: string, correctionAttemptId?: string): string {
+    const operation = this.repo.operationRecord(`read_${attemptId}`);
+    if (operation?.state !== 'applied' || !operation.expectedRef
+      || this.repo.conversationState(binding.worktreeId).state === 'failed') {
+      throw new Error('read_only_result_unverified');
+    }
+    if (correctionAttemptId) {
+      this.repo.operation({operationId: `read_${correctionAttemptId}`, workspaceId: binding.workspaceId,
+        kind: 'read_observation', expectedRef: operation.expectedRef,
+        payload: {attemptId: correctionAttemptId, conversationId: binding.conversationId}});
+      this.repo.operationState(`read_${correctionAttemptId}`, 'applied');
+    }
+    return operation.expectedRef;
+  }
+  settledWriteCommit(attemptId: string, correction?: {attemptId: string; workspaceId: string}): string {
+    const operation = this.repo.operationRecord(`seal_${attemptId}`)
+      ?? this.repo.operationRecord(`write_result_${attemptId}`);
+    if (operation?.state !== 'applied' || !operation.targetCommit) throw new Error('write_result_requires_recovery');
+    if (correction) {
+      this.repo.operation({operationId: `write_result_${correction.attemptId}`, workspaceId: correction.workspaceId,
+        kind: 'write_result_reference', targetCommit: operation.targetCommit, payload: {sourceAttemptId: attemptId}});
+      this.repo.operationState(`write_result_${correction.attemptId}`, 'applied');
+    }
+    return operation.targetCommit;
+  }
   async sealAttempt(binding:ConversationExecutionBinding,attemptId:string,explicitPaths:string[]=[]):Promise<{commit:string;changedPaths:string[]}>{
+    if (this.repo.operationRecord(`read_${attemptId}`)) throw new Error('read_only_attempt_cannot_seal');
+    if (this.repo.conversationState(binding.worktreeId).state === 'failed') throw new Error('conversation_requires_recovery');
     await this.validateBinding(binding);
     return withWorkspaceGitLock(this.repo.root(binding.workspaceId)!.repositoryPath,'metadata',async()=>{
       const worktree=this.repo.conversation(binding.conversationId)!;
@@ -207,6 +269,7 @@ export class ConversationWorktreeService {
   }
   async sealTask(taskId:string,generationId:string,held=false):Promise<{changeId:string|null;commit:string;hasChanges:boolean}>{
     const binding=this.repo.binding(taskId,generationId);if(!binding)throw new Error('conversation_execution_binding_missing');
+    if (this.repo.conversationState(binding.worktreeId).state === 'failed') throw new Error('conversation_requires_recovery');
     const worktree=this.repo.conversation(binding.conversationId)!;
     const changes=await this.git.changedFiles(worktree.repositoryPath,binding.taskBaseCommit,worktree.headCommit);
     const existing=this.repo.operationRecord(`task_seal_${taskId}_${generationId}`);

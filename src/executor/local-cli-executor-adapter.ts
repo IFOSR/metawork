@@ -1,5 +1,5 @@
 import { verifyExecutorRuntimeHome } from './runtime-binding-verification.js';
-import { writeFile } from 'node:fs/promises';
+import { mkdir, writeFile } from 'node:fs/promises';
 import { join, dirname } from 'node:path';
 import { spawn, type ChildProcess } from 'node:child_process';
 import { createHash, randomUUID } from 'node:crypto';
@@ -169,9 +169,19 @@ export class LocalCliExecutorAdapter implements ExecutorAdapter {
           : {}),
       });
       if (cancellation.cancelled) return cancelledResult(startedAt);
+      const sharedRead = input.context.workspaceContext.executionMode === 'conversation_git'
+        && input.context.workspaceContext.accessMode === 'read';
+      const scratchEnvironment: Record<string, string> = {};
+      if (sharedRead) {
+        for (const [key, directory] of [['TMPDIR', 'tmp'], ['XDG_CACHE_HOME', 'cache'], ['npm_config_cache', 'npm-cache'], ['PIP_CACHE_DIR', 'pip-cache']] as const) {
+          const path = join(executionBinding.workspacePath, directory);
+          await mkdir(path, {recursive: true});
+          scratchEnvironment[key] = path;
+        }
+      }
       const launch = this.driver.buildLaunch({
         prompt: buildExecutorContextPrompt(input),
-        cwd: input.context.workspaceContext.accessMode !== 'write'
+        cwd: !sharedRead && input.context.workspaceContext.accessMode !== 'write'
           && input.context.workspaceContext.readOnlySourcePath
           ? input.context.workspaceContext.readOnlySourcePath
           : executionBinding.workspacePath,
@@ -183,6 +193,7 @@ export class LocalCliExecutorAdapter implements ExecutorAdapter {
         // target. Response-only correction has its own explicit entrypoint.
         responseOnly: false,
         workspaceAccess: input.context.workspaceContext.accessMode,
+        writableScratch: sharedRead,
         ...(this.executorAffordances
           ? { executorAffordances: this.executorAffordances }
           : {}),
@@ -230,6 +241,7 @@ export class LocalCliExecutorAdapter implements ExecutorAdapter {
           ...this.runtimeBinding.environment,
           ...runtimeHome.environment,
           ...launch.environment,
+          ...scratchEnvironment,
           METACLAW_EVIDENCE_MCP_URL: input.context.evidenceTools.binding?.mcpUrl ?? '',
           METACLAW_EVIDENCE_JSON_URL: input.context.evidenceTools.binding?.jsonUrl ?? '',
           METACLAW_EVIDENCE_TOKEN: input.context.evidenceTools.binding?.bearerToken ?? '',

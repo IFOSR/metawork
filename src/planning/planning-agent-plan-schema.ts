@@ -132,6 +132,9 @@ const SubtaskSchema = z.object({
   // Planner may omit concrete bindings. Candidate Builder then enumerates all
   // enabled AgentClasses that satisfy the declared capabilities.
   executorBindings: z.array(ExecutorBindingSchema).max(32),
+  workspaceEffect: z.enum(['read_only', 'write', 'unknown']).optional().describe(
+    'Effect of this node on business Workspace files. read_only allows shared reads and private scratch writes; write includes code edits without downloadable files. unknown executes exclusively. This does not select Harness tools.',
+  ),
   deliveryKind: z.enum(DELIVERY_KIND_VALUES).describe(
     'edit: the subtask primarily delivers workspace/file changes; report: the subtask primarily delivers a report or answer. Both delivery kinds may create ordinary user-space files while executing.',
   ),

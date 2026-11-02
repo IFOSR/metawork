@@ -378,6 +378,7 @@ function containerExecutorInput(input: ExecutorInput): ExecutorInput {
       workspaceContext: {
         ...input.context.workspaceContext,
         workingDirectory: '/workspace',
+        ...(input.context.workspaceContext.readOnlySourcePath ? {readOnlySourcePath: '/source'} : {}),
         targetPaths: input.context.workspaceContext.targetPaths.map(target => (
           containerPath(target, binding.workspacePath)
         )),

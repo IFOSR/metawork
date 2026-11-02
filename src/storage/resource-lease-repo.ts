@@ -90,7 +90,8 @@ export class SqliteResourceLeaseRepository implements ResourceLeaseRepositoryPor
     const transaction = this.db.transaction((): ClaimResourceLeasesResult => {
       const existingRows = this.db.prepare(`
         SELECT * FROM resource_leases
-        WHERE released_at IS NULL AND expires_at > ?
+        WHERE released_at IS NULL AND (expires_at > ? OR EXISTS (
+          SELECT 1 FROM conversation_attempt_owners o WHERE o.attempt_id=resource_leases.attempt_id))
         ORDER BY created_at, id
       `).all(input.now) as ResourceLeaseRow[];
       const existing = existingRows.map(leaseFromRow);
@@ -98,14 +99,28 @@ export class SqliteResourceLeaseRepository implements ResourceLeaseRepositoryPor
       const others = existing.filter(lease => lease.attemptId !== input.attemptId);
       const conflicts = others.filter(lease => input.claims.some(claim => resourceClaimsConflict(claim, lease)));
 
-      if (conflicts.length > 0) {
+      // A queued writer closes the reader cohort. Resolved waits remain a
+      // reservation until that Subtask claims, is cancelled, or leaves ready.
+      const writers = this.pendingWriters();
+      const queuedConflicts = input.claims.filter(claim => claim.access === 'read'
+        && writers.some(wait => wait.subtaskId !== input.subtaskId
+          && resourceClaimsConflict(claim, wait)));
+      if (conflicts.length > 0 || queuedConflicts.length > 0) {
         const waits = input.claims
           .map(claim => ({ claim, conflicts: conflicts.filter(lease => resourceClaimsConflict(claim, lease)) }))
           .filter(item => item.conflicts.length > 0)
           .map(({ claim, conflicts: claimConflicts }) => this.upsertWait(input, claim.partition, claim.access, claimConflicts.map(lease => lease.id)));
+        for (const claim of queuedConflicts) {
+          if (!waits.some(wait => wait.partitionKey === partitionCanonicalKey(claim.partition))) {
+            waits.push(this.upsertWait(input, claim.partition, claim.access, []));
+          }
+        }
         return { type: 'conflict', waits, conflictingLeases: conflicts };
       }
 
+      this.db.prepare(`UPDATE resource_waits SET status='cancelled', resolved_at=?
+        WHERE task_id=? AND generation_id=? AND subtask_id=? AND attempt_id<>? AND status<>'cancelled'`)
+        .run(input.now, input.taskId, input.generationId, input.subtaskId, input.attemptId);
       const inserted = [...own];
       const insert = this.db.prepare(`
         INSERT INTO resource_leases (
@@ -157,7 +172,8 @@ export class SqliteResourceLeaseRepository implements ResourceLeaseRepositoryPor
     return this.db.prepare(`
       UPDATE resource_leases
       SET heartbeat_at = ?, expires_at = ?
-      WHERE attempt_id = ? AND lease_token = ? AND released_at IS NULL AND expires_at > ?
+      WHERE attempt_id = ? AND lease_token = ? AND released_at IS NULL AND (expires_at > ? OR EXISTS (
+          SELECT 1 FROM conversation_attempt_owners o WHERE o.attempt_id=resource_leases.attempt_id))
         AND revocation_requested_at IS NULL
     `).run(now, expiresAt, attemptId, leaseToken, now).changes;
   }
@@ -179,7 +195,8 @@ export class SqliteResourceLeaseRepository implements ResourceLeaseRepositoryPor
   findActive(now: string): ResourceLeaseRecord[] {
     return (this.db.prepare(`
       SELECT * FROM resource_leases
-      WHERE released_at IS NULL AND expires_at > ? ORDER BY created_at, id
+      WHERE released_at IS NULL AND (expires_at > ? OR EXISTS (
+          SELECT 1 FROM conversation_attempt_owners o WHERE o.attempt_id=resource_leases.attempt_id)) ORDER BY created_at, id
     `).all(now) as ResourceLeaseRow[]).map(leaseFromRow);
   }
 
@@ -260,15 +277,19 @@ export class SqliteResourceLeaseRepository implements ResourceLeaseRepositoryPor
     return this.db.transaction((): ResourceWaitRecord[] => {
       const active = (this.db.prepare(`
         SELECT * FROM resource_leases
-        WHERE released_at IS NULL AND expires_at > ?
+        WHERE released_at IS NULL AND (expires_at > ? OR EXISTS (
+          SELECT 1 FROM conversation_attempt_owners o WHERE o.attempt_id=resource_leases.attempt_id))
       `).all(now) as ResourceLeaseRow[]).map(leaseFromRow);
       const rows = (taskId
         ? this.db.prepare(`SELECT * FROM resource_waits WHERE status = 'waiting' AND task_id = ? ORDER BY requested_at, id`)
             .all(taskId)
         : this.db.prepare(`SELECT * FROM resource_waits WHERE status = 'waiting' ORDER BY requested_at, id`).all()) as ResourceWaitRow[];
+      const writers = this.pendingWriters();
       const resolved: ResourceWaitRecord[] = [];
       for (const row of rows) {
         const wait = waitFromRow(row);
+        if (wait.access === 'read' && writers.some(writer => writer.subtaskId !== wait.subtaskId
+          && resourceClaimsConflict(wait, writer))) continue;
         const conflict = active.find(lease => resourceClaimsConflict(
           { partition: wait.partition, access: wait.access },
           { partition: lease.partition, access: lease.access },
@@ -296,6 +317,16 @@ export class SqliteResourceLeaseRepository implements ResourceLeaseRepositoryPor
       ? this.db.prepare(`SELECT * FROM resource_waits WHERE status = 'waiting' AND task_id = ? ORDER BY requested_at, id`).all(taskId)
       : this.db.prepare(`SELECT * FROM resource_waits WHERE status = 'waiting' ORDER BY requested_at, id`).all()) as ResourceWaitRow[];
     return rows.map(waitFromRow);
+  }
+
+  private pendingWriters(): ResourceWaitRecord[] {
+    return (this.db.prepare(`SELECT w.* FROM resource_waits w
+      JOIN subtasks s ON s.id=w.subtask_id AND s.task_id=w.task_id AND s.generation_id=w.generation_id
+      JOIN tasks t ON t.id=w.task_id
+      WHERE w.access_mode='write' AND w.status IN ('waiting','resolved')
+        AND s.status='ready'
+        AND t.status IN ('running','queued','needs_action')
+      ORDER BY w.requested_at,w.id`).all() as ResourceWaitRow[]).map(waitFromRow);
   }
 
   private upsertWait(

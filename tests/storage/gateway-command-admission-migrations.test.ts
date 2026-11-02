@@ -343,7 +343,8 @@ CREATE TRIGGER trg_task_search_index_interactions_insert
   for (const table of [...admissionTables, ...retryWakeTables, ...observationTables, 'workspace_publication_deliveries']) {
     db.exec(`DROP TABLE IF EXISTS ${table}`);
   }
-  for (const table of ['workspace_merge_files','workspace_merge_jobs','task_workspace_changes','conversation_execution_bindings','conversation_git_worktrees','workspace_git_operations','service_git_worktrees','workspace_git_roots']) db.exec(`DROP TABLE ${table}`);
+  for (const table of ['conversation_attempt_owners','workspace_merge_files','workspace_merge_jobs','task_workspace_changes','conversation_execution_bindings','conversation_git_worktrees','workspace_git_operations','service_git_worktrees','workspace_git_roots']) db.exec(`DROP TABLE ${table}`);
+  db.exec('ALTER TABLE subtasks DROP COLUMN workspace_effect');
   for (const column of ['worktree_id','worktree_incarnation','before_commit','after_commit']) db.exec(`ALTER TABLE executor_attempt_runtime DROP COLUMN ${column}`);
   for (const column of ['git_commit','git_relative_path']) db.exec(`ALTER TABLE artifact_versions DROP COLUMN ${column}`);
   // Restore the historical global evidence key; keep the captured schema43 hash meaningful.

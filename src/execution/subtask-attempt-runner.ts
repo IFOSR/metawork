@@ -1,3 +1,4 @@
+import { supportsSharedWorkspaceRead } from '../work-graph/workspace-effect.js';
 import { resolveSafeResult, type PendingResultIdentity } from '../task/safe-result-identity.js';
 import { readPendingTaskResult } from '../storage/pending-task-result.js';
 import { ExecutorProbeError } from './work-unit-claim-service.js';
@@ -347,6 +348,10 @@ export class SubtaskAttemptRunner {
     const acceptedBinding = existingConversationBinding
       ?? this.deps.conversationWorktrees?.repo.binding(expected.taskId, expected.generationId)
       ?? null;
+    const acceptedRead = acceptedBinding
+      && this.deps.conversationWorktrees!.repo.operationRecord(`read_${pair.resultOwnerAttemptId}`);
+    const acceptedReadCommit = acceptedRead
+      ? this.deps.conversationWorktrees!.readResultCommit(acceptedBinding!, pair.resultOwnerAttemptId) : null;
     // Historical Tasks have no execution_mode. They were always authored
     // directly in the Workspace; retain that interpretation for acceptance,
     // while a conversation binding selects the immutable Git path.
@@ -376,6 +381,9 @@ export class SubtaskAttemptRunner {
       if (!rootPath) throw new Error('结果工作区不可用');
       delta ??= declaredOutputsDelta(rootPath, subtask.fileOutputs ?? []);
       if (!delta) throw new Error('无法确认文件变更，结果尚不能交付');
+    } else if (acceptedReadCommit) {
+      rootPath = acceptedBinding!.executionRoot;
+      if (!delta) throw new Error('read_only_result_delta_missing');
     } else {
       // Conversation Git Attempts execute directly in the durable session
       // Worktree. The legacy workspace record points at the Attempt-owned
@@ -417,19 +425,10 @@ export class SubtaskAttemptRunner {
       || completion.assessment.certification.violations.some(item => item.code !== 'completion_acceptance_mismatch')) {
       throw new Error('文件、安全或下游交付检查失败，结果尚不能发布');
     }
-    const acceptedPaths = [...completion.normalizedArtifacts,
-      ...(completion.envelope?.status === 'completed'
-        ? completion.envelope.handoffs.flatMap(h => h.items.flatMap(item => item.type === 'text' ? [] : item.paths))
-        : [])]
-      .map(path => isAbsolute(path) ? relative(rootPath, path) : path);
-    const candidate = inPlace
+    const candidate = acceptedReadCommit ? {commit: acceptedReadCommit} : inPlace
       ? { commit: `in-place:${expected.attemptId}` }
       : acceptedBinding
-        ? await this.deps.conversationWorktrees!.sealAttempt(
-          acceptedBinding,
-          expected.attemptId,
-          acceptedPaths,
-        )
+        ? {commit: this.deps.conversationWorktrees!.settledWriteCommit(pair.resultOwnerAttemptId)}
         : await this.managedGitWorkspace.commit(
           await this.managedGitWorkspace.ensure({ taskId: expected.taskId,
             generationId: expected.generationId, subtaskId: expected.subtaskId },
@@ -623,7 +622,9 @@ export class SubtaskAttemptRunner {
         goal: `Prepare service ${serviceRepair!.serviceId}. Install dependencies and build required runtime outputs in the assigned service worktree. Keep tracked source files unchanged. Do not repeat the original task or its handoffs. Report preparation results.`}
       : originalSubtask;
     if (this.deps.conversationWorktrees && !conversationBinding) throw new Error('legacy_execution_requires_replan');
-    const readOnlyExecution = !conversationBinding && Boolean(
+    const conversationReadOnly = Boolean(conversationBinding && !servicePreparation
+      && supportsSharedWorkspaceRead(subtask, this.deps.subtaskRepo.listByTask(task.id).filter(node => node.generationId === subtask.generationId)));
+    const readOnlyExecution = conversationReadOnly || !conversationBinding && Boolean(
       task.workspaceIntent?.operation === 'read_only'
       && subtask.deliveryKind === 'report'
       && (subtask.fileOutputs?.length ?? 0) === 0,
@@ -801,10 +802,18 @@ export class SubtaskAttemptRunner {
     if (claim instanceof ExecutorProbeError) return { outcome: 'executor_unavailable', attemptId, failure: claim.failure };
     if (!claim) return { outcome: 'capacity_unavailable', attemptId, agentClassName };
 
+    const readScratchRoot = conversationReadOnly ? this.deps.workspaceStore.planReadOnlyRoot(
+      {taskId: task.id, generationId: subtask.generationId, subtaskId: subtask.id}, attemptId) : null;
+    if (readScratchRoot && (isWithin(conversationBinding!.executionRoot, readScratchRoot)
+      || isWithin(readScratchRoot, conversationBinding!.executionRoot))) {
+      claim.release();
+      throw new Error('read_scratch_overlaps_conversation');
+    }
     const leaseToken = `attempt_lease_${randomUUID()}`;
     const claims = conversationExecution
       ? [...input.defaultResourceGrant.filter(grant=>!partitionCovers(workspaceRootClaim(conversationBinding!.userRoot).partition,grant.partition)
-        && !partitionCovers(grant.partition,workspaceRootClaim(conversationBinding!.userRoot).partition)),workspaceRootClaim(conversationBinding!.executionRoot, 'write')]
+        && !partitionCovers(grant.partition,workspaceRootClaim(conversationBinding!.userRoot).partition)),workspaceRootClaim(conversationBinding!.executionRoot, conversationReadOnly ? 'read' : 'write'),
+        ...(conversationReadOnly ? [workspaceRootClaim(readScratchRoot!, 'write')] : [])]
       : serviceExecution
       ? [...input.defaultResourceGrant.filter(grant=>!partitionCovers(workspaceRootClaim(conversationBinding!.userRoot).partition,grant.partition)
         && !partitionCovers(grant.partition,workspaceRootClaim(conversationBinding!.userRoot).partition)),workspaceRootClaim(serviceCheckout!.rootPath, 'write')]
@@ -830,8 +839,13 @@ export class SubtaskAttemptRunner {
       };
     }
 
-    if (conversationExecution && !this.deps.conversationWorktrees!.repo.claimConversation(conversationBinding!.conversationId, task.id, leaseToken)) {
+    if (conversationExecution && !this.deps.conversationWorktrees!.repo.claimConversation(conversationBinding!.conversationId, task.id, leaseToken, {attemptId, access: conversationReadOnly ? 'read' : 'write'})) {
       this.deps.resourceLeaseService.release(attemptId, leaseToken); claim.release();
+      if (this.deps.conversationWorktrees!.repo.conversationState(conversationBinding!.worktreeId).state === 'failed') {
+        return {outcome: 'executor_failed', attemptId, error: 'conversation_requires_recovery',
+          failure: {kind: 'unknown', scope: 'task', code: 'conversation_requires_recovery',
+            summary: '共享输入发生意外变化，会话已停止执行，需检查工作区后恢复', attemptStarted: false}};
+      }
       return {outcome: 'partition_conflict', attemptId, claims, conflictingLeaseIds: []};
     }
     const startedAt = new Date().toISOString();
@@ -882,9 +896,13 @@ export class SubtaskAttemptRunner {
     const heartbeat = setInterval(() => {
       claim.heartbeat();
       this.deps.resourceLeaseService.heartbeat(attemptId, leaseToken);
+      if (conversationReadOnly && this.deps.conversationWorktrees!.repo.conversationState(conversationBinding!.worktreeId).state === 'failed') {
+        this.deps.executionRuntime.abortTask(task.id);
+      }
     }, 20_000);
     try {
       claim.startAttempt();
+      if (conversationReadOnly) await this.deps.conversationWorktrees!.beginRead(conversationBinding!, attemptId, sourceAttemptId);
       if ((attemptKind as string) === 'merge_repair') {
         if (dispatch.attemptPayload?.protocol !== 'metaclaw:merge-repair:v1') {
           throw new Error('merge repair attempt is missing metaclaw:merge-repair:v1 payload');
@@ -916,7 +934,9 @@ export class SubtaskAttemptRunner {
         generationId: subtask.generationId,
         subtaskId: subtask.id,
       };
-      if (conversationExecution || serviceExecution) {
+      if (conversationReadOnly) {
+        workspace = await this.deps.workspaceStore.bindReadOnlyWorkspace(workspaceIdentity, attemptId, 'conversation_git');
+      } else if (conversationExecution || serviceExecution) {
         workspace = await this.deps.workspaceStore.bindConversationWorkspace(workspaceIdentity, executionContext.authorizedWorkingDirectory, attemptId);
       } else if (nonWritingExecution) {
         workspace = await this.deps.workspaceStore.bindReadOnlyWorkspace(
@@ -931,7 +951,7 @@ export class SubtaskAttemptRunner {
         );
       }
       if (!workspace) throw new Error('Workspace binding did not produce an execution directory');
-      observationRoot = nonWritingExecution
+      observationRoot = conversationReadOnly ? conversationBinding!.executionRoot : nonWritingExecution
         ? executionContext.canonicalWorkspacePath
         : workspace.filesPath;
       // The authorized working directory is a hard invariant, not a hint: an
@@ -1042,7 +1062,7 @@ export class SubtaskAttemptRunner {
           objects: checkpointObjects(startCheckpoint),
         });
       }
-      const targetPath = nonWritingExecution
+      const targetPath = conversationReadOnly ? conversationBinding!.executionRoot : nonWritingExecution
         ? executionContext.canonicalWorkspacePath
         : workspace.filesPath;
       // Planner authorization is Workspace-relative and durable on the
@@ -1143,7 +1163,7 @@ export class SubtaskAttemptRunner {
           // does not mean that a normal Attempt loses its shell tool.
           accessMode: readOnlyExecution ? 'read' : commandOnlyExecution ? 'execute' : 'write',
           ...(nonWritingExecution
-            ? { readOnlySourcePath: executionContext.canonicalWorkspacePath }
+            ? { readOnlySourcePath: conversationReadOnly ? conversationBinding!.executionRoot : executionContext.canonicalWorkspacePath }
             : {}),
           ...(inPlaceExecution
             ? { canonicalRoot: inPlaceCanonicalRoot! }
@@ -1324,7 +1344,7 @@ export class SubtaskAttemptRunner {
             idempotencyKey: `dispatch:${attemptId}`,
             workspacePath: workspace.filesPath,
             workspaceId: workspace.id,
-            sourcePath: sourceRoot,
+            sourcePath: conversationReadOnly ? conversationBinding!.executionRoot : sourceRoot,
             inputsPath,
             handoffsPath,
             gitMetadataPath: gitWorkspace?.gitMetadataPath ?? null,
@@ -1357,6 +1377,7 @@ export class SubtaskAttemptRunner {
         },
       });
       closeUsageSpan('closed');
+      if (conversationReadOnly) await this.deps.conversationWorktrees!.finishRead(conversationBinding!, attemptId);
       this.attemptRuntimeRepo.recordWriteFinished(
         attemptId,
         inPlaceExecution ? 'unknown' : 'none',
@@ -1443,7 +1464,7 @@ export class SubtaskAttemptRunner {
           // Change observation is best effort.
         }
       }
-      if (nonWritingExecution && !workspaceDelta) {
+      if (nonWritingExecution && !conversationReadOnly && !workspaceDelta) {
         // Read/execute attempts never publish Workspace changes. Keep an
         // explicit empty delta so completion validation can certify an inline
         // report without depending on the disposable attempt scratch root.
@@ -1640,7 +1661,7 @@ export class SubtaskAttemptRunner {
         rawResponse,
         subtask,
         outgoingHandoffs,
-        workspaceRoot: nonWritingExecution
+        workspaceRoot: conversationReadOnly ? conversationBinding!.executionRoot : nonWritingExecution
           ? executionContext.canonicalWorkspacePath
           : built.context.workspaceContext.workingDirectory,
         workspaceDelta,
@@ -1758,15 +1779,19 @@ export class SubtaskAttemptRunner {
       // An in-place Attempt has no candidate commit: the deliverable already
       // lives in the user's Workspace and lands directly in the Subtask.
       if (serviceExecution) await this.deps.serviceWorktrees!.markPrepared(serviceCheckout!);
-      const conversationCommit = conversationExecution
+      if (conversationReadOnly) await this.deps.conversationWorktrees!.verifyRead(conversationBinding!, attemptId);
+      const conversationCommit = conversationExecution && !conversationReadOnly
         ? await this.deps.conversationWorktrees!.sealAttempt(conversationBinding!, attemptId, [...completion.normalizedArtifacts,...completedEnvelope.handoffs.flatMap(h=>h.items.flatMap(item=>item.type==='text'?[]:item.paths))].map(path=>isAbsolute(path)?relative(conversationBinding!.executionRoot,path):path))
         : null;
+      const artifactPaths = [...completion.normalizedArtifacts,
+        ...completedEnvelope.handoffs.flatMap(h => h.items.flatMap(item => item.type === 'text' ? [] : item.paths))];
       const fixedArtifacts = conversationCommit && conversationBinding && this.deps.userArtifactPublication
+        && artifactPaths.length > 0
         ? await this.deps.userArtifactPublication.prepareGitArtifacts({
           git:this.deps.conversationWorktrees!.git,repositoryPath:this.deps.conversationWorktrees!.repo.root(conversationBinding.workspaceId)!.repositoryPath,
           commit:conversationCommit.commit,accountId:this.deps.accountId??'local-default',workspaceId:conversationBinding.workspaceId,
           taskId:task.id,attemptId,generationId:subtask.generationId,subtaskId:subtask.id,
-          relativePaths:[...completion.normalizedArtifacts,...completedEnvelope.handoffs.flatMap(h=>h.items.flatMap(item=>item.type==='text'?[]:item.paths))]
+          relativePaths:artifactPaths
             .map(path=>isAbsolute(path)?relative(conversationBinding!.executionRoot,path):path),
         }):null;
       const managedCommit = directCompletion ? null : await this.managedGitWorkspace.commit(
@@ -1945,6 +1970,9 @@ export class SubtaskAttemptRunner {
         resultId: resultObjects.safeProjectionId ?? undefined,
       };
     } catch (error) {
+      if (conversationReadOnly && this.deps.conversationWorktrees!.repo.conversationState(conversationBinding!.worktreeId).state === 'failed') {
+        this.deps.executionRuntime.abortTask(task.id);
+      }
       if (error instanceof InPlaceWriteUncertaintyError) {
         // Hand the unknown external effect to the supervisor so the dispatch
         // item becomes `uncertain` and no failure receipt is written.
@@ -2110,7 +2138,12 @@ export class SubtaskAttemptRunner {
       await evidenceToolServer?.close();
       await capabilityToolServer?.close();
       let workspaceSealed = true;
-      if (conversationExecution && this.hasSealedTerminal(attemptId) && this.deps.conversationWorktrees!.repo.operationRecord(`seal_${attemptId}`)?.state !== 'applied') {
+      if (conversationReadOnly && this.hasSealedTerminal(attemptId)
+        && this.deps.conversationWorktrees!.repo.operationRecord(`read_${attemptId}`)) {
+        try { await this.deps.conversationWorktrees!.finishRead(conversationBinding!, attemptId); }
+        catch { this.deps.executionRuntime.abortTask(task.id); }
+      }
+      if (conversationExecution && !conversationReadOnly && this.hasSealedTerminal(attemptId) && this.deps.conversationWorktrees!.repo.operationRecord(`seal_${attemptId}`)?.state !== 'applied') {
         try { await this.deps.conversationWorktrees!.sealAttempt(conversationBinding!, attemptId); }
         catch { workspaceSealed = false; }
       }
@@ -2118,7 +2151,7 @@ export class SubtaskAttemptRunner {
         if (conversationExecution) this.deps.conversationWorktrees!.repo.releaseConversation(conversationBinding!.conversationId, leaseToken);
         this.deps.resourceLeaseService.release(attemptId, leaseToken);
         claim.release();
-        if (workspace && (conversationExecution || serviceExecution)) {
+        if (workspace && ((conversationExecution && !conversationReadOnly) || serviceExecution)) {
           await this.deps.workspaceStore.removeConversationScratch(workspace,executionContext.authorizedWorkingDirectory);
         } else if (workspace && (inPlaceExecution || nonWritingExecution)) {
           // Inputs, handoffs and result staging belong to this Attempt, not to
@@ -2454,16 +2487,12 @@ export class SubtaskAttemptRunner {
         throw new Error(`authorized dispatch item not found: ${input.attemptId}`);
       }
       const correctionDirectCompletion = Boolean(correctionConversationBinding);
-      const correctedCommit = correctionDirectCompletion
-        ? (await this.deps.conversationWorktrees!.sealAttempt(
-            correctionConversationBinding!,
-            input.attemptId,
-            [...completion.normalizedArtifacts,
-              ...completion.envelope.handoffs.flatMap(h => h.items.flatMap(item => item.type === 'text' ? [] : item.paths))]
-              .map(path => isAbsolute(path)
-                ? relative(correctionConversationBinding!.executionRoot, path)
-                : path),
-          )).commit
+      const sourceRead = correctionConversationBinding
+        && this.deps.conversationWorktrees!.repo.operationRecord(`read_${input.sourceAttemptId}`);
+      const correctedCommit = sourceRead
+        ? this.deps.conversationWorktrees!.readResultCommit(correctionConversationBinding!, input.sourceAttemptId, input.attemptId)
+        : correctionDirectCompletion
+        ? this.deps.conversationWorktrees!.settledWriteCommit(input.sourceAttemptId, {attemptId: input.attemptId, workspaceId: correctionConversationBinding!.workspaceId})
         : await this.managedGitWorkspace.commit(
             await this.managedGitWorkspace.ensure({ taskId: task.id,
               generationId: subtask.generationId, subtaskId: subtask.id },

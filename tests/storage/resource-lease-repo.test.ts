@@ -1,3 +1,4 @@
+import { workspaceRootClaim } from '../../src/resource/index.js';
 import Database from 'better-sqlite3';
 import { describe, expect, it } from 'vitest';
 import { runMigrations } from '../../src/storage/migrations.js';
@@ -30,6 +31,34 @@ function seedForeignKeys(db: Database.Database): void {
 }
 
 describe('SqliteResourceLeaseRepository', () => {
+  it('keeps expired Conversation owners fenced and reserves admission for a queued writer', () => {
+    const db = new Database(':memory:');
+    runMigrations(db);
+    seedForeignKeys(db);
+    const repo = new SqliteResourceLeaseRepository(db);
+    const now = '2026-07-22T00:02:00.000Z';
+    const claim = (attemptId: string, subtaskId: string, access: 'read' | 'write', time = now) => repo.claim({
+      taskId: 'task', generationId: 'gen', subtaskId, attemptId, workUnitId: 'worker-a', leaseToken: attemptId,
+      claims: [workspaceRootClaim('/shared', access)],
+      now: time, expiresAt: '2026-07-22T00:01:00.000Z',
+    });
+    try {
+      expect(claim('reader', 'subtask-a', 'read', '2026-07-22T00:00:00.000Z').type).toBe('claimed');
+      db.prepare(`INSERT INTO conversation_attempt_owners VALUES ('conversation','reader','task','reader','read',?)`).run(now);
+      expect(claim('writer', 'subtask-b', 'write').type).toBe('conflict');
+      // A new reader cannot repeatedly bypass a writer waiting for this cohort.
+      expect(claim('late-reader', 'subtask-a', 'read').type).toBe('conflict');
+      expect(repo.resolveSatisfiedWaits(now)).toEqual([]);
+      db.prepare('DELETE FROM conversation_attempt_owners WHERE attempt_id=?').run('reader');
+      repo.releaseAttempt('reader', 'reader', now);
+      expect(repo.resolveSatisfiedWaits(now).map(wait => wait.attemptId)).toEqual(['writer']);
+      expect(claim('late-reader', 'subtask-a', 'read').type).toBe('conflict');
+      expect(claim('writer-next-attempt', 'subtask-b', 'write').type).toBe('claimed');
+      repo.releaseAttempt('writer-next-attempt', 'writer-next-attempt', now);
+      expect(repo.resolveSatisfiedWaits(now).map(wait => wait.attemptId)).toEqual(['late-reader']);
+    } finally { db.close(); }
+  });
+
   it('allows only one competing write claim and remains idempotent per attempt', () => {
     const db = new Database(':memory:');
     runMigrations(db);

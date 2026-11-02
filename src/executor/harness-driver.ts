@@ -88,6 +88,8 @@ export interface HarnessLaunchInput {
   responseOnly?: boolean;
   /** Workspace capability exposed to the harness. */
   workspaceAccess?: 'read' | 'execute' | 'write';
+  /** Business input is read-only; cwd is an attempt-owned writable scratch. */
+  writableScratch?: boolean;
   /** Executor-owned affordances used to register the Harness tool surface. */
   executorAffordances?: readonly ExecutorAffordanceId[];
   requiredCapabilities?: readonly string[];

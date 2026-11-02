@@ -52,6 +52,8 @@ export interface WorkGraphSubtask {
   contextRefs: ContextRef[];
   requiredCapabilities: RoutingCapabilityId[];
   executorBindings: ProposedExecutorBinding[];
+  /** Absent on historical graphs; unknown keeps exclusive execution. */
+  workspaceEffect?: 'read_only' | 'write' | 'unknown';
   deliveryKind: 'edit' | 'report';
   /** Required in new proposals. Absent only on graphs authorized before schema 50. */
   fileOutputs?: string[];

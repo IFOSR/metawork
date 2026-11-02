@@ -15,6 +15,7 @@ export interface WorkGraphPresentationSubtaskFact {
   generationId: string;
   firstDispatchOrder: number | null;
   hasPendingOrActiveAttempt: boolean;
+  resourceWaitAccess?: 'read' | 'write';
 }
 
 export interface WorkGraphPresentationDecisionFact {
@@ -96,6 +97,7 @@ export interface WorkGraphPresentationNode {
   executionState: 'completed' | 'running' | 'waiting' | 'blocked' | 'failed' | 'unknown';
   phase: number;
   runnable: boolean;
+  schedulingDetail?: string;
   dependencies: string[];
   requiredCapabilities: string[];
   acceptanceCriteria: string[];
@@ -173,6 +175,12 @@ export class WorkGraphPresentationProjector {
         executionState: presentationExecutionState(fact?.status ?? 'unknown'),
         phase: layers.get(subtask.id) ?? 0,
         runnable: runnable.has(subtask.id),
+        schedulingDetail: fact?.status === 'running' ? '执行中'
+          : fact?.resourceWaitAccess === 'read' ? '等待写入节点或其他独占资源释放'
+          : fact?.resourceWaitAccess === 'write' ? '等待读取或写入节点释放资源'
+          : fact?.hasPendingOrActiveAttempt ? '已安排，等待执行启动或收束'
+          : runnable.has(subtask.id) ? '前置条件已满足，等待调度与可用名额'
+          : fact?.status === 'ready' ? '等待前置结果' : undefined,
         dependencies: subtask.dependencies.map(dependency => dependency.fromSubtaskId),
         requiredCapabilities: [...subtask.requiredCapabilities].sort(),
         acceptanceCriteria: subtask.acceptance.map(item => bounded(item.description, 300)),

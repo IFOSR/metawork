@@ -208,6 +208,33 @@ function neverStartedEvent(item: KernelDispatchItemRecord): KernelEvent {
 }
 
 describe('AttemptSupervisor', () => {
+  it.each([2, 3])('runs %i of three independent attempts and starts the queued one after release', async capacity => {
+    const repository = new MemoryDispatchItems();
+    const supervisor = new AttemptSupervisor(repository, 4, capacity);
+    const decision = batchDecisionForTask('task-a', 'attempt-a');
+    for (const suffix of ['b', 'c']) decision.action.items.push({...decision.action.items[0]!,
+      attemptId: `attempt-${suffix}`, subtaskId: `subtask-${suffix}`});
+    const releases = new Map<string, () => void>();
+    const started: string[] = [];
+    supervisor.enqueue(decision, bindingContext(decision, 'generation-a'), {
+      run: async item => {
+        started.push(item.attemptId);
+        await new Promise<void>(resolve => releases.set(item.attemptId, resolve));
+        return outcomeEvent(item);
+      },
+      submit: async () => undefined,
+      onLaunchError: async item => outcomeEvent(item),
+    }, new Date().toISOString());
+    await new Promise(resolve => setTimeout(resolve, 0));
+    expect(started).toHaveLength(capacity);
+    expect(supervisor.activeCount('task-a')).toBe(capacity);
+    releases.get('attempt-a')!();
+    await new Promise(resolve => setTimeout(resolve, 0));
+    expect(started).toHaveLength(3);
+    for (const release of releases.values()) release();
+    await supervisor.drain('task-a');
+    expect(supervisor.activeCount()).toBe(0);
+  });
   it('records a yielded Attempt as not started instead of as an execution', async () => {
     // 2026-10-28 transparent execution §P2.1: `wait_for_partition` is a
     // scheduling yield, not an execution result. The dispatch item must stop

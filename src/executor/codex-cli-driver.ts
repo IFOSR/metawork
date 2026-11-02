@@ -98,7 +98,7 @@ export class CodexCliDriver implements HarnessDriver {
       // system-control and high-impact external capabilities separately.
       args: buildCodexNonInteractiveArgs(input.prompt, {
         json: true,
-        sandbox: input.responseOnly || input.workspaceAccess === 'read' || input.workspaceAccess === 'execute'
+        sandbox: input.responseOnly || (!input.writableScratch && (input.workspaceAccess === 'read' || input.workspaceAccess === 'execute'))
           ? 'read-only'
           : 'danger-full-access',
         ...(input.providerRef && input.modelId

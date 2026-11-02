@@ -1,4 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
+import { mkdtemp, rm, stat } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import type { RuntimePrivateConfigurationBinding } from '../../src/configuration/types.js';
 import { authorizedExecutorBindingFingerprint, type AuthorizedExecutorBinding } from '../../src/core/authorized-executor-binding.js';
 import { COMPLETION_MARKER_V3 } from '../../src/execution/completion-protocol.js';
@@ -15,6 +18,27 @@ import {
 } from '../../src/executor/local-cli-executor-adapter.js';
 
 describe('LocalCliExecutorAdapter', () => {
+  it('launches a Conversation reader in its writable scratch with isolated temporary/cache directories', async () => {
+    const scratch = await mkdtemp(join(tmpdir(), 'reader-adapter-'));
+    try {
+      const driver = harnessDriver('pi-cli');
+      const run = vi.fn(async () => ({exitCode: 0, stdout: 'checked', stderr: ''}));
+      const adapter = new LocalCliExecutorAdapter({agentClassId: 'quality-beta', driver,
+        runtimeBinding: runtimeBinding(), authorizedBinding: authorizedBinding(), modelId: 'test',
+        attemptsRoot: '/runtime/attempts', processRunner: {run, abort: vi.fn()}});
+      const input = executorInput('reader');
+      input.executionBinding!.workspacePath = scratch;
+      input.context.workspaceContext = {...input.context.workspaceContext, executionMode: 'conversation_git',
+        accessMode: 'read', workingDirectory: scratch, readOnlySourcePath: '/business/conversation'};
+      expect(await adapter.execute(input)).toMatchObject({success: true});
+      expect(driver.buildLaunch).toHaveBeenCalledWith(expect.objectContaining({cwd: scratch, responseOnly: false, writableScratch: true}));
+      expect(run).toHaveBeenCalledWith(expect.objectContaining({cwd: scratch, environment: expect.objectContaining({
+        TMPDIR: join(scratch, 'tmp'), XDG_CACHE_HOME: join(scratch, 'cache'), METACLAW_READ_ONLY_WORKSPACE: '/business/conversation',
+      })}));
+      expect((await stat(join(scratch, 'tmp'))).isDirectory()).toBe(true);
+    } finally { await rm(scratch, {recursive: true, force: true}); }
+  });
+
   it('rejects a substituted authorization fingerprint before creating a home or launching', async () => {
     const driver = harnessDriver('pi-cli');
     const processRunner = { run: vi.fn(), abort: vi.fn() };

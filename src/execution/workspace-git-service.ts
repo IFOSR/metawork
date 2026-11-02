@@ -168,7 +168,7 @@ export class WorkspaceGitService {
    */
   async isWorktreeClean(worktreeRoot: string, headCommit: string): Promise<boolean> {
     const output = await this.run([
-      '-C', worktreeRoot, 'status', '--porcelain=v1', '-z', '--untracked-files=all',
+      '--no-optional-locks', '-C', worktreeRoot, 'status', '--porcelain=v1', '-z', '--untracked-files=all',
     ]);
     if (output.length > 0) return false;
     const head = await this.text(['-C', worktreeRoot, 'rev-parse', 'HEAD']);

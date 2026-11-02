@@ -32,6 +32,7 @@ export function createV31RepositoryDb(): Database.Database {
       executor_bindings_json TEXT NOT NULL,
       delivery_kind TEXT NOT NULL,
       file_outputs_json TEXT,
+      workspace_effect TEXT,
       acceptance_json TEXT NOT NULL,
       risk_level TEXT NOT NULL,
       result TEXT NOT NULL,

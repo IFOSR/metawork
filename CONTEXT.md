@@ -1098,15 +1098,24 @@ Worktree。成功 Attempt 封存 Git 提交并进入合并队列；未产生变�
 Before/after 观测和提交封存使用 Conversation Worktree 的 Git 通道。用户目录的外部
 修改在合并前作为 external commit 吸收，冲突由 Workspace 合并队列保留并交给用户决策。
 
-`read_only` 是访问事实，不是第二种执行模式。只读 Attempt 通过受控只读边界读取
-Conversation Worktree，临时文件进入该 Worktree 的 attempt-owned 目录，不单独选择
+`read_only` 是访问事实，不是第二种执行模式。只读 Attempt 共享读取
+Conversation Worktree，临时文件进入会话目录外的 attempt-owned scratch，不单独选择
 `in_place`。历史 `in_place` 和旧 Worktree binding 只读用于审计、迁移和恢复，不能被新
 任务重新选择。
+
+Subtask 可声明 `workspaceEffect`。明确的文本报告读者共享 Conversation read lease，
+使用会话目录外的 Attempt scratch，并以输入提交见证完成；写入、unknown、文件交付
+或 artifact handoff 保持独占 write lease。只读完成不封存 Git，意外业务修改会隔离
+会话并阻止后续调度。历史缺少该字段时保持 unknown/独占语义。
+SQLite schema 65 保存 `conversation_attempt_owners`；owner 在租约 TTL 过期后仍是
+占用 fence，只有进程停止和 Attempt 收束后才释放。只读是可信原生执行约定，
+不是 OS 文件保护；Git 校验检测可观察的业务树/HEAD 变化，不承诺检测被忽略文件
+或执行中发生后又还原的修改。
 
 ## Current Server Upgrade Baseline
 
 The current implementation uses PlanningAgentPlan v9, Work Graph v7, Kernel wire
-v5 and SQLite schema v60. ADR-0027 through ADR-0030 govern the configuration
+v5 and SQLite schema v65. ADR-0027 through ADR-0030 govern the configuration
 and release baseline; ADR-0032 governs Completion Protocol v4 and result-first
 delivery.
 

@@ -19,6 +19,8 @@ This directory contains both current technical documentation and historical plan
 
 ## Current Docs
 
+- [子任务共享读锁并行](plans/2026-11-02-read-only-research-parallelism-plan.md)：代码已实现；只读节点共享会话输入并使用独立 scratch，写节点独占，迁移和专项验证记录见方案。
+
 - [记忆资产交互设计](plans/2026-10-31-memory-assets-interaction-design.md)：首版已实施；消除设置轮询触发的闪烁，提供全文详情、搜索筛选、分页与单条管理；内容编辑仍为后续范围。
 
 - [L1/L2/L3 记忆接入 Planner 技术方案](plans/2026-11-01-layered-memory-planner-integration-design.md)：已实施 L2 场景经验和 L3 用户画像召回、版本化 ContextRef、Runtime 证据物化及分层资产治理；验证与实施记录见方案末尾。

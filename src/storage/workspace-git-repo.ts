@@ -65,15 +65,38 @@ export class WorkspaceGitRepo implements WorkspaceGitPort {
       WHERE conversation_id=? AND owner_token IS NULL AND state NOT IN ('cleaning','cleaned','failed')`)
       .run(token,now(),conversationId).changes===1;
   }
-  claimConversation(conversationId: string, taskId: string, token: string): boolean {
-    return this.db.prepare(`UPDATE conversation_git_worktrees SET state='executing',owner_task_id=?,owner_token=?,updated_at=?
-      WHERE conversation_id=? AND state IN ('idle','executing','awaiting_delivery') AND (owner_token IS NULL OR owner_token=?)
-      AND (owner_task_id IS NULL OR owner_task_id=?)
-      AND NOT EXISTS (SELECT 1 FROM task_workspace_changes c WHERE c.conversation_id=conversation_git_worktrees.conversation_id
-        AND c.task_id<>? AND c.state NOT IN ('delivered','abandoned'))`).run(taskId,token,now(),conversationId,token,taskId,taskId).changes === 1;
+  claimConversation(conversationId: string, taskId: string, token: string, attempt?: { attemptId: string; access: 'read' | 'write' }): boolean {
+    return this.db.transaction(() => {
+      const state = this.db.prepare("SELECT * FROM conversation_git_worktrees WHERE conversation_id=? AND state IN ('idle','executing','awaiting_delivery')").get(conversationId) as Row | undefined;
+      if (!state || (state.owner_task_id && state.owner_task_id !== taskId)) return false;
+      if (this.hasUndeliveredChanges(conversationId, taskId)) return false;
+      const owners = this.db.prepare('SELECT * FROM conversation_attempt_owners WHERE conversation_id=?').all(conversationId) as Row[];
+      if (attempt && owners.some(owner => owner.attempt_id === attempt.attemptId && owner.token !== token)) return false;
+      const own = owners.find(owner => owner.token === token);
+      if (own && (own.task_id !== taskId || own.attempt_id !== attempt?.attemptId || own.access_mode !== attempt?.access)) return false;
+      if (state.owner_token && state.owner_token !== token) {
+        if (!attempt || attempt.access !== 'read' || !owners.some(owner => owner.token === state.owner_token)
+          || owners.some(owner => owner.task_id !== taskId || owner.access_mode !== 'read')) return false;
+      }
+      if (attempt && owners.some(owner => owner.token !== token
+        && (owner.access_mode === 'write' || attempt.access === 'write'))) return false;
+      if (attempt) this.db.prepare(`INSERT INTO conversation_attempt_owners
+        (conversation_id,token,task_id,attempt_id,access_mode,created_at) VALUES(?,?,?,?,?,?)
+        ON CONFLICT(token) DO NOTHING`).run(conversationId, token, taskId, attempt.attemptId, attempt.access, now());
+      this.db.prepare("UPDATE conversation_git_worktrees SET state='executing',owner_task_id=?,owner_token=COALESCE(owner_token,?),updated_at=? WHERE conversation_id=?")
+        .run(taskId, token, now(), conversationId);
+      return true;
+    }).immediate();
   }
   releaseConversation(conversationId: string, token: string): void {
-    this.db.prepare("UPDATE conversation_git_worktrees SET state=CASE WHEN state='executing' THEN 'idle' ELSE state END,owner_task_id=NULL,owner_token=NULL,updated_at=? WHERE conversation_id=? AND owner_token=?").run(now(),conversationId,token);
+    this.db.transaction(() => {
+      this.db.prepare('DELETE FROM conversation_attempt_owners WHERE conversation_id=? AND token=?').run(conversationId, token);
+      const next = this.db.prepare('SELECT token,task_id FROM conversation_attempt_owners WHERE conversation_id=? ORDER BY created_at,token LIMIT 1').get(conversationId) as Row | undefined;
+      this.db.prepare(`UPDATE conversation_git_worktrees SET
+        state=CASE WHEN state='executing' AND ? IS NULL THEN 'idle' ELSE state END,
+        owner_task_id=?,owner_token=?,updated_at=? WHERE conversation_id=? AND owner_token=?`)
+        .run(next?.token ?? null, next?.task_id ?? null, next?.token ?? null, now(), conversationId, token);
+    }).immediate();
   }
   binding(taskId: string, generationId: string): ConversationExecutionBinding | null {
     const row = this.db.prepare('SELECT * FROM conversation_execution_bindings WHERE task_id=? AND generation_id=?').get(taskId,generationId) as Row | undefined;
@@ -183,13 +206,19 @@ export class WorkspaceGitRepo implements WorkspaceGitPort {
   recordAttemptCommit(attemptId:string,worktree:ConversationGitWorktree,after:string):void {
     this.db.prepare('UPDATE executor_attempt_runtime SET worktree_id=?,worktree_incarnation=?,before_commit=?,after_commit=? WHERE attempt_id=?').run(worktree.worktreeId,worktree.incarnation,worktree.headCommit,after,attemptId);
   }
-  stoppedOwners(workspaceId:string):Array<{conversationId:string;token:string;attemptId:string;taskId:string;generationId:string}> {
-    return (this.db.prepare(`SELECT w.conversation_id,w.owner_token,a.attempt_id,a.task_id,a.generation_id
-      FROM conversation_git_worktrees w JOIN attempt_sandboxes a
-      ON a.task_id=w.owner_task_id AND a.lease_token=w.owner_token
-      WHERE w.workspace_id=? AND w.owner_token IS NOT NULL AND a.cleanup_status='removed'
-      AND a.status='removed'`).all(workspaceId) as Row[]).map(r=>({conversationId:r.conversation_id,
-        token:r.owner_token,attemptId:r.attempt_id,taskId:r.task_id,generationId:r.generation_id}));
+  stoppedOwners(workspaceId:string):Array<{conversationId:string;token:string;attemptId:string;taskId:string;generationId:string;access?:'read'|'write'}> {
+    const current = this.db.prepare(`SELECT o.conversation_id,o.token,o.access_mode,d.attempt_id,d.task_id,d.generation_id
+      FROM conversation_attempt_owners o JOIN conversation_git_worktrees w ON w.conversation_id=o.conversation_id
+      JOIN kernel_dispatch_items d ON d.attempt_id=o.attempt_id
+      LEFT JOIN attempt_sandboxes a ON a.attempt_id=o.attempt_id
+      WHERE w.workspace_id=? AND ((a.cleanup_status='removed' AND a.status='removed')
+        OR (a.attempt_id IS NULL AND d.status IN ('terminal','cancelled')))`).all(workspaceId) as Row[];
+    const legacy = this.db.prepare(`SELECT w.conversation_id,w.owner_token AS token,'write' AS access_mode,a.attempt_id,a.task_id,a.generation_id
+      FROM conversation_git_worktrees w JOIN attempt_sandboxes a ON a.task_id=w.owner_task_id AND a.lease_token=w.owner_token
+      WHERE w.workspace_id=? AND a.cleanup_status='removed' AND a.status='removed'
+      AND NOT EXISTS (SELECT 1 FROM conversation_attempt_owners o WHERE o.token=w.owner_token)`).all(workspaceId) as Row[];
+    return [...current, ...legacy].map(r => ({conversationId:r.conversation_id, token:r.token,
+      attemptId:r.attempt_id,taskId:r.task_id,generationId:r.generation_id,access:r.access_mode}));
   }
   operationRecord(operationId:string):{state:string;payload:Record<string,unknown>;expectedRef:string|null;targetCommit:string|null}|null {
     const r=this.db.prepare('SELECT * FROM workspace_git_operations WHERE operation_id=?').get(operationId) as Row|undefined;

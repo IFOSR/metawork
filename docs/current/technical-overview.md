@@ -1841,7 +1841,7 @@ The index is a deterministic read model, not a semantic router. The PlanningAgen
 
 MetaWork admits one executing or cleaning-up top-level Task per Conversation. An account-scoped scheduler selects Tasks from different Conversations under `maxConcurrentTasks`, `maxConcurrentAttempts`, `maxConcurrentAttemptsPerTask`, aging and fair-share policy; same-Conversation Tasks remain queued. Within each Task, Work Graph facts derive a stable runnable frontier and Kernel v5 may authorize up to four independent attempt items in one batch. Scheduling is non-preemptive; clarifications, status/query commands and explicit task-control commands remain available, while new semantic Planner turns cannot complete through `direct_reply`. This parallel rollout is governed by ADR-0037 and is implemented incrementally under the active implementation plan.
 
-Every natural-language proposal and deterministic execution entrypoint enters the same persisted coordination chain: `event → bounded graph/task facts → durable coordination command → Runtime apply → normalized event`. The current `KernelWorkflow` remains serial during migration, but applying `dispatch_batch` only persists `kernel_dispatch_items`; an Execution-owned supervisor launches them asynchronously and submits each outcome independently. A sibling failure never cancels the rest of the batch.
+Every natural-language proposal and deterministic execution entrypoint enters the same persisted coordination chain: `event → bounded graph/task facts → durable coordination command → Runtime apply → normalized event`. The current `KernelWorkflow` remains serial during migration, but applying `dispatch_batch` only persists `kernel_dispatch_items`; an Execution-owned supervisor launches them asynchronously and submits each outcome independently. A sibling failure never cancels the rest of the batch. Within one Conversation, explicitly declared text-only read Subtasks may hold compatible durable read ownership concurrently; write and unknown effects retain the exclusive Workspace fence.
 
 Whole-Task and explicit Subtask cancellation use the same durable control chain. The cancellation fence commits before process termination; `cancelling` dispatch/publication rows continue to own capacity until the exact backend execution has exited or is confirmed missing and WorkUnit/resource leases are released. Late outcomes are `no_op`. Subtask cancellation atomically includes every downstream dependent while independent siblings continue. After the surviving graph drains, the Task blocks until the user either cancels it or explicitly accepts the published subset with `/task accept-partial <taskId>`.
 
@@ -2477,3 +2477,19 @@ Task versions. Schema 51→52 classifies legacy evidence with immutable audit an
 quarantines unapplied legacy non-cancellation operations. See the
 [validation record](../plans/2026-10-22-task-state-review-fixes.md); installed/runtime
 packaging verification remains distinct from source validation.
+
+### Conversation shared readers (2026-11-02)
+
+SQLite schema 65 persists node `workspaceEffect` and `conversation_attempt_owners`.
+Explicit `read_only` report nodes with empty `fileOutputs` and text-only outgoing handoffs
+share the Conversation business root under read leases. Each executes in an independent
+scratch outside the Conversation tree, with private temporary/cache paths. Writers retain
+exclusive ownership through process cleanup and sealing; missing/unknown effects stay exclusive.
+Existing account and per-Task capacity still limit concurrency, and a queued writer closes
+admission to additional readers. Owner facts remain a fence after lease TTL expiry.
+
+Readers verify the observed HEAD and Git-visible tree, save receipt/handoffs atomically,
+and never seal a candidate. Recovery, result acceptance and response-only correction retain
+that distinction. Unexpected changes fence the Conversation and abort active readers without
+capturing the tree as a legitimate read result. This is coordination within trusted native
+execution, not OS protection; transient/reverted or ignored-file writes may evade detection.

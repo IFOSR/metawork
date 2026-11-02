@@ -21,6 +21,7 @@ interface SubtaskRow {
   executor_bindings_json: string;
   delivery_kind: Subtask['deliveryKind'];
   file_outputs_json: string | null;
+  workspace_effect: Subtask['workspaceEffect'] | null;
   acceptance_json: string;
   artifacts_json: string;
   verification_json: string;
@@ -53,6 +54,7 @@ function rowToSubtask(row: SubtaskRow): Subtask {
     requiredCapabilities: parseList(row.required_capabilities_json),
     executorBindings: parseJson(row.executor_bindings_json, []),
     deliveryKind: row.delivery_kind,
+    ...(row.workspace_effect == null ? {} : { workspaceEffect: row.workspace_effect }),
     ...(row.file_outputs_json === null ? {} : { fileOutputs: JSON.parse(row.file_outputs_json) as string[] }),
     acceptance: parseJson<WorkGraphAcceptanceCriterion[]>(row.acceptance_json, []),
     riskLevel: row.risk_level,
@@ -94,9 +96,9 @@ export class SubtaskRepo {
     this.db.prepare(`
       INSERT INTO subtasks (
         id, task_id, graph_revision, generation_id, title, goal, status, dependencies_json, context_refs_json, required_capabilities_json,
-        executor_bindings_json, delivery_kind, file_outputs_json, acceptance_json,
+        executor_bindings_json, delivery_kind, file_outputs_json, workspace_effect, acceptance_json,
         risk_level, result, artifacts_json, verification_json, error, created_at, updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       ON CONFLICT(id) DO UPDATE SET
         title = excluded.title,
         goal = excluded.goal,
@@ -107,6 +109,7 @@ export class SubtaskRepo {
         executor_bindings_json = excluded.executor_bindings_json,
         delivery_kind = excluded.delivery_kind,
         file_outputs_json = excluded.file_outputs_json,
+        workspace_effect = excluded.workspace_effect,
         acceptance_json = excluded.acceptance_json,
         risk_level = excluded.risk_level,
         result = excluded.result,
@@ -128,6 +131,7 @@ export class SubtaskRepo {
       JSON.stringify(subtask.executorBindings),
       subtask.deliveryKind,
       subtask.fileOutputs === undefined ? null : JSON.stringify(subtask.fileOutputs),
+      subtask.workspaceEffect ?? null,
       JSON.stringify(subtask.acceptance),
       subtask.riskLevel,
       subtask.result,

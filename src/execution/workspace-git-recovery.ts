@@ -75,7 +75,15 @@ export class WorkspaceGitRecovery {
           if (!binding) throw new Error('recovery_conversation_binding_missing');
           root={...root,state:'ready'};
           repo.saveRoot(root);
-          await this.conversations.sealAttempt(binding,owner.attemptId);
+          if (owner.access === 'read') {
+            // Never capture a reader's unexpected writes as legitimate output.
+            if (repo.operationRecord(`read_${owner.attemptId}`)) {
+              try { await this.conversations.finishRead(binding, owner.attemptId); }
+              catch { repo.setConversationState(binding.worktreeId, 'failed'); }
+            }
+          } else {
+            await this.conversations.sealAttempt(binding,owner.attemptId);
+          }
           repo.releaseConversation(owner.conversationId,owner.token);
         }
         let after = 0;

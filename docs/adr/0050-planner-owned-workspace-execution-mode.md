@@ -23,6 +23,23 @@ In-place Attempt 直接完成 Subtask，并由结果记录服务登记声明的�
 Workspace write lease，也不创建 publication。声明 `fileOutputs` 的报告自动按
 写入 admission 处理。
 
+### 2026-11-02 修订：Conversation 内共享读锁
+
+Subtask 可声明 `workspaceEffect: read_only | write | unknown`。只有明确的
+`read_only`、`report`、`fileOutputs=[]` 且没有 artifact outgoing handoff 的节点才
+取得 Conversation 业务根的共享 read lease；`write`、`unknown`、文件交付或不确定
+效果仍取得独占 write lease。一个 Task 可以混合两种节点，DAG 依赖和现有 Task/账户
+容量仍独立生效，因此读者可以真实重叠运行，写者等待全部读者退出。
+
+共享读者从稳定的 Conversation Git 提交读取，cwd 是会话目录外的 Attempt scratch；
+scratch 内的下载、缓存和脚本不进入业务 Git。只读 Attempt 完成时记录输入提交和
+结果 receipt，不调用 `sealAttempt`，也不推进分支或合并队列。业务树发生意外变化时
+会话进入恢复隔离，取消相关读者并阻止新调度，现场不会被当作只读成果封存。
+
+每个 Attempt 的读写占用记录在 `conversation_attempt_owners`，所以重启、TTL 到期
+和单个读者释放都不会错误地把仍有读者的 Conversation 标记为空闲。历史节点缺少
+`workspaceEffect` 时保持 unknown/独占语义。
+
 旧 Worktree binding、候选 publication 和自动复制结果只作为历史事实迁移并停放，
 不得重新 dispatch 或静默切换目录。显式配置
 `METACLAW_EXECUTOR_BACKEND=worktree` 会失败并要求重新规划为目标 Workspace
@@ -32,7 +49,7 @@ Workspace write lease，也不创建 publication。声明 `fileOutputs` 的报�
 
 - `authorizedWorkingDirectory` 只能是目标 Workspace 根或受控 scratch 根。
 - 目标路径必须是 Workspace-relative，并由 Kernel 校验 containment 和声明输出覆盖。
-- 同一物理 Workspace 或重叠父子路径由 ResourceLease 串行化；不同 Workspace 可并行。
+- 同一物理 Workspace 或重叠父子路径遵循读读兼容、读写/写写互斥；不同 Workspace 可并行。
 - Executor 崩溃后存在未知写入时进入 uncertainty，恢复不得盲目重放。
 - Web、Desktop、TUI、Gateway 只展示目标 Workspace 和变更事实，不展示候选发布模式。
 
@@ -50,3 +67,15 @@ Workspace”的执行细节。所有新 Task 的 Workspace admission 固定为
 `in_place`，Kernel 不再为新 Task 发出 `in_place`。数据库中的旧
 `in_place`/旧 Worktree 值只用于只读展示、恢复和迁移诊断，不会重新成为新任务的
 执行路径。
+
+## 2026-11-02 实施边界
+
+本修订在现有 Work Graph v7 / PlanningAgentPlan v9 上增加可选字段，不改变旧提案
+JSON；SQLite 64→65 增加 nullable effect 和 durable Attempt owner 表，不回填猜测
+历史只读权限。owner_token 仅投影一个仍存活的 owner 供既有生命周期观察，多读者
+归属以 owner 表为准。资源申请使用 immediate 事务，等待写者阻止新读者插队。
+
+结果接受和 response-only correction 引用原 Attempt 已确认的提交，不重新扫描封存
+共享目录。污染会话保留 failed 状态与现场，不自动回滚；同进程读者立即取消，其他
+进程的读者在心跳/完成校验中观察 fence。原生 Harness 仍是可信用户进程，这不是 OS
+沙箱；Git 检测不覆盖 ignored 文件或执行中写入后恢复的瞬态变化。

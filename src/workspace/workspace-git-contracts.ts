@@ -110,7 +110,7 @@ export interface WorkspaceGitPort {
   conversation(conversationId: string): ConversationGitWorktree | null;
   saveConversation(w: ConversationGitWorktree): ConversationGitWorktree;
   claimPlanner(conversationId: string, token: string): boolean;
-  claimConversation(conversationId: string, taskId: string, token: string): boolean;
+  claimConversation(conversationId: string, taskId: string, token: string, attempt?: { attemptId: string; access: 'read' | 'write' }): boolean;
   releaseConversation(conversationId: string, token: string): void;
   binding(taskId: string, generationId: string): ConversationExecutionBinding | null;
   latestBinding(conversationId: string): ConversationExecutionBinding | null;
@@ -132,7 +132,7 @@ export interface WorkspaceGitPort {
   cleanupBlocked(worktreeId:string):boolean;
   conversations(workspaceId:string):ConversationGitWorktree[];
   recordAttemptCommit(attemptId:string,worktree:ConversationGitWorktree,after:string):void;
-  stoppedOwners(workspaceId:string):Array<{conversationId:string;token:string;attemptId:string;taskId:string;generationId:string}>;
+  stoppedOwners(workspaceId:string):Array<{conversationId:string;token:string;attemptId:string;taskId:string;generationId:string;access?:'read'|'write'}>;
   operationRecord(operationId:string):{state:string;payload:Record<string,unknown>;expectedRef:string|null;targetCommit:string|null}|null;
   reviseManifest(jobId:string,external:string,merged:string):void;
   replaceFiles(jobId:string,files:WorkspaceMergeFile[]):void;

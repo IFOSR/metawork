@@ -100,6 +100,16 @@ function input(): WorkGraphPresentationInput {
 }
 
 describe('WorkGraphPresentationProjector', () => {
+  it('projects a resource wait independently of the dependency frontier', () => {
+    const facts = input();
+    facts.subtasks = facts.subtasks.map(node => node.id.endsWith('_docs') ? {...node, resourceWaitAccess: 'read'} : node);
+    const result = new WorkGraphPresentationProjector().project(facts);
+    const waiting = result.nodes.find(node => node.id.endsWith('_docs'))!;
+    expect(waiting.runnable).toBe(true);
+    expect(waiting.executionState).toBe('waiting');
+    expect(waiting.schedulingDetail).toContain('等待写入节点');
+    expect(result.nodes.find(node => node.id.endsWith('_implement'))?.schedulingDetail).toBe('执行中');
+  });
   it('projects dependency edges, parallel groups, frontier and concrete routing facts', () => {
     const result = new WorkGraphPresentationProjector().project(input());
 

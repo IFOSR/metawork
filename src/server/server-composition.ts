@@ -1,3 +1,4 @@
+import { SqliteResourceLeaseRepository } from '../storage/resource-lease-repo.js';
 import { RuntimeHomeMaterializer } from '../executor/runtime-home-materializer.js';
 import { ConversationDeletionService } from '../session/conversation-deletion.js';
 import { SqliteConversationDeletionStore } from '../storage/conversation-deletion-repo.js';
@@ -2807,6 +2808,7 @@ export async function main(cliCommand = parseCliArgs(process.argv.slice(2))) {
             authorizedBindings,
             routing: planAction.routing?.[subtaskId],
           }));
+          const waits = new SqliteResourceLeaseRepository(db).findWaiting(taskId);
           return workGraphPresentationProjector.project({
             taskId,
             graphRevision: planAction.graphRevision,
@@ -2818,6 +2820,7 @@ export async function main(cliCommand = parseCliArgs(process.argv.slice(2))) {
               status: subtask.status,
               generationId: subtask.generationId,
               firstDispatchOrder: firstDispatchOrder.get(subtask.id) ?? null,
+              resourceWaitAccess: waits.find(wait => wait.subtaskId === subtask.id && wait.generationId === subtask.generationId)?.access,
               hasPendingOrActiveAttempt: dispatchItems.some(item => (
                 item.subtaskId === subtask.id
                 && ['pending_launch', 'launching', 'running', 'cancelling', 'uncertain'].includes(item.status)

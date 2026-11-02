@@ -191,7 +191,7 @@ function validateWorkspaceIntent(plan: PlanningAgentPlan, errors: string[]): voi
     }
     if (intent.operation === 'read_only') {
       const writes = plan.workGraph?.subtasks.some(
-        subtask => subtask.deliveryKind !== 'report' || (subtask.fileOutputs?.length ?? 0) > 0,
+        subtask => subtask.workspaceEffect === 'write' || subtask.deliveryKind !== 'report' || (subtask.fileOutputs?.length ?? 0) > 0,
       ) ?? false;
       if (writes) {
         errors.push('a read-only Workspace intent cannot authorize a write Work Graph');

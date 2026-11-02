@@ -29,8 +29,9 @@ export function WorkGraphPanel({ projection }: { projection: WorkGraphPresentati
         </div>
         <div className="work-graph-meta">
           <span>{projection.nodes.length} 个子任务</span>
-          <span>{projection.currentRunnableFrontier.length} 个可调度</span>
-          {parallelGroups.map(group => <span key={group.phase}>阶段 {group.phase + 1} 可并行 {group.nodes.length} 项</span>)}
+          <span>{projection.nodes.filter(node => node.executionState === 'running').length} 个运行中</span>
+          <span>{projection.currentRunnableFrontier.length} 个前置条件已满足</span>
+          {parallelGroups.map(group => <span key={group.phase}>阶段 {group.phase + 1} 独立节点 {group.nodes.length} 项</span>)}
         </div>
       </header>
       <WorkGraphDiagram projection={projection} selectedId={selected.id}
@@ -75,6 +76,7 @@ function WorkGraphNode({
         <strong>{workGraphNodeLabel(node)}</strong>
       </div>
       <p>{node.goal}</p>
+      {node.schedulingDetail && <small>{node.schedulingDetail}</small>}
       <div className="work-graph-tags">
         {node.requiredCapabilities.map(capability => <span key={capability}>{capability}</span>)}
       </div>

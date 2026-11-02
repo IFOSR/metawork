@@ -1,3 +1,6 @@
+import { ConversationWorktreeService } from '../../src/execution/conversation-worktree-service.js';
+import { WorkspaceGitService } from '../../src/execution/workspace-git-service.js';
+import { WorkspaceGitRepo } from '../../src/storage/workspace-git-repo.js';
 import { createTaskStateAuthority } from '../../src/account/task-state-composition.js';
 import { TaskOperationKeys } from '../../src/storage/task-state-change-repo.js';
 import { ConversationTaskSchedulerRepo } from '../../src/storage/conversation-task-scheduler-repo.js';
@@ -90,6 +93,7 @@ function node(
 function setup(
   rawResponse: string,
   usageObserver?: (event: import('../../src/metering/usage-normalizer.js').RawUsageEvent) => void,
+  withConversation = false,
 ) {
   const artifactPublicationStub = {
     publishIntegratedArtifacts: vi.fn().mockResolvedValue({
@@ -171,6 +175,7 @@ function setup(
     )),
     resolveModelId: vi.fn(() => 'actual-provider-model'),
     runResponseOnly: vi.fn(),
+    abortTask: vi.fn(),
   };
   const attemptExecutionBackend: AttemptExecutionBackend = {
     kind: 'worktree',
@@ -186,7 +191,11 @@ function setup(
   const workspaceStore = new WorkspaceStore(join(fixtureRoot, 'store'));
   const workUnitClaimService = new WorkUnitClaimService(workUnitRepo);
   const claimAttempt = vi.spyOn(workUnitClaimService, 'claim');
+  const conversations = withConversation ? new ConversationWorktreeService(
+    new WorkspaceGitService({internalRoot: join(fixtureRoot, 'git')}), new WorkspaceGitRepo(db),
+  ) : undefined;
   const attemptRunner = new SubtaskAttemptRunner({
+    conversationWorktrees: conversations,
     db,
     sessionId: 'session_1',
     taskRuntimeService,
@@ -214,6 +223,7 @@ function setup(
   });
   const dispatchItems = new KernelDispatchItemRepo(db);
   const authorize = (input: {
+    subtaskId?: string;
     attemptId: string;
     authorizedBinding: AuthorizedExecutorBinding;
     bindingFingerprint: string;
@@ -235,7 +245,7 @@ function setup(
         taskId: 'task_phase2',
         items: [{
           order: 0,
-          subtaskId: a.id,
+          subtaskId: input.subtaskId ?? a.id,
           attemptId: input.attemptId,
           authorizedBinding: input.authorizedBinding,
           bindingFingerprint: input.bindingFingerprint,
@@ -248,6 +258,7 @@ function setup(
       },
     }, {
       generationId: a.generationId,
+      executionBindingFingerprint: conversations?.repo.binding(a.taskId, a.generationId)?.bindingFingerprint,
       configurationRevision: input.authorizedBinding.configurationRevision,
       attempts: {
         [input.attemptId]: {
@@ -280,6 +291,8 @@ function setup(
     },
   };
   return {
+    conversations,
+    fixtureRoot,
     db,
     runner,
     attemptRunner,
@@ -349,6 +362,152 @@ function validResponse(): string {
     noChangeReason: null,
   })}`;
 }
+
+describe('Conversation shared readers', () => {
+  async function readers() {
+    const fixture = setup(validResponse(), undefined, true);
+    const {a, b, subtaskRepo, conversations, workUnitRepo} = fixture;
+    subtaskRepo.upsert({...a, workspaceEffect: 'read_only', fileOutputs: []});
+    subtaskRepo.upsert({...b, dependencies: [], workspaceEffect: 'read_only', fileOutputs: []});
+    for (const id of ['reader-two', 'writer']) {
+      workUnitRepo.upsert({...workUnitRepo.findById('executor-codex')!, id});
+    }
+    const binding = await conversations!.bind({accountId: 'local-default', workspaceId: 'workspace',
+      conversationId: 'conversation', userRoot: fixture.sourceRoot, taskId: a.taskId, generationId: a.generationId});
+    const run = (subtaskId: string, attemptId: string) => fixture.runner.run({
+      taskId: a.taskId, subtaskId, attemptId, executionId: attemptId,
+      ...attemptIdentity(), defaultResourceGrant: [],
+    });
+    return {...fixture, binding, run};
+  }
+
+  it('runs readers concurrently in separate scratch and keeps the writer out until the last reader settles', async () => {
+    const f = await readers();
+    const pending = new Map<string, () => void>();
+    const directories: string[] = [];
+    const running: Promise<unknown>[] = [];
+    f.executionRuntime.run.mockImplementation(async input => {
+      const context = input.executorInput.context;
+      const cwd = context.workspaceContext.workingDirectory;
+      directories.push(cwd);
+      expect(cwd.startsWith(f.binding.executionRoot)).toBe(false);
+      expect(context.workspaceContext.readOnlySourcePath).toBe(f.binding.executionRoot);
+      writeFileSync(join(cwd, 'same-name.txt'), context.identity.attemptId);
+      await new Promise<void>(resolve => pending.set(context.identity.attemptId, resolve));
+      return {status: 'success', executorName: 'codex-cli', output: validResponse(), durationMs: 1};
+    });
+    try {
+      const first = f.run(f.a.id, 'read-one');
+      const second = f.run(f.b.id, 'read-two');
+      running.push(first, second);
+      await vi.waitFor(() => expect(pending.size).toBe(2));
+      expect(new Set(directories).size).toBe(2);
+      const writer = {...node('task_phase2_writer'), workspaceEffect: 'write' as const, fileOutputs: []};
+      f.subtaskRepo.upsert(writer);
+      expect((await f.run(writer.id, 'write-blocked')).outcome).toBe('partition_conflict');
+      pending.get('read-one')!();
+      expect((await first).outcome).toBe('completed');
+      expect(f.conversations!.repo.conversationState(f.binding.worktreeId).ownerToken).not.toBeNull();
+      expect((await f.run(writer.id, 'write-blocked')).outcome).toBe('partition_conflict');
+      pending.get('read-two')!();
+      expect((await second).outcome).toBe('completed');
+      expect(f.conversations!.repo.conversationState(f.binding.worktreeId).ownerToken).toBeNull();
+      expect(f.conversations!.repo.conversation('conversation')!.headCommit).toBe(f.binding.taskBaseCommit);
+      expect(f.conversations!.repo.operationRecord('seal_read-one')).toBeNull();
+      expect(f.conversations!.repo.operationRecord('seal_read-two')).toBeNull();
+      f.executionRuntime.run.mockImplementation(async input => {
+        expect(input.executorInput.context.workspaceContext.workingDirectory).toBe(f.binding.executionRoot);
+        writeFileSync(join(f.binding.executionRoot, 'README.md'), 'writer result');
+        return {status: 'success', executorName: 'codex-cli', output: validResponse(), durationMs: 1};
+      });
+      expect((await f.run(writer.id, 'write-blocked')).outcome).toBe('completed');
+      const writtenCommit = f.conversations!.repo.conversation('conversation')!.headCommit;
+      expect(writtenCommit).not.toBe(f.binding.taskBaseCommit);
+      const next = {...node('task_phase2_next'), workspaceEffect: 'read_only' as const, fileOutputs: []};
+      f.subtaskRepo.upsert(next);
+      f.executionRuntime.run.mockImplementation(async input => {
+        expect(readFileSync(join(input.executorInput.context.workspaceContext.readOnlySourcePath, 'README.md'), 'utf8')).toBe('writer result');
+        return {status: 'success', executorName: 'codex-cli', output: validResponse(), durationMs: 1};
+      });
+      expect((await f.run(next.id, 'read-after-write')).outcome).toBe('completed');
+      expect(f.conversations!.repo.operationRecord('read_read-after-write')?.expectedRef).toBe(writtenCommit);
+      expect(f.conversations!.repo.operationRecord('seal_read-after-write')).toBeNull();
+    } finally {
+      for (const release of pending.values()) release();
+      await Promise.allSettled(running);
+      f.db.close();
+      rmSync(f.fixtureRoot, {recursive: true, force: true});
+    }
+  });
+
+  it('fences unexpected business writes, aborts co-readers and never seals the dirty tree', async () => {
+    const f = await readers();
+    f.executionRuntime.run.mockImplementation(async () => {
+      writeFileSync(join(f.binding.executionRoot, 'README.md'), 'unexpected write');
+      return {status: 'success', executorName: 'codex-cli', output: validResponse(), durationMs: 1};
+    });
+    try {
+      expect((await f.run(f.a.id, 'dirty-reader')).outcome).toBe('executor_failed');
+      expect(f.executionRuntime.abortTask).toHaveBeenCalledWith(f.a.taskId);
+      expect(f.conversations!.repo.conversationState(f.binding.worktreeId).state).toBe('failed');
+      expect(f.conversations!.repo.operationRecord('seal_dirty-reader')).toBeNull();
+      expect(f.conversations!.repo.conversation('conversation')!.headCommit).toBe(f.binding.taskBaseCommit);
+      expect((await f.run(f.b.id, 'blocked-reader')).outcome).toBe('executor_failed');
+      expect(f.executionRuntime.run).toHaveBeenCalledTimes(1);
+    } finally { f.db.close(); rmSync(f.fixtureRoot, {recursive: true, force: true}); }
+  });
+
+  it('corrects a reader result without sealing while another reader holds the input', async () => {
+    const f = await readers();
+    f.executionRuntime.run.mockResolvedValue({status: 'success', output: 'Original read result', executorName: 'codex-cli', durationMs: 1});
+    try {
+      expect((await f.run(f.a.id, 'read-uncertified')).outcome).toBe('contract_failed');
+      expect(f.conversations!.repo.claimConversation('conversation', f.a.taskId, 'other-reader', {attemptId: 'other-reader', access: 'read'})).toBe(true);
+      f.executionRuntime.runResponseOnly.mockResolvedValue({success: true, output: validResponse(), durationMs: 1});
+      const result = await f.runner.runCorrection({attemptId: 'read-corrected', sourceAttemptId: 'read-uncertified',
+        executionId: 'correction', taskId: f.a.taskId, subtaskId: f.a.id, ...attemptIdentity(),
+        completionContract: {marker: COMPLETION_MARKER_V4, schemaVersion: 4}, violations: []});
+      expect(result).toMatchObject({outcome: 'completed', output: 'Original read result'});
+      expect(f.conversations!.repo.operationRecord('seal_read-corrected')).toBeNull();
+      expect(f.conversations!.repo.operationRecord('read_read-corrected')?.state).toBe('applied');
+      expect(f.conversations!.repo.conversationState(f.binding.worktreeId).ownerToken).toBe('other-reader');
+      expect(f.subtaskRepo.findById(f.a.id)?.status).toBe('done');
+    } finally { f.db.close(); rmSync(f.fixtureRoot, {recursive: true, force: true}); }
+  });
+
+  it('lands the text handoff with the reader result before the downstream writer can use it', async () => {
+    const f = await readers();
+    f.subtaskRepo.upsert({...f.b, workspaceEffect: 'write', fileOutputs: []});
+    try {
+      expect(f.db.prepare('SELECT count(*) AS n FROM subtask_handoffs').get()).toEqual({n: 0});
+      expect((await f.run(f.a.id, 'read-handoff')).outcome).toBe('completed');
+      expect(f.subtaskRepo.findById(f.a.id)?.status).toBe('done');
+      expect(new SubtaskHandoffRepo(f.db).listIncoming(f.a.taskId, f.b.id)).toHaveLength(1);
+      expect(f.conversations!.repo.operationRecord('seal_read-handoff')).toBeNull();
+    } finally { f.db.close(); rmSync(f.fixtureRoot, {recursive: true, force: true}); }
+  });
+
+  it('accepts a settled reader result after a later writer advances the input, without sealing that writer', async () => {
+    const f = await readers();
+    f.db.prepare("UPDATE tasks SET account_id='local-default' WHERE id=?").run(f.a.taskId);
+    f.executionRuntime.run.mockResolvedValue({status: 'success', output: 'Original read result', executorName: 'codex-cli', durationMs: 1});
+    try {
+      expect((await f.run(f.a.id, 'read-accept')).outcome).toBe('contract_failed');
+      const {readPendingTaskResult} = await import('../../src/storage/pending-task-result.js');
+      const pending = readPendingTaskResult(f.db, f.a.taskId)!;
+      expect(pending).not.toBeNull();
+      const authority = createTaskStateAuthority({db: f.db, workUnitClaimService: {hasClaimedByTask: () => false}});
+      authority.reconcile({taskId: f.a.taskId, decisionId: 'accept-reader', actor: 'task-domain', reason: 'explicit acceptance',
+        operationKey: TaskOperationKeys.acceptResult(pending.attemptId, pending.resultId), resolvedResult: pending});
+      writeFileSync(join(f.binding.executionRoot, 'README.md'), 'later writer');
+      const written = await f.conversations!.sealAttempt(f.binding, 'later-writer');
+      await f.attemptRunner.stageAcceptedResult(pending);
+      expect(f.subtaskRepo.findById(f.a.id)).toMatchObject({status: 'done', result: 'Original read result'});
+      expect(f.conversations!.repo.operationRecord('seal_read-accept')).toBeNull();
+      expect(f.conversations!.repo.conversation('conversation')!.headCommit).toBe(written.commit);
+    } finally { f.db.close(); rmSync(f.fixtureRoot, {recursive: true, force: true}); }
+  });
+});
 
 describe('SubtaskAttemptRunner', () => {
   it('lets a custom reviewer read the published upstream body through its attempt service', async () => {

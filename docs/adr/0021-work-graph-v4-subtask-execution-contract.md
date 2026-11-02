@@ -65,6 +65,16 @@ PlanningAgentPlan hard-upgrades to v7 and the Work Graph contract baseline to v6
 
 The model-facing Completion Protocol hard-upgrades to v3. A successful report contains only bounded `evidence` strings and nullable `noChangeReason`; a failed report retains the controlled `failure` object. The model does not emit artifacts, schema/status identity, Task/Subtask/attempt/WorkUnit IDs, acceptance keys, or outgoing handoff identities and keys.
 
+### Shared Workspace read effect amendment (2026-11-02)
+
+The Subtask contract adds the optional `workspaceEffect` fact. `read_only` is eligible
+for shared Conversation read admission only when the node is a text-only report with no
+file outputs and no artifact outgoing handoff. `write` and `unknown` remain exclusive;
+omitted effects on historical graphs are treated as unknown. This field describes the
+business Workspace effect and does not remove Harness tools or authorize external side
+effects. Read attempts use an attempt-owned scratch cwd, persist an input witness and
+receipt, and never seal or publish a Git commit.
+
 After a successful Executor response and before completion validation, Runtime computes and persists one authoritative workspace delta for every delivery kind. A `report` does not fail because the Executor created, modified or deleted ordinary Workspace files, and `noChangeReason` is not a report-specific prohibition. For `edit`, a changed Workspace requires a null reason and a zero-delta result requires a non-empty reason. Runtime derives publishable artifacts from created/modified files only, while deletions remain visible in delta/evidence. Truncated or indeterminate delta fails closed, and response-only correction reuses the source attempt's persisted delta. Runtime then materializes authoritative acceptance and handoff identities. Completion v2, the original v1 blocking-code set, patch/artifact heuristics, and old output-kind execution paths are historical only and are rejected rather than dual-read or repaired.
 
 ## Consequences

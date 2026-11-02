@@ -99,6 +99,7 @@ export interface WorkGraphPresentationProjection {
     executionState?: 'completed' | 'running' | 'waiting' | 'blocked' | 'failed' | 'unknown';
     phase: number;
     runnable: boolean;
+    schedulingDetail?: string;
     dependencies: string[];
     requiredCapabilities: string[];
     acceptanceCriteria: string[];

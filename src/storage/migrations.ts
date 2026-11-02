@@ -1,3 +1,4 @@
+import { installConversationAttemptOwnerSchema } from './conversation-attempt-owner-schema.js';
 import { CONVERSATION_TURN_SCHEMA_SQL, installConversationContentReferences } from './conversation-turn-schema.js';
 import { installWorkspaceGitSchema } from './workspace-git-schema.js';
 import { publicTaskRelativeDirectory } from '../task/public-task-directory.js';
@@ -5,7 +6,7 @@ import type Database from 'better-sqlite3';
 import { BILLING_SCHEMA_VERSION, createBillingSchema } from './billing-schema.js';
 import { installObservationSchema } from './observation-schema.js';
 
-export const CURRENT_SCHEMA_VERSION = 64;
+export const CURRENT_SCHEMA_VERSION = 65;
 
 /**
  * Local memory index (design §4.2).
@@ -1986,6 +1987,13 @@ export function runMigrations(
     })();
     version = 64;
   }
+  if (version === 64) {
+    db.transaction(() => {
+      installConversationAttemptOwnerSchema(db);
+      bumpSchemaVersion(db, 64, 65, '64 to 65');
+    })();
+    version = 65;
+  }
   // Current-schema databases may have been created before a new projection
   // invalidation trigger was introduced. Reinstalling the idempotent trigger
   // set on every open upgrades those databases without requiring a rebuild.
@@ -2912,12 +2920,12 @@ function runBaseMigrations(
     const versions = db.prepare(
       'SELECT version FROM schema_version ORDER BY version',
     ).all() as Array<{ version: number }>;
-    if (versions.length === 1 && [42, 43, 44, 45, 46, 47, 48, 49, 50, 51, 52, 53, 54, 55, 56, 57, 58, 59, 60, 61, 62, 63, CURRENT_SCHEMA_VERSION].includes(versions[0]!.version)) {
+    if (versions.length === 1 && [42, 43, 44, 45, 46, 47, 48, 49, 50, 51, 52, 53, 54, 55, 56, 57, 58, 59, 60, 61, 62, 63, 64, CURRENT_SCHEMA_VERSION].includes(versions[0]!.version)) {
       // A short-lived release stamped some pre-six-state databases as the
       // current version before rebuilding `tasks`. Treat that shape as the
       // genuine 51 baseline and run the authoritative six-state migration;
       // otherwise the runtime fails later on missing state_version columns.
-      if ([61, 62, 63, CURRENT_SCHEMA_VERSION].includes(versions[0]!.version)
+      if ([61, 62, 63, 64, CURRENT_SCHEMA_VERSION].includes(versions[0]!.version)
         && tableExists(db, 'tasks')
         && !columnsOf(db, 'tasks').includes('state_version')) {
         db.prepare('UPDATE schema_version SET version = 51 WHERE version = ?').run(versions[0]!.version);
@@ -3099,6 +3107,7 @@ function runBaseMigrations(
     installDirectoryInvalidationTriggers(db);
     createBillingSchema(db);
     installWorkspaceGitSchema(db);
+    installConversationAttemptOwnerSchema(db);
     db.prepare('INSERT INTO schema_version (version) VALUES (?)')
       .run(CURRENT_SCHEMA_VERSION);
   })();

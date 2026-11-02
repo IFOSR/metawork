@@ -44,6 +44,11 @@ function errorsFor(plan: PlanningAgentPlan): string[] {
 }
 
 describe('Planner Workspace intent contract (schema 9)', () => {
+  it('rejects a declared writer even when its delivery is a text report', () => {
+    const plan = v9Plan(workspaceIntentFixture({operation: 'read_only'}));
+    plan.workGraph!.subtasks[0] = {...plan.workGraph!.subtasks[0]!, workspaceEffect: 'write', deliveryKind: 'report', fileOutputs: []};
+    expect(errorsFor(plan).join('\n')).toContain('read-only Workspace intent');
+  });
   it('accepts a plan that declares how it will execute in the target Workspace', () => {
     const plan = v9Plan(workspaceIntentFixture({
       operation: 'modify_existing',

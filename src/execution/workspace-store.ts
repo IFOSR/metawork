@@ -242,27 +242,23 @@ export class WorkspaceStore {
     };
   }
 
-  /**
-   * Creates only the Runtime scratch area for a read admission. The returned
-   * filesPath is never the user Workspace, so accidental tool writes cannot
-   * modify Conversation files.
-   */
+  /** Deterministic attempt-private path; no filesystem mutation before leasing. */
+  planReadOnlyRoot(identity: WorkspaceIdentity, attemptId: string): string {
+    return join(this.workspacesPath,
+      workspaceSegment('task', safeIdentitySegment(identity.taskId, 'taskId')),
+      workspaceSegment('generation', safeIdentitySegment(identity.generationId, 'generationId')),
+      workspaceSegment('subtask', safeIdentitySegment(identity.subtaskId, 'subtaskId')),
+      'read-only', workspaceSegment('attempt', safeIdentitySegment(attemptId, 'attemptId')));
+  }
+
+  /** Default relative writes stay in scratch; this is not a host OS sandbox. */
   async bindReadOnlyWorkspace(
     identity: WorkspaceIdentity,
     attemptId: string,
+    kind: WorkspaceHandle['kind'] = 'in_place',
   ): Promise<WorkspaceHandle> {
-    const taskId = safeIdentitySegment(identity.taskId, 'taskId');
-    const generationId = safeIdentitySegment(identity.generationId, 'generationId');
-    const subtaskId = safeIdentitySegment(identity.subtaskId, 'subtaskId');
-    const attemptSegment = workspaceSegment('attempt', safeIdentitySegment(attemptId, 'attemptId'));
-    const rootPath = join(
-      this.workspacesPath,
-      workspaceSegment('task', taskId),
-      workspaceSegment('generation', generationId),
-      workspaceSegment('subtask', subtaskId),
-      'read-only',
-      attemptSegment,
-    );
+    const {taskId, generationId, subtaskId} = identity;
+    const rootPath = this.planReadOnlyRoot(identity, attemptId);
     const filesPath = join(rootPath, 'files');
     await Promise.all([
       mkdir(filesPath, { recursive: true }),
@@ -277,7 +273,7 @@ export class WorkspaceStore {
       taskId,
       generationId,
       subtaskId,
-      kind: 'in_place',
+      kind,
       rootPath,
       filesPath,
       checkpointsPath: join(rootPath, 'checkpoints'),

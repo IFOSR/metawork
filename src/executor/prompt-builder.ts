@@ -189,7 +189,7 @@ export function buildExecutorContextPrompt(input: ExecutorInput): string {
           ...(context.workspaceContext.readOnlySourcePath
             ? [`Read-only source Workspace: ${context.workspaceContext.readOnlySourcePath}`]
             : []),
-          'Workspace access: read-only. Inspect the source Workspace through the provided read-only boundary; write temporary files only under the attempt scratch directory.',
+          'Workspace access: read-only. Treat the source Workspace as shared read-only input; write temporary files only under the attempt scratch directory.',
           'Do not modify, delete, rename, or create files in the source Workspace.',
         ]
       : context.workspaceContext.accessMode === 'execute'

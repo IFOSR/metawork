@@ -153,6 +153,8 @@ export interface Subtask {
   contextRefs: ContextRef[];
   requiredCapabilities: string[];
   executorBindings: AuthorizedExecutorBinding[];
+  /** Absent on historical graphs; unknown keeps exclusive execution. */
+  workspaceEffect?: 'read_only' | 'write' | 'unknown';
   deliveryKind: 'edit' | 'report';
   /** Planner-declared file delivery; absent only on pre-schema-50 authorizations. */
   fileOutputs?: string[];
