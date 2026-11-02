@@ -64,7 +64,16 @@ export class WorkspaceGitRecovery {
         // Reconcile integration refs before sealing any stopped session: seal
         // validates main/delivered, which may still be midway through a durable merge.
         repo.saveRoot({...root, state: 'recovering'});
-        await this.merge.recover(root.workspaceId, true);
+        // Merge recovery is durable and replayed; a Conversation-scoped failure
+        // inside it must not fail the root. `validateRoot` below still decides
+        // whether the refs are actually consistent.
+        try {
+          await this.merge.recover(root.workspaceId, true);
+        } catch (error) {
+          console.error(`Workspace merge recovery deferred (${root.workspaceId}): `
+            + `${error instanceof Error ? error.message : String(error)}`,
+          error instanceof Error ? error.stack ?? '' : '');
+        }
         root = repo.root(root.workspaceId)!;
         await git.validateRoot(root);
         repo.saveRoot({...root, state: 'ready'});

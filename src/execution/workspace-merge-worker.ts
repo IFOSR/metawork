@@ -72,7 +72,18 @@ export class WorkspaceMergeWorker {
     });
     // Continuations may acquire the integration lock (service repair, another drain).
     // Notify only after releasing it; durable jobs are replayed by recovery.
-    for (const job of changed) await this.onChanged?.(job);
+    // A notification publishes/delivers a specific Conversation, so a failure
+    // there (for example its Conversation was deleted) must stay local: the job
+    // is already durable and delivery retries independently.
+    for (const job of changed) {
+      try {
+        await this.onChanged?.(job);
+      } catch (error) {
+        console.error(`Workspace merge notification failed (${job.jobId}): `
+          + `${error instanceof Error ? error.message : String(error)}`,
+        error instanceof Error ? error.stack ?? '' : '');
+      }
+    }
   }
   private async process(root:WorkspaceGitRoot,job:WorkspaceMergeJob,verify:()=>Promise<void>):Promise<WorkspaceMergeJob>{
     const opRef=`refs/metawork/operations/${job.operationId}`;
@@ -310,7 +321,13 @@ export class WorkspaceMergeWorker {
       await this.finishCancellation(root,current,operationId,preserved,verify);
       this.repo.operationState(`cancel_request_${requestId}`,'applied');
     });
-    await this.onChanged?.(this.repo.job(jobId)!);
+    try {
+      await this.onChanged?.(this.repo.job(jobId)!);
+    } catch (error) {
+      console.error(`Workspace merge notification failed (${jobId}): `
+        + `${error instanceof Error ? error.message : String(error)}`,
+      error instanceof Error ? error.stack ?? '' : '');
+    }
     await this.drain(job.workspaceId);
   }
   private async finishCancellation(root:WorkspaceGitRoot,job:WorkspaceMergeJob,operationId:string,preserved:string,verify:()=>Promise<void>):Promise<void> {
