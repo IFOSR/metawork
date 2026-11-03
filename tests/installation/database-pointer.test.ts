@@ -23,6 +23,7 @@ import {
   resolveDatabasePointerFile,
 } from '../../src/installation/database-pointer-paths.js';
 import { createDirectoryLink } from '../../src/platform/fs-links.js';
+import { CURRENT_SCHEMA_VERSION } from '../../src/storage/migrations.js';
 import { runMigrations } from '../../src/storage/migrations.js';
 
 const roots: string[] = [];
@@ -75,8 +76,8 @@ describe('database pointer path contract', () => {
     expect(isSupportedDatabaseSchema(undefined)).toBe(false);
     expect(isSupportedDatabaseSchema(29)).toBe(false);
     expect(isSupportedDatabaseSchema(30)).toBe(true);
-    expect(isSupportedDatabaseSchema(50)).toBe(true);
-    expect(isSupportedDatabaseSchema(51)).toBe(false);
+    expect(isSupportedDatabaseSchema(CURRENT_SCHEMA_VERSION)).toBe(true);
+    expect(isSupportedDatabaseSchema(CURRENT_SCHEMA_VERSION + 1)).toBe(false);
   });
 });
 
