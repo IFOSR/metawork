@@ -7,6 +7,16 @@ The project follows [Semantic Versioning](https://semver.org/) for public releas
 
 ## [Unreleased]
 
+## [0.1.22] - 2026-11-03
+
+- Desktop installs and upgrades now ship the bundled memory engine. The upgrade
+  path passed no memory root at all and the clean-install path passed the engine's
+  parent directory, so the installed release had either no `memory/tdai` or a
+  doubly nested copy; long-term memory reported that the engine was not installed
+  while Web/CLI installs worked. Both entry points now resolve payload paths
+  through one helper, and staging fails loudly when the memory root is not the
+  engine directory.
+
 ## [0.1.21] - 2026-11-03
 
 - Executor interrupts a tool call whose output, process CPU and workspace writes
@@ -472,6 +482,16 @@ signing or notarization.
 - 更新 Planner 成功后只同步 Planner 基线，保留其它板块尚未保存的编辑。
 
 ## [Unreleased]
+
+## [0.1.22] - 2026-11-03
+
+- Desktop installs and upgrades now ship the bundled memory engine. The upgrade
+  path passed no memory root at all and the clean-install path passed the engine's
+  parent directory, so the installed release had either no `memory/tdai` or a
+  doubly nested copy; long-term memory reported that the engine was not installed
+  while Web/CLI installs worked. Both entry points now resolve payload paths
+  through one helper, and staging fails loudly when the memory root is not the
+  engine directory.
 
 ## [0.1.21] - 2026-11-03
 
