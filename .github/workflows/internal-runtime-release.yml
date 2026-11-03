@@ -64,8 +64,11 @@ jobs:
           set -euo pipefail
           test -n "$RELEASE_SIGNING_KEY"
           printf '%s\n' "$RELEASE_SIGNING_KEY" > "$RUNNER_TEMP/metawork-release-key.pem"
-      # The Runtime archive ships the memory engine, so the same pinned
-      # preparation and FTS5 gate as the formal release apply here.
+      # The packaged Runtime ships the memory engine, so the same pinned
+      # preparation and FTS5 gate as the formal release apply here. Both need the
+      # repository's own toolchain (esbuild), so install dependencies first.
+      - name: Install dependencies
+        run: npm ci
       - name: Prepare pinned memory engine
         run: node scripts/prepare-memory-engine.mjs
       - name: Verify memory engine (FTS5 gate)
