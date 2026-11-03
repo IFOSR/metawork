@@ -79,6 +79,7 @@ export class AnyFusionPlanningAgent implements PlanningAgent {
           reason: error.convergence.reason,
           limit: error.convergence.limit,
           observed: error.convergence.observed,
+          ...(error.convergence.issues ? { issues: error.convergence.issues } : {}),
         };
       }
       return {

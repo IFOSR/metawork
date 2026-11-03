@@ -234,6 +234,51 @@ function completeConfigurationRpcTurnWithStructuredOutput(
   child.stdin.on('finish', () => queueMicrotask(() => child.emit('close', 0, null)));
 }
 
+
+/** Emits N identical rejected proposals, one per Planner turn. */
+function repeatedRejectionRpcTurn(child: FakeProcess, turns: number): void {
+  let inputBuffer = '';
+  const rejection = {
+    status: 'rejected',
+    turnId: 'turn-1',
+    submissionId: 'submission-1',
+    planId: 'plan-1',
+    rejectionType: 'validation',
+    issues: ['work graph configurationRevision rollback-0.1.21-local-final-0826-23c74b9f does not match Planner configuration revision'],
+    kernel: null,
+  };
+  child.stdin.on('data', chunk => {
+    inputBuffer += chunk.toString();
+    let newline = inputBuffer.indexOf('\n');
+    while (newline >= 0) {
+      const request = JSON.parse(inputBuffer.slice(0, newline)) as { id: string; type: string };
+      inputBuffer = inputBuffer.slice(newline + 1);
+      if (request.type === 'get_state') {
+        child.stdout.write(`${JSON.stringify({ type: 'response', command: 'get_state', success: true,
+          id: request.id, data: { model: { provider: 'provider', id: 'model' } } })}\n`);
+      } else {
+        const events = [
+          { type: 'response', command: 'prompt', success: true, id: request.id },
+        ];
+        for (let index = 0; index < turns; index += 1) {
+          events.push(
+            { type: 'turn_start', turnIndex: index, timestamp: new Date().toISOString() } as never,
+            { type: 'tool_execution_start', toolCallId: `tool-${index}`,
+              toolName: 'submit_planning_proposal', args: { plan: { id: 'plan-1' } } } as never,
+            { type: 'tool_execution_end', toolCallId: `tool-${index}`,
+              toolName: 'submit_planning_proposal', result: { details: rejection }, isError: false } as never,
+            { type: 'turn_end', turnIndex: index, timestamp: new Date().toISOString() } as never,
+          );
+        }
+        events.push({ type: 'agent_end', messages: [] } as never);
+        for (const event of events) child.stdout.write(`${JSON.stringify(event)}\n`);
+      }
+      newline = inputBuffer.indexOf('\n');
+    }
+  });
+  child.stdin.on('finish', () => queueMicrotask(() => child.emit('close', 0, null)));
+}
+
 describe('PlannerProcessSupervisor', () => {
   it('clears a configured binding when activation restores an unconfigured account', async () => {
     const spawn = vi.fn();
@@ -280,6 +325,33 @@ describe('PlannerProcessSupervisor', () => {
     expect((await old).proposalResult.status).toBe('accepted');
     expect(spawn.mock.calls.map(call => call[2].env.OPENAI_MODEL)).toEqual(['model-old', 'model-new']);
     expect(supervisor.runtimeBinding).toBeUndefined();
+  });
+
+  it('stops on a rejection that repeats verbatim instead of burning the cycle budget', async () => {
+    const child = fakeProcess();
+    repeatedRejectionRpcTurn(child, 3);
+    const spawn = vi.fn().mockReturnValue(child);
+    const supervisor = new PlannerProcessSupervisor({
+      plannerHome: join(tmpdir(), `planner-repeated-${process.pid}`),
+      ensureSessionDir: async () => undefined, spawn: spawn as never,
+      resolvePlannerBinding: async context => ({
+        configurationRevision: context.configuration.revisionId,
+        bindingFingerprint: context.configuration.revisionId,
+        provider: 'provider', modelId: 'model', runtimeEnvironment: {
+          OPENAI_BASE_URL: 'https://test.invalid', OPENAI_API_KEY: 'fake-test',
+          OPENAI_API_KEY__PROVIDER: 'fake-test', OPENAI_MODEL: 'model',
+        },
+      }),
+    });
+    const context = { timeoutMs: 5000, request: { sessionId: 'repeated', source: 'recovery' },
+      configuration: { revisionId: 'revision-test' } } as never;
+
+    const error = await supervisor.run('work', context, 'validation').catch(failure => failure);
+    expect(error).toBeInstanceOf(PlannerRunError);
+    expect(error.convergence).toMatchObject({ reason: 'repeated_rejection', observed: 2, limit: 2 });
+    // The rejection itself is reported, so the cause is visible instead of "budget".
+    expect(error.convergence.issues?.[0]).toContain('does not match Planner configuration revision');
+    expect(error.message).toContain('same rejected proposal');
   });
 
   it('rejects a Planner RPC when its explicit Conversation owner disagrees with the context', async () => {

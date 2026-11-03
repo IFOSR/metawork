@@ -40,6 +40,8 @@ import {
 const MAX_RPC_LINE_BYTES = 16 * 1024 * 1024;
 const DEFAULT_MAX_PROCESSING_CYCLES = 8;
 const DEFAULT_MAX_NON_PROPOSAL_TOOL_CALLS = 12;
+/** Identical consecutive rejections before the turn stops instead of retrying. */
+const REPEATED_REJECTION_LIMIT = 2;
 const DEFAULT_PROGRESS_HEARTBEAT_MS = 30_000;
 const SENSITIVE_PROGRESS_FIELD =
   /(?:^|[_-])(secret|token|password|passwd|credential|authorization|private[_-]?key|api[_-]?key|prompt|conversation|content|reasoning|thoughts?|signature)(?:$|[_-])/iu;
@@ -483,6 +485,11 @@ export class PlannerProcessSupervisor implements PlannerProcessController {
       let modelOutputReceived = true;
       let modelWaitingSince = startedAt;
       let nonProposalToolCalls = 0;
+      // Retrying cannot fix a rejection that repeats verbatim: stop early and
+      // report the issue instead of burning the whole cycle budget.
+      let lastRejectionSignature: string | null = null;
+      let repeatedRejections = 0;
+      let lastRejectionIssues: string[] = [];
       const maxProcessingCycles = positiveIntegerOrDefault(
         this.deps.maxProcessingCycles,
         DEFAULT_MAX_PROCESSING_CYCLES,
@@ -550,10 +557,11 @@ export class PlannerProcessSupervisor implements PlannerProcessController {
         reason: PlannerConvergenceReason,
         limit: number,
         observed: number,
+        issues: string[] = lastRejectionIssues,
       ) => {
         fail(new PlannerRunError(message, {
           code: 'convergence_exhausted',
-          convergence: { reason, limit, observed },
+          convergence: { reason, limit, observed, ...(issues.length > 0 ? { issues } : {}) },
           toolCalls: [...toolCalls],
           threadId: sessionPath,
           durationMs: Date.now() - startedAt,
@@ -771,6 +779,27 @@ export class PlannerProcessSupervisor implements PlannerProcessController {
               ? extractExecutorManualProposalResult(event.result)
               : extractPlannerProposalResult(event.result);
             if (proposalResult) terminalProposalResult = proposalResult;
+            if (proposalResult?.status === 'rejected') {
+              lastRejectionIssues = proposalResult.issues;
+              const signature = proposalResult.issues.join('\n').trim();
+              if (signature && signature === lastRejectionSignature) {
+                repeatedRejections += 1;
+              } else {
+                lastRejectionSignature = signature;
+                repeatedRejections = 1;
+              }
+              if (repeatedRejections >= REPEATED_REJECTION_LIMIT) {
+                failConvergence(
+                  'Planner submitted the same rejected proposal again; the rejection cannot be resolved by retrying: '
+                  + proposalResult.issues.join('; '),
+                  'repeated_rejection',
+                  REPEATED_REJECTION_LIMIT,
+                  repeatedRejections,
+                  proposalResult.issues,
+                );
+                return;
+              }
+            }
             if (proposalResult?.status === 'transport_uncertain') {
               const result: PlannerRunResult = {
                 proposalResult,

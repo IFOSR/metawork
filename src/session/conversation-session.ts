@@ -1073,10 +1073,15 @@ export class ConversationSession {
     }
     this.recordPlannerProposalTerminalTrace(result);
     if (result.status === 'convergence_exhausted') {
+      const label = result.reason === 'processing_cycles'
+        ? '处理轮次'
+        : result.reason === 'non_proposal_tool_calls' ? '非提案工具调用' : '重复被拒';
+      const cause = result.issues && result.issues.length > 0
+        ? `被拒原因：${result.issues.join('；')}。`
+        : '';
       this.appendOutput(
-        `错误: Planner 未能在限定的规划预算内完成方案（${result.reason === 'processing_cycles'
-          ? '处理轮次'
-          : '非提案工具调用'} ${result.observed}/${result.limit}）。本轮未创建任务，请重试或缩小请求范围。`,
+        `错误: Planner 未能在限定的规划预算内完成方案（${label} ${result.observed}/${result.limit}）。`
+        + `${cause}本轮未创建任务，请重试或缩小请求范围。`,
       );
       return true;
     }
@@ -1815,7 +1820,17 @@ export class ConversationSession {
         message: 'Planner proposal identity does not match the bound Conversation.',
       };
     }
-    const normalizedPlan = normalizePlanningAgentPlanInput(submission.plan);
+    const turnFacts = this.turnFactsFor(userInput);
+    const context = this.buildPlanningContext(
+      userInput,
+      turnFacts?.images,
+      turnFacts?.attachments,
+    );
+    // The active revision is authoritative: the proposal declares it, so the
+    // Runtime supplies it instead of trusting a copied string.
+    const normalizedPlan = normalizePlanningAgentPlanInput(submission.plan, {
+      configurationRevision: context?.configuration.revisionId,
+    });
     if (!this.allowLegacyDirectReply && isDirectReplyPlan(normalizedPlan)) {
       return {
         status: 'rejected',
@@ -1834,12 +1849,6 @@ export class ConversationSession {
     // Validation uses the same Turn facts the Planner was given. The admission
     // event itself no longer takes this context: `submitValidatedPlannerProposal`
     // reads the Turn record, so both submission paths share one source.
-    const turnFacts = this.turnFactsFor(userInput);
-    const context = this.buildPlanningContext(
-      userInput,
-      turnFacts?.images,
-      turnFacts?.attachments,
-    );
     const validation = context
       ? validatePlanningAgentPlan(
           normalizedPlan,

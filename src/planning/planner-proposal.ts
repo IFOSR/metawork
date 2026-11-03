@@ -72,9 +72,11 @@ export type PlannerProposalResult =
       status: 'convergence_exhausted';
       turnId: string;
       message: string;
-      reason: 'processing_cycles' | 'non_proposal_tool_calls';
+      reason: 'processing_cycles' | 'non_proposal_tool_calls' | 'repeated_rejection';
       limit: number;
       observed: number;
+      /** Issues of the last rejected proposal when they are known. */
+      issues?: string[];
     };
 
 export interface PlannerProposalSubmission {

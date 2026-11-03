@@ -1006,7 +1006,10 @@ export class MetaclawSession {
       return conflict;
     }
 
-    const normalizedPlan = normalizePlanningAgentPlanInput(submission.plan);
+    // The active configuration revision is authoritative for the proposal.
+    const normalizedPlan = normalizePlanningAgentPlanInput(submission.plan, {
+      configurationRevision: this.kernelConfiguration.revisionId,
+    });
     if (!this.allowLegacyDirectReply && isDirectReplyPlan(normalizedPlan)) {
       return {
         status: 'rejected',

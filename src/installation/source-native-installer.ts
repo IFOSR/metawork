@@ -33,6 +33,7 @@ import {
 } from './native-launcher.js';
 import { writeBuildSourceMetadata, buildSourceMetadataPath } from './build-source.js';
 import { writeReleaseIdentity } from './release-identity.js';
+import { createConfigurationRevisionId } from '../configuration/revision-id.js';
 
 const RELEASE_ID = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/u;
 
@@ -84,7 +85,7 @@ export class SourceNativeInstaller {
     ];
     const accountPaths = resolveAccountPaths(LOCAL_DEFAULT_ACCOUNT_ID, paths.root);
     const release = resolveReleasePaths(paths.root, input.releaseId);
-    const configurationRevision = `install-${input.releaseId}`;
+    const configurationRevision = createConfigurationRevisionId('install', input.releaseId);
     const databaseRevision = join(
       accountPaths.databaseRevisions,
       `${input.releaseId}-${configurationRevision}.db`,

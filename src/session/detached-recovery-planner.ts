@@ -32,7 +32,9 @@ export async function planWithoutClient(input: {
       if (purpose !== 'validation' || submission.sessionId !== sessionId || input.signal?.aborted) {
         return { ...base, status: 'rejected', rejectionType: 'validation', issues: ['recovery proposal identity or purpose mismatch'] };
       }
-      const plan = normalizePlanningAgentPlanInput(submission.plan);
+      const plan = normalizePlanningAgentPlanInput(submission.plan, {
+        configurationRevision: context.configuration.revisionId,
+      });
       const parsed = PlanningAgentPlanSchema.safeParse(plan);
       const validation = validatePlanningAgentPlan(plan, context.configuration, context.pendingAuthorizationRequest, context.replan);
       if (!parsed.success || !validation.valid) {

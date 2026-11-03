@@ -6,6 +6,7 @@ import { LOCAL_DEFAULT_ACCOUNT_ID } from '../account/account-id.js';
 import { resolveAccountPaths } from '../account/account-paths.js';
 import { ConfigurationService } from '../configuration/configuration-service.js';
 import { FileConfigurationRepository } from '../configuration/file-configuration-repository.js';
+import { createConfigurationRevisionId } from '../configuration/revision-id.js';
 import { createProductionConfigurationProbe } from '../configuration/production-configuration-probe.js';
 import {
   createLegacyProductionSecretStore,
@@ -128,7 +129,7 @@ async function activateFeishuPlatformMutation(input: {
 
   const service = new ConfigurationService({
     repository,
-    createRevisionId: () => `${input.revisionPrefix}-${Date.now()}`,
+    createRevisionId: () => createConfigurationRevisionId(input.revisionPrefix, String(Date.now())),
     probe: createProductionConfigurationProbe({
       releaseRoot: paths.appCurrent,
       secretStore,

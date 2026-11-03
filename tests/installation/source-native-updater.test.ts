@@ -536,7 +536,12 @@ describe('SourceNativeUpdater', () => {
     const originalSnapshot = await repository.readSnapshot(
       initialTargets.configuration.split('/').at(-1)!,
     );
-    expect(rollbackSnapshot.revisionId).toMatch(/^rollback-1\.2\.0-preview\.0-/u);
+    // A rollback activation id must stay inside the configuration reference
+    // grammar: an id with dots or over 64 characters made every Planner proposal
+    // unsubmittable (schema rejected it, the validator required it verbatim).
+    expect(rollbackSnapshot.revisionId).toMatch(/^rollback-r-1-2-0-preview-0-/u);
+    expect(rollbackSnapshot.revisionId).toMatch(/^[a-z][a-z0-9-]{0,63}$/u);
+    expect(rollbackSnapshot.revisionId.length).toBeLessThanOrEqual(64);
     expect(rollbackSnapshot.contentHash).toBe(originalSnapshot.contentHash);
   });
 

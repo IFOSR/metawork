@@ -34,6 +34,7 @@ import { createMigrationContextFromSnapshot } from './schema30-migration-context
 import { stageSourceRelease } from './source-native-installer.js';
 import { AccountLayoutMigrator } from './account-layout-migrator.js';
 import { acquireRuntimeUpdateLock } from './runtime-update-lock.js';
+import { createConfigurationRevisionId } from '../configuration/revision-id.js';
 import { buildSourceMetadataPath, writeBuildSourceMetadata } from './build-source.js';
 import { assertLauncherAvailable, installNativeLauncher } from './native-launcher.js';
 import { backupGatewayJournal, restoreGatewayJournal } from './gateway-journal-backup.js';
@@ -100,7 +101,7 @@ export class SourceNativeUpdater {
       await recoverPreparedReleaseActivations(paths.upgradeJournals, pointerPaths,
         (journal, path) => restoreActivationJournal(accountPaths, journal, activationId(path)));
       const currentActivation = await findCurrentActivation(paths.upgradeJournals, pointerPaths);
-      const upgradeId = `update-${input.releaseId}-${randomUUID()}`;
+      const upgradeId = createConfigurationRevisionId('update', `${input.releaseId}-${randomUUID()}`);
       const release = resolveReleasePaths(paths.root, input.releaseId);
       const repository = new FileConfigurationRepository(accountPaths.config);
       await repository.initialize();
@@ -256,7 +257,7 @@ export class SourceNativeUpdater {
         secretStore: this.dependencies.secretStore,
         detectCommand: this.dependencies.detectCommand,
       });
-      const upgradeId = `rollback-${releaseId}-${randomUUID()}`;
+      const upgradeId = createConfigurationRevisionId('rollback', `${releaseId}-${randomUUID()}`);
       const currentRevision = basename(await readlink(pointerPaths.configuration));
       const service = new ConfigurationService({
         repository,

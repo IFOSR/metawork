@@ -21,12 +21,18 @@ export interface PlannerRunResult {
 }
 
 export type PlannerRunErrorCode = 'runtime_failure' | 'convergence_exhausted';
-export type PlannerConvergenceReason = 'processing_cycles' | 'non_proposal_tool_calls';
+export type PlannerConvergenceReason =
+  | 'processing_cycles'
+  | 'non_proposal_tool_calls'
+  /** The same rejection repeated: retrying cannot change the outcome. */
+  | 'repeated_rejection';
 
 export interface PlannerConvergenceDetails {
   reason: PlannerConvergenceReason;
   limit: number;
   observed: number;
+  /** Issues of the last rejected proposal, so the failure names its cause. */
+  issues?: string[];
 }
 
 export class PlannerRunError extends Error {

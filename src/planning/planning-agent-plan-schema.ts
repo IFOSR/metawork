@@ -158,7 +158,13 @@ const SubtaskSchema = z.object({
 
 const WorkGraphSchema = z.object({
   schemaVersion: z.literal(7),
-  configurationRevision: ConfigurationReferenceSchema,
+  /**
+   * Which configuration the graph was planned against. The Runtime overwrites
+   * this value with the authoritative revision before validation, so the model
+   * never has to reproduce a long activation id; the validator still requires it
+   * to equal the active revision exactly.
+   */
+  configurationRevision: z.string().trim().min(1).max(200),
   reason: z.string(),
   subtasks: z.array(SubtaskSchema).min(1),
 }).strict();

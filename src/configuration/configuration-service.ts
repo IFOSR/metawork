@@ -26,6 +26,7 @@ import type {
   RuntimePrivateConfigurationBinding,
 } from './types.js';
 import { resolveRuntimePrivateConfigurationBinding } from './runtime-private-binding-resolver.js';
+import { isValidConfigurationRevisionId } from './revision-id.js';
 import type { SecretStore } from './secret-store.js';
 import type { AuthorizedExecutorBinding } from '../core/authorized-executor-binding.js';
 import type { AgentRuntimeRenderer } from './agent-runtime-renderer.js';
@@ -170,6 +171,14 @@ export class ConfigurationService implements ConfigurationServicePort {
     baseRevisionId: string | null;
   } {
     const revisionId = this.createRevisionId();
+    // Fail at creation, not later inside a Planner proposal: an id outside the
+    // reference grammar can never be expressed by a Work Graph.
+    if (!isValidConfigurationRevisionId(revisionId)) {
+      throw new Error(
+        `configuration revision id is not a valid reference: ${revisionId}; `
+        + 'use the first 64 characters of [a-z0-9-] starting with a letter',
+      );
+    }
     if (this.drafts.has(revisionId)) {
       throw new Error(`duplicate configuration draft revision ID: ${revisionId}`);
     }
