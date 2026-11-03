@@ -7,6 +7,22 @@ The project follows [Semantic Versioning](https://semver.org/) for public releas
 
 ## [Unreleased]
 
+## [0.1.21] - 2026-11-03
+
+- Executor interrupts a tool call whose output, process CPU and workspace writes
+  all stop for five minutes, hands the failure back to the model, and ends the
+  Attempt with an explicit failure after three interruptions instead of hanging.
+- Schedulers drop the account-wide Task/Attempt gates: capacity is bounded per
+  Workspace Conversation limit, and a Task runs up to 10 Attempts concurrently so
+  independent read-only research roots actually run in parallel.
+- Planner declares `workspaceEffect` for every subtask; plan validation requires
+  it when a graph has parallel text-report roots.
+- Every Conversation Turn keeps its own execution record: cards name their state,
+  a settled Turn keeps a collapsible DAG, and the trajectory surface can walk back
+  through every Turn, reading a Turn by identity when the bounded window dropped it.
+- Deleting a Conversation erases its derived projection work and no longer fails
+  the whole Workspace root, so a deleted Conversation can no longer block new ones.
+
 ## [0.1.19] - 2026-10-20
 
 - Compare authorized Pi and Codex runtime configuration semantically so model
@@ -456,6 +472,22 @@ signing or notarization.
 - 更新 Planner 成功后只同步 Planner 基线，保留其它板块尚未保存的编辑。
 
 ## [Unreleased]
+
+## [0.1.21] - 2026-11-03
+
+- Executor interrupts a tool call whose output, process CPU and workspace writes
+  all stop for five minutes, hands the failure back to the model, and ends the
+  Attempt with an explicit failure after three interruptions instead of hanging.
+- Schedulers drop the account-wide Task/Attempt gates: capacity is bounded per
+  Workspace Conversation limit, and a Task runs up to 10 Attempts concurrently so
+  independent read-only research roots actually run in parallel.
+- Planner declares `workspaceEffect` for every subtask; plan validation requires
+  it when a graph has parallel text-report roots.
+- Every Conversation Turn keeps its own execution record: cards name their state,
+  a settled Turn keeps a collapsible DAG, and the trajectory surface can walk back
+  through every Turn, reading a Turn by identity when the bounded window dropped it.
+- Deleting a Conversation erases its derived projection work and no longer fails
+  the whole Workspace root, so a deleted Conversation can no longer block new ones.
 
 ### Added
 
