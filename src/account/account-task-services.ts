@@ -42,9 +42,15 @@ export function buildAccountTaskServices(deps: {
   };
 }
 
-function createDefaultAttemptExecutionBackend(stateRoot?: string): AttemptExecutionBackend {
+export function createDefaultAttemptExecutionBackend(stateRoot?: string): AttemptExecutionBackend {
   const backend = (process.env.METACLAW_EXECUTOR_BACKEND ?? 'native').trim().toLowerCase();
   if (backend === 'docker' || backend === 'container') return new DockerCliAttemptExecutionBackend();
-  if (backend === 'native' || backend === '') return new NativeAttemptExecutionBackend(stateRoot);
+  // `in_place` is the retired name of the native backend. A Desktop shell that
+  // still launches the Runtime with it must keep working: the running shell is
+  // only replaced after this Runtime starts, so rejecting the old value would
+  // deadlock the upgrade ("runtime-not-ready") and roll back forever.
+  if (backend === 'native' || backend === 'in_place' || backend === '') {
+    return new NativeAttemptExecutionBackend(stateRoot);
+  }
   throw new Error(`Unsupported METACLAW_EXECUTOR_BACKEND: ${backend}; use native or docker`);
 }
