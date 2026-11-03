@@ -459,7 +459,7 @@ export class ManagedLocalServices {
       ? { taskId, ...manifest, origin: 'manifest' as const } : manifest;
     const spec = validateLocalServiceSpecification(bound);
     if (spec.taskId !== taskId) {
-      // An in-place Workspace keeps the manifest a previous Task wrote. That
+      // A merged Workspace keeps the manifest a previous Task wrote. That
       // file is not foreign code when this Workspace already registered the
       // very same launch contract for this service id: the current Task then
       // takes the service over (2026-10-27 realignment §4.2/§8). A manifest

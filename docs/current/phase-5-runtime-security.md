@@ -67,7 +67,7 @@ On PowerShell:
 In Docker compatibility mode, MetaWork resolves each canonical image tag to a
 Docker image ID. Custom AgentClasses are configured through Settings activation with an image reference,
 its current immutable `sha256:` image ID, a valid permission profile, and the
-command/arguments inside the image. The native in-place mode is restricted to the two canonical built-ins and does not
+command/arguments inside the image. The native mode is restricted to the two canonical built-ins and does not
 add a custom registration path. A changed
 Docker tag fails closed until the class is explicitly updated.
 
@@ -80,7 +80,7 @@ not a host-process fallback for arbitrary custom classes.
 Executor availability uses a structured `probe()` rather than a boolean command
 check. For Docker classes, the recovery probe verifies the local Engine,
 immutable image, `metaclaw-control` network, runtime command, and configuration
-in layers. For native in-place classes, it verifies the trusted runtime/profile and provider
+in layers. For native classes, it verifies the trusted runtime/profile and provider
 configuration without an Engine or Docker-network probe.
 Authentication/provider-network failures may add the Adapter's minimal remote
 validation. A successful recovery check may only move that checked class from
@@ -91,15 +91,15 @@ projected onto classes that were not checked.
 ## Mount and persistence contract
 
 - Native write attempts start with `cwd` set to the Kernel-authorized Conversation Workspace path. Read-only attempts start in Runtime scratch and receive only a read-only source boundary. The adapter validates containment before launch; no task-owned Git worktree or candidate directory is created.
-- Native in-place execution does not jail the Executor to a copied `/workspace`: ordinary user-space files outside the authorized Workspace may be read or written only according to the active permission profile. Docker compatibility mode exposes `/workspace` as the only writable bind-mounted tree; `/source`, `/inputs` and `/handoffs` are read-only mounts, with a read-only root filesystem, UID/GID 1000, dropped Linux capabilities and `no-new-privileges`.
+- Native execution does not jail the Executor to a copied `/workspace`: ordinary user-space files outside the authorized Workspace may be read or written only according to the active permission profile. Docker compatibility mode exposes `/workspace` as the only writable bind-mounted tree; `/source`, `/inputs` and `/handoffs` are read-only mounts, with a read-only root filesystem, UID/GID 1000, dropped Linux capabilities and `no-new-privileges`.
 - Canonical Codex Docker attempts also run their own `workspace-write` sandbox with fail-closed non-interactive approval. Only the pinned canonical Codex image receives `seccomp=unconfined` so that nested user namespaces work; every other Docker restriction remains active, and custom images cannot request this exception.
-- The user Workspace remains the durable source of in-place changes. Runtime scratch, attempt homes and evidence services are disposable; change records and receipts remain durable in SQLite/CAS.
+- The user Workspace remains the durable source of merged changes. Runtime scratch, attempt homes and evidence services are disposable; change records and receipts remain durable in SQLite/CAS.
 - Checkpoints are immutable manifests. File bodies live in the SHA-256 CAS; SQLite stores URI, hash, size and reference metadata.
 - Cancelled or archived Task workspaces receive a seven-day cleanup deadline. CAS objects are removed only after the last checkpoint reference disappears. Files explicitly exported outside the managed workspace/CAS roots are not removed.
 
 ## Runtime permission and audit flow
 
-Default profile operations do not request permission. In Native in-place mode,
+Default profile operations do not request permission. In native mode,
 ordinary Workspace and user-space file operations are part of normal Executor
 work rather than capability escalation. An Executor calls `request_capability`
 only for a concrete controlled operation such as system-control access,
@@ -112,7 +112,7 @@ attempt-bound and budgeted; user authorization is a durable fact from
 `/permission approve|deny <requestId>`, a gateway action, or a precise Planner
 interpretation.
 
-The Runtime supplies `permission-profile-v1` rules to both the live attempt and authorization-recovery workflows. Exact Task-registered partitions may receive `additional_read_resource` grants when a controlled resource claim is required. Only `public-web-research` may receive a `network_target` grant after the target is normalized as credential-free public HTTP(S). Docker compatibility attempts use the egress proxy; native in-place attempts use the Runtime's normal network namespace. No profile rule permits secrets, privilege changes, system-control resources, Docker/host control sockets, devices, host namespaces, external mutation or repository promotion.
+The Runtime supplies `permission-profile-v1` rules to both the live attempt and authorization-recovery workflows. Exact Task-registered partitions may receive `additional_read_resource` grants when a controlled resource claim is required. Only `public-web-research` may receive a `network_target` grant after the target is normalized as credential-free public HTTP(S). Docker compatibility attempts use the egress proxy; native attempts use the Runtime's normal network namespace. No profile rule permits secrets, privilege changes, system-control resources, Docker/host control sockets, devices, host namespaces, external mutation or repository promotion.
 
 A granted response includes a `grantId`, but neither the request nor grant changes sandbox authority. `use_capability` accepts the operation payload, measures its UTF-8 bytes and atomically consumes attempt identity, expiry, call count and byte count. Read/network grants retain the 100-call/100-MiB audit budget; one-shot sensitive and logical requests allow one control payload up to 1 MiB. Budget rejection fails closed.
 
@@ -137,7 +137,7 @@ npm run smoke:gateway
 
 Both live smokes run as native host processes by default, using the MetaWork
 configuration installed under `METAWORK_CONFIG_HOME` (default
-`~/.config/metawork`) and the in-place Executor backend; Docker is not
+`~/.config/metawork`) and the native Executor backend; Docker is not
 required. `--mode docker` instead builds the unified runtime image and runs
 the same scenarios inside a control container against a trusted local Docker
 Engine, requiring the `docker/*.env` provider files. The artifact

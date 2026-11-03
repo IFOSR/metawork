@@ -3539,8 +3539,8 @@ export class KernelExecutionRuntime {
       && outcome.resultId
       && this.shouldDeliverCompletedResultInline(item, subtask)
     ) {
-      // Report results and zero-change in-place edits do not create a
-      // Workspace publication. Without this handoff the Task can become
+      // Report results and zero-change rounds do not create a Workspace
+      // publication. Without this handoff the Task can become
       // `succeeded` while the Conversation only receives the generic
       // "completed" summary and loses the Executor's actual stdout/result.
       this.deps.callbacks.recordResultDelivery({

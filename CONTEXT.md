@@ -872,7 +872,7 @@ The current product implementation uses SQLite schema version 61. Fresh database
 
 The legacy routing/intent subsystem, `PolicyKernel`, `TaskAdmissionGate`, `SchedulerEngine`, queue/preemption policy and parked auto-resume have been removed. The target active path is `PlanningAgent/Application Shell → Work Graph → Durable Task Coordinator → idempotent Runtime handlers → Executor/Harness`; the current `KernelWorkflow → ControlKernel` implementation is the migration adapter for that coordinator. Do not reintroduce a parallel strategic interpreter, a Kernel security gate, or allow a workflow framework to own Harness retry policy.
 
-Startup inserts the missing `planner` class and force-converges the persisted `codex-cli` and `pi-agent` AgentClasses to their canonical definitions, including permission-profile bindings and the image fields used by Docker compatibility mode. Custom classes without a valid runtime command/permission profile remain audit-visible but fail closed. Only `planner-1` is seeded; executor WorkUnits are created and probed on demand after kernel authorization. `ExecutorRegistry` resolves every executable AgentClass through the backend-aware `BackendExecutorAdapter`; the in-place backend is the trusted native process path, and Docker remains explicit compatibility coverage rather than a second semantic executor router.
+Startup inserts the missing `planner` class and force-converges the persisted `codex-cli` and `pi-agent` AgentClasses to their canonical definitions, including permission-profile bindings and the image fields used by Docker compatibility mode. Custom classes without a valid runtime command/permission profile remain audit-visible but fail closed. Only `planner-1` is seeded; executor WorkUnits are created and probed on demand after kernel authorization. `ExecutorRegistry` resolves every executable AgentClass through the backend-aware `BackendExecutorAdapter`; the native backend is the trusted native process path, and Docker remains explicit compatibility coverage rather than a second semantic executor router.
 
 The canonical `pi-agent` AgentClass is a composite Executor implementation:
 ordinary Subtasks run the operator-provided standard `pi --mode json`, while
@@ -1123,8 +1123,9 @@ Before/after 观测和提交封存使用 Conversation Worktree 的 Git 通道。
 
 `read_only` 是访问事实，不是第二种执行模式。只读 Attempt 共享读取
 Conversation Worktree，临时文件进入会话目录外的 attempt-owned scratch，不单独选择
-`in_place`。历史 `in_place` 和旧 Worktree binding 只读用于审计、迁移和恢复，不能被新
-任务重新选择。
+执行模式。历史 `in_place` 和旧 Worktree 绑定只作为数据库历史行保留：Runtime 中没有
+它们的执行分支，Kernel 遇到这类 Task 或 binding 直接要求重新规划（
+`legacy_execution_requires_replan`），不会把它们投影回当前模式。
 
 Subtask 可声明 `workspaceEffect`。明确的文本报告读者共享 Conversation read lease，
 使用会话目录外的 Attempt scratch，并以输入提交见证完成；写入、unknown、文件交付

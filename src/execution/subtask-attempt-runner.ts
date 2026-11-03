@@ -1454,8 +1454,8 @@ export class SubtaskAttemptRunner {
       }
 
       const completedAt = new Date().toISOString();
-      // An in-place Attempt has no candidate commit: the deliverable already
-      // lives in the user's Workspace and lands directly in the Subtask.
+      // A Conversation Git Attempt lands through its sealed commit, and a
+      // report or zero-change round creates no publication at all.
       if (serviceExecution) await this.deps.serviceWorktrees!.markPrepared(serviceCheckout!);
       if (conversationReadOnly) await this.deps.conversationWorktrees!.verifyRead(conversationBinding!, attemptId);
       const conversationCommit = conversationExecution && !conversationReadOnly
@@ -1918,7 +1918,7 @@ export class SubtaskAttemptRunner {
         subtask,
         outgoingHandoffs,
         // Delta paths and reportPath are relative to the executor output area
-        // (`files/` for a worktree, the Workspace itself for in-place runs).
+        // (`files/` inside the bound Conversation Worktree).
         workspaceRoot: correctionWorkspaceRoot,
         workspaceDelta: sourceRuntime.workspaceDelta,
         incomingUsageByTarget: new Map(outgoingHandoffs.map(contract => [

@@ -197,7 +197,7 @@ export class AttemptTerminalService {
 
       this.receipts.insert(input.receipt);
       // The receipt is the durable "no unknown external effect" fact; recording
-      // it closes the in-place uncertainty window for this Attempt.
+      // it closes the uncertainty window for this Attempt.
       new ExecutorAttemptRuntimeRepo(this.db).recordReceiptPersisted(
         input.receipt.attemptId,
         input.now,

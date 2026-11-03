@@ -79,3 +79,27 @@ JSON；SQLite 64→65 增加 nullable effect 和 durable Attempt owner 表，不
 共享目录。污染会话保留 failed 状态与现场，不自动回滚；同进程读者立即取消，其他
 进程的读者在心跳/完成校验中观察 fence。原生 Harness 仍是可信用户进程，这不是 OS
 沙箱；Git 检测不覆盖 ignored 文件或执行中写入后恢复的瞬态变化。
+
+## 2026-11-03 修订：移除 in_place 执行分支
+
+上一条修订只停了新任务的模式选择，Runtime 里仍留着 `in_place` 的单根目录执行
+分支、`InPlaceWriteUncertaintyError`、`WorkspaceStore.bindInPlaceWorkspace`、
+`WorktreeAttemptExecutionBackend` 以及 `METACLAW_EXECUTOR_BACKEND=in_place` 的
+环境契约。这些分支在生产组合中不可达（`conversationWorktrees` 恒注入，缺失
+Conversation binding 的 Attempt 在 dispatch 前即 fail closed），因此按要求整体
+删除，不再保留兼容路径：
+
+- `ExecutionMode` 只保留 `conversation_git` 与 `service_git`；历史取值集中在
+  `RetiredExecutionMode` 类型，仅用于识别旧行并显式拒绝。
+- Attempt 必须在 dispatch 前拿到 Conversation binding，否则抛
+  `legacy_execution_requires_replan`；不存在无 binding 的单根目录回退。
+- `workspace_execution_bindings` 表与 `WorkspaceExecutionBindingRepo` 只作为
+  历史读取保留；`executionContextFromBinding` 遇到退役模式直接拒绝。
+- `METACLAW_EXECUTOR_BACKEND` 只接受 `native`/`docker`（含 `container`），
+  launcher、Docker 脚本与 smoke 覆盖统一写入 `native`。
+- 删除 `resolveExecutionModeFromEnvironment`、`parseExecutionMode`、
+  `isWorkspaceExecutionMode` 等无调用者的模式解析入口。
+
+迁移与 schema 历史（`resource_leases`、`tasks.execution_mode`、
+`workspace_records.workspace_kind` 的旧 CHECK 约束）保持不变，因为它们记录的是
+已发生的持久事实，不是可执行路径。

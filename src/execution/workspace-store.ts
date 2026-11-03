@@ -207,7 +207,7 @@ export class WorkspaceStore {
   async bindReadOnlyWorkspace(
     identity: WorkspaceIdentity,
     attemptId: string,
-    kind: WorkspaceHandle['kind'] = 'in_place',
+    kind: WorkspaceHandle['kind'],
   ): Promise<WorkspaceHandle> {
     const {taskId, generationId, subtaskId} = identity;
     const rootPath = this.planReadOnlyRoot(identity, attemptId);

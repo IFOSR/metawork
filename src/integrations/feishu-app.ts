@@ -1462,7 +1462,7 @@ export async function handleFeishuMessageEvent(
           : {}),
         requestId: messageId,
         onProgress: (progress, options) => {
-          // Serialize progress sends so in-place card updates never race the
+          // Serialize progress sends so card updates never race the
           // send that created the card message.
           progressChain = progressChain.then(() => {
             const target = {
