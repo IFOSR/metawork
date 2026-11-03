@@ -62,7 +62,10 @@ export interface PrioritySignals {
 // ─── 任务对象 ───
 export interface Task {
   id: string;
-  /** New Tasks use conversation_git; the other values are historical reads. */
+  /**
+   * New Tasks use `conversation_git`. `in_place`/`worktree` are retired product
+   * modes kept only so historical rows stay readable.
+   */
   executionMode?: 'conversation_git' | 'service_git' | 'worktree' | 'in_place';
   /**
    * Kernel-authorized Workspace execution facts fixed at admission
@@ -389,7 +392,7 @@ export interface WorkspaceContext {
   targetPaths: string[];
   /** Workspace identity the Attempt was bound to at admission. */
   workspaceId?: string;
-  executionMode?: 'worktree' | 'in_place' | 'conversation_git' | 'service_git';
+  executionMode?: 'conversation_git' | 'service_git';
   /** Workspace access granted for this Attempt. Read admissions never receive a write mount. */
   /**
    * `read` only inspects files, `execute` may run commands in the canonical

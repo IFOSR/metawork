@@ -1,11 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   assertExecutionContext,
-  DEFAULT_EXECUTION_MODE,
-  EXECUTION_MODE_ENVIRONMENT,
   ExecutionContextError,
-  parseExecutionMode,
-  resolveExecutionModeFromEnvironment,
   type ExecutionContext,
 } from '../../src/execution/execution-context.js';
 
@@ -13,7 +9,13 @@ function context(overrides: Partial<ExecutionContext> = {}): ExecutionContext {
   return {
     workspaceId: 'workspace_abc',
     canonicalWorkspacePath: '/Users/me/project',
-    executionMode: 'in_place',
+    executionMode: 'conversation_git',
+    conversation: {
+      conversationId: 'conversation_1',
+      worktreeId: 'worktree_1',
+      incarnation: 1,
+      taskBaseCommit: 'a'.repeat(40),
+    },
     authorizedWorkingDirectory: '/Users/me/project',
     resourceLeaseId: 'lease_1',
     taskId: 'task_1',
@@ -27,18 +29,6 @@ function context(overrides: Partial<ExecutionContext> = {}): ExecutionContext {
 }
 
 describe('execution context', () => {
-  it('defaults new admissions to in-place and rejects the retired mode', () => {
-    expect(DEFAULT_EXECUTION_MODE).toBe('conversation_git');
-    expect(parseExecutionMode(undefined)).toBe('conversation_git');
-    expect(parseExecutionMode('')).toBe('conversation_git');
-    expect(parseExecutionMode('in_place')).toBe('in_place');
-    expect(() => parseExecutionMode('in-place')).toThrow(ExecutionContextError);
-    expect(resolveExecutionModeFromEnvironment({ [EXECUTION_MODE_ENVIRONMENT]: ' in_place ' }))
-      .toBe('in_place');
-    expect(resolveExecutionModeFromEnvironment({})).toBe('conversation_git');
-    expect(() => parseExecutionMode('worktree')).toThrow(/retired/u);
-  });
-
   it('requires absolute paths and non-empty identities', () => {
     expect(() => assertExecutionContext(context({ canonicalWorkspacePath: 'project' })))
       .toThrow(/canonical Workspace path/u);
@@ -49,14 +39,14 @@ describe('execution context', () => {
     expect(assertExecutionContext(context()).workspaceId).toBe('workspace_abc');
   });
 
-  it('keeps in-place working directories inside the Workspace', () => {
+  it('requires the Conversation Git identity for a writable Attempt', () => {
     expect(assertExecutionContext(context({ authorizedWorkingDirectory: '/Users/me/project/sub' })))
       .toBeDefined();
-    expect(() => assertExecutionContext(context({ authorizedWorkingDirectory: '/Users/me/project-other' })))
-      .toThrow(/inside its Workspace/u);
+    expect(() => assertExecutionContext(context({ conversation: undefined })))
+      .toThrow(/Conversation Git identity is required/u);
     expect(() => assertExecutionContext(context({
-      executionMode: 'worktree',
-      authorizedWorkingDirectory: '/Users/me/.metawork/workspace-store/worktrees/abc/files',
-    }))).toThrow(/retired/u);
+      executionMode: 'service_git',
+      service: undefined,
+    }))).toThrow(/Service Git identity is required/u);
   });
 });

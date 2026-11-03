@@ -551,16 +551,13 @@ function resolveRequiredWork(input: {
       : { fact: { ...base, state: 'pending', reason: null }, failureReason: null };
   }
   if (requirement.kind === 'delivery') {
-    // In-place attempts write the Conversation Workspace directly and never
-    // create a publication row. A completed receipt plus a done Subtask is
-    // the durable delivery fact for declared file outputs. Conversation Git
-    // rounds use a separate worktree/merge ledger (and therefore leave the
-    // Task's legacy execution_mode column null); a delivered merge summary is
-    // the equivalent durable delivery fact for that path.
+    // A Conversation Git round records delivery through its own worktree/merge
+    // ledger; a delivered merge summary is the durable delivery fact for
+    // declared file outputs, independent of any publication row.
     const conversationWorkspaceDelivered = input.raw.workspaceDelivery
       && (input.raw.workspaceDelivery.noChanges
         || input.raw.workspaceDelivery.summary?.state === 'delivered');
-    if ((input.raw.task.executionMode === 'in_place' || conversationWorkspaceDelivered)
+    if (conversationWorkspaceDelivered
       && subtask.status === 'done'
       && hasCompletionEvidence) {
       return { fact: { ...base, state: 'completed', reason: null }, failureReason: null };

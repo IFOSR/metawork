@@ -866,19 +866,8 @@ export class KernelExecutionRuntime {
     } : null;
     // Never infer reusable output from a done label. Every node must have an
     // integrated immutable candidate, and no unsafe external operation may remain.
-    const inPlace = source.executionMode === 'in_place';
-    // In-place execution has no isolated publication row to reuse: the
-    // completed Executor already wrote the authorized files into the bound
-    // Workspace. A failed service-start round therefore retries only the
-    // service requirement after proving every execution node settled.
-    const executionReceipts = facts?.receipts.filter(receipt => nodes.some(node => node.id === receipt.subtaskId)) ?? [];
-    const executionSettledInPlace = inPlace && nodes.length > 0
-      && nodes.every(node => node.status === 'done')
-      && executionReceipts.length >= nodes.length
-      && nodes.every(node => executionReceipts.some(receipt => receipt.subtaskId === node.id
-        && (receipt.terminalState === 'completed' || receipt.accepted === true)));
-    const safeToRetry = (inPlace ? executionSettledInPlace
-      : nodes.length > 0 && nodes.every(node => publications.some(item => item.subtaskId === node.id)))
+    const safeToRetry = nodes.length > 0
+      && nodes.every(node => publications.some(item => item.subtaskId === node.id))
       && !facts?.externalOutcomeUnknown
       && this.deps.cancellationCoordinator.completionBlockedReasons(taskId, null).length === 0;
     let rejected: string | null = null;
@@ -999,11 +988,9 @@ export class KernelExecutionRuntime {
         const source = this.deps.taskRuntimeService.findTask(remaining.sourceTaskId)!;
         const files = this.deps.userArtifactPublication?.taskArtifactRepo.publicFiles
           .list(source.accountId ?? 'local-default', source.id) ?? [];
-        // Worktree retries verify immutable published bytes. In-place retries
-        // launch from the bound Workspace and have no public-file manifest.
-        if (source.executionMode !== 'in_place') {
-          await manager.verifyPublishedFiles(source.id, files);
-        }
+        // A retry verifies the immutable published bytes before starting the
+        // requested service against them.
+        await manager.verifyPublishedFiles(source.id, files);
         assertCurrent();
         await this.startRequestedPublishedService(taskId);
       }
@@ -1114,13 +1101,7 @@ export class KernelExecutionRuntime {
         ? null
         : (task.conversationId ? await this.deps.resolveUserWorkspaceRoot?.(task.conversationId) : null)
           ?? this.deps.userArtifactPublication?.userWorkspaceRoot ?? null);
-    // A legacy Task row may still say `in_place` even after its active
-    // generation has been rebound to Conversation Git. Project the durable
-    // binding, so the client never shows the retired mode for a live Worktree.
-    const projectedTask = conversationBinding && task.executionMode === 'in_place'
-      ? { ...task, executionMode: 'conversation_git' as const }
-      : task;
-    return projectPublicDelivery({ task: projectedTask, workspace,
+    return projectPublicDelivery({ task, workspace,
       artifacts: [...(this.deps.userArtifactPublication?.taskArtifactRepo.publicFiles.list(task.accountId ?? 'local-default', taskId) ?? []),
         ...(this.deps.userArtifactPublication?.taskArtifactRepo.listByTask(taskId).filter(item => item.accountId === (task.accountId ?? 'local-default')) ?? [])],
       publications: this.deps.publicationRepo.listByTask(taskId).filter(item => item.generationId === graph?.generationId
@@ -1275,50 +1256,13 @@ export class KernelExecutionRuntime {
       return conversations.bind({accountId: task.accountId ?? 'local-default', workspaceId,
         conversationId: task.conversationId, userRoot, taskId, generationId});
     }
-    const repo = this.deps.workspaceExecutionBindingRepo;
-    if (!repo) return null;
-    const task = this.deps.taskRuntimeService.findTask(taskId);
-    if (!task) return null;
-    const existing = repo.find(taskId, generationId);
-    if (existing) return existing;
-    const workspaceId = workspaceIdHint ?? task.workspaceId ?? null;
-    const resolved = this.deps.resolveWorkspacePath
-      ? await this.deps.resolveWorkspacePath(taskId)
-      : null;
-    if (!workspaceId || !resolved) return null;
-    const canonical = await canonicalizeWorkspacePath(resolved).catch(() => null);
-    if (!canonical) return null;
-    // A null mode is a pre-Conversation-Git historical row. New Tasks persist
-    // `conversation_git` before this fallback can be reached.
-    const executionMode = task.executionMode ?? 'in_place';
-    if (executionMode !== 'in_place') {
-      throw new Error(`Task ${taskId} requires the Conversation Git binding`);
+    // Without Conversation Worktrees there is no writable binding to create.
+    // Historical single-root bindings are retired: a pre-Conversation-Git Task
+    // must be re-planned instead of silently authorizing an unconverted mode.
+    if (this.deps.workspaceExecutionBindingRepo?.find(taskId, generationId)) {
+      throw new Error('legacy_execution_requires_replan');
     }
-    // A replan of an existing Task keeps the mode of its first generation; a
-    // later generation never reinterprets the current settings.
-    const inherited = repo.findLatestForTask(taskId);
-    if (inherited && inherited.executionMode !== executionMode) {
-      throw new Error(
-        `workspace execution mode is immutable for Task ${taskId}: `
-        + `binding=${inherited.executionMode}, task=${executionMode}`,
-      );
-    }
-    const now = new Date().toISOString();
-    const authorizedWorkingDirectory = canonical.canonicalPath;
-    return repo.upsert({
-      taskId,
-      generationId,
-      workspaceId,
-      canonicalPath: canonical.canonicalPath,
-      executionMode,
-      authorizedWorkingDirectory,
-      modeSource: task.workspaceExecutionSource ?? inherited?.modeSource ?? null,
-      deliveryPolicy: task.workspaceDeliveryPolicy ?? inherited?.deliveryPolicy ?? null,
-      workspaceIntent: task.workspaceIntent ?? inherited?.workspaceIntent ?? null,
-      targetPaths: task.workspaceTargetPaths ?? inherited?.targetPaths ?? [],
-      createdAt: now,
-      updatedAt: now,
-    });
+    return null;
   }
 
   async recoverCancellations(taskId?: string): Promise<void> {
@@ -4259,8 +4203,7 @@ export class KernelExecutionRuntime {
     // fence only stops historical or cancelled work.
     if (task.status === 'succeeded' || task.status === 'failed' || task.status === 'cancelled') return;
     const resourceTaskId = task.retryOfTaskId ?? taskId;
-    const inPlaceWorkspace = task.executionMode === 'in_place';
-    if (!manager || (!inPlaceWorkspace && !await manager.isPublished(resourceTaskId))) {
+    if (!manager || (!await manager.isPublished(resourceTaskId))) {
       if (this.deps.subtaskRepo.listActiveByTask(taskId).every(subtask => subtask.status === 'done')) {
         this.deps.callbacks.appendOutput('代码已交付，但缺少可启动的服务规格或受管服务能力；服务尚未就绪。');
         // A missing required service specification is an execution contract

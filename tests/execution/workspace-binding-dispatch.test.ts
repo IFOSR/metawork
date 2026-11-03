@@ -14,13 +14,15 @@ const roots: string[] = [];
 afterEach(() => { for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }); });
 
 describe('workspace execution binding', () => {
-  it('keeps the first binding for a generation and fingerprints its facts', () => {
+  it('keeps a generation binding immutable and fingerprints its facts', () => {
     const db = new Database(':memory:');
     runMigrations(db);
     const root = mkdtempSync(join(tmpdir(), 'workspace-binding-'));
     roots.push(root);
     mkdirSync(join(root, 'app'), { recursive: true });
     const repo = new WorkspaceExecutionBindingRepo(db);
+    // This table only ever held the retired single-root mode; it stays readable
+    // so recovery can reject those rows explicitly.
     const binding = repo.upsert({
       taskId: 'task_1',
       generationId: 'generation_1',
@@ -42,7 +44,14 @@ describe('workspace execution binding', () => {
     expect(again.executionMode).toBe('in_place');
 
     const fingerprint = workspaceExecutionBindingFingerprint(binding);
-    const context = executionContextFromBinding({
+
+    // Any change to the physical facts produces a different fingerprint.
+    expect(workspaceExecutionBindingFingerprint({ ...binding, canonicalPath: '/elsewhere' }))
+      .not.toBe(fingerprint);
+
+    // A retired single-root binding is rejected instead of being reinterpreted
+    // as a Conversation Git Attempt.
+    expect(() => executionContextFromBinding({
       binding,
       taskId: 'task_1',
       generationId: 'generation_1',
@@ -50,14 +59,7 @@ describe('workspace execution binding', () => {
       attemptId: 'attempt_1',
       configurationRevision: 'revision_1',
       resourceLeaseId: 'resource_lease_1',
-    });
-    expect(context.executionMode).toBe('in_place');
-    expect(context.bindingFingerprint).toBe(fingerprint);
-    expect(context.canonicalWorkspacePath).toBe(binding.canonicalPath);
-
-    // Any change to the physical facts produces a different fingerprint.
-    expect(workspaceExecutionBindingFingerprint({ ...binding, canonicalPath: '/elsewhere' }))
-      .not.toBe(fingerprint);
+    })).toThrow(/retired/u);
     db.close();
   });
 });

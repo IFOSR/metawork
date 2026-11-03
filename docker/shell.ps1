@@ -252,7 +252,7 @@ function Start-ShellContainer {
       -e METACLAW_PI_EXECUTOR_ENV_FILE=$piExecutorEnvContainerPath `
       -e METACLAW_HOME=/data/anyfusion/data `
       -e ANYFUSION_INSTALL_ROOT=/data/anyfusion `
-      -e METACLAW_EXECUTOR_BACKEND=in_place `
+      -e METACLAW_EXECUTOR_BACKEND=native `
       -e METACLAW_EXECUTOR_CODEX_HOME=/var/lib/metaclaw/codex/executor `
       -e METACLAW_EXECUTOR_PI_HOME=/root `
       -e PI_SKIP_VERSION_CHECK=1 `

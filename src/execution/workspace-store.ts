@@ -194,54 +194,6 @@ export class WorkspaceStore {
     };
   }
 
-  /**
-   * Binds one Attempt to the user's Workspace instead of materializing a private
-   * copy. Only the attempt-owned runtime root (inputs, handoffs, results) is
-   * created here; `filesPath` stays the canonical authoring directory, so the
-   * Executor writes where the user sees the files and nothing is copied back.
-   */
-  async bindInPlaceWorkspace(
-    identity: WorkspaceIdentity,
-    canonicalPath: string,
-    /** Attempt that owns the runtime directories; retries must not share them. */
-    attemptId?: string,
-  ): Promise<WorkspaceHandle> {
-    const taskId = safeIdentitySegment(identity.taskId, 'taskId');
-    const generationId = safeIdentitySegment(identity.generationId, 'generationId');
-    const subtaskId = safeIdentitySegment(identity.subtaskId, 'subtaskId');
-    // One directory per Attempt: a retry or recovery must never see the previous
-    // Attempt's inputs, handoffs or results.
-    const attemptSegment = attemptId
-      ? workspaceSegment('attempt', safeIdentitySegment(attemptId, 'attemptId'))
-      : 'attempt-shared';
-    const rootPath = join(
-      this.workspacesPath,
-      workspaceSegment('task', taskId),
-      workspaceSegment('generation', generationId),
-      workspaceSegment('subtask', subtaskId),
-      'in-place',
-      attemptSegment,
-    );
-    await Promise.all([
-      mkdir(join(rootPath, 'inputs'), { recursive: true }),
-      mkdir(join(rootPath, 'handoffs'), { recursive: true }),
-      mkdir(join(rootPath, 'results'), { recursive: true }),
-    ]);
-    return {
-      // The durable Workspace record is Generation/Subtask scoped. Runtime
-      // scratch directories remain Attempt scoped, but their persistence and
-      // FK identity must stay stable across retry/recovery Attempts.
-      id: `workspace:in-place:${taskId}:${generationId}:${subtaskId}`,
-      taskId,
-      generationId,
-      subtaskId,
-      kind: 'in_place',
-      rootPath,
-      filesPath: canonicalPath,
-      checkpointsPath: join(rootPath, 'checkpoints'),
-    };
-  }
-
   /** Deterministic attempt-private path; no filesystem mutation before leasing. */
   planReadOnlyRoot(identity: WorkspaceIdentity, attemptId: string): string {
     return join(this.workspacesPath,

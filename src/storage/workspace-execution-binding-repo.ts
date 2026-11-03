@@ -1,5 +1,5 @@
 import type Database from 'better-sqlite3';
-import type { ExecutionMode } from '../execution/execution-context.js';
+import type { ExecutionMode, RetiredExecutionMode } from '../execution/execution-context.js';
 import type {
   WorkspaceDeliveryPolicy,
   WorkspaceExecutionSource,
@@ -11,7 +11,7 @@ export interface WorkspaceExecutionBinding {
   generationId: string;
   workspaceId: string;
   canonicalPath: string;
-  executionMode: ExecutionMode;
+  executionMode: ExecutionMode | RetiredExecutionMode;
   authorizedWorkingDirectory: string;
   /** Which admission fact authorized the mode (planner/fallback/kernel safety). */
   modeSource?: WorkspaceExecutionSource | null;

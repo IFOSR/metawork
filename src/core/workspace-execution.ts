@@ -11,10 +11,11 @@
 
 /**
  * Workspace execution modes. `conversation_git` is the only mode admitted for
- * new Tasks. `in_place` and `worktree` remain readable solely for historical
- * rows created before the Workspace Git protocol was enabled.
+ * new Tasks; `service_git` describes a service preparation round inside that
+ * Worktree. The retired `in_place`/`worktree` values are historical row data
+ * only and never appear in an admission decision.
  */
-export type WorkspaceExecutionMode = 'conversation_git' | 'service_git' | 'in_place' | 'worktree';
+export type WorkspaceExecutionMode = 'conversation_git' | 'service_git';
 
 /**
  * What the user is trying to do in the target Workspace. Planner produces this;
@@ -73,7 +74,7 @@ export type WorkspaceExecutionSource =
   | 'kernel_safety';
 
 /**
- * Historical delivery metadata. New in-place rounds always use `none`.
+ * Historical delivery metadata. New rounds always use `none`.
  */
 export type WorkspaceDeliveryPolicy = 'none' | 'auto_publish' | 'await_acceptance';
 
@@ -98,14 +99,9 @@ export const WORKSPACE_OPERATIONS: readonly WorkspaceOperation[] = [
 ];
 
 const WORKSPACE_OPERATION_SET = new Set<string>(WORKSPACE_OPERATIONS);
-const EXECUTION_MODE_SET = new Set<string>(['conversation_git', 'service_git', 'in_place', 'worktree']);
 const ORIGINAL_FILE_POLICY_SET = new Set<string>(['may_replace', 'must_preserve', 'unknown']);
 const SOURCE_SET = new Set<string>(['explicit_user', 'planner', 'fallback', 'kernel_safety']);
 const DELIVERY_POLICY_SET = new Set<string>(['none', 'auto_publish', 'await_acceptance']);
-
-export function isWorkspaceExecutionMode(value: unknown): value is WorkspaceExecutionMode {
-  return typeof value === 'string' && EXECUTION_MODE_SET.has(value);
-}
 
 export function isWorkspaceExecutionSource(value: unknown): value is WorkspaceExecutionSource {
   return typeof value === 'string' && SOURCE_SET.has(value);

@@ -337,7 +337,7 @@ PlanningAgent → ControlKernel → Runtime 链处理；已删除 script Client�
 | Codex CLI | `codex` | 仓库修改、测试、确定性实现、带 patch 的代码审查 | 原生安装复用现有命令，不改变其安装或个人 home |
 | Pi Agent | `pi` | 调研、报告生成、多步骤信息综合、agentic CLI 工作流；授权图片模型后也负责图片生成与编辑 | 原生安装复用现有命令，不改变其安装或个人 home；图片执行由 MetaWork 提供 Runner |
 
-默认 In-place 后端只执行 canonical `codex-cli` 与 `pi-agent`。获批后，Runtime claim 或创建 WorkUnit，再把对应 CLI 作为统一 Runtime 的子进程启动，并把 `cwd` 设为 Kernel 授权的 Conversation Workspace；只读任务使用 Runtime scratch。该路径不扩展第三方 Executor 注册；旧 Docker attempt 后端仍可通过 `METACLAW_EXECUTOR_BACKEND=docker` 显式启用。
+默认原生后端（`METACLAW_EXECUTOR_BACKEND=native`）只执行 canonical `codex-cli` 与 `pi-agent`。获批后，Runtime claim 或创建 WorkUnit，再把对应 CLI 作为统一 Runtime 的子进程启动，并把 `cwd` 设为 Kernel 授权的 Conversation Workspace；只读任务使用 Runtime scratch。该路径不扩展第三方 Executor 注册；旧 Docker attempt 后端仍可通过 `METACLAW_EXECUTOR_BACKEND=docker` 显式启用。
 
 `pi-agent` 仍是用户可见的一个 Executor，但内部包含两个确定性的执行引擎：
 普通任务使用用户本机提供的标准 `pi --mode json` 子进程；需要

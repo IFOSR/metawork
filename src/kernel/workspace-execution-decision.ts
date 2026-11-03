@@ -9,10 +9,13 @@ import { isWorkspaceRelativePath, normalizeWorkspaceTargetPaths } from '../works
 
 export interface WorkspaceAdmissionFacts {
   targetWorkspace: { workspaceId: string; canonicalPath: string } | null;
-  /** Historical Task binding. New Tasks must never inherit a Worktree mode. */
+  /**
+   * Historical Task binding read from the Task row. Retired product modes are
+   * accepted here only so the admission can reject them explicitly.
+   */
   existingTaskBinding?: {
     workspaceId: string;
-    executionMode: WorkspaceExecutionMode;
+    executionMode: WorkspaceExecutionMode | 'in_place' | 'worktree';
     deliveryPolicy?: 'none' | 'auto_publish' | 'await_acceptance';
   } | null;
 }
@@ -139,8 +142,11 @@ export function resolveWorkspaceAdmission(
 
   const existing = input.facts.existingTaskBinding;
   if (existing) {
-    if (existing.executionMode === 'worktree') {
-      return { status: 'rejected', reason: 'historical Task Worktree bindings are no longer dispatchable' };
+    if (existing.executionMode === 'worktree' || existing.executionMode === 'in_place') {
+      return {
+        status: 'rejected',
+        reason: `historical Task ${existing.executionMode} bindings are no longer dispatchable`,
+      };
     }
     if (existing.workspaceId && existing.workspaceId !== target.workspaceId) {
       return {

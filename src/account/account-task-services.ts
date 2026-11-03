@@ -43,9 +43,8 @@ export function buildAccountTaskServices(deps: {
 }
 
 function createDefaultAttemptExecutionBackend(stateRoot?: string): AttemptExecutionBackend {
-  const backend = (process.env.METACLAW_EXECUTOR_BACKEND ?? 'in_place').trim().toLowerCase();
+  const backend = (process.env.METACLAW_EXECUTOR_BACKEND ?? 'native').trim().toLowerCase();
   if (backend === 'docker' || backend === 'container') return new DockerCliAttemptExecutionBackend();
-  if (backend === 'in_place' || backend === 'native' || backend === '') return new NativeAttemptExecutionBackend(stateRoot);
-  if (backend === 'worktree') throw new Error('METACLAW_EXECUTOR_BACKEND=worktree has been retired; use native');
-  throw new Error(`Unsupported METACLAW_EXECUTOR_BACKEND: ${backend}`);
+  if (backend === 'native' || backend === '') return new NativeAttemptExecutionBackend(stateRoot);
+  throw new Error(`Unsupported METACLAW_EXECUTOR_BACKEND: ${backend}; use native or docker`);
 }

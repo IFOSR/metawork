@@ -777,7 +777,7 @@ flowchart LR
   WorkGraph --> Ready[Runnable frontier<br/>published direct dependencies]
   Ready --> Batch[dispatch_batch<br/>durable attempt items]
   Batch --> Attempt[Attempt supervisor<br/>claim and run independently]
-  Attempt --> Run[ExecutionRuntime<br/>authorized in-place execution]
+  Attempt --> Run[ExecutionRuntime<br/>authorized Conversation Worktree execution]
   Run --> Verify[Completion Protocol v4<br/>result objects, delta and receipt]
   Verify --> Done{Workspace result sealed?}
   Done -->|yes| Result[Atomically record result,<br/>handoffs, live files and done]
@@ -833,7 +833,7 @@ available explicitly for compatibility:
 | Pi Agent | `pi` | Research tasks, report generation, multi-step synthesis, agentic CLI workflows, image generation and editing when an authorized image model is selected | Native install reuses the existing command without changing its installation or personal home; MetaWork supplies the image runner |
 
 `codex-cli` and `pi-agent` are canonical AgentClasses with permission-profile
-bindings. In the default in-place mode, their trusted CLI commands run as child
+bindings. In the default native mode, their trusted CLI commands run as child
 processes inside the unified Runtime with `cwd` set to the Kernel-authorized
 Workspace path (or Runtime scratch for read-only work). In `docker` mode, the
 AgentClass also requires its immutable image pin and internal control network. No executor
@@ -875,7 +875,7 @@ sudo apt-get install -y build-essential python3 make g++
 
 Executor prerequisites:
 
-- Native in-place mode: existing `codex` and `pi` commands must already be on
+- Native mode: existing `codex` and `pi` commands must already be on
   `PATH`; setup does not install, upgrade, downgrade, or reconfigure them.
 - Docker compatibility mode: build or pull the canonical Codex and Pi executor
   images used by the configured AgentClasses.
@@ -1073,7 +1073,7 @@ which codex
 codex --help
 ```
 
-Codex attempts use `BackendExecutorAdapter`: in-place mode runs the trusted local
+Codex attempts use `BackendExecutorAdapter`: native mode runs the trusted local
 `codex` process with an isolated attempt `CODEX_HOME` and the authorized Workspace
 `cwd`; Docker compatibility mode
 runs the canonical `metaclaw-executor-codex:phase5` image.
@@ -1094,7 +1094,7 @@ pi -p "<prompt>"
 ```
 
 Pi attempts use the same execution seam in either backend. Docker compatibility
-mode runs them in `metaclaw-executor-pi:phase5`; in-place mode runs the trusted
+mode runs them in `metaclaw-executor-pi:phase5`; native mode runs the trusted
 `pi` binary in the Kernel-authorized Workspace or Runtime scratch directory.
 
 ## Run
@@ -1672,7 +1672,7 @@ and the final image keeps the MetaClaw control process and Planner process
 isolated with separate dependency trees. The Docker attempt path is
 compatibility-only and is not started by the native launcher.
 
-The Runtime image contains the MetaClaw CLI, generated v9 schema, versioned host bridge, compiled Planner MCP server, built AnyFusion-Pi application, Codex/Pi CLIs and their attempt configuration. `docker/Dockerfile.runtime` builds the checked-in MetaClaw and vendored planner sources and copies two independent application trees into the final image. The Planner launcher and MetaClaw-injected `/app/dist/planner-mcp.js` command both use `/usr/local/bin/node`; `/opt/anyfusion-planner/node` is forbidden. The in-place mode runs the trusted Executor CLI in the authorized Workspace or Runtime scratch directory and uses loopback attempt services; it does not require sibling Executor images or a Docker socket. Source changes require `docker/shell.ps1 -Rebuild`; only workspace and data volumes persist. The trusted Runtime exposes an attempt-scoped model gateway with a random scoped token. Use `docker/shell.ps1` for Docker + SSH compatibility validation.
+The Runtime image contains the MetaClaw CLI, generated v9 schema, versioned host bridge, compiled Planner MCP server, built AnyFusion-Pi application, Codex/Pi CLIs and their attempt configuration. `docker/Dockerfile.runtime` builds the checked-in MetaClaw and vendored planner sources and copies two independent application trees into the final image. The Planner launcher and MetaClaw-injected `/app/dist/planner-mcp.js` command both use `/usr/local/bin/node`; `/opt/anyfusion-planner/node` is forbidden. The native mode runs the trusted Executor CLI in the authorized Workspace or Runtime scratch directory and uses loopback attempt services; it does not require sibling Executor images or a Docker socket. Source changes require `docker/shell.ps1 -Rebuild`; only workspace and data volumes persist. The trusted Runtime exposes an attempt-scoped model gateway with a random scoped token. Use `docker/shell.ps1` for Docker + SSH compatibility validation.
 
 Local validation covers TypeScript lint/build, focused Planner RPC and host-protocol tests, the Docker Vitest suite, Unix-socket bridge behavior, Session validation, and unchanged Kernel/Execution/Executor regressions. Linux container smoke additionally verifies the single Node 22.19+ executable, isolated application dependency trees and processes, absence of an embedded Planner Node, Planner RPC JSONL, entrypoint config separation, and the final unified image.
 

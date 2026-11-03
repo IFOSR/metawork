@@ -1088,11 +1088,11 @@ export async function main(cliCommand = parseCliArgs(process.argv.slice(2))) {
         .some(item => item.status === 'published' && item.relativePath === relativePath
           && item.publishedPath === join(root, relativePath));
       if (published) return true;
-      // In-place Tasks do not have publication rows. Their declared write
-      // targets are the provenance boundary: a Workspace-root manifest that
-      // was not part of this Task's target cannot be silently adopted.
+      // A historical single-root Task has no publication rows. Their declared
+      // write targets are the provenance boundary: a Workspace-root manifest
+      // that was not part of this Task's target cannot be silently adopted.
       const task = taskEngine.getTaskRepo().findById(taskId);
-      if (task?.executionMode !== 'in_place') return false;
+      if (!task) return false;
       return (task.workspaceTargetPaths ?? []).some(target => {
         const normalized = target.replaceAll('\\', '/').replace(/^\.\//u, '').replace(/\/$/u, '');
         return normalized === '' || relativePath === normalized || relativePath.startsWith(`${normalized}/`);
@@ -1126,9 +1126,6 @@ export async function main(cliCommand = parseCliArgs(process.argv.slice(2))) {
       const workspace = await resolveTaskWorkspacePath(taskId);
       if (!workspace) return null;
       const canonicalWorkspace = await realpath(workspace);
-      // The Workspace itself is the authorized service directory for in-place
-      // execution. There is no public task directory in this mode.
-      if (task.executionMode === 'in_place') return canonicalWorkspace;
       // A published project is runnable without a service manifest. The file
       // registry proves that this Task delivered something into the Workspace;
       // target resolution then selects the project's own path and optionally

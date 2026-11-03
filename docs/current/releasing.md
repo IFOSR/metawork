@@ -5,6 +5,10 @@ CHANGELOG and a release plan before tagging. Published releases are immutable;
 use a new version for future releases. The current published release is `v0.1.17`: macOS Desktop and Runtime,
 plus Linux x64 and Windows x64 Server/Web/TUI Runtime packages.
 
+An internal build (ad-hoc signed, not notarized, Apple Silicon DMG only) uses a
+different path that needs no Apple material: see
+[internal-release-operations.md](internal-release-operations.md).
+
 ## GitHub Actions configuration
 
 Keep all secret values out of Git and logs.

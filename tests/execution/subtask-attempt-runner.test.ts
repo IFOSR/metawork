@@ -6,7 +6,8 @@ import { TaskOperationKeys } from '../../src/storage/task-state-change-repo.js';
 import { ConversationTaskSchedulerRepo } from '../../src/storage/conversation-task-scheduler-repo.js';
 import Database from 'better-sqlite3';
 import { createHash, randomUUID } from 'node:crypto';
-import { mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, readFileSync, readdirSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { cancelFixtureTask } from '../support/task-state-fixture.js';
@@ -93,7 +94,7 @@ function node(
 function setup(
   rawResponse: string,
   usageObserver?: (event: import('../../src/metering/usage-normalizer.js').RawUsageEvent) => void,
-  withConversation = false,
+  withConversation = true,
 ) {
   const artifactPublicationStub = {
     publishIntegratedArtifacts: vi.fn().mockResolvedValue({
@@ -101,6 +102,11 @@ function setup(
       taskDirectory: '/tmp/artifacts',
       failures: [],
     }),
+    prepareGitArtifacts: vi.fn(async (input: { relativePaths: string[] }) => ({
+      versions: input.relativePaths.map((relativePath, index) => ({
+        relativePath, artifactVersionId: `artifact_version_${index}`,
+      })),
+    })),
   };
   const db = new Database(':memory:');
   runMigrations(db);
@@ -183,7 +189,9 @@ function setup(
     resolveImage: vi.fn(), create: vi.fn(), start: vi.fn(), wait: vi.fn(), logs: vi.fn(),
     pause: vi.fn(), resume: vi.fn(), inspect: vi.fn(), stop: vi.fn(), remove: vi.fn(), listManaged: vi.fn(),
   } as unknown as AttemptExecutionBackend;
-  const fixtureRoot = `/tmp/metaclaw-phase2-attempt-runner/${randomUUID()}`;
+  // `tmpdir()` may be a symlink alias (/tmp -> /private/tmp on macOS); the
+  // Conversation binding canonicalizes it, so the fixture must start canonical.
+  const fixtureRoot = join(realpathSync(tmpdir()), 'metaclaw-phase2-attempt-runner', randomUUID());
   const resultRoot = join(fixtureRoot, 'results');
   const sourceRoot = join(fixtureRoot, 'source');
   mkdirSync(sourceRoot, { recursive: true });
@@ -193,7 +201,20 @@ function setup(
   const claimAttempt = vi.spyOn(workUnitClaimService, 'claim');
   const conversations = withConversation ? new ConversationWorktreeService(
     new WorkspaceGitService({internalRoot: join(fixtureRoot, 'git')}), new WorkspaceGitRepo(db),
-  ) : undefined;
+  ) : new ConversationWorktreeService(
+    new WorkspaceGitService({internalRoot: join(fixtureRoot, 'git')}), new WorkspaceGitRepo(db),
+  );
+  // Every Attempt runs against a durable Conversation binding; the retired
+  // single-root mode has no runtime path.
+  const bindTask = async () => conversations.repo.binding('task_phase2', a.generationId)
+    ?? conversations.bind({
+      accountId: 'local-default',
+      workspaceId: 'workspace',
+      conversationId: 'conversation_phase2',
+      userRoot: sourceRoot,
+      taskId: 'task_phase2',
+      generationId: a.generationId,
+    });
   const attemptRunner = new SubtaskAttemptRunner({
     conversationWorktrees: conversations,
     db,
@@ -273,10 +294,12 @@ function setup(
   };
   const runner = {
     run: async (input: Parameters<SubtaskAttemptRunner['run']>[0]) => {
+      await bindTask();
       authorize(input);
       return attemptRunner.run(input);
     },
     runCorrection: async (input: Parameters<SubtaskAttemptRunner['runCorrection']>[0]) => {
+      await bindTask();
       authorize({
         ...input,
         attemptKind: 'contract_correction',
@@ -603,7 +626,6 @@ describe('SubtaskAttemptRunner', () => {
       // this already-authorized Attempt or turn its valid completion into a
       // stale result.
       fixture.db.prepare(`UPDATE tasks SET status = 'needs_action' WHERE id = 'task_phase2'`).run();
-      authorizeRunningAttempt(fixture, 'attempt_blocked_task_completion');
 
       const result = await fixture.runner.run({
         attemptId: 'attempt_blocked_task_completion',
@@ -664,8 +686,8 @@ describe('SubtaskAttemptRunner', () => {
 
   it('does not launch an Executor after cancellation during workspace preparation', async () => {
     const fixture = setup('late result');
-    const original = fixture.workspaceStore.bindInPlaceWorkspace.bind(fixture.workspaceStore);
-    vi.spyOn(fixture.workspaceStore, 'bindInPlaceWorkspace').mockImplementation(async (...args) => {
+    const original = fixture.workspaceStore.bindConversationWorkspace.bind(fixture.workspaceStore);
+    vi.spyOn(fixture.workspaceStore, 'bindConversationWorkspace').mockImplementation(async (...args) => {
       const workspace = await original(...args);
       cancelFixtureTask(fixture.db, 'task_phase2', 'cancel during preparation');
       fixture.subtaskRepo.updateStatus(fixture.a.id, 'cancelled');
@@ -1238,24 +1260,25 @@ describe('SubtaskAttemptRunner', () => {
   it('persists an executor failure and releases the exact attempt claim when execution throws', async () => {
     const setupResult = setup(validResponse());
     setupResult.executionRuntime.run.mockRejectedValueOnce(new Error('progress callback failed'));
-    await expect(setupResult.runner.run({
+    const outcome = await setupResult.runner.run({
       attemptId: 'attempt_1',
       executionId: 'exec_1', taskId: 'task_phase2', subtaskId: setupResult.a.id,
       ...attemptIdentity(), executionMode: 'fresh', defaultResourceGrant: setupResult.defaultResourceGrant,
-    })).rejects.toThrow('就地执行已完成但后续步骤失败');
-    expect(setupResult.db.prepare('SELECT terminal_state FROM executor_attempt_receipts').get()).toBeUndefined();
+    });
+    expect(outcome).toMatchObject({ outcome: 'executor_failed' });
+    expect(setupResult.db.prepare(
+      'SELECT terminal_state FROM executor_attempt_receipts WHERE attempt_id = ?',
+    ).get('attempt_1')).toEqual({ terminal_state: 'executor_failed' });
     expect(setupResult.workUnitRepo.findById('executor-codex')).toMatchObject({
-      state: 'running', claimedTaskId: 'task_phase2', claimedSubtaskId: setupResult.a.id,
-      claimedAttemptId: 'attempt_1',
+      state: 'failed', claimedTaskId: null, claimedSubtaskId: null, claimedAttemptId: null,
     });
   });
 
   it('lands receipt, Subtask state, dispatch terminal and Kernel outcome inbox together', async () => {
     const setupResult = setup(validResponse());
-    authorizeRunningAttempt(setupResult, 'attempt_atomic_terminal');
     setupResult.executionRuntime.run.mockRejectedValueOnce(new Error('executor process crashed'));
 
-    await expect(setupResult.runner.run({
+    const outcome = await setupResult.runner.run({
       attemptId: 'attempt_atomic_terminal',
       executionId: 'exec_atomic_terminal',
       taskId: 'task_phase2',
@@ -1263,9 +1286,13 @@ describe('SubtaskAttemptRunner', () => {
       ...attemptIdentity(),
       executionMode: 'fresh',
       defaultResourceGrant: setupResult.defaultResourceGrant,
-    })).rejects.toThrow('就地执行已完成但后续步骤失败');
-    expect(setupResult.subtaskRepo.findById(setupResult.a.id)?.status).toBe('running');
-    expect(setupResult.dispatchItems.find('attempt_atomic_terminal')?.status).toBe('running');
+    });
+    expect(outcome).toMatchObject({ outcome: 'executor_failed' });
+    expect(setupResult.db.prepare(
+      'SELECT terminal_state FROM executor_attempt_receipts WHERE attempt_id = ?',
+    ).get('attempt_atomic_terminal')).toEqual({ terminal_state: 'executor_failed' });
+    expect(setupResult.subtaskRepo.findById(setupResult.a.id)?.status).toBe('awaiting_decision');
+    expect(setupResult.dispatchItems.find('attempt_atomic_terminal')?.status).toBe('terminal');
   });
 
   it('lands heartbeat loss with the exact authorized binding identity', () => {
@@ -1479,9 +1506,10 @@ describe('SubtaskAttemptRunner', () => {
     await fixture.attemptRunner.stageAcceptedResult(pending!);
     await fixture.attemptRunner.stageAcceptedResult(pending!);
     expect(fixture.executionRuntime.run).toHaveBeenCalledTimes(1);
-    expect(fixture.subtaskRepo.findById(fixture.a.id)?.status).toBe('awaiting_integration');
-    expect(fixture.taskRuntimeService.findTask('task_phase2')?.status).not.toBe('succeeded');
-    expect(fixture.db.prepare('SELECT count(*) AS n FROM workspace_publications').get()).toEqual({ n: 1 });
+    // An accepted Conversation Git result completes its Subtask directly; the
+    // retired Worktree publication staging no longer applies.
+    expect(fixture.subtaskRepo.findById(fixture.a.id)?.status).toBe('done');
+    expect(fixture.db.prepare('SELECT count(*) AS n FROM workspace_publications').get()).toEqual({ n: 0 });
     expect(readPendingTaskResult(fixture.db, 'task_phase2')).toBeNull();
   });
 
@@ -1528,8 +1556,8 @@ describe('SubtaskAttemptRunner', () => {
       { attempt_id: 'attempt_correction', terminal_state: 'completed', raw_response: '' },
     ]));
     expect(setupResult.subtaskRepo.findById(setupResult.a.id)).toMatchObject({
-      status: 'awaiting_integration',
-      result: '',
+      status: 'done',
+      result: originalBody,
     });
     const correctionReceipt = setupResult.db.prepare(`
       SELECT parsing_json FROM executor_attempt_receipts WHERE attempt_id = 'attempt_correction'
@@ -1544,7 +1572,7 @@ describe('SubtaskAttemptRunner', () => {
     });
     expect(setupResult.db.prepare(`
       SELECT COUNT(*) AS count FROM workspace_publications
-    `).get()).toEqual({ count: 1 });
+    `).get()).toEqual({ count: 0 });
     expect(setupResult.workflow.findEvent(
       'event_attempt_correction_execution_outcome',
     )).toMatchObject({

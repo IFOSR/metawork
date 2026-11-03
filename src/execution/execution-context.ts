@@ -1,8 +1,15 @@
 import { createHash } from 'node:crypto';
 import { isAbsolute } from 'node:path';
-import { isWithin } from '../workspace/workspace-path.js';
 
-export type ExecutionMode = 'conversation_git' | 'service_git' | 'worktree' | 'in_place';
+/**
+ * Modes an Attempt can execute in. `conversation_git` and `service_git` are the
+ * only live modes; historical `in_place`/`worktree` rows are rejected before an
+ * Attempt starts and never reach this type.
+ */
+export type ExecutionMode = 'conversation_git' | 'service_git';
+
+/** Historical mode values still readable from pre-Conversation-Git rows. */
+export type RetiredExecutionMode = 'in_place' | 'worktree';
 
 /**
  * Immutable facts fixed before an Attempt starts. Kernel produces them from the
@@ -12,11 +19,11 @@ export type ExecutionMode = 'conversation_git' | 'service_git' | 'worktree' | 'i
 export interface ExecutionContext {
   workspaceId: string;
   canonicalWorkspacePath: string;
-  executionMode: ExecutionMode | 'conversation_git' | 'service_git';
-  /** Fixed Conversation identity; absent only for historical bindings. */
+  executionMode: ExecutionMode;
+  /** Fixed Conversation identity that authorizes the writable Worktree. */
   conversation?: { conversationId:string; worktreeId:string; incarnation:number; taskBaseCommit:string };
   service?: { serviceWorktreeId:string; sourceCommit:string; projectPath:string };
-  /** Directory the Executor runs in: the Workspace itself (in_place) or its managed worktree. */
+  /** Directory the Executor runs in: the bound Conversation or service Worktree. */
   authorizedWorkingDirectory: string;
   /** ResourceLease id that carries the Workspace write claim, when one was claimed. */
   resourceLeaseId: string | null;
@@ -32,19 +39,10 @@ export interface ExecutionContext {
 export interface WorkspaceExecutionBindingFacts {
   workspaceId: string;
   canonicalPath: string;
-  executionMode: ExecutionMode;
+  /** Retired values stay readable so recovery can reject them explicitly. */
+  executionMode: ExecutionMode | RetiredExecutionMode;
   authorizedWorkingDirectory: string;
 }
-
-/** New admissions have no in-place default; this parser is legacy-only. */
-export const DEFAULT_EXECUTION_MODE: ExecutionMode = 'conversation_git';
-/**
- * Migration-compatibility input only. Since the Planner-owned Workspace mode
- * contract, the Kernel-authorized decision is the sole source of the mode for a
- * new Task (`WorkspaceExecutionDecision`), and the environment no longer admits
- * work. The parser stays for legacy configuration/import tooling.
- */
-export const EXECUTION_MODE_ENVIRONMENT = 'METAWORK_WORKSPACE_EXECUTION_DEFAULT';
 
 export class ExecutionContextError extends Error {
   constructor(readonly field: string, message: string) {
@@ -53,35 +51,9 @@ export class ExecutionContextError extends Error {
   }
 }
 
-/** Reads the admission default for new Tasks; never used to reinterpret a running Attempt. */
-export function resolveExecutionModeFromEnvironment(
-  env: NodeJS.ProcessEnv = process.env,
-): ExecutionMode {
-  const raw = env[EXECUTION_MODE_ENVIRONMENT]?.trim();
-  return parseExecutionMode(raw);
-}
-
-
-export function parseExecutionMode(value: string | undefined): ExecutionMode {
-  if (value === undefined || value === '') return DEFAULT_EXECUTION_MODE;
-  if (value === 'conversation_git') return value;
-  if (value === 'in_place') return value;
-  if (value === 'worktree') {
-    throw new ExecutionContextError(
-      'executionMode',
-      'worktree execution has been retired; choose the Conversation-bound Workspace',
-    );
-  }
-  throw new ExecutionContextError(
-    'executionMode',
-    `${EXECUTION_MODE_ENVIRONMENT} must be conversation_git`,
-  );
-}
-
 /**
- * Rejects an inconsistent context before any Executor side effect. In-place
- * Attempts must run inside their canonical Workspace; worktree Attempts run in a
- * managed worktree that lives outside it by design.
+ * Rejects an inconsistent context before any Executor side effect. A writable
+ * Attempt must carry the Conversation or service Git identity it executes in.
  */
 export function assertExecutionContext(context: ExecutionContext): ExecutionContext {
   for (const field of ['workspaceId', 'taskId', 'generationId', 'subtaskId', 'attemptId'] as const) {
@@ -100,18 +72,6 @@ export function assertExecutionContext(context: ExecutionContext): ExecutionCont
   }
   if (context.executionMode === 'service_git' && (!context.service || !/^[a-f0-9]{40}$/u.test(context.service.sourceCommit))) {
     throw new ExecutionContextError('service', 'Service Git identity is required');
-  }
-  if (context.executionMode === 'worktree') {
-    throw new ExecutionContextError('executionMode', 'worktree execution bindings are retired');
-  }
-  if (
-    context.executionMode === 'in_place'
-    && !isWithin(context.canonicalWorkspacePath, context.authorizedWorkingDirectory)
-  ) {
-    throw new ExecutionContextError(
-      'authorizedWorkingDirectory',
-      'an in-place working directory must stay inside its Workspace',
-    );
   }
   return context;
 }
@@ -140,6 +100,13 @@ export function executionContextFromBinding(input: {
   configurationRevision: string;
   resourceLeaseId?: string | null;
 }): ExecutionContext {
+  if (input.binding.executionMode !== 'conversation_git'
+    && input.binding.executionMode !== 'service_git') {
+    throw new ExecutionContextError(
+      'executionMode',
+      `${input.binding.executionMode} bindings are retired; re-plan the Task`,
+    );
+  }
   return assertExecutionContext({
     workspaceId: input.binding.workspaceId,
     canonicalWorkspacePath: input.binding.canonicalPath,

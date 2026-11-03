@@ -384,8 +384,12 @@ export interface KernelTaskFact {
   status: KernelTaskStatus;
   conversationId?: string;
   workspaceId?: string;
-  /** Immutable Workspace execution mode fixed when the Task was admitted. */
-  executionMode?: WorkspaceExecutionMode;
+  /**
+   * Workspace execution mode recorded on the Task row. Kernel reads the raw
+   * column, so a historical Task may still carry a retired product mode; no
+   * admission decision produces one.
+   */
+  executionMode?: WorkspaceExecutionMode | 'in_place' | 'worktree';
   /** Authorized delivery policy fixed when the Task was admitted. */
   deliveryPolicy?: WorkspaceDeliveryPolicy;
 }
