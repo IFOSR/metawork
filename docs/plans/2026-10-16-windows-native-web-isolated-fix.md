@@ -7,6 +7,7 @@
 - 起点：`main` 的 `cde31595`（`docs: record v0.1.16 packaged acceptance`）。此处记录分支基线，不代表 Windows 已通过该版本验收。
 - 产品范围：Windows x64 原生 MetaWork Server + 浏览器 Web；不制作 Windows Electron Desktop。
 - 完成日期、交付行为、验收证据、关闭提交：见第 6 节"实施记录"；本计划建立不代表修复完成。
+- 主干同步：见第 8 节"主干同步记录"，记录 2026-10-16 同步 `main` `95ee3a4c` 的做法与可重复流程。
 
 ## 1. 目标与实施边界
 
@@ -273,3 +274,84 @@ Windows 上跑过真实任务。Planner 仍复用旧安装里同一份 0.80.2 �
   （均为 fsync/durability 修复的收益）。
 - W2 阶段的 Server/Web 主链路（启动、命名管道、静态资源、会话、WebSocket、目录浏览、
   连续两次配置激活、`metawork web` 拉起浏览器、`server stop`）保持通过。
+
+## 8. 主干同步记录（2026-10-16）
+
+### 8.1 同步目标与基线
+
+把 `main` 的最新功能引入 `fix/windows-native-web`，同时保留全部 Windows 适配，
+且不改写 `main`、不向 `main` 合并任何内容。
+
+- 同步基线：`main` = `95ee3a4c`（`refactor: remove retired in_place execution residue`）。
+- 同步前分支：`9aa00940`（领先 main 8 个提交、落后 103 个提交）。
+- 同步后分支：`main` + 8 个 Windows 提交 + 1 个 schema 断言修正提交。
+
+### 8.2 采用的做法：rebase + rerere
+
+选择 `git rebase main` 而不是 `git merge main`，理由：
+
+1. 分支始终保持为「`main` 的新基线 + 若干 Windows 补丁」，主干功能与适配的边界清晰；
+2. 每次同步只重放 Windows 补丁，不累积合并提交，下一次同步的冲突面不会变大；
+3. `git config rerere.enabled true` 会缓存冲突解法，重复出现的冲突自动复用。
+
+`git merge main` 的备选方案会把 898 个文件的差异反复叠加，冲突面随时间变大；
+整文件 `--theirs` / `--ours` 也不可用，因为会丢掉另一侧的非冲突改动。
+
+同步前已建立本地备份分支 `backup/windows-native-pre-sync-2026-10-16`（指向 `9aa00940`）。
+
+### 8.3 冲突清单与解法（共 14 处）
+
+| # | 提交 | 文件 | 解法 |
+| --- | --- | --- | --- |
+| 1-9 | `fix(platform): flush files and replace directory pointers on Windows` | `configuration/activation-journal.ts`、`gateway/segmented-event-journal.ts`、`installation/desktop-activation.ts`、`installation/gateway-journal-backup.ts`、`installation/product-root-migrator.ts`、`installation/native-launcher.ts`、`installation/upgrade-journal.ts`、`session/file-conversation-store.ts`、`storage/file-conversation-presentation-store.ts` | 同形冲突：`main` 内联 `process.platform` 判断的 fsync，分支改为统一调用 `src/platform/durable-fs.ts`。取分支侧，保留 `main` 的其他改动 |
+| 10-11 | `fix(installation): back the database pointer with a Windows junction` | `configuration/file-configuration-repository.ts`、`installation/account-layout-migrator.ts` | 同上，取分支侧（seam 化 fsync） |
+| 12 | 同上 | `installation/release-pointer-transaction.ts` | `main` 用 `readlink`/`replaceSymlink` 统一处理四个指针；分支按指针类型分派（数据库指针 = 文件 symlink 或 Windows junction，其余 = 目录链接）。取分支侧，`readTargets` 走 `readPointer` |
+| 13 | `fix(executor): resolve Windows command shims and Node entries` | `executor/local-cli-executor-adapter.ts` | **合并双方**：保留 `main` 的 `processGroupOwnershipNow()` 进程组归属计时，同时采用分支的 `launch.executable` + `prefixArgs`（Windows `.cmd` shim 解析） |
+| 14 | 同上 | `executor/pi-cli-driver.ts` | **合并双方**：采用分支的 `executorLaunchArgv(resolveExecutorLaunch(...))`，保留 `main` 的 `PYTHONDONTWRITEBYTECODE=1`（Python 字节码不可缓存导致探测超时） |
+
+第 13、14 处不能单取一侧：取 `main` 侧会丢 Windows shim 解析，取分支侧会丢 `main` 的进程组
+归属与 Python 字节码规避。
+
+### 8.4 同步后发现并修复的遗留
+
+`tests/installation/database-pointer.test.ts` 把「可迁移 schema 上限」写死为 50，
+而 `main` 的 `CURRENT_SCHEMA_VERSION` 已推进到 65，该断言在同步后必然失败。
+已改为引用 `CURRENT_SCHEMA_VERSION`，后续主干推进 schema 时不再失效。
+
+### 8.5 同步后的验证证据（Windows，Node v22.19.0）
+
+- `npx tsc --noEmit` 通过；`npx tsup` 构建通过。
+- 全量测试对比（同一台 Windows 主机、同一 Node 22.19.0，分别检出 `main` 与本分支）：
+
+| 指标 | `main` 基线 | 同步后分支 |
+| --- | --- | --- |
+| 失败的测试文件 | 128 | 104 |
+| 通过的测试文件 | 485 | 514 |
+| 测试文件总数 | 644 | 649 |
+
+- **修好 27 个测试文件**：分支的 Windows 适配（fsync seam、路径包含判断、数据库指针
+  junction、执行器工具解析）把 `main` 上失败的 `file-configuration-repository`、
+  `web-session-catalog`、`file-attachment-store`、`workspace-directory-service` 等修复为通过。
+- **无真实回归**：初次比对出现 2 个「`main` 通过、分支失败」的文件
+  （`e2e/account-conversation-origin-delivery.test.ts`、`executor/pi-tool-stall-guard.test.ts`）
+  与 1 个文件内多 1 个用例，均为既有的顺序/并发相关偶发：单独重跑即通过，`main` 基线
+  同样偶发，不构成回归。
+- 环境限制（本机，不影响结论）：本机 `node` 为 v24，`better-sqlite3` prebuild 为 ABI 127，
+  需使用便携版 Node v22.19.0 才能跑 SQLite 测试；本机无 Docker，POSIX 分支用例按设计
+  跳过；`tests/platform/local-endpoint.test.ts` 的 POSIX 路径断言在 Windows 主机上必然失败，
+  该文件在 `main` 与分支完全一致，属主干既有问题。
+
+### 8.6 下次同步的可重复流程
+
+1. 备份：`git branch backup/windows-native-pre-sync-<date>`。
+2. 开启 rerere（仅需一次）：`git config rerere.enabled true`、`git config rerere.autoupdate true`。
+3. 同步：`git rebase main`；按第 8.3 节的分类处理冲突——同形 fsync/seam 冲突取分支侧，
+   Executor 启动与探测冲突合并双方（保留 `main` 的进程组归属与 `PYTHONDONTWRITEBYTECODE`）。
+4. 提交内修正：`git rebase -i main` 把目标提交改为 `edit`，修正后 `git commit --amend --no-edit`
+   再 `git rebase --continue`（避免把修正混进无关提交）。
+5. 验证：`npx tsc --noEmit` → `npx tsup` → 与 `main` 基线做全量测试逐文件对比
+   （基线用 `git worktree add <dir> main` 临时检出，共享 `node_modules` 目录联接）。
+6. 把本次冲突解法与遗留修正补进本节，再提交。
+
+注意：`git rebase -i` 期间若工作区有未暂存改动，rebase 会拒绝启动；先 `git add` 提交或
+`git stash`，否则容易误用 `commit --amend` 改到 HEAD 提交上。
