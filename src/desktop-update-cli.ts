@@ -2,6 +2,7 @@ import { spawn, type ChildProcess } from 'node:child_process';
 import { access, cp, mkdir, open, readFile, realpath, rename, rm, writeFile } from 'node:fs/promises';
 import { dirname, join, resolve } from 'node:path';
 import { DesktopActivation, type DesktopActivationRecord } from './installation/desktop-activation.js';
+import { desktopPayloadRoots } from './installation/desktop-payload-paths.js';
 import { verifyDesktopRelease } from './installation/desktop-release.js';
 import { readReleaseIdentity } from './installation/release-identity.js';
 import { SourceNativeUpdater } from './installation/source-native-updater.js';
@@ -110,8 +111,11 @@ async function main(): Promise<void> {
         // Explicit recovery must complete the stop even when running() is false.
         await (await manager()).stopForUpdate();
       },
+      // The upgrade path must carry the bundled memory engine too: omitting it
+      // left the installed release without <release>/memory/tdai, so long-term
+      // memory reported "引擎没有随当前发布包安装".
       updateRuntime: () => updater.update({ releaseId: record.candidateReleaseId,
-        sourceRoot: join(resources, 'payload/metawork'), plannerRoot: join(resources, 'payload/planner') }).then(() => undefined),
+        ...desktopPayloadRoots(resources) }).then(() => undefined),
       replaceShell: async () => {
         const stagedSibling = `${record.applicationPath}.metawork-staged`;
         await cp(record.stagedApplicationPath, stagedSibling, { recursive: true, errorOnExist: true, force: false, verbatimSymlinks: true });

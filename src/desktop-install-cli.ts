@@ -4,6 +4,7 @@ import { join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { z } from 'zod';
 import { verifyDesktopRelease } from './installation/desktop-release.js';
+import { desktopPayloadRoots } from './installation/desktop-payload-paths.js';
 import { SourceNativeInstaller } from './installation/source-native-installer.js';
 import { SourceNativeUpdater } from './installation/source-native-updater.js';
 import { resolveMetaWorkPaths } from './installation/paths.js';
@@ -45,9 +46,7 @@ export async function runDesktopInstall(
     await restoreManagedTools(resources, paths.root, release);
     return;
   }
-  const sourceRoot = join(resources, 'payload', 'metawork');
-  const plannerRoot = join(resources, 'payload', 'planner');
-  const memoryRoot = join(resources, 'payload', 'memory');
+  const { sourceRoot, plannerRoot, memoryRoot } = desktopPayloadRoots(resources);
   const secretStore = createProductionSecretStore({ credentialsFile: paths.credentials });
   const searchPath = [join(sourceRoot, 'desktop-tools/node/bin'), join(sourceRoot, 'desktop-tools/git/bin'),
     join(sourceRoot, 'desktop-tools/executor/bin'), process.env.PATH ?? '/usr/bin:/bin'].join(':');

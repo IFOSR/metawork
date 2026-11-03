@@ -1,6 +1,7 @@
 import { prepareStandardAgentConfiguration } from '../configuration/standard-agent-configuration.js';
 import { prepareVerifiedModelCapabilities } from '../configuration/model-capability-catalog.js';
 import { randomUUID } from 'node:crypto';
+import { existsSync } from 'node:fs';
 import {
   chmod,
   copyFile,
@@ -413,6 +414,7 @@ export async function stageSourceRelease(
   memoryRoot?: string,
 ): Promise<void> {
   await assertReleaseRootReplaceable(releaseRoot, appCurrentPointer, releaseId);
+  if (memoryRoot) assertMemoryEngineRoot(memoryRoot);
   const stageRoot = `${releaseRoot}.stage-${randomUUID()}`;
   await mkdir(stageRoot, { recursive: true, mode: 0o700 });
   try {
@@ -444,6 +446,22 @@ export async function stageSourceRelease(
     await makeWritable(stageRoot);
     await rm(stageRoot, { recursive: true, force: true });
     throw error;
+  }
+}
+
+/**
+ * The engine is staged into `<release>/memory/tdai`, so the caller must hand over
+ * the engine directory itself. A parent directory silently produced
+ * `memory/tdai/tdai`, which no runtime path resolves.
+ */
+function assertMemoryEngineRoot(memoryRoot: string): void {
+  if (basename(memoryRoot) !== 'tdai') {
+    throw new Error(
+      `memory engine root must be the engine directory named "tdai" (got ${basename(memoryRoot)}): ${memoryRoot}`,
+    );
+  }
+  if (!existsSync(join(memoryRoot, 'package.json'))) {
+    throw new Error(`memory engine root is missing package.json: ${memoryRoot}`);
   }
 }
 
