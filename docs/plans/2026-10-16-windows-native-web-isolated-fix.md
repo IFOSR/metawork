@@ -325,17 +325,18 @@ Windows 上跑过真实任务。Planner 仍复用旧安装里同一份 0.80.2 �
 
 | 指标 | `main` 基线 | 同步后分支 |
 | --- | --- | --- |
-| 失败的测试文件 | 128 | 104 |
-| 通过的测试文件 | 485 | 514 |
-| 测试文件总数 | 644 | 649 |
+| 失败的测试文件 | 122 | 98 |
+| 通过的测试文件 | 518 | 546 |
+| 失败的测试用例 | 428 | 304 |
+| 通过的测试用例 | 4106 | 4259 |
 
-- **修好 27 个测试文件**：分支的 Windows 适配（fsync seam、路径包含判断、数据库指针
+- **修好 26 个测试文件**：分支的 Windows 适配（fsync seam、路径包含判断、数据库指针
   junction、执行器工具解析）把 `main` 上失败的 `file-configuration-repository`、
   `web-session-catalog`、`file-attachment-store`、`workspace-directory-service` 等修复为通过。
 - **无真实回归**：初次比对出现 2 个「`main` 通过、分支失败」的文件
-  （`e2e/account-conversation-origin-delivery.test.ts`、`executor/pi-tool-stall-guard.test.ts`）
-  与 1 个文件内多 1 个用例，均为既有的顺序/并发相关偶发：单独重跑即通过，`main` 基线
-  同样偶发，不构成回归。
+  （`e2e/account-conversation-origin-delivery.test.ts`、`configuration/configuration-migration-service.test.ts`），
+  均为既有的顺序/并发相关偶发：单独重跑即通过（连续 3 次通过），`main` 基线同样偶发，
+  且相关源文件不在本分支改动范围内，不构成回归。
 - 环境限制（本机，不影响结论）：本机 `node` 为 v24，`better-sqlite3` prebuild 为 ABI 127，
   需使用便携版 Node v22.19.0 才能跑 SQLite 测试；本机无 Docker，POSIX 分支用例按设计
   跳过；`tests/platform/local-endpoint.test.ts` 的 POSIX 路径断言在 Windows 主机上必然失败，
