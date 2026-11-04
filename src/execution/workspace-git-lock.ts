@@ -61,7 +61,19 @@ export async function withWorkspaceGitLock<T>(repositoryPath: string, name: stri
   await writeFile(join(candidate,'owner.json'),JSON.stringify({pid:process.pid,token,processStart:await processStart(process.pid)}));
   for (;;) {
     try { await rename(candidate,path); break; }
-    catch (error) { if (!['EEXIST','ENOTEMPTY'].includes((error as NodeJS.ErrnoException).code??'')) { await rm(candidate,{recursive:true,force:true}); throw error; } }
+    catch (error) {
+      const code=(error as NodeJS.ErrnoException).code??'';
+      // POSIX reports ENOTEMPTY (or EEXIST) when a directory rename targets an
+      // existing directory; Windows reports EPERM for the same collision. A held
+      // lock must therefore be recognised by the target's presence, not by the
+      // errno alone - otherwise two parallel Subtasks racing for the same
+      // Workspace integration lock fail the whole attempt with EPERM instead of
+      // waiting for the owner.
+      const held=await stat(path).then(()=>true,()=>false);
+      if (!held || !['EEXIST','ENOTEMPTY','EPERM'].includes(code)) {
+        await rm(candidate,{recursive:true,force:true,maxRetries:10,retryDelay:50}); throw error;
+      }
+    }
     const previous = await owner(path);
     // The empty-owner interval during acquisition is not a dead process.
     if (previous && !await ownerAlive(previous)) {
@@ -81,12 +93,16 @@ export async function withWorkspaceGitLock<T>(repositoryPath: string, name: stri
       }
       finally { if (fence) await rm(reclaim, { recursive: true, force: true }); }
     }
-    if (Date.now() >= deadline) { await rm(candidate,{recursive:true,force:true}); throw new Error(`workspace_git_busy:${name}`); }
+    if (Date.now() >= deadline) { await rm(candidate,{recursive:true,force:true,maxRetries:10,retryDelay:50}); throw new Error(`workspace_git_busy:${name}`); }
     await pause();
   }
   const verify = async () => {
     if ((await owner(path))?.token !== token) throw new Error('workspace_git_owner_changed');
   };
   try { return await action(verify); }
-  finally { if ((await owner(path))?.token === token) await rm(path, { recursive: true }); }
+  finally {
+    // A Git child can still hold a handle on Windows, so the release retries
+    // the busy directory instead of failing the finished attempt.
+    if ((await owner(path))?.token === token) await rm(path, { recursive: true, maxRetries: 10, retryDelay: 50 });
+  }
 }
