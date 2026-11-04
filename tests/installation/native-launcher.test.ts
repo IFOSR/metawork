@@ -15,6 +15,8 @@ describe('renderNativeLauncher', () => {
 
     expect(launcher).toContain('REM MetaWork managed launcher');
     expect(launcher).toContain('node "%METAWORK_INSTALL_ROOT%\\app\\current\\dist\\index.js" %*');
+    // The Executor shell tool needs a POSIX shell on Windows.
+    expect(launcher).toContain('portablegit\\bin');
     expect(launcher).not.toContain('export ');
     expect(launcher).not.toContain('#!/usr/bin/env bash');
   });

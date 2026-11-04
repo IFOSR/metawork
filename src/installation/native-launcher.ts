@@ -105,6 +105,10 @@ set "METACLAW_PLANNER_SESSION_DIR=%METAWORK_INSTALL_ROOT%\\data\\planner-session
 set "METACLAW_PLANNER_SCHEMA_PATH=%METAWORK_INSTALL_ROOT%\\app\\current\\dist\\planning-agent-plan-v9.schema.json"
 set "ANYFUSION_PLANNER_SCHEMA_PATH=%METACLAW_PLANNER_SCHEMA_PATH%"
 set "METACLAW_PI_ATTEMPT_EXTENSION=%METAWORK_INSTALL_ROOT%\\app\\current\\dist\\pi-attempt-tools.ts"
+REM The Executor shell tool needs a POSIX shell; expose the bundled Git Bash
+REM when it is present so a Windows install can run shell commands.
+if exist "%LOCALAPPDATA%\\MetaWork\\tools\\portablegit\\bin" set "PATH=%PATH%;%LOCALAPPDATA%\\MetaWork\\tools\\portablegit\\bin"
+if exist "%METAWORK_INSTALL_ROOT%\\tools\\portablegit\\bin" set "PATH=%PATH%;%METAWORK_INSTALL_ROOT%\\tools\\portablegit\\bin"
 set "PI_SKIP_VERSION_CHECK=1"
 set "PI_TELEMETRY=0"
 node "%METAWORK_INSTALL_ROOT%\\app\\current\\dist\\index.js" %*
