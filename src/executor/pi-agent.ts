@@ -420,3 +420,13 @@ export default function (pi: ExtensionAPI) {
   pi.registerTool(resultReferenceGetTool);
 }
 `;
+
+/**
+ * Tool names the generated extension registers.
+ *
+ * Derived from the extension source itself so a launch allowlist can never
+ * drift from the tools the extension actually defines.
+ */
+export const PI_WEB_EXTENSION_TOOL_NAMES: readonly string[] = [
+  ...PI_WEB_EXTENSION_SOURCE.matchAll(/name: "([a-z0-9_]+)"/gu),
+].map((match) => match[1]!);

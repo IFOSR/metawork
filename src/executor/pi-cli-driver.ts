@@ -12,6 +12,7 @@ import {
 } from '../configuration/agent-runtime-renderer.js';
 import { redactSensitiveText } from '../utils/redact-sensitive-text.js';
 import { RuntimeHomeMaterializer } from './runtime-home-materializer.js';
+import { PI_WEB_EXTENSION_TOOL_NAMES } from './pi-agent.js';
 import {
   TOOL_STALL_FACTS_FILE,
   TOOL_STALL_SAMPLE_MS,
@@ -151,7 +152,12 @@ export class PiCliDriver implements HarnessDriver {
     // correction path.
     const toolArgs = input.responseOnly
       ? ['--no-session', '--tools', 'read']
-      : piExecutorToolArgs(input.executorAffordances);
+      : piExecutorToolArgs(
+        input.executorAffordances,
+        hasWebResearchAffordances(input.executorAffordances)
+          ? PI_WEB_EXTENSION_TOOL_NAMES
+          : [],
+      );
     return {
       command: this.command,
       args: [
@@ -373,6 +379,7 @@ export class PiCliDriver implements HarnessDriver {
 
 function piExecutorToolArgs(
   affordances: readonly ExecutorAffordanceId[] | undefined,
+  extensionTools: readonly string[] = [],
 ): string[] {
   // An omitted affordance projection preserves Pi's own standard tool
   // registry. When the authorized Executor publishes one, derive its tool
@@ -381,6 +388,11 @@ function piExecutorToolArgs(
   const tools = ['read'];
   if (affordances.includes('workspace-command-validation')) tools.push('bash');
   if (affordances.includes('workspace-read-write')) tools.push('edit', 'write');
+  // Pi's `--tools` is an allowlist that replaces the default registry and only
+  // keeps MCP tools, so the seeded web/evidence extension tools have to be
+  // named explicitly. Without them the Executor reports web_search as
+  // unavailable even though the extension was installed into its home.
+  tools.push(...extensionTools);
   return ['--tools', tools.join(',')];
 }
 

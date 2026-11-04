@@ -162,6 +162,23 @@ describe('PiCliDriver', () => {
     expect(launch.args).toContain('read,bash');
   });
 
+  it('keeps the seeded web tools in the Pi tool allowlist', () => {
+    const driver = new PiCliDriver({ probeCommand: vi.fn(), piCommand: { command: 'pi', args: [] } });
+    const launch = driver.buildLaunch({
+      prompt: '查证上海今天与周末天气',
+      cwd: '/workspace',
+      runtimeHomePath: '/attempt/home',
+      workspaceAccess: 'read',
+      executorAffordances: ['public-web-search', 'public-web-fetch', 'source-citation'],
+    });
+    const allowlist = launch.args[launch.args.indexOf('--tools') + 1] ?? '';
+    // Pi's `--tools` allowlist replaces the default registry and keeps only
+    // MCP tools, so the extension tools must be named or the Executor reports
+    // web_search as unavailable.
+    expect(allowlist.split(',')).toContain('web_search');
+    expect(allowlist.split(',')).toContain('web_fetch');
+  });
+
   it('keeps image capabilities out of the standard Pi CLI launch', () => {
     const driver = new PiCliDriver({
       probeCommand: vi.fn(),
