@@ -65,7 +65,7 @@ Release 提供 macOS arm64 Desktop DMG，以及 macOS arm64、macOS x64 和 Linu
 Runtime、Planner、Memory 归档。Desktop 仅支持 Apple Silicon；macOS x64 和 Linux x64
 请使用 Server 安装包提供的 Web、TUI 或飞书客户端。本发布线不包含原生 Windows；
 如需在 Windows 上安装 Native 版本的 Release，请见其独立分支：
-[`docs/native-windows-install`](https://github.com/IFOSR/metawork/tree/docs/native-windows-install)。
+[`fix/windows-native-web`](https://github.com/IFOSR/metawork/tree/fix/windows-native-web)。
 
 | 平台 | 最新可用版本 | 下载 / 安装 |
 | --- | --- | --- |
@@ -73,7 +73,7 @@ Runtime、Planner、Memory 归档。Desktop 仅支持 Apple Silicon；macOS x64 
 | macOS Apple Silicon（`arm64`）Server | 0.1.22 | [最新安装器](https://github.com/IFOSR/metawork/releases/latest/download/install.sh) · [签名清单](https://github.com/IFOSR/metawork/releases/latest/download/manifest.darwin-arm64.json) |
 | macOS Intel（`x64`）Server | 0.1.22 | [最新安装器](https://github.com/IFOSR/metawork/releases/latest/download/install.sh) · [签名清单](https://github.com/IFOSR/metawork/releases/latest/download/manifest.darwin-x64.json) |
 | Linux / WSL2（`x64`）Server | 0.1.22 | [最新安装器](https://github.com/IFOSR/metawork/releases/latest/download/install.sh) · [签名清单](https://github.com/IFOSR/metawork/releases/latest/download/manifest.linux-x64.json) |
-| Windows 原生（`x64`）Server | 0.1.17（本发布线未更新） | [Native Windows 安装指南](https://github.com/IFOSR/metawork/tree/docs/native-windows-install)（分支） |
+| Windows 原生（`x64`）Server | 0.1.17（本发布线未更新） | [Native Windows 安装指南](https://github.com/IFOSR/metawork/tree/fix/windows-native-web)（分支） |
 
 [最新 macOS/Linux Release 与归档](https://github.com/IFOSR/metawork/releases/latest) ·
 [最新校验文件](https://github.com/IFOSR/metawork/releases/latest/download/SHA256SUMS)。
@@ -146,7 +146,7 @@ metawork --help
 
 该命令使用**最新稳定版的签名清单**，并在安装前校验 Runtime/Planner 归档。
 
-如需在 Windows 上安装 Native 版本的 Release，请见 `https://github.com/IFOSR/metawork/tree/docs/native-windows-install`：
+如需在 Windows 上安装 Native 版本的 Release，请见 `https://github.com/IFOSR/metawork/tree/fix/windows-native-web`：
 本发布线不产出 `win32-x64` 归档，因此 Windows 流程有独立的前置条件，并且必须显式
 指定 Windows 清单而不能使用全局 `latest`。该指南只在其分支上维护，不在本 README 中。
 Linux/WSL2 默认使用文件 SecretStore。安装器会对不支持的架构明确报错，

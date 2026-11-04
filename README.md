@@ -79,7 +79,7 @@ signed Runtime, Planner and Memory archives for macOS arm64, macOS x64 and
 Linux x64. Desktop is available only on Apple Silicon; macOS x64 and Linux x64
 use the Web, TUI or Feishu clients with the Server package. Native Windows is
 excluded from this release line; if you need to install a native Windows Release,
-see its own branch: [`docs/native-windows-install`](https://github.com/IFOSR/metawork/tree/docs/native-windows-install).
+see its own branch: [`fix/windows-native-web`](https://github.com/IFOSR/metawork/tree/fix/windows-native-web).
 
 | Platform | Latest available version | Download / install |
 | --- | --- | --- |
@@ -87,7 +87,7 @@ see its own branch: [`docs/native-windows-install`](https://github.com/IFOSR/met
 | macOS Apple Silicon (`arm64`) Server | 0.1.22 | [Latest installer](https://github.com/IFOSR/metawork/releases/latest/download/install.sh) · [Signed manifest](https://github.com/IFOSR/metawork/releases/latest/download/manifest.darwin-arm64.json) |
 | macOS Intel (`x64`) Server | 0.1.22 | [Latest installer](https://github.com/IFOSR/metawork/releases/latest/download/install.sh) · [Signed manifest](https://github.com/IFOSR/metawork/releases/latest/download/manifest.darwin-x64.json) |
 | Linux / WSL2 (`x64`) Server | 0.1.22 | [Latest installer](https://github.com/IFOSR/metawork/releases/latest/download/install.sh) · [Signed manifest](https://github.com/IFOSR/metawork/releases/latest/download/manifest.linux-x64.json) |
-| Windows native (`x64`) Server | 0.1.17 (unchanged) | [Native Windows install guide](https://github.com/IFOSR/metawork/tree/docs/native-windows-install) (branch) |
+| Windows native (`x64`) Server | 0.1.17 (unchanged) | [Native Windows install guide](https://github.com/IFOSR/metawork/tree/fix/windows-native-web) (branch) |
 
 [Latest macOS/Linux Release and archives](https://github.com/IFOSR/metawork/releases/latest) ·
 [Latest checksums](https://github.com/IFOSR/metawork/releases/latest/download/SHA256SUMS).
@@ -173,7 +173,7 @@ metawork --help
 This command uses the **latest stable release's signed manifest** and verifies the
 Runtime/Planner archives before installation.
 
-To install a native Windows Release, follow `https://github.com/IFOSR/metawork/tree/docs/native-windows-install`:
+To install a native Windows Release, follow `https://github.com/IFOSR/metawork/tree/fix/windows-native-web`:
 this release line publishes no `win32-x64` assets, so the Windows procedure
 carries its own prerequisites and must pin an explicit Windows manifest instead of
 the global `latest`. That guide is maintained on its branch, not in this README.
