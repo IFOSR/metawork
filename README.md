@@ -18,6 +18,18 @@ boundaries, and deliver verifiable results instead of stopping at a chat reply.
 
 </div>
 
+---
+
+> **This branch (`fix/windows-native-web`) publishes the native Windows x64 build.**
+> Installation here is Windows-only: [Install on Windows x64](#install-on-windows-x64).
+> For macOS, Linux and WSL2, use the main branch instead:
+> <https://github.com/IFOSR/metawork/blob/main/README.md>
+>
+> This branch is independent. It is not merged into `main`.
+
+---
+
+
 ## Why MetaWork
 
 MetaWork provides one commercial service system for planning, authorizing,
@@ -70,48 +82,125 @@ existing names where changing them would break installations.
 
 ## Release
 
-The current release is **v0.1.19**. It fixes semantic runtime configuration
-verification, clearer execution state and blocker presentation, and ordered
-preview release identities.
-The internal release includes a self-contained macOS arm64 Desktop DMG plus
-signed Runtime and Planner archives for macOS arm64, macOS x64 and Linux x64.
-Desktop is available only on Apple Silicon; macOS x64 and Linux x64 use the Web,
-TUI or Feishu clients with the Server package. Windows is excluded from this release.
+This branch publishes the **native Windows x64 Server package** for **v0.1.22**.
+It contains the Web workspace, the vendored Planner (`AnyFusion-Pi`), the pinned
+memory engine, bundled Git for Windows, and the portable Python runtime used for
+PDF processing. Everything runs as ordinary Windows processes: no WSL, no
+Docker, no administrator rights and no Developer Mode.
 
-| Platform | Latest available version | Download / install |
+| Platform | Version | Download / install |
 | --- | --- | --- |
-| macOS Apple Silicon (`arm64`) Desktop | 0.1.19 | [Latest DMG](https://github.com/IFOSR/metawork/releases/latest/download/MetaWork-darwin-arm64.dmg) |
-| macOS Apple Silicon (`arm64`) Server | 0.1.19 | [Latest installer](https://github.com/IFOSR/metawork/releases/latest/download/install.sh) · [Signed manifest](https://github.com/IFOSR/metawork/releases/latest/download/manifest.darwin-arm64.json) |
-| macOS Intel (`x64`) Server | 0.1.19 | [Latest installer](https://github.com/IFOSR/metawork/releases/latest/download/install.sh) · [Signed manifest](https://github.com/IFOSR/metawork/releases/latest/download/manifest.darwin-x64.json) |
-| Linux / WSL2 (`x64`) Server | 0.1.19 | [Latest installer](https://github.com/IFOSR/metawork/releases/latest/download/install.sh) · [Signed manifest](https://github.com/IFOSR/metawork/releases/latest/download/manifest.linux-x64.json) |
-| Windows native (`x64`) Server | 0.1.17 (unchanged) | [Windows installer](https://github.com/IFOSR/metawork/releases/download/v0.1.17/install.ps1) · [Signed manifest](https://github.com/IFOSR/metawork/releases/download/v0.1.17/manifest.win32-x64.json) |
+| **Windows native (`x64`) Server** | **0.1.22** | [Windows installer](https://github.com/IFOSR/metawork/releases/download/v0.1.22/install.ps1) · [Signed manifest](https://github.com/IFOSR/metawork/releases/download/v0.1.22/manifest.win32-x64.json) |
+| macOS arm64 Desktop, macOS arm64/x64 Server, Linux x64 Server | See main | <https://github.com/IFOSR/metawork/blob/main/README.md> |
 
-[Latest macOS/Linux Release and archives](https://github.com/IFOSR/metawork/releases/latest) ·
-[Latest checksums](https://github.com/IFOSR/metawork/releases/latest/download/SHA256SUMS).
-The macOS/Linux links follow GitHub's latest Release. The installer selects the
-matching architecture and downloads both Runtime and Planner from its signed
-manifest. Windows is excluded from 0.1.19; its latest available package remains
-0.1.17 and uses the explicit Windows command below.
+macOS and Linux are **not** built from this branch. Their Desktop DMG, Runtime
+and Planner archives are published from the main branch, and their installation
+steps live in the main README:
+<https://github.com/IFOSR/metawork/blob/main/README.md>.
 
-The Desktop DMG uses an internal ad-hoc signature and
-is not notarized with an Apple Developer ID. It currently supports macOS Apple
-Silicon (`arm64`) only. The Server/Web/TUI installer supports Linux x64,
-macOS arm64 and macOS x64. Windows is not included in this internal release.
+Windows assets verify against the signed `manifest.win32-x64.json`, which pins
+the Runtime, Planner and memory-engine archives by SHA-256. The installer rejects
+any archive whose hash or Ed25519 signature does not match, and refuses archives
+for another platform or architecture.
+
+The native Windows package has no Desktop shell. Use the browser Web workspace,
+the native TUI, or Feishu against the local Server.
 
 ## Installation
 
-Desktop, browser, TUI and Feishu share one Server and the selected installation's
-account data. Web is included in the Server package and does not require Desktop.
+This branch installs a **native Windows x64 runtime**: it runs directly on
+Windows (no WSL, no Docker) and serves the browser Web workspace from
+`http://127.0.0.1:8788`. Ordinary users need no administrator rights and no
+Developer Mode.
 
 | Preferred interface | Install | Open |
 | --- | --- | --- |
-| macOS Apple Silicon Desktop | Desktop DMG | MetaWork.app |
-| Browser | Native Server package | Start Server, then `metawork web` |
-| Terminal UI | Same Server package | Start Server, then `metawork tui` |
+| **Windows x64 (this branch)** | **PowerShell installer below** | Start Server, then `metawork web` |
+| Terminal UI | Same Windows Server package | Start Server, then `metawork tui` |
 | Feishu | Same Server package and Feishu app configuration | `metawork server setup-feishu` |
+| macOS Desktop, macOS/Linux/WSL2 Server | **Not in this branch** | See [main](https://github.com/IFOSR/metawork/blob/main/README.md) |
 | Source development | Source instructions below | CLI or isolated Desktop |
 
+### Install on Windows x64
+
+Prerequisites:
+
+- **Node.js 22.x, at least 22.19.0** on `PATH`. This is required, not optional:
+  the bundled native SQLite binding is built for Node 22 (ABI 127), so Node 24
+  fails at startup with a native module error. Check with `node --version`.
+- PowerShell 5.1 or later. `tar.exe` ships with Windows 10/11 and is used to
+  extract the archives.
+- Your model provider's API URL, model ID and API key.
+- At least one supported Executor CLI on `PATH` (Pi Agent or Codex). The
+  installer detects Executor CLIs but does not install them. Git for Windows is
+  installed as part of the package and is used for repository operations.
+
+Install in PowerShell:
+
+```powershell
+$version = '0.1.22'
+irm "https://github.com/IFOSR/metawork/releases/download/v$version/install.ps1" -OutFile metawork-install.ps1
+.\metawork-install.ps1 -ManifestUrl "https://github.com/IFOSR/metawork/releases/download/v$version/manifest.win32-x64.json"
+```
+
+The installer downloads the signed manifest plus the Runtime, Planner and memory
+engine archives, verifies every signature and SHA-256 hash before extracting,
+and then runs the offline installer. It installs to
+`%LOCALAPPDATA%\MetaWork` by default; pass `-InstallRoot` to choose another
+directory. Installation does not need administrator rights.
+
+Start Server and keep that window open:
+
+```powershell
+metawork server start
+```
+
+In another PowerShell window:
+
+```powershell
+metawork web                    # opens the local Web workspace
+metawork tui                    # native terminal UI
+metawork server setup-feishu    # optional Feishu app setup
+```
+
+`metawork web` opens the Server's actual local URL (default
+`http://127.0.0.1:8788`). The first browser session asks you to sign in to the
+MetaWork official account, then to configure a provider and activate models in
+Settings before the first task.
+
+Install checklist:
+
+- `node --version` is `>=22.19.0` and below 23.
+- `%LOCALAPPDATA%\MetaWork\app\current` exists and points at the release.
+- `metawork server status` reports the running Server.
+- `http://127.0.0.1:8788` loads the Web workspace.
+- `metawork server doctor` reports no blocking problem.
+
+To update: stop Server, run the installer again with the new version, then start
+Server. Configuration, credentials and account data are preserved, and repeating
+the same version does not reset the installation.
+
+To uninstall:
+
+```powershell
+.\metawork-install.ps1 -Uninstall
+```
+
+Windows notes:
+
+- Release, configuration and database pointers are NTFS junctions. They are the
+  only directory links an ordinary user can create, which is why no Developer
+  Mode or elevation is required.
+- The installed package includes Git for Windows and its `bin` directory is added
+  to `PATH` by the launcher, so Executors that need a POSIX shell can run commands.
+- The server keeps its data under `%LOCALAPPDATA%\MetaWork`. Do not delete that
+  directory to update; delete only the app pointers if support asks you to.
+
 ### macOS Desktop (internal, Apple Silicon)
+
+> Not published from this branch. The macOS Desktop section is kept for
+> reference; install macOS from
+> <https://github.com/IFOSR/metawork/blob/main/README.md>.
 
 1. Confirm that the Mac uses Apple Silicon under **Apple menu → About This Mac**.
 2. Install Apple's Command Line Tools once if they are not already present:
@@ -149,7 +238,11 @@ Runtime identities differ, choose **完成更新并重启** once and wait for th
 progress indicator. There is no separate file-installation menu. Do not delete
 `~/.metawork` or the application support directory.
 
-### Server with Web / TUI / Feishu
+### Server with Web / TUI / Feishu (macOS, Linux, WSL2)
+
+These platforms are served by the **main branch**. Use
+<https://github.com/IFOSR/metawork/blob/main/README.md> for their installation,
+including the macOS Desktop DMG and the `install.sh` prebuilt archives.
 
 Prerequisites: **Node.js 22.x, at least 22.19.0**, Git, your model provider's API
 URL/model ID/API key, and at least one supported Executor CLI (Pi Agent or Codex)
@@ -157,29 +250,8 @@ on `PATH`. The installer detects Executor CLIs but does not install them.
 Prebuilt archives include native dependencies; npm and native build tools are
 required for source builds, not ordinary prebuilt installation.
 
-macOS Apple Silicon or Intel, Linux x64 or WSL2 x64, in an interactive terminal:
-
-```bash
-curl -fsSL https://github.com/IFOSR/metawork/releases/latest/download/install.sh -o metawork-install.sh
-bash metawork-install.sh
-export PATH="$HOME/.local/bin:$PATH"
-metawork --help
-```
-
-Windows x64, in PowerShell (enable Developer Mode or use an elevated terminal
-for NTFS release pointers):
-
-```powershell
-irm https://github.com/IFOSR/metawork/releases/download/v0.1.17/install.ps1 -OutFile metawork-install.ps1
-.\metawork-install.ps1 -ManifestUrl "https://github.com/IFOSR/metawork/releases/download/v0.1.17/manifest.win32-x64.json"
-```
-
-The macOS/Linux command uses the **latest stable release's signed manifest**;
-the Windows command selects the **latest available Windows package (0.1.17)**.
-This explicit Windows manifest is required because 0.1.19 contains no Windows
-assets. Both installers verify Runtime/Planner archives before installation.
-The setup wizard configures the model provider; Linux/WSL2 defaults to file-backed
-secrets. Unsupported architectures are rejected rather than given another platform's archive.
+Windows x64 is installed by the PowerShell procedure in
+[Install on Windows x64](#install-on-windows-x64) above.
 
 Start Server in one terminal and keep it running:
 
@@ -313,19 +385,13 @@ Set `METAWORK_INSTALL_ROOT` before installation to use a different root.
 
 ## Quick Start
 
-Three steps from a fresh install to your first delivered task:
+Three steps from a fresh Windows install to your first delivered task:
 
-```bash
-# 1. Start the Server (foreground; use the supervision templates above for
-#    background deployment)
+```powershell
+# 1. Start the Server (foreground; keep this window open)
 metawork server start
 
-# 2. In a second terminal, launch the single MetaWork TUI from your project
-#    directory
-cd /path/to/your/project
-metawork
-
-# Or use the Web Client
+# 2. In a second PowerShell window, open the Web workspace
 metawork web            # opens http://127.0.0.1:8788 in your browser
 ```
 
