@@ -73,7 +73,22 @@ Four independent defects chained into that permanent state:
 
 ## Live acceptance
 
-On the local installation: a normal stop leaves no process behind and the memory
-deposition succeeds; a frozen instance is reported as a stuck instance and is
-reclaimed by `metawork server stop --force` both with and without its lock; the
-Desktop stop action recovers without a reachable endpoint.
+Performed against this machine's installation while the Server ran the fixed
+code:
+
+- A normal `server stop` logs
+  `MetaWork shutdown requested: signal=SIGTERM pid=… ppid=… uid=… argv=…`, the
+  final deposition no longer reports "database connection is not open", and the
+  process, lock and endpoint are gone afterwards.
+- A frozen instance with withdrawn endpoint and socket, whose lock is older than
+  the startup window, is reported as a stuck instance by `server status` and is
+  reclaimed by `server stop --force`.
+- The same instance with its lock deleted is not reported as running, and
+  `server stop --force` reclaims it through the ownership/argv scan in a fixture
+  install root (a development Server outside `app/releases/` is correctly left
+  alone).
+- A stale lock left behind by a forced kill is not reported as running, and the
+  next `server start` reclaims it by PID.
+- The Desktop stop/connect recovery paths are covered by unit tests; the
+  installed Desktop is upgraded by opening the v0.1.23 DMG and completing its
+  one-time background update.

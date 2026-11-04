@@ -6,7 +6,9 @@ instead of Developer ID signed and notarized. Use it when the build is for
 internal verification and will not be submitted to Apple; use
 [releasing.md](releasing.md) for a formal, notarized release.
 
-Recorded from the `v0.1.21` internal release (2026-11-03).
+Recorded from the `v0.1.21` internal release (2026-11-03); re-run unchanged for
+`v0.1.23` (2026-11-04): 14 assets, DMG 465,056,678 bytes in 12 parts, Runtime
+workflow 9m43s, DMG assembly 2m.
 
 ## What gets published
 
