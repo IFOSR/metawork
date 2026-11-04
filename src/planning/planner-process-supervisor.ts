@@ -1184,8 +1184,37 @@ export class PlannerProcessSupervisor implements PlannerProcessController {
   }
 }
 
-function findVendoredPlannerCommand(): string | null {
-  const relative = join(
+/**
+ * Locate the vendored Planner entry.
+ *
+ * A source checkout keeps it under `planner/AnyFusion-Pi/...`, while a release
+ * install unpacks it to `<releaseRoot>/planner/...` without that level. Both
+ * layouts must resolve: a release whose Server is started without the managed
+ * launcher has no `METACLAW_PLANNER_COMMAND`, and falling through to a PATH
+ * lookup produced the opaque `spawn .../.missing-tools/anyfusion-planner
+ * ENOENT` failure.
+ */
+export function vendoredPlannerCandidates(moduleDirectory: string): string[] {
+  const sourceTree = join(
+    'planner',
+    'AnyFusion-Pi',
+    'packages',
+    'coding-agent',
+    'dist',
+    'cli.js',
+  );
+  const releaseLayout = join('planner', 'packages', 'coding-agent', 'dist', 'cli.js');
+  return [
+    resolve(moduleDirectory, '../../', sourceTree),
+    resolve(moduleDirectory, '../', sourceTree),
+    resolve(moduleDirectory, '../', releaseLayout),
+  ];
+}
+
+export function findVendoredPlannerCommand(
+  moduleDirectory: string = dirname(fileURLToPath(import.meta.url)),
+): string | null {
+  const sourceTree = join(
     'planner',
     'AnyFusion-Pi',
     'packages',
@@ -1194,9 +1223,8 @@ function findVendoredPlannerCommand(): string | null {
     'cli.js',
   );
   const candidates = [
-    resolve(process.cwd(), relative),
-    resolve(dirname(fileURLToPath(import.meta.url)), '../../', relative),
-    resolve(dirname(fileURLToPath(import.meta.url)), '../', relative),
+    resolve(process.cwd(), sourceTree),
+    ...vendoredPlannerCandidates(moduleDirectory),
   ];
   return candidates.find(candidate => existsSync(candidate)) ?? null;
 }

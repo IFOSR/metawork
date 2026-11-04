@@ -5,7 +5,7 @@ import { join, resolve } from 'node:path';
 import { PassThrough } from 'node:stream';
 import { describe, expect, it, vi } from 'vitest';
 import { PlannerRunError } from '../../src/planning/planner-audit-contract.js';
-import { PlannerProcessSupervisor } from '../../src/planning/planner-process-supervisor.js';
+import { PlannerProcessSupervisor, vendoredPlannerCandidates } from '../../src/planning/planner-process-supervisor.js';
 
 interface FakeProcess extends EventEmitter {
   stdin: PassThrough;
@@ -389,10 +389,31 @@ describe('PlannerProcessSupervisor', () => {
       request: { sessionId: 'session-vendored', source: 'gateway' },
     } as never, 'kernel');
 
-    expect(spawn.mock.calls[0]?.[0]).toBe(resolve(
+    const entry = resolve(
       process.cwd(),
       'planner/AnyFusion-Pi/packages/coding-agent/dist/cli.js',
-    ));
+    );
+    const [spawnedCommand, spawnedArgs] = spawn.mock.calls[0] ?? [];
+    if (process.platform === 'win32') {
+      // Windows cannot execute a `.js` entry directly (no shebang support),
+      // so the Planner always starts through the Node runtime.
+      expect(spawnedCommand).toBe(process.execPath);
+      expect((spawnedArgs as string[] | undefined)?.[0]).toBe(entry);
+    } else {
+      expect(spawnedCommand).toBe(entry);
+    }
+  });
+
+  it('locates the vendored Planner in a release install layout', async () => {
+    const root = await mkdtemp(join(tmpdir(), `planner-release-layout-${process.pid}-`));
+    try {
+      const entry = join(root, 'planner', 'packages', 'coding-agent', 'dist', 'cli.js');
+      await mkdir(join(root, 'planner', 'packages', 'coding-agent', 'dist'), { recursive: true });
+      await writeFile(entry, '// vendored planner entry\n');
+      expect(vendoredPlannerCandidates(join(root, 'dist'))).toContain(entry);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
   });
 
   it('forwards each completed Planner message usage with the active model identity', async () => {
