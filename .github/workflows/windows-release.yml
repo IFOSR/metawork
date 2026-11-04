@@ -39,6 +39,14 @@ jobs:
         run: |
           if (-not $env:RELEASE_SIGNING_KEY) { throw 'METAWORK_RELEASE_SIGNING_KEY is required' }
           $env:RELEASE_SIGNING_KEY | Out-File -FilePath "$env:RUNNER_TEMP\metawork-release-key.pem" -Encoding utf8 -NoNewline
+      # The packaged Runtime ships the memory engine and the planner is built
+      # from source, so both pinned inputs are prepared before packaging.
+      - name: Install dependencies
+        run: npm ci
+      - name: Prepare pinned memory engine
+        run: node scripts/prepare-memory-engine.mjs
+      - name: Verify memory engine (FTS5 gate)
+        run: node scripts/verify-memory-engine.mjs
       - name: Build and package Windows Runtime
         shell: pwsh
         env:

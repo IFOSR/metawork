@@ -99,9 +99,15 @@ process.stdout.write(JSON.stringify({
   $runtimeRoot = Join-Path $staging 'runtime'
   $plannerRoot = Join-Path $staging 'planner'
   $memoryRoot = Join-Path $staging 'memory'
-  Expand-Archive -Path $runtimeArchive -DestinationPath $runtimeRoot -Force
-  Expand-Archive -Path $plannerArchive -DestinationPath $plannerRoot -Force
-  Expand-Archive -Path $memoryArchive -DestinationPath $memoryRoot -Force
+  New-Item -ItemType Directory -Force -Path $runtimeRoot, $plannerRoot, $memoryRoot | Out-Null
+  # tar extracts the archives in seconds. Expand-Archive spends many minutes on
+  # the memory engine (thousands of small files) and made the install look hung.
+  tar -xf $runtimeArchive -C $runtimeRoot
+  if ($LASTEXITCODE -ne 0) { throw 'Runtime artifact extraction failed.' }
+  tar -xf $plannerArchive -C $plannerRoot
+  if ($LASTEXITCODE -ne 0) { throw 'Planner artifact extraction failed.' }
+  tar -xf $memoryArchive -C $memoryRoot
+  if ($LASTEXITCODE -ne 0) { throw 'Memory engine artifact extraction failed.' }
   $runtimeRoot = Join-Path $runtimeRoot 'metawork'
   $plannerRoot = Join-Path $plannerRoot 'planner'
   $memoryRoot = Join-Path $memoryRoot 'memory\tdai'
