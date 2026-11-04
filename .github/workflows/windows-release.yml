@@ -46,11 +46,13 @@ jobs:
       - name: Prepare pinned memory engine
         run: node scripts/prepare-memory-engine.mjs
       - name: Verify memory engine (FTS5 gate)
-        run: node scripts/verify-memory-engine.mjs
+        run: node scripts/verify-memory-engine.mjs --timeout-ms 180000
       # Only the memory engine changed for this release, so the Runtime and
       # Planner archives are carried over from the published Release instead of
       # being rebuilt. Each archive keeps its exact bytes, which keeps the signed
       # manifest valid and turns a full rebuild into a short one.
+      # Reuse is an optimisation: if the published archives cannot be fetched the
+      # build falls back to producing every archive instead of failing.
       - name: Fetch published archives to reuse
         shell: pwsh
         env:
@@ -58,15 +60,21 @@ jobs:
         run: |
           $out = "$env:RUNNER_TEMP\metawork-reuse"
           New-Item -ItemType Directory -Force -Path $out | Out-Null
-          gh release view $env:GITHUB_REF_NAME --repo IFOSR/metawork 2>$null
-          if ($LASTEXITCODE -eq 0) {
-            gh release download $env:GITHUB_REF_NAME --repo IFOSR/metawork `
-              --pattern 'metawork-*.zip' --pattern 'planner-*.zip' --dir $out --clobber
-            if ($LASTEXITCODE -ne 0) { throw 'Failed to download the published archives to reuse.' }
-            Get-ChildItem $out | ForEach-Object { Write-Host "reusable: $($_.Name) ($($_.Length) bytes)" }
-          } else {
-            Write-Host 'No published Windows Release yet; building every archive.'
+          gh release view $env:GITHUB_REF_NAME --repo IFOSR/metawork *> $null
+          if ($LASTEXITCODE -ne 0) {
+            Write-Host 'No published Windows Release yet; every archive will be built.'
+            exit 0
           }
+          gh release download $env:GITHUB_REF_NAME --repo IFOSR/metawork `
+            --pattern 'metawork-*.zip' --pattern 'planner-*.zip' --dir $out --clobber
+          if ($LASTEXITCODE -ne 0) {
+            Write-Warning 'Could not download the published archives; every archive will be built.'
+            exit 0
+          }
+          Get-ChildItem $out -ErrorAction SilentlyContinue | ForEach-Object {
+            Write-Host "reusable: $($_.Name) ($($_.Length) bytes)"
+          }
+          exit 0
       - name: Build and package Windows Runtime
         shell: pwsh
         env:

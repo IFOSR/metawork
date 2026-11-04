@@ -150,32 +150,28 @@ if (!existsSync(join(target, lock.entry))) {
 // though everything else worked. The package already supports a WebAssembly
 // flavour; installing it (plus its runtime peers) next to the native binding
 // gives that fallback without changing any engine code.
-if (process.platform === 'win32') {
-  run('npm', [
-    'install', '--no-save', '--no-audit', '--no-fund', '--legacy-peer-deps',
-    '@node-rs/jieba-wasm32-wasi@2.0.4',
-    '@emnapi/core@2.0.0-alpha.5',
-    '@emnapi/runtime@2.0.0-alpha.5',
-    '@napi-rs/wasm-runtime@1.2.5',
-  ], target);
-}
-
+//
+// This runs only after `prune` on purpose: the fallback is not a declared
+// dependency of the upstream tree, so an earlier install would be pruned away
+// anyway, and touching the dependency tree before the build risks perturbing it.
 // Build tools are needed during compilation, but are not shipped at runtime.
 run('npm', ['prune', '--omit=dev', '--no-audit', '--no-fund', '--legacy-peer-deps'], target);
 
 if (process.platform === 'win32') {
-  // `prune` drops the packages npm installed only for this fallback because
-  // they are not declared dependencies of the upstream tree.
+  // `prune` drops packages that are not declared dependencies of the upstream
+  // tree, so the fallback is installed afterwards and then asserted.
   run('npm', [
-    'install', '--no-save', '--no-audit', '--no-fund', '--legacy-peer-deps',
+    'install', '--no-save', '--no-package-lock', '--no-audit', '--no-fund', '--legacy-peer-deps',
     '@node-rs/jieba-wasm32-wasi@2.0.4',
     '@emnapi/core@2.0.0-alpha.5',
     '@emnapi/runtime@2.0.0-alpha.5',
     '@napi-rs/wasm-runtime@1.2.5',
   ], target);
-  if (!existsSync(join(target, 'node_modules', '@node-rs', 'jieba-wasm32-wasi'))) {
+  const fallback = join(target, 'node_modules', '@node-rs', 'jieba-wasm32-wasi');
+  if (!existsSync(fallback)) {
     throw new Error('memory engine is missing the Windows WebAssembly jieba fallback');
   }
+  process.stdout.write(`Windows jieba fallback present: ${fallback}\n`);
 }
 
 process.stdout.write(`memory engine ready: ${target} @ ${head}\n`);
