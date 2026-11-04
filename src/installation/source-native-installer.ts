@@ -425,19 +425,24 @@ export async function stageSourceRelease(
   const stageRoot = `${releaseRoot}.stage-${randomUUID()}`;
   await mkdir(stageRoot, { recursive: true, mode: 0o700 });
   try {
+    // The staged tree must be self-contained. An ordinary Windows user cannot
+    // create a symbolic link, so copying npm workspace links verbatim fails
+    // with EPERM; dereferencing is also what the release archives do.
     await Promise.all([
-      cp(join(sourceRoot, 'dist'), join(stageRoot, 'dist'), { recursive: true }),
-      cp(join(sourceRoot, 'web', 'dist'), join(stageRoot, 'web', 'dist'), { recursive: true }),
-      cp(join(sourceRoot, 'node_modules'), join(stageRoot, 'node_modules'), { recursive: true }),
+      cp(join(sourceRoot, 'dist'), join(stageRoot, 'dist'), { recursive: true, dereference: true }),
+      cp(join(sourceRoot, 'web', 'dist'), join(stageRoot, 'web', 'dist'), { recursive: true, dereference: true }),
+      cp(join(sourceRoot, 'node_modules'), join(stageRoot, 'node_modules'), { recursive: true, dereference: true }),
       copyFile(join(sourceRoot, 'package.json'), join(stageRoot, 'package.json')),
       cp(plannerRoot, join(stageRoot, 'planner'), {
         recursive: true,
+        dereference: true,
         filter: source => basename(source) !== '.git',
       }),
       writeReleaseIdentity(stageRoot, releaseId),
       ...(memoryRoot
         ? [cp(memoryRoot, join(stageRoot, 'memory', 'tdai'), {
           recursive: true,
+          dereference: true,
           filter: source => basename(source) !== '.git',
         })]
         : []),
@@ -451,7 +456,12 @@ export async function stageSourceRelease(
     await makeImmutable(releaseRoot);
   } catch (error) {
     await makeWritable(stageRoot);
-    await rm(stageRoot, { recursive: true, force: true });
+    // The cleanup must never mask the install failure. On Windows the
+    // recursive removal of a large staged tree can still report ENOTEMPTY
+    // while a directory settles, so it retries and its own failure is dropped
+    // in favour of the original error.
+    await rm(stageRoot, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 })
+      .catch(() => undefined);
     throw error;
   }
 }
