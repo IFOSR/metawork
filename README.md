@@ -76,9 +76,12 @@ grace window is shorter than a real drain (an unreachable memory engine made
 that routine), success is now defined by "no live instance left in this
 installation", and a Server that hangs before withdrawing its endpoints is
 reclaimed by identity-verified forced exit instead of blocking the upgrade
-forever. It keeps everything from v0.1.23: bounded Server shutdown with an exit
-watchdog, preserved final memory deposition, stuck-instance status, and
-`metawork server stop --force`.
+forever. It also removes the upgrade loop caused by a long internal release id: an
+upgrade identifier is `<releaseId>-<uuid>`, and for ids such as
+`0.1.24-desktoppayload-1903` it overflowed the 64-character configuration
+reference grammar, so every background update failed and rolled back. It keeps
+everything from v0.1.23: bounded Server shutdown with an exit watchdog, preserved
+final memory deposition, stuck-instance status, and `metawork server stop --force`.
 The internal release includes a self-contained macOS arm64 Desktop DMG plus
 signed Runtime, Planner and Memory archives for macOS arm64, macOS x64 and
 Linux x64. Desktop is available only on Apple Silicon; macOS x64 and Linux x64

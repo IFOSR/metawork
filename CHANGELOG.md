@@ -7,6 +7,14 @@ The project follows [Semantic Versioning](https://semver.org/) for public releas
 
 ## [0.1.24] - 2026-11-04
 
+- Desktop background updates no longer fail because the release id is long. An
+  upgrade id is `<releaseId>-<uuid>`; for `0.1.24-desktoppayload-1903` it
+  exceeded the 64-character configuration reference grammar, so `updateRuntime`
+  threw and rolled back on every attempt. Long inputs are now trimmed from their
+  description side, never from the unique suffix.
+- Desktop background updates no longer fail because a Server job was not
+  recognised: launchd argv paths are resolved through `realpath` first, and an
+  unrecognised job is logged and skipped instead of aborting the upgrade.
 - Desktop background updates no longer fail in a loop at the stop stage. A drain
   that runs longer than the stop CLI's fixed grace window (an unreachable memory
   engine is enough) made the update abort and roll back with
@@ -21,6 +29,11 @@ The project follows [Semantic Versioning](https://semver.org/) for public releas
 
 ## [0.1.24] - 2026-11-04
 
+- Desktop 后台更新不再因为版本号过长而失败。升级 id 为 `<releaseId>-<uuid>`，
+  `0.1.24-desktoppayload-1903` 这类内部版本号会让它超出 64 字符的配置引用语法，
+  导致 `updateRuntime` 抛错并回滚。超长输入现在从“描述部分”截断，绝不截断唯一后缀。
+- Desktop 后台更新不再因为“认不出的 Server job”而失败：launchd 的 argv 路径先用
+  `realpath` 解析；仍未识别时只记诊断并跳过，不再中止升级。
 - Desktop 后台更新不再卡在“停止后台”一步反复失败。当 drain 时间超过停止 CLI 的固定
   宽限（记忆引擎不可达就足够触发），更新会中止并回滚，重试时始终显示
   `stop/unexpected`。现在成功标准改为“该安装已无存活实例”，CLI 的退出码只作为参考。

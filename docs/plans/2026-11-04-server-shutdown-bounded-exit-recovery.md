@@ -127,3 +127,29 @@ opt-in force and keeps the default fail-closed behaviour.
 Stale `upgrades/desktop-stage-*` directories from rolled-back attempts were also
 leaking disk (14 GB on this machine); they are removed when an attempt finalizes
 or rolls back, and the release run cleaned the existing ones by hand.
+
+## Follow-up: the upgrade id outgrew the grammar (v0.1.24)
+
+With the stop stage fixed, the update advanced to `updateRuntime` and failed
+there with `configuration revision id is not a valid reference:
+u-r-0-1-24-desktoppayload-1903-<uuid>`. `createConfigurationRevisionId` only
+shortened the prefix: an upgrade id is `<releaseId>-<uuid>`, so a 25-character
+internal release id plus a uuid slugged to 63 characters, left a zero-length
+prefix budget and produced a 65-character id. Every background update from such
+a build failed and rolled back.
+
+- The id builder now trims an over-long input from its description side and keeps
+  the unique suffix; unit tests use the exact failing input, assert the id ends
+  with the uuid and stays unique across install/update/rollback.
+- Release process gap: the update transaction had no end-to-end gate. Added
+  `scripts/verify-desktop-update.mjs` (+ `scripts/desktop-update-gate.ts`): it
+  installs the machine's current release into a disposable root, runs the real
+  `SourceNativeUpdater.update()` against a candidate payload, and requires the
+  upgrade to commit with a legal upgrade id, `app/current` on the candidate and
+  the bundled memory engine present. Verified to fail with the previous logic and
+  pass with the fix, and recorded as a mandatory pre-upload step in the internal
+  release runbook.
+
+Known issue, not addressed in v0.1.24: a rolled-back attempt leaves its
+`upgrades/desktop-stage-*` bundle behind (~1.4 GB per attempt); cleanup only runs
+after a commit.

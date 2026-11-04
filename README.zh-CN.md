@@ -61,8 +61,10 @@ AnyFusion 标识。
 当前发布版本是 **v0.1.24**，修复 Desktop 后台更新反复失败循环：更新的“停止后台”
 一步不再因为停止 CLI 的固定宽限短于真实 drain（记忆引擎不可达时很常见）而判定失败，
 成功标准改为“该安装已无存活实例”；若 Server 在撤除端点前就卡住，会按进程身份校验后
-强制结束，而不是让升级永久卡死。包含 v0.1.23 的全部内容：退出看门狗保障的有界关停、
-不再丢失的最后一次记忆沉积、能识别卡住实例的状态，以及 `metawork server stop --force`。
+强制结束，而不是让升级永久卡死。同时修掉了由过长内部版本号导致的升级循环：升级 id 为 `<releaseId>-<uuid>`，
+`0.1.24-desktoppayload-1903` 这类版本号会超出 64 字符的配置引用语法，使每次后台更新
+都失败并回滚。包含 v0.1.23 的全部内容：退出看门狗保障的有界关停、不再丢失的最后一次
+记忆沉积、能识别卡住实例的状态，以及 `metawork server stop --force`。
 Release 提供 macOS arm64 Desktop DMG，以及 macOS arm64、macOS x64 和 Linux x64 的签名
 Runtime、Planner、Memory 归档。Desktop 仅支持 Apple Silicon；macOS x64 和 Linux x64
 请使用 Server 安装包提供的 Web、TUI 或飞书客户端。本发布线不包含原生 Windows；
