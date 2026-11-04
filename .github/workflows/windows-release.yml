@@ -47,6 +47,26 @@ jobs:
         run: node scripts/prepare-memory-engine.mjs
       - name: Verify memory engine (FTS5 gate)
         run: node scripts/verify-memory-engine.mjs
+      # Only the memory engine changed for this release, so the Runtime and
+      # Planner archives are carried over from the published Release instead of
+      # being rebuilt. Each archive keeps its exact bytes, which keeps the signed
+      # manifest valid and turns a full rebuild into a short one.
+      - name: Fetch published archives to reuse
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $out = "$env:RUNNER_TEMP\metawork-reuse"
+          New-Item -ItemType Directory -Force -Path $out | Out-Null
+          gh release view $env:GITHUB_REF_NAME --repo IFOSR/metawork 2>$null
+          if ($LASTEXITCODE -eq 0) {
+            gh release download $env:GITHUB_REF_NAME --repo IFOSR/metawork `
+              --pattern 'metawork-*.zip' --pattern 'planner-*.zip' --dir $out --clobber
+            if ($LASTEXITCODE -ne 0) { throw 'Failed to download the published archives to reuse.' }
+            Get-ChildItem $out | ForEach-Object { Write-Host "reusable: $($_.Name) ($($_.Length) bytes)" }
+          } else {
+            Write-Host 'No published Windows Release yet; building every archive.'
+          }
       - name: Build and package Windows Runtime
         shell: pwsh
         env:
@@ -63,14 +83,31 @@ jobs:
           # The Windows package is published as its own Release. A platform
           # release may not mix artifacts from another commit into the main
           # release: the release verifier requires one identical release set.
-          npm run build:release -- `
-            --platform win32 `
-            --arch x64 `
-            --channel $channel `
-            --release-id $releaseId `
-            --artifact-base-url "https://github.com/IFOSR/metawork/releases/download/v$version-windows" `
-            --signing-key "$env:RUNNER_TEMP\metawork-release-key.pem" `
-            --out-dir "$env:RUNNER_TEMP\metawork-release"
+          $reuse = "$env:RUNNER_TEMP\metawork-reuse"
+          $reusable = (Get-ChildItem $reuse -Filter '*.zip' -ErrorAction SilentlyContinue | Measure-Object).Count
+          if ($reusable -ge 2) {
+            Write-Host 'Reusing published Runtime and Planner archives; rebuilding only the memory engine.'
+            npm run build:release -- `
+              --platform win32 `
+              --arch x64 `
+              --package-only `
+              --reuse-archives $reuse `
+              --channel $channel `
+              --release-id $releaseId `
+              --artifact-base-url "https://github.com/IFOSR/metawork/releases/download/v$version-windows" `
+              --signing-key "$env:RUNNER_TEMP\metawork-release-key.pem" `
+              --out-dir "$env:RUNNER_TEMP\metawork-release"
+          } else {
+            npm run build:release -- `
+              --platform win32 `
+              --arch x64 `
+              --channel $channel `
+              --release-id $releaseId `
+              --artifact-base-url "https://github.com/IFOSR/metawork/releases/download/v$version-windows" `
+              --signing-key "$env:RUNNER_TEMP\metawork-release-key.pem" `
+              --out-dir "$env:RUNNER_TEMP\metawork-release"
+          }
+          if ($LASTEXITCODE -ne 0) { throw 'Packaging failed.' }
       - uses: actions/upload-artifact@v4
         with:
           name: metawork-windows-x64

@@ -15,6 +15,7 @@ function parseArguments(argv) {
     signingKey: undefined,
     artifactBaseUrl: undefined,
     packageOnly: false,
+    reuseArchivesDir: undefined,
   };
   for (let index = 0; index < argv.length; index += 1) {
     const argument = argv[index];
@@ -34,6 +35,7 @@ function parseArguments(argv) {
       case '--signing-key': options.signingKey = resolve(requireValue()); break;
       case '--artifact-base-url': options.artifactBaseUrl = requireValue(); break;
       case '--package-only': options.packageOnly = true; break;
+      case '--reuse-archives': options.reuseArchivesDir = resolve(requireValue()); break;
       default: throw new Error(`unknown option: ${argument}`);
     }
   }
@@ -113,6 +115,7 @@ function main() {
     ...(options.releaseId ? ['--release-id', options.releaseId] : []),
     ...(options.signingKey ? ['--signing-key', options.signingKey] : []),
     ...(options.artifactBaseUrl ? ['--artifact-base-url', options.artifactBaseUrl] : []),
+    ...(options.reuseArchivesDir ? ['--reuse-archives', options.reuseArchivesDir] : []),
   ];
 
   if (!options.packageOnly) {

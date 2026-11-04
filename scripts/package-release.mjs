@@ -39,7 +39,7 @@
 // are an explicit runtime allowlist; the development workspace is never
 // shipped verbatim into a release tarball.
 import { createHash, generateKeyPairSync, sign as ed25519Sign } from 'node:crypto';
-import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync, copyFileSync, readdirSync } from 'node:fs';
 import { spawn, spawnSync } from 'node:child_process';
 import { promisify } from 'node:util';
 import { basename, dirname, join, resolve } from 'node:path';
@@ -95,6 +95,7 @@ function parseArguments(argv) {
       case '--platform': options.platformOverride = requireValue(); break;
       case '--arch': options.archOverride = requireValue(); break;
       case '--compat': options.compat = requireValue(); break;
+      case '--reuse-archives': options.reuseArchivesDir = resolve(requireValue()); break;
       default: throw new Error(`unknown option: ${argument}`);
     }
   }
@@ -442,16 +443,37 @@ async function main() {
   const runtimeArchiveName = archiveName('metawork', releaseId, platform, arch);
   const plannerArchiveName = archiveName('planner', releaseId, platform, arch);
   const memoryArchiveName = archiveName('memory', releaseId, platform, arch);
-  await packageArchive({
+  // Only the Runtime and Planner may be carried over from an earlier build of
+  // the same release id. An archive that content did not change keeps its exact
+  // bytes, so the signed manifest stays valid while a rebuild only has to
+  // produce the archives that actually changed.
+  const reuseIfPresent = async (name, packageInput) => {
+    const reuse = options.reuseArchivesDir;
+    if (reuse && existsSync(reuse)) {
+      // Match the kind and target rather than the full name: a rebuild that only
+      // changes the engine keeps the same archive bytes even though a new commit
+      // changes the release id embedded in the file name.
+      const suffix = `-${platform}-${arch}${archiveExtension(platform)}`;
+      const prefix = `${packageInput.prefix}-`;
+      const found = readdirSync(reuse)
+        .find(candidate => candidate.startsWith(prefix) && candidate.endsWith(suffix));
+      if (found) {
+        copyFileSync(join(reuse, found), join(options.outDir, name));
+        process.stdout.write(`reused: ${found} -> ${name}\n`);
+        return;
+      }
+    }
+    await packageArchive({ ...packageInput, outputPath: join(options.outDir, name) });
+  };
+  await reuseIfPresent(runtimeArchiveName, {
     sourceRoot: options.sourceRoot,
     stagingRoot,
     prefix: 'metawork',
     entries: ['dist', 'web/dist', 'node_modules', 'package.json'],
     exclude: runtimeArchiveExcludes,
-    outputPath: join(options.outDir, runtimeArchiveName),
     platform,
   });
-  await packageArchive({
+  await reuseIfPresent(plannerArchiveName, {
     sourceRoot: options.plannerRoot,
     stagingRoot,
     prefix: 'planner',
@@ -468,7 +490,6 @@ async function main() {
       'node_modules',
     ],
     exclude: plannerArchiveExcludes,
-    outputPath: join(options.outDir, plannerArchiveName),
     platform,
   });
   await packageArchive({
