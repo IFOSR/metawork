@@ -67,9 +67,10 @@ AnyFusion 标识。
 记忆沉积、能识别卡住实例的状态，以及 `metawork server stop --force`。
 Release 提供 macOS arm64 Desktop DMG，以及 macOS arm64、macOS x64 和 Linux x64 的签名
 Runtime、Planner、Memory 归档。Desktop 仅支持 Apple Silicon；macOS x64 和 Linux x64
-请使用 Server 安装包提供的 Web、TUI 或飞书客户端。本发布线不包含原生 Windows；
-如需在 Windows 上安装 Native 版本的 Release，请见其独立分支：
-[`fix/windows-native-web`](https://github.com/IFOSR/metawork/tree/fix/windows-native-web)。
+请使用 Server 安装包提供的 Web、TUI 或飞书客户端。
+
+Windows Native Release：见
+[`fix/windows-native-web`](https://github.com/IFOSR/metawork/tree/fix/windows-native-web) 分支。
 
 | 平台 | 最新可用版本 | 下载 / 安装 |
 | --- | --- | --- |
@@ -77,17 +78,15 @@ Runtime、Planner、Memory 归档。Desktop 仅支持 Apple Silicon；macOS x64 
 | macOS Apple Silicon（`arm64`）Server | 0.1.24 | [最新安装器](https://github.com/IFOSR/metawork/releases/latest/download/install.sh) · [签名清单](https://github.com/IFOSR/metawork/releases/latest/download/manifest.darwin-arm64.json) |
 | macOS Intel（`x64`）Server | 0.1.24 | [最新安装器](https://github.com/IFOSR/metawork/releases/latest/download/install.sh) · [签名清单](https://github.com/IFOSR/metawork/releases/latest/download/manifest.darwin-x64.json) |
 | Linux / WSL2（`x64`）Server | 0.1.24 | [最新安装器](https://github.com/IFOSR/metawork/releases/latest/download/install.sh) · [签名清单](https://github.com/IFOSR/metawork/releases/latest/download/manifest.linux-x64.json) |
-| Windows 原生（`x64`）Server | 0.1.17（本发布线未更新） | [Native Windows 安装指南](https://github.com/IFOSR/metawork/tree/fix/windows-native-web)（分支） |
 
 [最新 macOS/Linux Release 与归档](https://github.com/IFOSR/metawork/releases/latest) ·
 [最新校验文件](https://github.com/IFOSR/metawork/releases/latest/download/SHA256SUMS)。
 macOS/Linux 下载链接跟随 GitHub 最新 Release；安装器自动选择当前架构，
-按签名清单下载匹配的 Runtime 和 Planner。本发布线不包含原生 Windows，
-最新可用的 Windows 包仍为 0.1.17，安装方式见上文链接的分支指南。
+按签名清单下载匹配的 Runtime 和 Planner。
 
 Desktop DMG 使用内部 ad-hoc 签名，未使用 Apple Developer ID 公证，
 当前只支持 macOS Apple Silicon（`arm64`）。Server/Web/TUI 安装器支持 Linux x64、
-macOS arm64 和 macOS x64；本次 internal release 暂不包含原生 Windows。
+macOS arm64 和 macOS x64。
 
 ## 安装方式
 
@@ -150,9 +149,6 @@ metawork --help
 
 该命令使用**最新稳定版的签名清单**，并在安装前校验 Runtime/Planner 归档。
 
-如需在 Windows 上安装 Native 版本的 Release，请见 `https://github.com/IFOSR/metawork/tree/fix/windows-native-web`：
-本发布线不产出 `win32-x64` 归档，因此 Windows 流程有独立的前置条件，并且必须显式
-指定 Windows 清单而不能使用全局 `latest`。该指南只在其分支上维护，不在本 README 中。
 Linux/WSL2 默认使用文件 SecretStore。安装器会对不支持的架构明确报错，
 不会安装不匹配的归档。
 
@@ -251,31 +247,6 @@ macOS 和 Linux 使用以下目录，并通过 Unix socket 连接本地 Client�
 │   ├── attempts/
 │   └── gateway/
 └── upgrade-journals/
-```
-
-Windows 使用 `%LOCALAPPDATA%\MetaWork\bin\*.cmd` 启动器，并通过 named pipe
-连接本地 Gateway：
-
-```text
-%LOCALAPPDATA%\MetaWork\
-├── bin/
-│   ├── metawork.cmd
-│   ├── anyfusion.cmd
-│   └── metaclaw.cmd
-├── app/
-│   ├── current
-│   └── releases/
-├── data/
-│   ├── runtime.lock
-│   └── planner-sessions/
-└── accounts/local-default/
-    ├── config/
-    ├── secrets/
-    ├── data/
-    ├── conversations/
-    ├── workspace-store/
-    ├── attempts/
-    └── gateway/
 ```
 
 如需修改安装根目录，请在安装前设置 `METAWORK_INSTALL_ROOT`。
