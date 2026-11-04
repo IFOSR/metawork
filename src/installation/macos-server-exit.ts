@@ -78,6 +78,15 @@ export async function finishMacOSServerExit(server: ServerProcess, options: {
   timeoutMs?: number;
   sleep?: (ms: number) => Promise<void>;
   signal?: (pid: number, signal: NodeJS.Signals) => unknown;
+  /**
+   * Reclaim a Server that hung before withdrawing its endpoints.
+   *
+   * Only the explicit update/repair path sets this: a hung shutdown there blocks
+   * the whole upgrade forever, and leaving the machine unusable is worse than a
+   * killed drain (writes are WAL-journaled and the identity is re-verified
+   * before the kill). Ordinary connect never forces an unwithdrawn Server.
+   */
+  forceUnwithdrawn?: boolean;
 } = {}): Promise<void> {
   const sleep = options.sleep ?? (ms => new Promise(resolve => setTimeout(resolve, ms)));
   const sameProcess = async () => {
@@ -105,14 +114,21 @@ export async function finishMacOSServerExit(server: ServerProcess, options: {
   if (await wait(options.timeoutMs ?? 10_000)) return;
   // A missing lock alone is not proof of a completed drain: require withdrawn
   // endpoints, then recheck identity before reclaiming the process.
-  const assertWithdrawn = async () => {
+  const withdrawn = async () => {
     for (const path of ['data/runtime.lock', 'server-endpoint.json']) {
       const exists = await lstat(join(server.root, path)).then(() => true, error => {
         if ((error as NodeJS.ErrnoException).code === 'ENOENT') return false;
         throw error;
       });
-      if (exists) throw new Error('Background Server has not completed shutdown');
+      if (exists) return false;
     }
+    return true;
+  };
+  const assertWithdrawn = async () => {
+    if (await withdrawn()) return;
+    if (!options.forceUnwithdrawn) throw new Error('Background Server has not completed shutdown');
+    console.error(`MetaWork Server PID ${server.pid} did not withdraw its endpoints within the stop window; `
+      + 'forced exit will be verified by process identity');
   };
   await assertWithdrawn();
   // Holding descriptors is NOT a reason to leave a zombie behind any more: the

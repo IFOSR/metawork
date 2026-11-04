@@ -2,7 +2,7 @@
 
 **Plan date:** 2026-11-04
 **Status:** Complete (2026-11-04)
-**Release:** v0.1.23
+**Release:** v0.1.23, v0.1.24 (update stop semantics)
 
 ## Problem
 
@@ -92,3 +92,38 @@ code:
 - The Desktop stop/connect recovery paths are covered by unit tests; the
   installed Desktop is upgraded by opening the v0.1.23 DMG and completing its
   one-time background update.
+
+## Follow-up: the Desktop update loop (v0.1.24)
+
+The v0.1.23 build shipped bounded shutdown, but a Desktop background update could
+still fail in a loop at the `stop` stage with `stop/unexpected`:
+
+- `DesktopServiceManager.stopForUpdate` treated a non-zero stop CLI exit as a
+  failure. The stop CLI grants the Server a fixed 10s grace window, while a real
+  drain can exceed it — an unreachable memory engine (`tdai_unreachable`) was
+  enough. The update then rolled back and the app showed the same
+  `stop/unexpected` diagnostic on every retry.
+- A Server that hung *before* withdrawing its endpoints made
+  `finishMacOSServerExit` throw `Background Server has not completed shutdown`,
+  which the update cannot recover from.
+- The helper discarded its error message, so the stage/code in
+  `desktop-update-status.json` was the only evidence.
+
+Delivered in v0.1.24:
+
+- A stop succeeds when the installation has no live instance left. The CLI
+  result is informational, the drain is awaited (bounded), and a still-live
+  installation is reported with the CLI's own error.
+- The explicit update/repair path may force an unwithdrawn Server
+  (`forceUnwithdrawn`) after re-verifying the launchd job and process identity;
+  ordinary connect keeps refusing.
+- The helper writes `Desktop update failed: …` to `upgrades/desktop-helper.log`.
+
+Validation: `tests/client/desktop-service-manager.test.ts` covers "CLI failed but
+the instance is gone" and "hung before withdrawal is forced with
+`forceUnwithdrawn`"; `tests/installation/macos-server-exit.test.ts` covers the
+opt-in force and keeps the default fail-closed behaviour.
+
+Stale `upgrades/desktop-stage-*` directories from rolled-back attempts were also
+leaking disk (14 GB on this machine); they are removed when an attempt finalizes
+or rolls back, and the release run cleaned the existing ones by hand.

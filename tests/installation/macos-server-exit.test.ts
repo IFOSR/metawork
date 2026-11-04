@@ -91,6 +91,18 @@ it.each(['uid', 'entry', 'node'])('rejects a foreign job (%s)', async field => {
   await expect(captureMacOSServerProcess(f.root)).rejects.toThrow('identity mismatch');
 });
 
+it.each(['data/runtime.lock', 'server-endpoint.json'])(
+  'forces an unwithdrawn Server only when the explicit caller allows it (%s)', async path => {
+    const f = await fixture();
+    const server = await captureMacOSServerProcess(f.root);
+    await writeFile(join(f.root, path), '{}');
+    const error = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    try {
+      await finishMacOSServerExit(server!, { ...f, timeoutMs: 0, forceUnwithdrawn: true });
+    } finally { error.mockRestore(); }
+    expect(f.signal).toHaveBeenCalledWith(12345, 'SIGKILL');
+  });
+
 it('fails closed on launchctl errors but accepts an absent job', async () => {
   const f = await fixture(); f.state.fail = true;
   await expect(captureMacOSServerProcess(f.root)).rejects.toThrow('denied');

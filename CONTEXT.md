@@ -1170,6 +1170,12 @@ lie about whether a process is still alive.
 - Stop reasons are auditable: the Server records
   `signal/ppid/uid/argv`, and the Desktop appends
   `reason=user-stop|update|pi-repair` to `logs/desktop-restart.log`.
+- A stop is judged by the installation, not by the stop CLI's exit code. The CLI
+  grants a fixed grace window that a real drain can exceed (an unreachable memory
+  engine suffices), so the Desktop stop/update path awaits the instance exit and
+  only then reports failure. The explicit update/repair path may additionally
+  force a Server that hung before withdrawing its endpoints, after re-verifying
+  the launchd job and process identity; ordinary connect never does.
 
 ## Current Server Upgrade Baseline
 

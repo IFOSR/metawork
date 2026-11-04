@@ -100,6 +100,7 @@ This directory contains both current technical documentation and historical plan
 
 ## Releases
 
+- [MetaWork v0.1.24 Internal Release](releases/v0.1.24.md): Desktop background update no longer loops at the stop stage, and a hung pre-withdrawal Server can no longer block the upgrade.
 - [MetaWork v0.1.23 Internal Release](releases/v0.1.23.md): bounded Server shutdown, reclaim of a stuck exit, preserved final memory deposition, and auditable stop reasons.
 - [MetaWork v0.1.19 Release](https://github.com/IFOSR/metawork/releases/tag/v0.1.19): Apple Silicon Desktop DMG and signed macOS/Linux Runtime/Planner archives.
 - [AnyFusion v1.2.0 Preview](releases/v1.2.0-preview.0.md): public preview highlights, architecture summary, deployment status, and known limitations.

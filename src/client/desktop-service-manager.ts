@@ -128,9 +128,17 @@ export class DesktopServiceManager {
     await this.stopForUpdate();
   }
 
-  /** Explicit installer action; legacy Web Servers cannot issue Desktop tickets. */
-  async stopForUpdate(): Promise<void> {
+  /**
+   * Explicit installer action; legacy Web Servers cannot issue Desktop tickets.
+   *
+   * `drainTimeoutMs` bounds how long the installation may still report a live
+   * instance before the stuck-exit path takes over.
+   */
+  async stopForUpdate(options: { drainTimeoutMs?: number; pollMs?: number } = {}): Promise<void> {
+    const drainTimeoutMs = options.drainTimeoutMs ?? 45_000;
+    const pollMs = options.pollMs ?? 300;
     const root = await this.releaseRoot();
+    const lock = join(this.runtime.installRoot, 'data', 'runtime.lock');
     const background = process.platform === 'darwin' ? await captureMacOSServerProcess(this.runtime.installRoot) : null;
     const stopped = await new Promise<void>((resolve, reject) => {
       const child = spawn(this.runtime.nodePath, [join(root, 'dist', 'index.js'), 'server', 'stop'], {
@@ -138,16 +146,34 @@ export class DesktopServiceManager {
       });
       // Bound the stop CLI too: it is a separate Node process and may itself
       // stall in native exit. Killing this command does not kill Server.
-      const timer = setTimeout(() => { child.kill('SIGKILL'); reject(new Error('Server stop command timed out')); }, 20_000);
+      const timer = setTimeout(() => { child.kill('SIGKILL'); reject(new Error('Server stop command timed out')); }, 60_000);
       child.once('error', error => { clearTimeout(timer); reject(error); });
       child.once('exit', code => { clearTimeout(timer); code === 0 ? resolve() : reject(new Error('后台服务未完成停止，请检查服务状态。')); });
-    }).then(() => ({ error: null }), error => ({ error }));
-    if (background) {
-      await finishMacOSServerExit(background);
-      if (await isInstanceRunning(join(this.runtime.installRoot, 'data/runtime.lock'))) {
-        throw new Error('Another Server is running after stop');
-      }
-    } else if (stopped.error) throw stopped.error;
+    }).then(() => ({ error: null as unknown }), error => ({ error }));
+    // The stop CLI grants the Server a fixed grace window that a drain with an
+    // unreachable memory engine routinely exceeds. Its exit code therefore says
+    // nothing about the installation: a stop succeeds only when this
+    // installation has no live instance left.
+    if (background) await finishMacOSServerExit(background);
+    if (await this.waitForInstanceExit(lock, drainTimeoutMs, pollMs)) return;
+    // Still alive after the drain window: reclaim it as a stuck exit. Reaching
+    // here with published endpoints means the Server hung inside its own
+    // shutdown, which the update cannot proceed without.
+    const stuck = process.platform === 'darwin'
+      ? await captureMacOSServerProcess(this.runtime.installRoot).catch(() => null)
+      : null;
+    if (stuck) await finishMacOSServerExit(stuck, { forceUnwithdrawn: true });
+    if (await this.waitForInstanceExit(lock, Math.min(10_000, drainTimeoutMs), pollMs)) return;
+    throw stopped.error ?? new Error('Another Server is running after stop');
+  }
+
+  private async waitForInstanceExit(lock: string, timeoutMs: number, pollMs: number): Promise<boolean> {
+    const deadline = Date.now() + timeoutMs;
+    while (await isInstanceRunning(lock)) {
+      if (Date.now() >= deadline) return false;
+      await new Promise(resolve => setTimeout(resolve, pollMs));
+    }
+    return true;
   }
 
   private async releaseRoot(): Promise<string> {

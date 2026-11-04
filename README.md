@@ -70,14 +70,15 @@ existing names where changing them would break installations.
 
 ## Release
 
-The current release is **v0.1.23**. It makes stopping the local Server bounded:
-a Server that stalls during exit is reclaimed instead of surviving with no
-listener, no lock and an open database, the final long-term-memory deposition is
-no longer lost on every clean stop, `metawork server status` reports a stuck
-instance again, and `metawork server stop --force` recovers it without a manual
-`kill -9`. It also keeps everything from v0.1.22: the bundled memory engine in
-Desktop installs and upgrades, the upgrade deadlock fix, and planning with a
-runtime-owned `configurationRevision`.
+The current release is **v0.1.24**. It fixes the Desktop upgrade loop: the stop
+step of a background update no longer fails just because the stop CLI's fixed
+grace window is shorter than a real drain (an unreachable memory engine made
+that routine), success is now defined by "no live instance left in this
+installation", and a Server that hangs before withdrawing its endpoints is
+reclaimed by identity-verified forced exit instead of blocking the upgrade
+forever. It keeps everything from v0.1.23: bounded Server shutdown with an exit
+watchdog, preserved final memory deposition, stuck-instance status, and
+`metawork server stop --force`.
 The internal release includes a self-contained macOS arm64 Desktop DMG plus
 signed Runtime, Planner and Memory archives for macOS arm64, macOS x64 and
 Linux x64. Desktop is available only on Apple Silicon; macOS x64 and Linux x64
@@ -87,10 +88,10 @@ see its own branch: [`fix/windows-native-web`](https://github.com/IFOSR/metawork
 
 | Platform | Latest available version | Download / install |
 | --- | --- | --- |
-| macOS Apple Silicon (`arm64`) Desktop | 0.1.23 | [Latest DMG](https://github.com/IFOSR/metawork/releases/latest/download/MetaWork-darwin-arm64.dmg) |
-| macOS Apple Silicon (`arm64`) Server | 0.1.23 | [Latest installer](https://github.com/IFOSR/metawork/releases/latest/download/install.sh) · [Signed manifest](https://github.com/IFOSR/metawork/releases/latest/download/manifest.darwin-arm64.json) |
-| macOS Intel (`x64`) Server | 0.1.23 | [Latest installer](https://github.com/IFOSR/metawork/releases/latest/download/install.sh) · [Signed manifest](https://github.com/IFOSR/metawork/releases/latest/download/manifest.darwin-x64.json) |
-| Linux / WSL2 (`x64`) Server | 0.1.23 | [Latest installer](https://github.com/IFOSR/metawork/releases/latest/download/install.sh) · [Signed manifest](https://github.com/IFOSR/metawork/releases/latest/download/manifest.linux-x64.json) |
+| macOS Apple Silicon (`arm64`) Desktop | 0.1.24 | [Latest DMG](https://github.com/IFOSR/metawork/releases/latest/download/MetaWork-darwin-arm64.dmg) |
+| macOS Apple Silicon (`arm64`) Server | 0.1.24 | [Latest installer](https://github.com/IFOSR/metawork/releases/latest/download/install.sh) · [Signed manifest](https://github.com/IFOSR/metawork/releases/latest/download/manifest.darwin-arm64.json) |
+| macOS Intel (`x64`) Server | 0.1.24 | [Latest installer](https://github.com/IFOSR/metawork/releases/latest/download/install.sh) · [Signed manifest](https://github.com/IFOSR/metawork/releases/latest/download/manifest.darwin-x64.json) |
+| Linux / WSL2 (`x64`) Server | 0.1.24 | [Latest installer](https://github.com/IFOSR/metawork/releases/latest/download/install.sh) · [Signed manifest](https://github.com/IFOSR/metawork/releases/latest/download/manifest.linux-x64.json) |
 | Windows native (`x64`) Server | 0.1.17 (unchanged) | [Native Windows install guide](https://github.com/IFOSR/metawork/tree/fix/windows-native-web) (branch) |
 
 [Latest macOS/Linux Release and archives](https://github.com/IFOSR/metawork/releases/latest) ·

@@ -177,8 +177,12 @@ async function main(): Promise<void> {
     throw error;
   } finally { await releaseLock(); }
 }
-void main().catch(async () => {
+void main().catch(async (error: unknown) => {
   // Preserve the activation record; the UI must not bypass failed recovery.
+  // The stage/code in desktop-update-status.json is the user-facing diagnostic;
+  // the message goes to the helper log so a failure is actionable on the machine
+  // that hit it (this log already carries the Server's own stderr).
+  process.stderr.write(`Desktop update failed: ${error instanceof Error ? error.message : String(error)}\n`);
   process.stderr.write('Desktop update requires recovery; previous data and activation journals were retained.\n');
   process.exitCode = 1;
 });

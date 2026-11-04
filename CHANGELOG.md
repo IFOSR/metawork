@@ -5,6 +5,30 @@ AnyFusion release entries remain unchanged for auditability.
 
 The project follows [Semantic Versioning](https://semver.org/) for public releases.
 
+## [0.1.24] - 2026-11-04
+
+- Desktop background updates no longer fail in a loop at the stop stage. A drain
+  that runs longer than the stop CLI's fixed grace window (an unreachable memory
+  engine is enough) made the update abort and roll back with
+  `stop/unexpected` on every retry. Success is now defined by the installation
+  having no live instance left; the CLI result is informational.
+- A Server that hangs before withdrawing its endpoints no longer blocks the
+  upgrade: the explicit update/repair path may force that exit after verifying
+  the launchd job and process identity. Ordinary connect still never forces an
+  unwithdrawn Server.
+- A failed background update writes `Desktop update failed: …` to
+  `upgrades/desktop-helper.log` instead of discarding the reason.
+
+## [0.1.24] - 2026-11-04
+
+- Desktop 后台更新不再卡在“停止后台”一步反复失败。当 drain 时间超过停止 CLI 的固定
+  宽限（记忆引擎不可达就足够触发），更新会中止并回滚，重试时始终显示
+  `stop/unexpected`。现在成功标准改为“该安装已无存活实例”，CLI 的退出码只作为参考。
+- Server 若在撤除端点之前卡住，不再让升级永久卡死：显式更新/修复路径在校验 launchd
+  任务与进程身份后可以强制结束它；普通重连仍不会强制结束未撤除端点的 Server。
+- 后台更新失败会把 `Desktop update failed: …` 写入 `upgrades/desktop-helper.log`，
+  不再丢弃失败原因。
+
 ## [Unreleased]
 
 ## [0.1.23] - 2026-11-04

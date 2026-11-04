@@ -37,6 +37,8 @@ it('uses the formal lifecycle for legacy Web Servers without requiring Desktop s
   const { root, release, tools, node, manager } = await fixture();
   mocks.discover.mockRejectedValue(new Error('Legacy Server has no Desktop sessions'));
   mocks.endpoint.mockResolvedValue({ ok: true });
+  // The formal stop must confirm the installation has no live instance left.
+  mocks.running.mockResolvedValue(false);
   mocks.spawn.mockImplementation(() => {
     const child = new EventEmitter();
     queueMicrotask(() => child.emit('exit', 0));
@@ -58,7 +60,7 @@ it.skipIf(process.platform !== 'darwin')('completes an explicit stop despite a m
   const { manager, root } = await fixture();
   const processIdentity = { pid: 12345 };
   mocks.capture.mockResolvedValueOnce(processIdentity);
-  mocks.running.mockResolvedValueOnce(false);
+  mocks.running.mockResolvedValue(false);
   mocks.spawn.mockImplementationOnce(() => {
     expect(mocks.capture).toHaveBeenCalledWith(root);
     const child = new EventEmitter();
@@ -130,3 +132,33 @@ it.skipIf(process.platform !== 'darwin')('stops a stuck instance even without an
   await manager.stop();
   expect(mocks.finish).toHaveBeenCalledWith({ pid: 4323 });
 });
+
+it.skipIf(process.platform !== 'darwin')('accepts a stop whose CLI failed once the instance is gone', async () => {
+  const { manager, root } = await fixture();
+  // A drain that exceeds the CLI's grace window makes the stop CLI exit non-zero
+  // even though the Server did stop; that must not fail the update.
+  mocks.capture.mockResolvedValue(null);
+  mocks.running.mockResolvedValue(false);
+  mocks.spawn.mockImplementationOnce(() => {
+    const child = new EventEmitter();
+    queueMicrotask(() => child.emit('exit', 1));
+    return child;
+  });
+  await expect(manager.stopForUpdate()).resolves.toBeUndefined();
+  expect(mocks.finish).not.toHaveBeenCalled();
+});
+
+it.skipIf(process.platform !== 'darwin')('forces a Server that hung before withdrawing its endpoints', async () => {
+  const { manager, root } = await fixture();
+  mocks.capture.mockResolvedValue(null);
+  mocks.running.mockResolvedValue(true);
+  mocks.spawn.mockImplementation(() => {
+    const child = new EventEmitter();
+    queueMicrotask(() => child.emit('exit', 1));
+    return child;
+  });
+  const stuck = { pid: 4324 };
+  mocks.capture.mockResolvedValueOnce(null).mockResolvedValue(stuck);
+  await expect(manager.stopForUpdate({ drainTimeoutMs: 300, pollMs: 50 })).rejects.toThrow();
+  expect(mocks.finish).toHaveBeenCalledWith(stuck, { forceUnwithdrawn: true });
+}, 120_000);
