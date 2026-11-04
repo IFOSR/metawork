@@ -13,6 +13,7 @@ import { existsSync } from 'node:fs';
 import { spawn } from 'node:child_process';
 import { join } from 'node:path';
 import { stopInstanceForRestart } from './management/lock.js';
+import { findInstalledServerProcesses } from './management/server-process-scan.js';
 
 const command = parseCliArgs(process.argv.slice(2));
 const run = command.kind === 'build'
@@ -20,7 +21,7 @@ const run = command.kind === 'build'
     process.stdout.write(`built and activated ${result.releaseId} (${result.mode})\n`);
   })
   : command.kind === 'server' && command.action === 'restart'
-    ? restartServerWithCurrentRelease()
+    ? restartServerWithCurrentRelease(command.force === true)
     : command.kind === 'server' && command.action === 'setup-feishu'
       ? runSetupFeishu()
       : command.kind === 'server' && (command.action === 'bind-feishu' || command.action === 'unbind-feishu')
@@ -64,13 +65,23 @@ async function runPairing(
   });
 }
 
-async function restartServerWithCurrentRelease(): Promise<void> {
+async function restartServerWithCurrentRelease(force: boolean): Promise<void> {
   const paths = resolveMetaWorkPaths();
-  const result = await stopInstanceForRestart(join(paths.data, 'runtime.lock'));
+  const result = await stopInstanceForRestart(join(paths.data, 'runtime.lock'), { force });
+  const orphaned = force && result.status === 'not_running'
+    ? await findInstalledServerProcesses(paths.root)
+    : [];
+  for (const pid of orphaned) {
+    try { process.kill(pid, 'SIGKILL'); } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'ESRCH') throw error;
+    }
+  }
   process.stdout.write(
     result.status === 'stopped'
       ? `MetaWork Server 旧实例已停止（PID ${result.pid}），正在重新启动。\n`
-      : 'MetaWork Server 未运行，正在启动。\n',
+      : orphaned.length > 0
+        ? `MetaWork Server 运行锁已不存在；已强制结束残留实例 PID ${orphaned.join(', ')}，正在重新启动。\n`
+        : 'MetaWork Server 未运行，正在启动。\n',
   );
   // `server start` is a long-running foreground process; waiting for its
   // exit would hang the restart forever. Spawn it detached and wait for the

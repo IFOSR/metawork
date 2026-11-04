@@ -27,7 +27,7 @@ describe('ServerLifecycle', () => {
     expect(lifecycle.state).toBe('ready');
   });
 
-  it('drains before Runtime shutdown and releases the lock only at the end', async () => {
+  it('drains before Runtime shutdown and keeps the lock until the process exits', async () => {
     const calls: string[] = [];
     const unlock = vi.fn(async () => calls.push('unlock'));
     const lifecycle = new ServerLifecycle({
@@ -60,9 +60,10 @@ describe('ServerLifecycle', () => {
       'drain',
       'stop-runtime',
       'remove-manifest',
-      'unlock',
     ]);
-    expect(unlock).toHaveBeenCalledTimes(1);
+    // The lock survives stop(): it is the only evidence that this process is
+    // still alive while it may be stuck inside the native part of process.exit.
+    expect(unlock).not.toHaveBeenCalled();
     expect(lifecycle.state).toBe('stopped');
   });
 

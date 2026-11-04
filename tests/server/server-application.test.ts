@@ -35,7 +35,6 @@ describe('ServerApplication', () => {
       'drain',
       'stop-runtime',
       'remove-manifest',
-      'unlock',
     ]);
   });
 });

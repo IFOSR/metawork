@@ -66,7 +66,14 @@ export async function captureMacOSServerProcess(installRoot: string): Promise<Se
   return { root, target, pid, identity: processIdentity };
 }
 
-/** Only explicit installer stop uses this fallback; ordinary connect never kills a job. */
+/**
+ * Force the exit of a captured Server that did not stop on SIGTERM.
+ *
+ * Two callers exist: the explicit installer/user stop, and `connect()` reclaiming
+ * an instance that already withdrew its endpoints but never finished exiting.
+ * Neither ever kills a Server that still publishes an endpoint or an instance
+ * lock: withdrawal is the proof that the process can no longer admit work.
+ */
 export async function finishMacOSServerExit(server: ServerProcess, options: {
   timeoutMs?: number;
   sleep?: (ms: number) => Promise<void>;
@@ -96,8 +103,8 @@ export async function finishMacOSServerExit(server: ServerProcess, options: {
     return !await sameProcess();
   };
   if (await wait(options.timeoutMs ?? 10_000)) return;
-  // A missing lock alone is not proof of a completed drain. Require withdrawn
-  // endpoints AND no open account/data files or sockets, then recheck identity.
+  // A missing lock alone is not proof of a completed drain: require withdrawn
+  // endpoints, then recheck identity before reclaiming the process.
   const assertWithdrawn = async () => {
     for (const path of ['data/runtime.lock', 'server-endpoint.json']) {
       const exists = await lstat(join(server.root, path)).then(() => true, error => {
@@ -108,16 +115,14 @@ export async function finishMacOSServerExit(server: ServerProcess, options: {
     }
   };
   await assertWithdrawn();
-  const files = await execute('/usr/sbin/lsof', ['-nP', '-a', '-p', String(server.pid), '-Ftn'],
-    { timeout: 5_000 }).then(value => value.stdout, async error => {
-      if (!await sameProcess()) return null;
-      throw error;
-    });
-  if (files === null) return;
-  if (!files.startsWith(`p${server.pid}\n`) || files.split('\n').some(line =>
-    /^t(?:IPv4|IPv6|unix)$/u.test(line) || (line.startsWith('n') &&
-      (inside(join(server.root, 'accounts'), line.slice(1)) || inside(join(server.root, 'data'), line.slice(1)))))) {
-    throw new Error('Background Server still holds runtime resources');
+  // Holding descriptors is NOT a reason to leave a zombie behind any more: the
+  // endpoints are already withdrawn, so the process cannot admit work, and
+  // SQLite is crash-safe in WAL mode. Report what it still holds, then reclaim.
+  const held = await heldRuntimeResources(server).catch(() => null);
+  if (held === null) return; // process left while we inspected it
+  if (held.length > 0) {
+    console.error(`MetaWork Server PID ${server.pid} withdrew its endpoints but stayed alive; `
+      + `held resources before forced exit: ${held.join(', ')}`);
   }
   await assertWithdrawn();
   if (!await sameProcess()) return;
@@ -127,4 +132,18 @@ export async function finishMacOSServerExit(server: ServerProcess, options: {
   try { (options.signal ?? process.kill.bind(process))(server.pid, 'SIGKILL'); }
   catch (error) { if ((error as NodeJS.ErrnoException).code !== 'ESRCH') throw error; }
   if (!await wait(5_000)) throw new Error('Background Server did not exit after shutdown');
+}
+
+/** Descriptors that reveal why a Server could not finish exiting; diagnostics only. */
+async function heldRuntimeResources(server: ServerProcess): Promise<string[] | null> {
+  const files = await execute('/usr/sbin/lsof', ['-nP', '-a', '-p', String(server.pid), '-Ftn'],
+    { timeout: 5_000 }).then(value => value.stdout, async error => {
+      if (!await identity(server.pid)) return null;
+      throw error;
+    });
+  if (files === null) return null;
+  if (!files.startsWith(`p${server.pid}\n`)) return ['unexpected lsof output'];
+  return files.split('\n').filter(line => /^t(?:IPv4|IPv6|unix)$/u.test(line)
+    || (line.startsWith('n')
+      && (inside(join(server.root, 'accounts'), line.slice(1)) || inside(join(server.root, 'data'), line.slice(1)))));
 }

@@ -38,7 +38,19 @@ export class DesktopServiceManager {
     const lock = join(this.runtime.installRoot, 'data', 'runtime.lock');
     if (await isInstanceRunning(lock)) {
       // A live incompatible instance must never trigger another Server spawn.
-      return;
+      // It may, however, be an instance that already withdrew its endpoints and
+      // never finished exiting. Reclaiming it is the only way `reconnect` can
+      // recover, so verify readiness before deciding to reuse it.
+      if (await this.publishedEndpointReady()) return;
+      if (process.platform === 'darwin') {
+        const stuck = await captureMacOSServerProcess(this.runtime.installRoot);
+        if (stuck) await finishMacOSServerExit(stuck);
+      } else return;
+    } else if (process.platform === 'darwin') {
+      // The lock is gone but launchd may still own the PID of the same stuck
+      // instance; startMacOSBackgroundProcess would treat that as reusable.
+      const stuck = await captureMacOSServerProcess(this.runtime.installRoot);
+      if (stuck && !await this.publishedEndpointReady()) await finishMacOSServerExit(stuck);
     }
     await mkdir(join(this.runtime.installRoot, 'logs'), { recursive: true, mode: 0o700 });
     if (process.platform === 'darwin') {
@@ -60,6 +72,12 @@ export class DesktopServiceManager {
       });
       child.unref();
     } finally { await log.close(); }
+  }
+
+  private async publishedEndpointReady(): Promise<boolean> {
+    const endpoint = await resolveClientEndpoint(join(this.runtime.installRoot, 'server-endpoint.json'), 1,
+      { releaseId: this.runtime.releaseId });
+    return endpoint.ok;
   }
 
   /** Updater rollback may restore a Web Server predating Desktop sessions. */
@@ -96,11 +114,17 @@ export class DesktopServiceManager {
 
   async stop(): Promise<void> {
     // Verify the running owner and instance before invoking the formal global stop.
-    await discoverDesktopSession({
-      installRoot: this.runtime.installRoot,
-      manifestPath: join(this.runtime.installRoot, 'server-endpoint.json'),
-      releaseId: this.runtime.releaseId,
-    });
+    // A Server stuck in exit has no endpoint to verify, which must not block the
+    // only path that can reclaim it.
+    try {
+      await discoverDesktopSession({
+        installRoot: this.runtime.installRoot,
+        manifestPath: join(this.runtime.installRoot, 'server-endpoint.json'),
+        releaseId: this.runtime.releaseId,
+      });
+    } catch (error) {
+      if (await this.publishedEndpointReady()) throw error;
+    }
     await this.stopForUpdate();
   }
 

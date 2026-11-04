@@ -19,6 +19,8 @@ This directory contains both current technical documentation and historical plan
 
 ## Current Docs
 
+- [Server 关停有界与退出恢复](plans/2026-11-04-server-shutdown-bounded-exit-recovery.md)：2026-11-04 已实施。关停按 Planner → 记忆沉积 → 账户存储释放排序；Server 在 drain 前武装独立的退出看门狗（默认 60s）；实例锁只在进程真正退出时释放，`status` 能识别卡住的实例，`metawork server stop --force` 与 Desktop 停止/重连都能回收它；停止原因可审计。
+
 - [子任务共享读锁并行](plans/2026-11-02-read-only-research-parallelism-plan.md)：代码已实现；只读节点共享会话输入并使用独立 scratch，写节点独占，迁移和专项验证记录见方案。
 
 - [记忆资产交互设计](plans/2026-10-31-memory-assets-interaction-design.md)：首版已实施；消除设置轮询触发的闪烁，提供全文详情、搜索筛选、分页与单条管理；内容编辑仍为后续范围。
@@ -98,6 +100,7 @@ This directory contains both current technical documentation and historical plan
 
 ## Releases
 
+- [MetaWork v0.1.23 Internal Release](releases/v0.1.23.md): bounded Server shutdown, reclaim of a stuck exit, preserved final memory deposition, and auditable stop reasons.
 - [MetaWork v0.1.19 Release](https://github.com/IFOSR/metawork/releases/tag/v0.1.19): Apple Silicon Desktop DMG and signed macOS/Linux Runtime/Planner archives.
 - [AnyFusion v1.2.0 Preview](releases/v1.2.0-preview.0.md): public preview highlights, architecture summary, deployment status, and known limitations.
 - [MetaWork v1.2.0 Preview 6](releases/v1.2.0-preview.6.md): historical preview release matrix and build notes.

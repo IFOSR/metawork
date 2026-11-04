@@ -390,17 +390,38 @@ function menuAction(action: DesktopMenuAction): void {
   showWindow();
   if (window && sameOrigin(window.webContents.getURL(), origin)) window.webContents.send('desktop:menu', action);
 }
-async function stopService(): Promise<void> {
-  if (!window || !origin) return;
-  let detail: string;
+/**
+ * Record why the background service is being stopped. Without this line a stop
+ * can never be traced to a caller (menu action, update, Pi repair, crash), which
+ * is why an unexplained stop previously cost hours of forensics.
+ */
+async function recordLifecycleAction(reason: 'user-stop' | 'update' | 'pi-repair'): Promise<void> {
+  if (!installRoot) return;
   try {
-    const response = await webSession.fetch(`${origin}/api/client/service-activity`, { redirect: 'error', signal: AbortSignal.timeout(5000) });
-    if (!response.ok) throw new Error('Activity unavailable');
-    const activity = await response.json() as { activeTasks: number; tasks: Array<{ title: string }>; truncated: boolean };
-    detail = `当前有 ${activity.activeTasks} 个未结束任务。\n${activity.tasks.slice(0, 20).map(task => task.title).join('\n')}`
-      + `${activity.truncated ? '\n…' : ''}\n\nWeb、TUI、飞书和桌面将同时断开。关闭桌面窗口可继续后台工作。`;
+    await mkdir(join(installRoot, 'logs'), { recursive: true, mode: 0o700 });
+    await appendFile(join(installRoot, 'logs', 'desktop-restart.log'),
+      `${new Date().toISOString()} reason=${reason} shell=${app.getVersion()} origin=${origin ?? 'none'}\n`,
+      { mode: 0o600 });
   } catch {
-    dialog.showErrorBox('暂时无法读取后台状态', '请等待连接恢复后重试停止操作。'); return;
+    // Diagnostics must never block a stop.
+  }
+}
+
+async function stopService(): Promise<void> {
+  if (!window) return;
+  // A Server stuck in exit publishes no origin, and that is exactly when this
+  // action must still work: it is the only user-facing way to reclaim it.
+  let detail = '后台服务当前未连接：将回收残留的后台实例并停止所有客户端。';
+  if (origin) {
+    try {
+      const response = await webSession.fetch(`${origin}/api/client/service-activity`, { redirect: 'error', signal: AbortSignal.timeout(5000) });
+      if (!response.ok) throw new Error('Activity unavailable');
+      const activity = await response.json() as { activeTasks: number; tasks: Array<{ title: string }>; truncated: boolean };
+      detail = `当前有 ${activity.activeTasks} 个未结束任务。\n${activity.tasks.slice(0, 20).map(task => task.title).join('\n')}`
+        + `${activity.truncated ? '\n…' : ''}\n\nWeb、TUI、飞书和桌面将同时断开。关闭桌面窗口可继续后台工作。`;
+    } catch {
+      dialog.showErrorBox('暂时无法读取后台状态', '请等待连接恢复后重试停止操作。'); return;
+    }
   }
   const answer = await dialog.showMessageBox(window, {
     type: 'warning', title: '停止后台服务', message: '停止服务会影响所有客户端和正在进行的工作。',
@@ -409,6 +430,7 @@ async function stopService(): Promise<void> {
   });
   if (answer.response !== 1) return;
   try {
+    await recordLifecycleAction('user-stop');
     await manager.stop();
     notifications.stop();
     origin = null;
@@ -434,6 +456,7 @@ async function repairPiOnce(automatic: boolean): Promise<{ ok: boolean; message:
   updatingApplication = true;
   try {
     setState({ phase: 'connecting', busy: true, message: '正在恢复执行组件，请等待，无需重复打开应用…' });
+    await recordLifecycleAction('pi-repair');
     await manager.stopForUpdate();
     await installation.run('repair-tools');
     return { ok: true, message: '执行组件已恢复，正在重新连接。' };
@@ -480,6 +503,7 @@ async function updateApplication(recover = false): Promise<void> {
     notifications.stop();
     setState({ phase: 'connecting', busy: true, progress: 62,
       message: '正在停止后台并切换运行环境（3/4），请保持等待…' });
+    await recordLifecycleAction('update');
     await launchDesktopUpdate(installRoot, recover);
     setState({ phase: 'connecting', busy: true, progress: 92,
       message: '正在验证新版并自动重启（4/4），无需任何操作…' });

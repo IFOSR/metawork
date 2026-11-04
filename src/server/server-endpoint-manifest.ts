@@ -37,7 +37,21 @@ export interface EndpointValidationDeps {
   readonly socketExists?: (path: string) => boolean;
 }
 
-export type ServerReadiness = 'ready' | 'starting_or_failed' | 'not_running';
+/**
+ * `zombie` is a live process whose endpoints were withdrawn. Shutdown happens
+ * before exit (listeners, manifest and sockets are removed first), so this is
+ * the observable shape of a Server stuck in the native part of `process.exit`.
+ */
+export type ServerReadiness = 'ready' | 'starting_or_failed' | 'zombie' | 'not_running';
+
+/** A Server that has not published endpoints after this long never will. */
+export const ZOMBIE_AFTER_MS = 60_000;
+
+export interface ServerReadinessDeps extends Pick<EndpointValidationDeps, 'isProcessAlive' | 'socketExists'> {
+  /** Age of the live instance lock, absent when it cannot be read. */
+  readonly lockAgeMs?: number;
+  readonly zombieAfterMs?: number;
+}
 
 export async function writeEndpointManifest(
   path: string,
@@ -78,13 +92,18 @@ export async function removeEndpointManifest(path: string): Promise<void> {
 export function classifyServerReadiness(
   manifest: unknown,
   instanceRunning: boolean,
-  deps: Pick<EndpointValidationDeps, 'isProcessAlive' | 'socketExists'> = {},
+  deps: ServerReadinessDeps = {},
 ): ServerReadiness {
   if (!instanceRunning) return 'not_running';
-  if (!manifest) return 'starting_or_failed';
-  return validateEndpointManifest(manifest, deps).ok
-    ? 'ready'
-    : 'starting_or_failed';
+  const stalled = deps.lockAgeMs !== undefined
+    && deps.lockAgeMs >= (deps.zombieAfterMs ?? ZOMBIE_AFTER_MS);
+  if (!manifest) return stalled ? 'zombie' : 'starting_or_failed';
+  const validation = validateEndpointManifest(manifest, deps);
+  if (validation.ok) return 'ready';
+  // A published manifest whose socket is gone, on an instance that has been
+  // alive past the startup window, is an exit that will never finish.
+  if (stalled && validation.code === 'socket_unavailable') return 'zombie';
+  return 'starting_or_failed';
 }
 
 export function validateEndpointManifest(

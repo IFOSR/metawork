@@ -7,6 +7,29 @@ The project follows [Semantic Versioning](https://semver.org/) for public releas
 
 ## [Unreleased]
 
+## [0.1.23] - 2026-11-04
+
+- Stopping the local Server is now bounded. Node cannot bound its own exit, so a
+  Server that stalled inside `process.exit` kept running with no listener, no
+  lock and an open account database; the Server now arms a detached exit
+  watchdog (default 60s) before draining and is reclaimed after that budget.
+- The final long-term-memory deposition is no longer lost on every clean stop.
+  Shutdown released account storage before the memory drain, so the deposition
+  always failed with "The database connection is not open"; it now runs before
+  storage is released, every shutdown step is attempted, and storage is always
+  released.
+- `metawork server status` reports a live process whose endpoints were withdrawn
+  as a stuck instance instead of "not running", because the instance lock is no
+  longer deleted before the process exits.
+- `metawork server stop --force` and `metawork server restart --force` reclaim
+  that instance; Desktop recovers it from the stop action and from reconnect
+  without a reachable endpoint and without a manual `kill -9`.
+- Stop reasons are auditable: the Server records `signal/ppid/uid/argv`, and the
+  Desktop appends `reason=user-stop|update|pi-repair` to
+  `logs/desktop-restart.log`.
+
+
+
 ## [0.1.22] - 2026-11-03
 
 - Desktop installs and upgrades now ship the bundled memory engine. The upgrade
@@ -482,6 +505,22 @@ signing or notarization.
 - 更新 Planner 成功后只同步 Planner 基线，保留其它板块尚未保存的编辑。
 
 ## [Unreleased]
+
+## [0.1.23] - 2026-11-04
+
+- 停止本地 Server 现在是有界操作。Node 无法为自己的退出设定上限，卡在
+  `process.exit` 里的 Server 会继续运行，却既没有监听、也没有运行锁，还占着账户
+  数据库；现在 Server 在 drain 之前会武装一个独立的退出看门狗（默认 60s），超时后
+  强制回收该进程。
+- 每次正常停止都不会再丢失最后一次长期记忆沉积。原关停顺序先释放账户存储再
+  drain 记忆，导致沉积必然以「数据库连接已关闭」失败；现在沉积发生在释放存储之前，
+  每一步都会尝试执行，且存储始终会被释放。
+- `metawork server status` 重新能把「端点已撤除但进程仍在」的实例报告为卡住的实例，
+  而不是「未运行」，因为实例锁不再在进程退出之前被删除。
+- `metawork server stop --force` 与 `metawork server restart --force` 可回收该实例；
+  Desktop 的停止操作与重连在端点不可达时也能回收它，无需手敲 `kill -9`。
+- 停止原因可审计：Server 记录 `signal/ppid/uid/argv`，Desktop 在
+  `logs/desktop-restart.log` 追加 `reason=user-stop|update|pi-repair`。
 
 ## [0.1.22] - 2026-11-03
 

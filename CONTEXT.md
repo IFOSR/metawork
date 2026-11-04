@@ -1136,6 +1136,41 @@ SQLite schema 65 保存 `conversation_attempt_owners`；owner 在租约 TTL 过�
 不是 OS 文件保护；Git 校验检测可观察的业务树/HEAD 变化，不承诺检测被忽略文件
 或执行中发生后又还原的修改。
 
+## Server Shutdown And Exit Invariants (2026-11-04)
+
+Stopping the local Server is a bounded operation, and its observable facts never
+lie about whether a process is still alive.
+
+- Shutdown order is Planner, then the memory controller's final deposition, then
+  AccountRuntime storage release. The final deposition writes through the
+  Conversation read model, so releasing storage first loses that segment; the
+  no-new-turn guarantee during deposition comes from closed admission points and
+  a completed drain, not from disposing accounts first.
+- Every shutdown step is attempted; a failed step is reported after storage is
+  released, and an incomplete shutdown never leaves storage open.
+- A stopping Server arms a detached exit watchdog before draining
+  (`METAWORK_EXIT_WATCHDOG_MS`, default 60s). Node cannot bound its own exit:
+  `process.exit()` waits on the threadpool join with no timeout, and a stuck
+  exit consumes the one-shot signal handler, so a second SIGTERM is never
+  dispatched. `SIGKILL` after the budget is safe because endpoints and the lock
+  are already withdrawn and SQLite runs in WAL mode.
+- The instance lock outlives `ServerLifecycle.stop()` and is removed only by the
+  process `exit` handler. A stale lock from a crash is reclaimed by PID
+  liveness, and it never forces a kill on its own.
+- Readiness distinguishes `ready`, `starting_or_failed`, `zombie` and
+  `not_running`. `zombie` means a live process whose lock is past the startup
+  window with withdrawn manifest or Gateway socket. Only the explicit
+  `metawork server stop --force` path reclaims it, and only for this installation
+  and this user: identity comes from the launchd job or from a `ps` scan of
+  `…/app/releases/<release>/dist/index.js server start` under the install root.
+  Ambiguous ownership is reported, never guessed.
+- Desktop may reclaim such an instance without a reachable endpoint, and
+  `connect()` reclaims it before bootstrapping a replacement. Ordinary connection
+  still never terminates a healthy Server.
+- Stop reasons are auditable: the Server records
+  `signal/ppid/uid/argv`, and the Desktop appends
+  `reason=user-stop|update|pi-repair` to `logs/desktop-restart.log`.
+
 ## Current Server Upgrade Baseline
 
 The current implementation uses PlanningAgentPlan v9, Work Graph v7, Kernel wire

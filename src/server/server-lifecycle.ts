@@ -70,10 +70,13 @@ export class ServerLifecycle {
       await runStep(this.deps.drain, errors);
       await runStep(this.deps.stopRuntime, errors);
       await runStep(this.deps.removeManifest, errors);
-      await runStep(async () => {
-        await this.releaseLock?.();
-        this.releaseLock = null;
-      }, errors);
+      // The instance lock is deliberately NOT released here. It is the only
+      // durable evidence that this process is still alive: releasing it before
+      // the process actually exits made a Server stuck inside
+      // `process.exit` indistinguishable from a stopped one, so `status`,
+      // `connect` and the updater all treated the zombie as absent. The lock is
+      // removed by the `exit` handler (releaseOnExit) once the process really
+      // ends; a crash leaves a stale lock that the next start reclaims by PID.
       this.currentState = 'stopped';
       if (errors.length > 0) {
         throw new AggregateError(errors, 'MetaWork Server shutdown did not complete cleanly');

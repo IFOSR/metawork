@@ -171,6 +171,7 @@ import { KernelDispatchItemRepo } from '../storage/kernel-dispatch-item-repo.js'
 import {
   acquireInstanceLock,
   isInstanceRunning,
+  readInstanceLock,
   stopInstanceForRestart,
   type InstanceLock,
 } from '../management/lock.js';
@@ -229,6 +230,8 @@ import {
   removeEndpointManifest,
 } from '../server/server-endpoint-manifest.js';
 import { readReleaseIdentity } from '../installation/release-identity.js';
+import { armExitWatchdog } from './exit-watchdog.js';
+import { findInstalledServerProcesses } from '../management/server-process-scan.js';
 import {
   createServerApplication,
 } from './server-application.js';
@@ -434,7 +437,11 @@ export async function main(cliCommand = parseCliArgs(process.argv.slice(2))) {
 
   const runtimeLockPath = resolve(paths.data, 'runtime.lock');
   if (cliCommand.kind === 'server' && cliCommand.action === 'status') {
+    // Liveness decides "running"; the lock record only supplies the age that
+    // separates a starting Server from one stuck inside its exit. A stale lock
+    // left by a forced kill must never be reported as a live instance.
     const instanceRunning = await isInstanceRunning(runtimeLockPath);
+    const instance = instanceRunning ? await readInstanceLock(runtimeLockPath) : null;
     const manifest = await readEndpointManifest(endpointManifestPath).catch(() => null);
     const readiness = classifyServerReadiness(manifest, instanceRunning, {
       isProcessAlive: pid => {
@@ -446,27 +453,41 @@ export async function main(cliCommand = parseCliArgs(process.argv.slice(2))) {
         }
       },
       socketExists: existsSync,
+      lockAgeMs: instance ? Date.now() - Date.parse(instance.startedAt) : undefined,
     });
     process.stdout.write(readiness === 'ready'
       ? 'MetaWork Server 正在运行。\n'
-      : readiness === 'starting_or_failed'
-        ? 'MetaWork Server 尚未就绪：正在启动或启动失败，请检查 Server terminal。\n'
-        : 'MetaWork Server 未运行。请执行 `metawork server start`。\n');
+      : readiness === 'zombie'
+        ? `MetaWork Server 进程仍在（PID ${instance?.pid}），但端点与 Gateway socket 已回收：这是卡在退出阶段的僵死实例，不再服务任何客户端。\n`
+          + '执行 `metawork server stop --force` 清理它，然后 `metawork server start`。\n'
+        : readiness === 'starting_or_failed'
+          ? 'MetaWork Server 尚未就绪：正在启动或启动失败，请检查 Server terminal。\n'
+          : 'MetaWork Server 未运行。请执行 `metawork server start`。\n');
     return;
   }
 
   if (cliCommand.kind === 'server' && cliCommand.action === 'stop') {
-    const result = await stopInstanceForRestart(runtimeLockPath);
+    const result = await stopInstanceForRestart(runtimeLockPath, { force: cliCommand.force });
+    const orphaned = cliCommand.force && result.status === 'not_running'
+      ? await findInstalledServerProcesses(paths.root)
+      : [];
+    for (const pid of orphaned) {
+      try { process.kill(pid, 'SIGKILL'); } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== 'ESRCH') throw error;
+      }
+    }
     process.stdout.write(
       result.status === 'stopped'
         ? `MetaWork Server 已停止（PID ${result.pid}）。\n`
-        : 'MetaWork Server 未运行。\n',
+        : orphaned.length > 0
+          ? `MetaWork Server 运行锁已不存在；已强制结束残留实例 PID ${orphaned.join(', ')}。\n`
+          : 'MetaWork Server 未运行。\n',
     );
     return;
   }
 
   if (cliCommand.kind === 'server' && cliCommand.action === 'restart') {
-    const result = await stopInstanceForRestart(runtimeLockPath);
+    const result = await stopInstanceForRestart(runtimeLockPath, { force: cliCommand.force });
     process.stdout.write(
       result.status === 'stopped'
         ? `MetaWork Server 旧实例已停止（PID ${result.pid}），正在重新启动。\n`
@@ -2496,7 +2517,15 @@ export async function main(cliCommand = parseCliArgs(process.argv.slice(2))) {
   process.once('exit', () => {
     clearInterval(taskPoolReviewTimer);
   });
-  const shutdownForSignal = (): void => {
+  const shutdownForSignal = (signal: NodeJS.Signals): void => {
+    // Audit before anything else: without this line a stop can never be traced
+    // back to the caller (CLI stop, Desktop update/repair, external kill).
+    console.error(
+      `MetaWork shutdown requested: signal=${signal} pid=${process.pid} `
+      + `ppid=${process.ppid} uid=${String(process.getuid?.())} argv=${process.argv.join(' ')}`,
+    );
+    // Bounds drain + native exit; see exit-watchdog for why Node cannot do this itself.
+    armExitWatchdog();
     void shutdown().then(
       () => process.exit(0),
       error => {
@@ -2506,10 +2535,10 @@ export async function main(cliCommand = parseCliArgs(process.argv.slice(2))) {
     );
   };
   process.once('SIGINT', () => {
-    shutdownForSignal();
+    shutdownForSignal('SIGINT');
   });
   process.once('SIGTERM', () => {
-    shutdownForSignal();
+    shutdownForSignal('SIGTERM');
   });
 
   await gatewayServer.start();

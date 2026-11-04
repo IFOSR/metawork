@@ -59,13 +59,19 @@ it.each(['data/runtime.lock', 'server-endpoint.json'])('never forces a Server re
   expect(f.signal).not.toHaveBeenCalled();
 });
 
-it.each(['tIPv4', 'tIPv6', 'tunix', 'n/accounts/local/data/anyfusion.db', 'n/data/runtime.db'])('never forces a process holding resources: %s', async file => {
-  const f = await fixture();
-  const server = await captureMacOSServerProcess(f.root);
-  f.state.files += file.startsWith('n') ? `n${f.root}${file.slice(1)}\n` : `${file}\n`;
-  await expect(finishMacOSServerExit(server!, { ...f, timeoutMs: 0 })).rejects.toThrow('holds runtime resources');
-  expect(f.signal).not.toHaveBeenCalled();
-});
+it.each(['tIPv4', 'tIPv6', 'tunix', 'n/accounts/local/data/anyfusion.db', 'n/data/runtime.db'])(
+  'still forces a withdrawn Server that only holds resources: %s', async file => {
+    const f = await fixture();
+    const server = await captureMacOSServerProcess(f.root);
+    f.state.files += file.startsWith('n') ? `n${f.root}${file.slice(1)}\n` : `${file}\n`;
+    const error = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    try {
+      await finishMacOSServerExit(server!, { ...f, timeoutMs: 0 });
+    } finally { error.mockRestore(); }
+    // Endpoints are withdrawn, so the process cannot admit work; refusing to kill
+    // it only produced a permanent zombie with no lock and no listener.
+    expect(f.signal).toHaveBeenCalledWith(12345, 'SIGKILL');
+  });
 
 it.each(['birth', 'pid', 'args'])('rejects process replacement or PID reuse (%s)', async field => {
   const f = await fixture();

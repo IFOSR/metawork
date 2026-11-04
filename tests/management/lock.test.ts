@@ -5,6 +5,7 @@ import { describe, expect, it } from 'vitest';
 import {
   isInstanceRunning,
   acquireInstanceLock,
+  readInstanceLock,
   stopInstanceForRestart,
 } from '../../src/management/lock.js';
 import { acquireRuntimeUpdateLock } from '../../src/installation/runtime-update-lock.js';
@@ -84,5 +85,64 @@ describe('stopInstanceForRestart', () => {
 
     expect(result).toEqual({ status: 'stopped', pid: 4242 });
     expect(signals).toEqual([0, 'SIGTERM', 0]);
+  });
+});
+
+describe('zombie lock records', () => {
+  it('reports a live instance lock with its start time', async () => {
+    const directory = await mkdtemp(resolve(tmpdir(), 'anyfusion-lock-'));
+    const lockPath = resolve(directory, 'runtime.lock');
+    await writeFile(lockPath, '{"pid":"4242","startedAt":"2026-08-17T00:00:00.000Z"}\n');
+    await expect(readInstanceLock(lockPath)).resolves.toEqual({ pid: 4242, startedAt: '2026-08-17T00:00:00.000Z' });
+  });
+
+  it('reports nothing when the lock is absent or unparsable', async () => {
+    const directory = await mkdtemp(resolve(tmpdir(), 'anyfusion-lock-'));
+    const lockPath = resolve(directory, 'runtime.lock');
+    await expect(readInstanceLock(lockPath)).resolves.toBeNull();
+    await writeFile(lockPath, 'not-a-pid\n');
+    await expect(readInstanceLock(lockPath)).resolves.toBeNull();
+  });
+});
+
+describe('stopInstanceForRestart --force', () => {
+  it('escalates to SIGKILL once the grace window expires', async () => {
+    const directory = await mkdtemp(resolve(tmpdir(), 'anyfusion-lock-'));
+    const lockPath = resolve(directory, 'runtime.lock');
+    await writeFile(lockPath, '{"pid":"4242","startedAt":"2026-08-17T00:00:00.000Z"}\n');
+    let running = true;
+    const signals: Array<NodeJS.Signals | 0> = [];
+    const result = await stopInstanceForRestart(lockPath, {
+      force: true,
+      timeoutMs: 100,
+      pollIntervalMs: 10,
+      signalProcess: (_pid: number, signal: NodeJS.Signals | 0) => {
+        signals.push(signal);
+        if (signal === 'SIGKILL') running = false;
+        if (signal === 0 && !running) {
+          const error = new Error('not running') as NodeJS.ErrnoException;
+          error.code = 'ESRCH';
+          throw error;
+        }
+        return true;
+      },
+      sleep: async () => undefined,
+    });
+    expect(result).toEqual({ status: 'stopped', pid: 4242 });
+    expect(signals).toContain('SIGKILL');
+  });
+
+  it('does not escalate without --force', async () => {
+    const directory = await mkdtemp(resolve(tmpdir(), 'anyfusion-lock-'));
+    const lockPath = resolve(directory, 'runtime.lock');
+    await writeFile(lockPath, '{"pid":"4242","startedAt":"2026-08-17T00:00:00.000Z"}\n');
+    const signals: Array<NodeJS.Signals | 0> = [];
+    await expect(stopInstanceForRestart(lockPath, {
+      timeoutMs: 20,
+      pollIntervalMs: 10,
+      signalProcess: (_pid: number, signal: NodeJS.Signals | 0) => { signals.push(signal); return true; },
+      sleep: async () => undefined,
+    })).rejects.toThrow('--force');
+    expect(signals).not.toContain('SIGKILL');
   });
 });

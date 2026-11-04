@@ -5,7 +5,8 @@ import { join } from 'node:path';
 import { afterEach, expect, it, vi } from 'vitest';
 import { DesktopServiceManager } from '../../src/client/desktop-service-manager.js';
 
-const mocks = vi.hoisted(() => ({ spawn: vi.fn(), discover: vi.fn(), endpoint: vi.fn(), running: vi.fn(async () => true), capture: vi.fn(), finish: vi.fn() }));
+const mocks = vi.hoisted(() => ({ spawn: vi.fn(), discover: vi.fn(), endpoint: vi.fn(async () => ({ ok: true })),
+  running: vi.fn(async () => true), capture: vi.fn(), finish: vi.fn() }));
 vi.mock('../../src/installation/macos-background-process.js', () => ({ startMacOSBackgroundProcess: vi.fn() }));
 vi.mock('../../src/installation/macos-server-exit.js', () => ({ captureMacOSServerProcess: mocks.capture, finishMacOSServerExit: mocks.finish }));
 vi.mock('node:child_process', () => ({ spawn: mocks.spawn }));
@@ -71,11 +72,61 @@ it.skipIf(process.platform !== 'darwin')('completes an explicit stop despite a m
 it.skipIf(process.platform !== 'darwin')('does not hide an unsafe or incomplete process shutdown', async () => {
   const { manager } = await fixture();
   mocks.capture.mockResolvedValueOnce({ pid: 12345 });
-  mocks.finish.mockRejectedValueOnce(new Error('Server still holds runtime resources'));
+  mocks.finish.mockRejectedValueOnce(new Error('Background Server has not completed shutdown'));
   mocks.spawn.mockImplementationOnce(() => {
     const child = new EventEmitter();
     queueMicrotask(() => child.emit('exit', 0));
     return child;
   });
-  await expect(manager.stopForUpdate()).rejects.toThrow('holds runtime resources');
+  await expect(manager.stopForUpdate()).rejects.toThrow('has not completed shutdown');
+});
+
+it.skipIf(process.platform !== 'darwin')('reclaims an instance that withdrew its endpoints before spawning', async () => {
+  const { manager, root } = await fixture();
+  // Instance lock still present (shutdown no longer releases it early), but no
+  // published endpoint: this is a process stuck inside exit.
+  mocks.running.mockResolvedValueOnce(true);
+  mocks.endpoint.mockResolvedValueOnce({ ok: false, code: 'server_not_running' });
+  const stuck = { pid: 4321 };
+  mocks.capture.mockResolvedValueOnce(stuck);
+  mocks.discover.mockResolvedValueOnce({ instanceId: 'i', accountId: 'a' });
+  await manager.connect();
+  expect(mocks.finish).toHaveBeenCalledWith(stuck);
+});
+
+it.skipIf(process.platform !== 'darwin')('reclaims a launchd-owned PID whose lock is already gone', async () => {
+  const { manager } = await fixture();
+  mocks.running.mockResolvedValueOnce(false);
+  mocks.endpoint.mockResolvedValueOnce({ ok: false, code: 'invalid_manifest' });
+  const stuck = { pid: 4322 };
+  mocks.capture.mockResolvedValueOnce(stuck);
+  mocks.discover.mockResolvedValueOnce({ instanceId: 'i', accountId: 'a' });
+  await manager.connect();
+  expect(mocks.finish).toHaveBeenCalledWith(stuck);
+});
+
+it.skipIf(process.platform !== 'darwin')('reuses a healthy running instance without touching it', async () => {
+  const { manager } = await fixture();
+  mocks.running.mockResolvedValueOnce(true);
+  mocks.endpoint.mockResolvedValueOnce({ ok: true });
+  mocks.discover.mockResolvedValueOnce({ instanceId: 'i', accountId: 'a' });
+  await manager.connect();
+  expect(mocks.capture).not.toHaveBeenCalled();
+  expect(mocks.finish).not.toHaveBeenCalled();
+});
+
+it.skipIf(process.platform !== 'darwin')('stops a stuck instance even without an authenticated endpoint', async () => {
+  const { manager, root } = await fixture();
+  mocks.discover.mockRejectedValue(new Error('no endpoint'));
+  mocks.endpoint.mockResolvedValue({ ok: false, code: 'server_not_running' });
+  mocks.capture.mockResolvedValue({ pid: 4323 });
+  // The forced exit removes the instance lock, so the post-stop verification passes.
+  mocks.running.mockResolvedValue(false);
+  mocks.spawn.mockImplementation(() => {
+    const child = new EventEmitter();
+    queueMicrotask(() => child.emit('exit', 1));
+    return child;
+  });
+  await manager.stop();
+  expect(mocks.finish).toHaveBeenCalledWith({ pid: 4323 });
 });

@@ -58,9 +58,12 @@ AnyFusion 标识。
 
 ## Release
 
-当前发布版本是 **v0.1.22**，修复 Desktop 安装与升级丢失内置长期记忆引擎、
-因已退役的 `in_place` 执行后端导致的升级死锁，以及回滚写出的配置版本号无法被
-规划提案表达的问题。
+当前发布版本是 **v0.1.23**，让停止本地 Server 变成有界操作：卡在退出阶段的
+Server 会被回收，不再留下“没有监听、没有锁、却仍占着数据库”的僵尸进程；每次正常
+停止时的最后一次长期记忆沉积不再丢失；`metawork server status` 重新能识别卡住的实例，
+`metawork server stop --force` 无需手敲 `kill -9` 即可恢复。同时包含 v0.1.22 的全部
+修复：Desktop 安装与升级的内置记忆引擎、升级死锁，以及由运行时提供
+`configurationRevision` 的规划修复。
 Release 提供 macOS arm64 Desktop DMG，以及 macOS arm64、macOS x64 和 Linux x64 的签名
 Runtime、Planner、Memory 归档。Desktop 仅支持 Apple Silicon；macOS x64 和 Linux x64
 请使用 Server 安装包提供的 Web、TUI 或飞书客户端。本发布线不包含原生 Windows；
@@ -69,10 +72,10 @@ Runtime、Planner、Memory 归档。Desktop 仅支持 Apple Silicon；macOS x64 
 
 | 平台 | 最新可用版本 | 下载 / 安装 |
 | --- | --- | --- |
-| macOS Apple Silicon（`arm64`）桌面版 | 0.1.22 | [最新 DMG](https://github.com/IFOSR/metawork/releases/latest/download/MetaWork-darwin-arm64.dmg) |
-| macOS Apple Silicon（`arm64`）Server | 0.1.22 | [最新安装器](https://github.com/IFOSR/metawork/releases/latest/download/install.sh) · [签名清单](https://github.com/IFOSR/metawork/releases/latest/download/manifest.darwin-arm64.json) |
-| macOS Intel（`x64`）Server | 0.1.22 | [最新安装器](https://github.com/IFOSR/metawork/releases/latest/download/install.sh) · [签名清单](https://github.com/IFOSR/metawork/releases/latest/download/manifest.darwin-x64.json) |
-| Linux / WSL2（`x64`）Server | 0.1.22 | [最新安装器](https://github.com/IFOSR/metawork/releases/latest/download/install.sh) · [签名清单](https://github.com/IFOSR/metawork/releases/latest/download/manifest.linux-x64.json) |
+| macOS Apple Silicon（`arm64`）桌面版 | 0.1.23 | [最新 DMG](https://github.com/IFOSR/metawork/releases/latest/download/MetaWork-darwin-arm64.dmg) |
+| macOS Apple Silicon（`arm64`）Server | 0.1.23 | [最新安装器](https://github.com/IFOSR/metawork/releases/latest/download/install.sh) · [签名清单](https://github.com/IFOSR/metawork/releases/latest/download/manifest.darwin-arm64.json) |
+| macOS Intel（`x64`）Server | 0.1.23 | [最新安装器](https://github.com/IFOSR/metawork/releases/latest/download/install.sh) · [签名清单](https://github.com/IFOSR/metawork/releases/latest/download/manifest.darwin-x64.json) |
+| Linux / WSL2（`x64`）Server | 0.1.23 | [最新安装器](https://github.com/IFOSR/metawork/releases/latest/download/install.sh) · [签名清单](https://github.com/IFOSR/metawork/releases/latest/download/manifest.linux-x64.json) |
 | Windows 原生（`x64`）Server | 0.1.17（本发布线未更新） | [Native Windows 安装指南](https://github.com/IFOSR/metawork/tree/fix/windows-native-web)（分支） |
 
 [最新 macOS/Linux Release 与归档](https://github.com/IFOSR/metawork/releases/latest) ·

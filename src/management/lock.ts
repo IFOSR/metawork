@@ -12,6 +12,26 @@ export interface StopInstanceForRestartResult {
   pid?: number;
 }
 
+export interface InstanceLockRecord {
+  readonly pid: number;
+  readonly startedAt: string;
+}
+
+/**
+ * Read the live instance lock without probing the PID.
+ *
+ * Shutdown keeps this lock until the process actually exits (see
+ * ServerLifecycle.stop), so a present lock with withdrawn endpoints is the only
+ * reliable signal that a process is stuck inside its exit.
+ */
+export async function readInstanceLock(lockPath: string): Promise<InstanceLockRecord | null> {
+  const holder = await readLockIfPresent(lockPath);
+  if (!holder) return null;
+  const pid = Number(holder.pid);
+  if (!Number.isInteger(pid) || pid <= 0) return null;
+  return { pid, startedAt: holder.startedAt };
+}
+
 export async function isInstanceRunning(
   lockPath: string,
   signalProcess: (pid: number, signal: NodeJS.Signals | 0) => boolean = process.kill.bind(process),
@@ -36,6 +56,8 @@ interface StopInstanceForRestartOptions {
   pollIntervalMs?: number;
   signalProcess?: (pid: number, signal: NodeJS.Signals | 0) => boolean;
   sleep?: (durationMs: number) => Promise<void>;
+  /** Escalate to SIGKILL when the process does not exit within the grace window. */
+  force?: boolean;
 }
 
 interface LockRecord {
@@ -105,7 +127,25 @@ export async function stopInstanceForRestart(
     }
   }
 
-  throw new Error(`MetaWork 进程 PID ${pid} 未在 ${timeoutMs}ms 内退出`);
+  if (options.force) {
+    // A Server that withdrew its endpoints can stall forever inside the native
+    // part of process.exit (see exit-watchdog). SIGTERM has already been
+    // consumed and is never redelivered, so only SIGKILL can reclaim it.
+    try {
+      signalProcess(pid, 'SIGKILL');
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === 'ESRCH') return { status: 'stopped', pid };
+      throw error;
+    }
+    const killAttempts = Math.max(1, Math.ceil(5_000 / pollIntervalMs));
+    for (let attempt = 0; attempt < killAttempts; attempt += 1) {
+      await sleep(pollIntervalMs);
+      if (!isProcessAlive(pid, signalProcess)) return { status: 'stopped', pid };
+    }
+  }
+
+  throw new Error(`MetaWork 进程 PID ${pid} 未在 ${timeoutMs}ms 内退出`
+    + (options.force ? '（已尝试强制结束）' : '；可执行 `metawork server stop --force`'));
 }
 
 function removeInstanceLockOnExit(lockPath: string, expectedContent: string): void {

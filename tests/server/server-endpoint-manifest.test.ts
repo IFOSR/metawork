@@ -54,6 +54,17 @@ describe('server endpoint manifest', () => {
     expect(classifyServerReadiness(value.manifest, false)).toBe('not_running');
   });
 
+  it('reports a live instance with withdrawn endpoints as zombie after the startup window', () => {
+    const alive = { isProcessAlive: () => true };
+    // Inside the startup window the same observation is just "still starting".
+    expect(classifyServerReadiness(null, true, { ...alive, lockAgeMs: 5_000 })).toBe('starting_or_failed');
+    expect(classifyServerReadiness(null, true, { ...alive, lockAgeMs: 120_000 })).toBe('zombie');
+    expect(classifyServerReadiness(null, true, { ...alive, lockAgeMs: 120_000, zombieAfterMs: 300_000 }))
+      .toBe('starting_or_failed');
+    // A lock that cannot be read never counts as evidence of a stuck exit.
+    expect(classifyServerReadiness(null, true, alive)).toBe('starting_or_failed');
+  });
+
   it('writes and reads an atomic mode-restricted manifest without Workspace data', async () => {
     const value = await fixture();
     await writeEndpointManifest(value.path, value.manifest);

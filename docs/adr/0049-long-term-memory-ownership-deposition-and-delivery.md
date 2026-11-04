@@ -326,3 +326,14 @@ per-Turn input/answer-hash receipts; the sequence cursor alone is insufficient
 for late completion or revised answers. Deletion is a fenced retryable workflow
 and remains pending until the external L0 service confirms complete erasure.
 Task lifecycle and L1/L2/L3 asset ownership remain unchanged.
+
+## Shutdown deposition amendment (2026-11-04)
+
+The final deposition runs before any AccountRuntime releases its storage. The
+previously documented order (stop accounts, then drain memory) closed SQLite
+first, so every clean Server stop failed the deposition with "The database
+connection is not open" and silently lost the last segment. The guarantee that
+no AccountRuntime can produce a new turn during the deposition now comes from
+the earlier shutdown stages — closed client/Gateway admission and a completed
+drain — instead of from a disposed account registry. Each shutdown step is
+attempted even when an earlier step fails, and storage is always released.

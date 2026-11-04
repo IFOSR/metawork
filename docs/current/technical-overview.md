@@ -37,14 +37,17 @@ proposal validation checks exact evidence IDs in the same Planner turn using a
 detached host. New evidence IDs hash the full source; existing refs stay stable.
 See ADR-0023 and the blocked-upstream recovery implementation record.
 
-Desktop shutdown recovery (2026-10-17): explicit installer stop captures the
-owned launchd Server before invoking the installed stop CLI, including when a
-legacy Server has already removed its runtime lock. Activation waits for actual
-process exit. Bounded cleanup requires unchanged user/process/job identity,
-withdrawn lock and endpoint, and no open account/data files or sockets. Ordinary
-connection never terminates a live job. Pi inventory verification runs outside
-the connection promise so a ready client can reconnect immediately. See the
-Desktop exit recovery implementation record for local acceptance.
+Desktop shutdown recovery: explicit installer stop captures the owned launchd
+Server before invoking the installed stop CLI, including when the Server already
+removed its runtime lock. Activation waits for actual process exit. Cleanup
+requires unchanged user/process/job identity and withdrawn lock and endpoint;
+holding descriptors after withdrawal is reported and no longer blocks the
+forced exit, because a withdrawn Server cannot admit work and SQLite is
+crash-safe in WAL mode. Ordinary connection never terminates a healthy job, but
+it does reclaim an instance that withdrew its endpoints and never exited (2026-11-04).
+The connection promise never covers Pi inventory verification, so a ready client
+reconnects immediately. See ADR-0023 and the bounded shutdown implementation
+record for local acceptance.
 
 Explicit file delivery (2026-10-15, ADR-0032): new Planner proposals require
 `fileOutputs` per Subtask. Empty arrays request inline answers/action receipts or
@@ -1400,6 +1403,40 @@ sockets before reclaiming a confirmed stale socket and records the created
 device/inode so shutdown cannot unlink a replacement. Planner RPC preserves
 structured transport uncertainty and partial tool audit.
 
+### Server shutdown and exit recovery (2026-11-04)
+
+Stopping the Server is bounded on both sides of the process boundary.
+
+- Shutdown order is Planner, then the memory controller's final drain, then the
+  AccountRuntimes. Storage is released last, because the deposition writes
+  through the Conversation read model; the no-new-turn guarantee comes from
+  `stopListeners` closing admission and `drain` awaiting in-flight work. Each
+  step is attempted even if an earlier one fails, and the failure is reported
+  after storage is released.
+- `process.exit()` itself cannot be bounded: it runs `uv_threadpool_cleanup()`
+  and waits on `uv_thread_join()` with no timeout. The Server therefore arms a
+  detached exit watchdog (`METAWORK_EXIT_WATCHDOG_MS`, default 60s) before it
+  starts draining. Endpoints and the instance lock are withdrawn before the
+  budget expires, so the watchdog's `SIGKILL` cannot admit work or corrupt a
+  committed write.
+- The instance lock is released by the `exit` handler, not by
+  `ServerLifecycle.stop()`. Releasing it before the process actually exits made
+  a stuck exit indistinguishable from a stopped Server for `status`, `connect`
+  and the updater; a crash leaves a stale lock that the next start reclaims by
+  PID.
+- `classifyServerReadiness` reports `zombie` for a live instance whose lock is
+  older than the startup window and whose manifest or Gateway socket is gone.
+  `metawork server stop --force` reclaims it: SIGTERM, then SIGKILL after the
+  grace window, and when the lock is already gone, a scan restricted to this
+  user and to `…/app/releases/<release>/dist/index.js server start` under this
+  install root.
+- The Desktop stop path no longer requires a reachable endpoint, and
+  `connect()` reclaims an instance that withdrew its endpoints before it
+  bootstraps a replacement. Both record the reason in
+  `logs/desktop-restart.log`; the Server records
+  `MetaWork shutdown requested: signal=… ppid=… uid=… argv=…` on stderr, so an
+  unexplained stop is traceable to a caller.
+
 ### Task lifecycle state convergence (2026-09-25)
 
 Attempt settlement, Kernel application and Task conclusion are separated by
@@ -2043,8 +2080,10 @@ process, sends no request and costs nothing.
 One MetaWork installation is one local Server for one local customer. The
 `MemoryRuntimeController` is therefore Server-owned: the Server composition
 creates it once, a configuration activation rebuilds it only when the `memory`
-section changed, and shutdown stops the AccountRuntimes, then performs one final
-drain, then stops the scheduler and the sidecar. It is not created per
+section changed, and shutdown performs one final drain before any AccountRuntime
+releases its storage, then stops the scheduler and the sidecar (2026-11-04: the
+previous order released storage first, so the final deposition always failed and
+was lost). It is not created per
 AccountRuntime. The account identity remains the durable persistence namespace:
 every memory query keeps its `account_id` predicate, and every recalled asset is
 validated against the owning account.

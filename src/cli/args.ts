@@ -4,7 +4,7 @@ export type ServerAction = 'start' | 'stop' | 'restart' | 'status' | 'doctor' | 
   | 'bind-feishu' | 'unbind-feishu';
 
 export type CliCommand =
-  | { kind: 'server'; action: ServerAction }
+  | { kind: 'server'; action: ServerAction; force?: boolean }
   | { kind: 'build' }
   | { kind: 'tui'; conversationId?: string }
   | { kind: 'web'; conversationId?: string; noOpen?: boolean }
@@ -78,6 +78,7 @@ export function formatCliHelp(): string {
     'MetaWork Server（先启动，持续运行）:',
     '  metawork server start',
     '  metawork server stop',
+    '  metawork server stop --force      强制结束已撤除端点但卡在退出的实例',
     '  metawork server restart',
     '  metawork server status',
     '  metawork server doctor',
@@ -115,8 +116,16 @@ function parseServerArgs(argv: readonly string[]): CliCommand {
   if (rest.includes('--workspace') || rest.some(arg => arg.startsWith('--workspace='))) {
     throw new Error('server start 不接受 Workspace；请在 Client 中使用 `/workspace /absolute/path`');
   }
-  if (rest.length > 0) throw new Error(`未知 server 参数: ${rest[0]}`);
-  return { kind: 'server', action: rawAction as ServerAction };
+  const action = rawAction as ServerAction;
+  // `--force` is the only flag: it lets `stop`/`restart` reclaim a Server that
+  // withdrew its endpoints but never finished exiting.
+  const unknown = rest.find(arg => arg !== '--force');
+  if (unknown !== undefined) throw new Error(`未知 server 参数: ${unknown}`);
+  const force = rest.includes('--force');
+  if (force && action !== 'stop' && action !== 'restart') {
+    throw new Error(`--force 只用于 server stop / server restart`);
+  }
+  return { kind: 'server', action, ...(force ? { force: true } : {}) };
 }
 
 function parseClientArgs(
