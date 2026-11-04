@@ -108,101 +108,183 @@ the native TUI, or Feishu against the local Server.
 
 ## Installation
 
-This branch installs a **native Windows x64 runtime**: it runs directly on
-Windows (no WSL, no Docker) and serves the browser Web workspace from
-`http://127.0.0.1:8788`. Ordinary users need no administrator rights and no
-Developer Mode.
+> **This branch publishes the native Windows x64 package only.**
+> **Every other platform (macOS Desktop, macOS/Linux/WSL2 Server) is documented in the main branch README:**
+> **<https://github.com/IFOSR/metawork/blob/main/README.md>**
+>
+> The instructions below install MetaWork **natively on Windows 10/11 x64**. It
+> runs as ordinary Windows processes: no WSL, no Docker, no administrator
+> rights and no Developer Mode.
 
-| Preferred interface | Install | Open |
-| --- | --- | --- |
-| **Windows x64 (this branch)** | **PowerShell installer below** | Start Server, then `metawork web` |
-| Terminal UI | Same Windows Server package | Start Server, then `metawork tui` |
-| Feishu | Same Server package and Feishu app configuration | `metawork server setup-feishu` |
-| macOS Desktop, macOS/Linux/WSL2 Server | **Not in this branch** | See [main](https://github.com/IFOSR/metawork/blob/main/README.md) |
-| Source development | Source instructions below | CLI or isolated Desktop |
+| Platform | Where it is documented |
+| --- | --- |
+| **Windows x64 (this branch)** | [Install on Windows x64](#install-on-windows-x64) below |
+| macOS Apple Silicon Desktop | [main branch README](https://github.com/IFOSR/metawork/blob/main/README.md#macos-desktop-internal-apple-silicon) |
+| macOS / Linux / WSL2 Server package | [main branch README](https://github.com/IFOSR/metawork/blob/main/README.md#server-with-web--tui--feishu) |
+| Source build and Desktop development | [main branch README](https://github.com/IFOSR/metawork/blob/main/README.md#source-installation-and-desktop-development) |
 
 ### Install on Windows x64
 
-Prerequisites:
+The Windows package is published as its own Release:
 
-- **Node.js 22.x, at least 22.19.0** on `PATH`. This is required, not optional:
-  the bundled native SQLite binding is built for Node 22 (ABI 127), so Node 24
-  fails at startup with a native module error. Check with `node --version`.
-- PowerShell 5.1 or later. `tar.exe` ships with Windows 10/11 and is used to
-  extract the archives.
-- Your model provider's API URL, model ID and API key.
-- At least one supported Executor CLI on `PATH` (Pi Agent or Codex). The
-  installer detects Executor CLIs but does not install them. Git for Windows is
-  installed as part of the package and is used for repository operations.
+**<https://github.com/IFOSR/metawork/releases/tag/v0.1.22-windows>**
 
-Install in PowerShell:
+That Release holds four files plus the installer: the signed
+`manifest.win32-x64.json`, and the Runtime, Planner and memory-engine archives.
+It is deliberately **not** the repository's latest Release, because the latest
+Release carries the macOS and Linux downloads from the main branch and a release
+may only contain artifacts built from one identical commit.
+
+#### Step 0 — Prerequisites
+
+- **Node.js 22.x, at least 22.19.0, and below 23.** Check with
+  `node --version`. This is mandatory, not advisory: the bundled native SQLite
+  binding is built for Node 22 (ABI 127), so Node 24 fails at startup with a
+  native-module error.
+- **Windows 10 or 11, x64.** `tar.exe` ships with Windows and is used to extract
+  the archives.
+- **PowerShell 5.1 or later** (the built-in one is fine).
+- **Your model provider details**: API base URL, model ID and API key.
+- **At least one Executor CLI on `PATH`** — Pi Agent (`pi`) or Codex (`codex`).
+  The installer detects them but does not install or upgrade them. Git for
+  Windows **is** included in this package and is used for repository operations.
+
+#### Step 1 — Download the installer
+
+In PowerShell:
 
 ```powershell
 $version = 'v0.1.22-windows'
 irm "https://github.com/IFOSR/metawork/releases/download/$version/install.ps1" -OutFile metawork-install.ps1
+```
+
+#### Step 2 — Install
+
+```powershell
 .\metawork-install.ps1 -ManifestUrl "https://github.com/IFOSR/metawork/releases/download/$version/manifest.win32-x64.json"
 ```
 
-The Windows package is published as its **own Release** (`v0.1.22-windows`), not
-as the repository's latest Release. The latest Release carries the macOS and
-Linux downloads from the main branch, and a release may only contain artifacts
-built from one identical commit, so the Windows-only build cannot share it.
-Always pass the explicit `-ManifestUrl` shown above.
+Always pass the explicit `-ManifestUrl`: the installer's default points at the
+repository's latest Release, which is the macOS/Linux one.
 
-The installer downloads the signed manifest plus the Runtime, Planner and memory
-engine archives, verifies every signature and SHA-256 hash before extracting,
-and then runs the offline installer. It installs to
-`%LOCALAPPDATA%\MetaWork` by default; pass `-InstallRoot` to choose another
-directory. Installation does not need administrator rights.
+What the installer does, in this order:
 
-Start Server and keep that window open:
+1. downloads the signed manifest and verifies its **Ed25519 signature** against
+   the release public key embedded in the script;
+2. downloads the Runtime, Planner and memory-engine archives and verifies every
+   **SHA-256** hash;
+3. extracts them with `tar` (fast on thousands of small files);
+4. runs the offline installer, which stages a release, activates the NTFS
+   junctions and migrates or creates the account database.
+
+It installs to `%LOCALAPPDATA%\MetaWork` and needs **no administrator rights**.
+Pass `-InstallRoot "D:\MetaWork"` to choose another directory. Re-running the
+installer on an existing installation performs an **update** (see Step 6).
+
+Expect roughly ten to twenty minutes, dominated by the 210 MB of archives.
+
+#### Step 3 — Start the Server
+
+Keep this window open (the Server is a foreground process):
 
 ```powershell
 metawork server start
 ```
 
-In another PowerShell window:
+If `metawork` is not on `PATH` yet, open a new PowerShell window, or call the
+launcher directly:
 
 ```powershell
-metawork web                    # opens the local Web workspace
-metawork tui                    # native terminal UI
+& "$env:LOCALAPPDATA\MetaWork\bin\metawork.cmd" server start
+```
+
+#### Step 4 — Open the Web workspace
+
+In a second PowerShell window:
+
+```powershell
+metawork web                    # opens http://127.0.0.1:8788 in your browser
+metawork tui                    # native terminal UI, same Server
 metawork server setup-feishu    # optional Feishu app setup
 ```
 
-`metawork web` opens the Server's actual local URL (default
-`http://127.0.0.1:8788`). The first browser session asks you to sign in to the
-MetaWork official account, then to configure a provider and activate models in
-Settings before the first task.
+The first browser session asks you to sign in to the MetaWork official account.
+After signing in, open **Settings** to configure a provider, activate models and
+choose an executor before the first task.
 
-Install checklist:
+#### Step 5 — Verify the installation
 
-- `node --version` is `>=22.19.0` and below 23.
-- `%LOCALAPPDATA%\MetaWork\app\current` exists and points at the release.
-- `metawork server status` reports the running Server.
-- `http://127.0.0.1:8788` loads the Web workspace.
-- `metawork server doctor` reports no blocking problem.
+```powershell
+node --version                  # >=22.19.0 and below 23
+metawork server status          # Server is running
+metawork server doctor          # no blocking problem
+```
 
-To update: stop Server, run the installer again with the new version, then start
-Server. Configuration, credentials and account data are preserved, and repeating
-the same version does not reset the installation.
+Then confirm `http://127.0.0.1:8788` loads the workspace and that
+`%LOCALAPPDATA%\MetaWork\app\current` points at the installed release.
 
-To uninstall:
+#### Step 6 — Update an existing installation
+
+Stop the Server, download the installer for the new version and run Step 2
+again, then start the Server:
+
+```powershell
+metawork server stop
+# download and run the installer for the new version
+metawork server start
+```
+
+Configuration, credentials, conversations, tasks and account data are
+preserved. Repeating the same version does not reset the installation, and the
+previous release directory stays on disk for rollback.
+
+#### Step 7 — Uninstall
 
 ```powershell
 .\metawork-install.ps1 -Uninstall
 ```
 
-Windows notes:
+Remove `%LOCALAPPDATA%\MetaWork` as well only if you also want to delete
+configuration, credentials and account data.
 
-- Release, configuration and database pointers are NTFS junctions. They are the
-  only directory links an ordinary user can create, which is why no Developer
-  Mode or elevation is required.
-- The installed package includes Git for Windows and its `bin` directory is added
-  to `PATH` by the launcher, so Executors that need a POSIX shell can run commands.
-- The server keeps its data under `%LOCALAPPDATA%\MetaWork`. Do not delete that
-  directory to update; delete only the app pointers if support asks you to.
+#### What the package contains
+
+| Component | Purpose |
+| --- | --- |
+| Server, Web workspace, native TUI | The runtime you install; one Server serves every client |
+| Vendored Planner (`AnyFusion-Pi`) | Planning surface, started through the Node runtime |
+| Memory engine | Long-term memory; includes a WebAssembly Chinese tokenizer fallback so it works on machines without the Visual C++ redistributable |
+| Git for Windows | Repository operations and a POSIX shell for Executors |
+| Portable Python runtime + PDF libraries | PDF reading and report generation without a Python install |
+| Codex / Pi Executors | **Not** bundled — install the ones you want yourself |
+
+#### Windows-specific behaviour
+
+- Release, configuration and database pointers are **NTFS junctions**: the only
+  directory link an ordinary user can create, which is why no Developer Mode or
+  elevation is needed. A junction stores an absolute target, so every reader
+  normalises it back to the relative pointer contract before validating it.
+- The launcher adds the bundled Git `bin` directory to `PATH`, so an Executor
+  that needs a POSIX shell can start one.
+- The account database lives behind `database-current`, a junction into
+  `database-revisions/<revision>/`. Do not move or delete it by hand.
+
+#### Troubleshooting
+
+| Symptom | Cause and fix |
+| --- | --- |
+| `NODE_MODULE_VERSION` / native-module error at startup | Node is not 22.x. Install Node 22.19+ and restart the Server. |
+| `http://127.0.0.1:8788` unreachable | The Server is a foreground process: check the `metawork server start` window. `metawork server status` reports the running instance. |
+| Port 8788 already in use | Set `METAWORK_WEB_PORT` before `metawork server start`. |
+| Manifest signature or hash mismatch | The download was truncated or an archive is stale. Delete `metawork-install.ps1` and the `%TEMP%\metawork-*` folders, then repeat Step 1 and 2. |
+| Memory features report unavailable | Memory is off by default. Enable it in **Settings**, then restart the Server. |
 
 ### macOS Desktop (internal, Apple Silicon)
+
+> **Not published from this branch.** The macOS Desktop, macOS/Linux Server and
+> source-installation sections below are kept for reference only. Install those
+> platforms from the main branch README:
+> <https://github.com/IFOSR/metawork/blob/main/README.md>
 
 > Not published from this branch. The macOS Desktop section is kept for
 > reference; install macOS from
