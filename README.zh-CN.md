@@ -58,29 +58,33 @@ AnyFusion 标识。
 
 ## Release
 
-当前发布版本是 **v0.1.19**，修复运行配置语义校验、执行状态与阻塞原因展示，并统一
-预览版的有序版本标识。
+当前发布版本是 **v0.1.22**，修复 Desktop 安装与升级丢失内置长期记忆引擎、
+因已退役的 `in_place` 执行后端导致的升级死锁，以及回滚写出的配置版本号无法被
+规划提案表达的问题。
 Release 提供 macOS arm64 Desktop DMG，以及 macOS arm64、macOS x64 和 Linux x64 的签名
-Runtime、Planner 归档。Desktop 仅支持 Apple Silicon；macOS x64 和 Linux x64 请使用
-Server 安装包提供的 Web、TUI 或飞书客户端。本次不发布 Windows。
+Runtime、Planner、Memory 归档。Desktop 仅支持 Apple Silicon；macOS x64 和 Linux x64
+请使用 Server 安装包提供的 Web、TUI 或飞书客户端。本发布线不包含原生 Windows，
+其安装说明见
+[`docs/native-windows-install`](https://github.com/IFOSR/metawork/blob/docs/native-windows-install/docs/native-windows-install.md)
+分支。
 
 | 平台 | 最新可用版本 | 下载 / 安装 |
 | --- | --- | --- |
-| macOS Apple Silicon（`arm64`）桌面版 | 0.1.19 | [最新 DMG](https://github.com/IFOSR/metawork/releases/latest/download/MetaWork-darwin-arm64.dmg) |
-| macOS Apple Silicon（`arm64`）Server | 0.1.19 | [最新安装器](https://github.com/IFOSR/metawork/releases/latest/download/install.sh) · [签名清单](https://github.com/IFOSR/metawork/releases/latest/download/manifest.darwin-arm64.json) |
-| macOS Intel（`x64`）Server | 0.1.19 | [最新安装器](https://github.com/IFOSR/metawork/releases/latest/download/install.sh) · [签名清单](https://github.com/IFOSR/metawork/releases/latest/download/manifest.darwin-x64.json) |
-| Linux / WSL2（`x64`）Server | 0.1.19 | [最新安装器](https://github.com/IFOSR/metawork/releases/latest/download/install.sh) · [签名清单](https://github.com/IFOSR/metawork/releases/latest/download/manifest.linux-x64.json) |
-| Windows 原生（`x64`）Server | 0.1.17（本次未更新） | [Windows 安装器](https://github.com/IFOSR/metawork/releases/download/v0.1.17/install.ps1) · [签名清单](https://github.com/IFOSR/metawork/releases/download/v0.1.17/manifest.win32-x64.json) |
+| macOS Apple Silicon（`arm64`）桌面版 | 0.1.22 | [最新 DMG](https://github.com/IFOSR/metawork/releases/latest/download/MetaWork-darwin-arm64.dmg) |
+| macOS Apple Silicon（`arm64`）Server | 0.1.22 | [最新安装器](https://github.com/IFOSR/metawork/releases/latest/download/install.sh) · [签名清单](https://github.com/IFOSR/metawork/releases/latest/download/manifest.darwin-arm64.json) |
+| macOS Intel（`x64`）Server | 0.1.22 | [最新安装器](https://github.com/IFOSR/metawork/releases/latest/download/install.sh) · [签名清单](https://github.com/IFOSR/metawork/releases/latest/download/manifest.darwin-x64.json) |
+| Linux / WSL2（`x64`）Server | 0.1.22 | [最新安装器](https://github.com/IFOSR/metawork/releases/latest/download/install.sh) · [签名清单](https://github.com/IFOSR/metawork/releases/latest/download/manifest.linux-x64.json) |
+| Windows 原生（`x64`）Server | 0.1.17（本发布线未更新） | [见 `docs/native-windows-install` 分支的安装指南](https://github.com/IFOSR/metawork/blob/docs/native-windows-install/docs/native-windows-install.md) |
 
 [最新 macOS/Linux Release 与归档](https://github.com/IFOSR/metawork/releases/latest) ·
 [最新校验文件](https://github.com/IFOSR/metawork/releases/latest/download/SHA256SUMS)。
 macOS/Linux 下载链接跟随 GitHub 最新 Release；安装器自动选择当前架构，
-按签名清单下载匹配的 Runtime 和 Planner。Windows 未参与 0.1.19 发布，
-最新可用包仍为 0.1.17，请使用下文指定 Windows 清单的安装命令。
+按签名清单下载匹配的 Runtime 和 Planner。本发布线不包含原生 Windows，
+最新可用的 Windows 包仍为 0.1.17，安装方式见上文链接的分支指南。
 
 Desktop DMG 使用内部 ad-hoc 签名，未使用 Apple Developer ID 公证，
 当前只支持 macOS Apple Silicon（`arm64`）。Server/Web/TUI 安装器支持 Linux x64、
-macOS arm64 和 macOS x64；本次 internal release 暂不包含 Windows。
+macOS arm64 和 macOS x64；本次 internal release 暂不包含原生 Windows。
 
 ## 安装方式
 
@@ -141,18 +145,12 @@ export PATH="$HOME/.local/bin:$PATH"
 metawork --help
 ```
 
-Windows x64，在 PowerShell 中执行；需要启用 Developer Mode 或使用管理员终端，
-以支持事务性 NTFS Release 指针：
+该命令使用**最新稳定版的签名清单**，并在安装前校验 Runtime/Planner 归档。
 
-```powershell
-irm https://github.com/IFOSR/metawork/releases/download/v0.1.17/install.ps1 -OutFile metawork-install.ps1
-.\metawork-install.ps1 -ManifestUrl "https://github.com/IFOSR/metawork/releases/download/v0.1.17/manifest.win32-x64.json"
-```
-
-macOS/Linux 命令使用**最新稳定版的签名清单**；Windows 命令使用
-**Windows 最新可用版本（0.1.17）**的清单。由于 0.1.19 没有 Windows 产物，
-Windows 安装命令必须显式指定该清单，不能使用全局 latest。
-两个安装器都会校验 Runtime/Planner 归档，并通过配置向导设置模型服务。
+原生 Windows 的安装说明记录在
+[`docs/native-windows-install`](https://github.com/IFOSR/metawork/blob/docs/native-windows-install/docs/native-windows-install.md)
+分支：本发布线不产出 `win32-x64` 归档，因此 Windows 流程有独立的前置条件，
+并且必须显式指定 Windows 清单而不能使用全局 `latest`。该指南只在分支上维护。
 Linux/WSL2 默认使用文件 SecretStore。安装器会对不支持的架构明确报错，
 不会安装不匹配的归档。
 

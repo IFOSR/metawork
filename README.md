@@ -70,33 +70,38 @@ existing names where changing them would break installations.
 
 ## Release
 
-The current release is **v0.1.19**. It fixes semantic runtime configuration
-verification, clearer execution state and blocker presentation, and ordered
-preview release identities.
+The current release is **v0.1.22**. It fixes Desktop installs and upgrades that
+shipped without the bundled long-term memory engine, an upgrade deadlock caused by
+the retired `in_place` executor backend, and planning being unable to express a
+configuration revision written by a rollback.
 The internal release includes a self-contained macOS arm64 Desktop DMG plus
-signed Runtime and Planner archives for macOS arm64, macOS x64 and Linux x64.
-Desktop is available only on Apple Silicon; macOS x64 and Linux x64 use the Web,
-TUI or Feishu clients with the Server package. Windows is excluded from this release.
+signed Runtime, Planner and Memory archives for macOS arm64, macOS x64 and
+Linux x64. Desktop is available only on Apple Silicon; macOS x64 and Linux x64
+use the Web, TUI or Feishu clients with the Server package. Native Windows is
+excluded from this release line; its install guide lives on the
+[`docs/native-windows-install`](https://github.com/IFOSR/metawork/blob/docs/native-windows-install/docs/native-windows-install.md)
+branch.
 
 | Platform | Latest available version | Download / install |
 | --- | --- | --- |
-| macOS Apple Silicon (`arm64`) Desktop | 0.1.19 | [Latest DMG](https://github.com/IFOSR/metawork/releases/latest/download/MetaWork-darwin-arm64.dmg) |
-| macOS Apple Silicon (`arm64`) Server | 0.1.19 | [Latest installer](https://github.com/IFOSR/metawork/releases/latest/download/install.sh) · [Signed manifest](https://github.com/IFOSR/metawork/releases/latest/download/manifest.darwin-arm64.json) |
-| macOS Intel (`x64`) Server | 0.1.19 | [Latest installer](https://github.com/IFOSR/metawork/releases/latest/download/install.sh) · [Signed manifest](https://github.com/IFOSR/metawork/releases/latest/download/manifest.darwin-x64.json) |
-| Linux / WSL2 (`x64`) Server | 0.1.19 | [Latest installer](https://github.com/IFOSR/metawork/releases/latest/download/install.sh) · [Signed manifest](https://github.com/IFOSR/metawork/releases/latest/download/manifest.linux-x64.json) |
-| Windows native (`x64`) Server | 0.1.17 (unchanged) | [Windows installer](https://github.com/IFOSR/metawork/releases/download/v0.1.17/install.ps1) · [Signed manifest](https://github.com/IFOSR/metawork/releases/download/v0.1.17/manifest.win32-x64.json) |
+| macOS Apple Silicon (`arm64`) Desktop | 0.1.22 | [Latest DMG](https://github.com/IFOSR/metawork/releases/latest/download/MetaWork-darwin-arm64.dmg) |
+| macOS Apple Silicon (`arm64`) Server | 0.1.22 | [Latest installer](https://github.com/IFOSR/metawork/releases/latest/download/install.sh) · [Signed manifest](https://github.com/IFOSR/metawork/releases/latest/download/manifest.darwin-arm64.json) |
+| macOS Intel (`x64`) Server | 0.1.22 | [Latest installer](https://github.com/IFOSR/metawork/releases/latest/download/install.sh) · [Signed manifest](https://github.com/IFOSR/metawork/releases/latest/download/manifest.darwin-x64.json) |
+| Linux / WSL2 (`x64`) Server | 0.1.22 | [Latest installer](https://github.com/IFOSR/metawork/releases/latest/download/install.sh) · [Signed manifest](https://github.com/IFOSR/metawork/releases/latest/download/manifest.linux-x64.json) |
+| Windows native (`x64`) Server | 0.1.17 (unchanged) | [Install guide on the `docs/native-windows-install` branch](https://github.com/IFOSR/metawork/blob/docs/native-windows-install/docs/native-windows-install.md) |
 
 [Latest macOS/Linux Release and archives](https://github.com/IFOSR/metawork/releases/latest) ·
 [Latest checksums](https://github.com/IFOSR/metawork/releases/latest/download/SHA256SUMS).
 The macOS/Linux links follow GitHub's latest Release. The installer selects the
 matching architecture and downloads both Runtime and Planner from its signed
-manifest. Windows is excluded from 0.1.19; its latest available package remains
-0.1.17 and uses the explicit Windows command below.
+manifest. Native Windows is excluded from this release line; its latest available
+package remains 0.1.17 and is installed by the branch guide linked above.
 
 The Desktop DMG uses an internal ad-hoc signature and
 is not notarized with an Apple Developer ID. It currently supports macOS Apple
 Silicon (`arm64`) only. The Server/Web/TUI installer supports Linux x64,
-macOS arm64 and macOS x64. Windows is not included in this internal release.
+macOS arm64 and macOS x64. Native Windows is not included in this internal
+release.
 
 ## Installation
 
@@ -166,18 +171,15 @@ export PATH="$HOME/.local/bin:$PATH"
 metawork --help
 ```
 
-Windows x64, in PowerShell (enable Developer Mode or use an elevated terminal
-for NTFS release pointers):
+This command uses the **latest stable release's signed manifest** and verifies the
+Runtime/Planner archives before installation.
 
-```powershell
-irm https://github.com/IFOSR/metawork/releases/download/v0.1.17/install.ps1 -OutFile metawork-install.ps1
-.\metawork-install.ps1 -ManifestUrl "https://github.com/IFOSR/metawork/releases/download/v0.1.17/manifest.win32-x64.json"
-```
-
-The macOS/Linux command uses the **latest stable release's signed manifest**;
-the Windows command selects the **latest available Windows package (0.1.17)**.
-This explicit Windows manifest is required because 0.1.19 contains no Windows
-assets. Both installers verify Runtime/Planner archives before installation.
+Native Windows installation is documented on the
+[`docs/native-windows-install`](https://github.com/IFOSR/metawork/blob/docs/native-windows-install/docs/native-windows-install.md)
+branch: this release line publishes no `win32-x64` assets, so the Windows
+procedure carries its own prerequisites and must pin an explicit Windows manifest
+instead of the global `latest`. Contributors update that guide on the branch
+rather than here.
 The setup wizard configures the model provider; Linux/WSL2 defaults to file-backed
 secrets. Unsupported architectures are rejected rather than given another platform's archive.
 
