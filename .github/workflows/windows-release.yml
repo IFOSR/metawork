@@ -60,20 +60,28 @@ jobs:
         run: |
           $out = "$env:RUNNER_TEMP\metawork-reuse"
           New-Item -ItemType Directory -Force -Path $out | Out-Null
-          gh release view $env:GITHUB_REF_NAME --repo IFOSR/metawork *> $null
+          gh release view $env:GITHUB_REF_NAME --repo IFOSR/metawork --json assets --jq '.assets[].name' > "$env:RUNNER_TEMP\assets.txt"
           if ($LASTEXITCODE -ne 0) {
-            Write-Host 'No published Windows Release yet; every archive will be built.'
+            Write-Host '::notice::no published Windows Release yet; every archive will be built'
             exit 0
           }
-          gh release download $env:GITHUB_REF_NAME --repo IFOSR/metawork `
-            --pattern 'metawork-*.zip' --pattern 'planner-*.zip' --dir $out --clobber
-          if ($LASTEXITCODE -ne 0) {
-            Write-Warning 'Could not download the published archives; every archive will be built.'
+          $names = @(Get-Content "$env:RUNNER_TEMP\assets.txt" | Where-Object { $_ -match '\.zip$' })
+          Write-Host "::notice::published archives: $($names -join ', ')"
+          if ($names.Count -lt 2) {
+            Write-Host '::notice::fewer than two published archives; every archive will be built'
             exit 0
+          }
+          foreach ($name in $names) {
+            gh release download $env:GITHUB_REF_NAME --repo IFOSR/metawork --pattern $name --dir $out --clobber
+            if ($LASTEXITCODE -ne 0) {
+              Write-Warning "could not download $name; every archive will be built"
+              exit 0
+            }
           }
           Get-ChildItem $out -ErrorAction SilentlyContinue | ForEach-Object {
             Write-Host "reusable: $($_.Name) ($($_.Length) bytes)"
           }
+          Write-Host "::notice::reusing $((Get-ChildItem $out -Filter '*.zip').Count) published archive(s)"
           exit 0
       - name: Build and package Windows Runtime
         shell: pwsh

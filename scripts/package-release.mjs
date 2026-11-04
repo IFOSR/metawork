@@ -194,21 +194,38 @@ function gitSourceUrl(sourceRoot) {
     : url;
 }
 
-function assertPackagableTree(options) {
+function assertPackagableTree(options, platform, arch) {
   if (basename(options.memoryRoot) !== 'tdai') {
     throw new Error(
       `memory engine root must be a directory named "tdai" (got ${basename(options.memoryRoot)});`
       + ' every installer extracts it to <releaseRoot>/memory/tdai',
     );
   }
+  // An archive carried over from an earlier build of the same release is never
+  // rebuilt, so its inputs do not have to exist in this tree. Only the archives
+  // that will actually be produced are checked.
+  const reusable = (prefix) => {
+    const reuse = options.reuseArchivesDir;
+    if (!reuse || !existsSync(reuse)) return false;
+    const suffix = `-${platform}-${arch}${archiveExtension(platform)}`;
+    return readdirSync(reuse).some(
+      candidate => candidate.startsWith(`${prefix}-`) && candidate.endsWith(suffix),
+    );
+  };
+  const runtimeReused = reusable('metawork');
+  const plannerReused = reusable('planner');
   const required = [
-    join(options.sourceRoot, 'dist', 'install-cli.js'),
-    join(options.sourceRoot, 'dist', 'planning-agent-plan-v9.schema.json'),
-    join(options.sourceRoot, 'web', 'dist'),
-    join(options.sourceRoot, 'node_modules'),
-    join(options.plannerRoot, 'package.json'),
-    join(options.plannerRoot, 'packages', 'coding-agent', 'dist'),
-    join(options.plannerRoot, 'node_modules'),
+    ...(runtimeReused ? [] : [
+      join(options.sourceRoot, 'dist', 'install-cli.js'),
+      join(options.sourceRoot, 'dist', 'planning-agent-plan-v9.schema.json'),
+      join(options.sourceRoot, 'web', 'dist'),
+      join(options.sourceRoot, 'node_modules'),
+    ]),
+    ...(plannerReused ? [] : [
+      join(options.plannerRoot, 'package.json'),
+      join(options.plannerRoot, 'packages', 'coding-agent', 'dist'),
+      join(options.plannerRoot, 'node_modules'),
+    ]),
     join(options.memoryRoot, 'package.json'),
     join(options.memoryRoot, 'dist', 'gateway', 'server.js'),
   ];
@@ -219,6 +236,7 @@ function assertPackagableTree(options) {
       );
     }
   }
+  if (runtimeReused) return;
   const nativeSqliteBinary = join(
     options.sourceRoot,
     'node_modules',
@@ -419,9 +437,9 @@ async function main() {
     return;
   }
 
-  assertPackagableTree(options);
   const platform = options.platformOverride ?? platformName();
   const arch = options.archOverride ?? architectureName();
+  assertPackagableTree(options, platform, arch);
   const revision = gitRevision(options.sourceRoot);
   const sourceUrl = gitSourceUrl(options.sourceRoot);
   const packageVersion = JSON.parse(readFileSync(join(options.sourceRoot, 'package.json'), 'utf8')).version;
