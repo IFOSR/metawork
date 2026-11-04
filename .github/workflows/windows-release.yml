@@ -60,12 +60,15 @@ jobs:
             $channel = 'stable'
             $releaseId = "$version-build-$($env:GITHUB_SHA.Substring(0, 7))"
           }
+          # The Windows package is published as its own Release. A platform
+          # release may not mix artifacts from another commit into the main
+          # release: the release verifier requires one identical release set.
           npm run build:release -- `
             --platform win32 `
             --arch x64 `
             --channel $channel `
             --release-id $releaseId `
-            --artifact-base-url "https://github.com/IFOSR/metawork/releases/download/v$version" `
+            --artifact-base-url "https://github.com/IFOSR/metawork/releases/download/v$version-windows" `
             --signing-key "$env:RUNNER_TEMP\metawork-release-key.pem" `
             --out-dir "$env:RUNNER_TEMP\metawork-release"
       - uses: actions/upload-artifact@v4
@@ -86,18 +89,36 @@ jobs:
         with:
           name: metawork-windows-x64
           path: release-assets
-      - name: Upload Windows assets to the matching stable Release
+      - name: Publish the Windows-only Release
         env:
           GH_TOKEN: ${{ github.token }}
         shell: bash
         run: |
           set -euo pipefail
-          VERSION="${GITHUB_REF_NAME#v}"
+          TAG="${GITHUB_REF_NAME}"                 # v0.1.22-windows
+          VERSION="${TAG#v}"
           VERSION="${VERSION%-windows}"
-          TAG="v${VERSION}"
-          gh release view "$TAG" --repo IFOSR/metawork >/dev/null
+          # An earlier run of this workflow pushed Windows assets into the shared
+          # version Release, where they mix commits and break its verification.
+          # The Windows package now lives only in its own Release, so any such
+          # leftover is removed here.
+          SHARED="v${VERSION}"
+          if gh release view "$SHARED" --repo IFOSR/metawork >/dev/null 2>&1; then
+            for asset in $(gh release view "$SHARED" --repo IFOSR/metawork --json assets \
+              --jq '.assets[].name' | grep -E 'win32-x64|^install\.ps1$' || true); do
+              gh release delete-asset "$SHARED" "$asset" --yes || true
+            done
+          fi
+          # Never promote this Release to latest: the main branch publishes the
+          # macOS and Linux downloads from its own latest Release.
+          if ! gh release view "$TAG" --repo IFOSR/metawork >/dev/null 2>&1; then
+            gh release create "$TAG" --repo IFOSR/metawork --prerelease \
+              --title "MetaWork Windows x64 ${VERSION}" \
+              --notes "Native Windows x64 Server package: Web workspace, native TUI and Feishu against one local Server. Runs without WSL, Docker, administrator rights or Developer Mode. Requires Node.js 22.x (at least 22.19.0). macOS and Linux are published from the main branch: https://github.com/IFOSR/metawork/blob/main/README.md"
+          fi
+          cp scripts/install.ps1 release-assets/install.ps1
           gh release upload "$TAG" --repo IFOSR/metawork release-assets/* --clobber
           mkdir downloaded-release
           gh release download "$TAG" --repo IFOSR/metawork --dir downloaded-release
-          node scripts/verify-release-assets.mjs downloaded-release "$TAG"
-          node scripts/verify-release-assets.mjs downloaded-release "$TAG" "https://github.com/IFOSR/metawork/releases/latest/download"
+          METAWORK_RELEASE_TARGETS=win32-x64 METAWORK_REQUIRE_DESKTOP=false \
+            node scripts/verify-release-assets.mjs downloaded-release "$TAG"

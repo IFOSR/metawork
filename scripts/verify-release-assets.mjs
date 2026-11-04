@@ -69,7 +69,9 @@ function assertArtifact(actual, expected, name) {
 
 export async function verifyReleaseAssets(directory, tag, options = {}) {
   if (!/^v\d+\.\d+\.\d+(?:-[A-Za-z0-9.-]+)?$/.test(tag)) throw new Error('invalid release tag');
-  const tagVersion = tag.slice(1);
+  // A platform release (v0.1.22-windows) publishes the same version's build for
+  // one platform; its tag adds a suffix that is not part of the release id.
+  const tagVersion = tag.slice(1).replace(/-windows$/u, '');
   const previewRelease = /-preview\.\d+$/u.test(tagVersion);
   const expectedChannel = previewRelease ? 'preview' : 'stable';
   const expectedReleaseId = previewRelease ? tagVersion : `${tagVersion}-build-`;
@@ -180,8 +182,12 @@ export async function verifyPublishedRelease(release, baseUrl) {
 if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) {
   const [directory, tag, baseUrl] = process.argv.slice(2);
   const targets = process.env.METAWORK_RELEASE_TARGETS?.split(',').map(value => value.trim()).filter(Boolean);
+  // A platform-specific release (for example the Windows-only package built from
+  // a platform branch) has no Desktop installers to verify.
+  const requireDesktop = process.env.METAWORK_REQUIRE_DESKTOP !== 'false';
   const release = await verifyReleaseAssets(directory, tag, {
     sourceCommit: process.env.GITHUB_SHA,
+    requireDesktop,
     ...(targets?.length ? { targets } : {}),
   });
   if (baseUrl) await verifyPublishedRelease(release, baseUrl);

@@ -90,7 +90,7 @@ Docker, no administrator rights and no Developer Mode.
 
 | Platform | Version | Download / install |
 | --- | --- | --- |
-| **Windows native (`x64`) Server** | **0.1.22** | [Windows installer](https://github.com/IFOSR/metawork/releases/download/v0.1.22/install.ps1) · [Signed manifest](https://github.com/IFOSR/metawork/releases/download/v0.1.22/manifest.win32-x64.json) |
+| **Windows native (`x64`) Server** | **0.1.22** | [Windows installer](https://github.com/IFOSR/metawork/releases/download/v0.1.22-windows/install.ps1) · [Signed manifest](https://github.com/IFOSR/metawork/releases/download/v0.1.22-windows/manifest.win32-x64.json) |
 | macOS arm64 Desktop, macOS arm64/x64 Server, Linux x64 Server | See main | <https://github.com/IFOSR/metawork/blob/main/README.md> |
 
 macOS and Linux are **not** built from this branch. Their Desktop DMG, Runtime
@@ -138,10 +138,16 @@ Prerequisites:
 Install in PowerShell:
 
 ```powershell
-$version = '0.1.22'
-irm "https://github.com/IFOSR/metawork/releases/download/v$version/install.ps1" -OutFile metawork-install.ps1
-.\metawork-install.ps1 -ManifestUrl "https://github.com/IFOSR/metawork/releases/download/v$version/manifest.win32-x64.json"
+$version = 'v0.1.22-windows'
+irm "https://github.com/IFOSR/metawork/releases/download/$version/install.ps1" -OutFile metawork-install.ps1
+.\metawork-install.ps1 -ManifestUrl "https://github.com/IFOSR/metawork/releases/download/$version/manifest.win32-x64.json"
 ```
+
+The Windows package is published as its **own Release** (`v0.1.22-windows`), not
+as the repository's latest Release. The latest Release carries the macOS and
+Linux downloads from the main branch, and a release may only contain artifacts
+built from one identical commit, so the Windows-only build cannot share it.
+Always pass the explicit `-ManifestUrl` shown above.
 
 The installer downloads the signed manifest plus the Runtime, Planner and memory
 engine archives, verifies every signature and SHA-256 hash before extracting,
