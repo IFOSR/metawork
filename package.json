@@ -53,7 +53,8 @@
     "benchmark:desktop": "node apps/desktop/tests/startup-benchmark.mjs",
     "package:desktop": "npm run package:mac --prefix apps/desktop",
     "prepare:memory-engine": "node scripts/prepare-memory-engine.mjs",
-    "verify:memory-engine": "node scripts/verify-memory-engine.mjs"
+    "verify:memory-engine": "node scripts/verify-memory-engine.mjs",
+    "verify:desktop-update": "node scripts/verify-desktop-update.mjs"
   },
   "dependencies": {
     "@larksuiteoapi/node-sdk": "^1.71.1",

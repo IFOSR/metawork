@@ -36,17 +36,30 @@ export function configurationReferenceSlug(label: string): string {
 /**
  * Builds a legal configuration revision id from a prefix and a unique suffix.
  *
- * The suffix keeps its identity (trimmed, not dropped) and the prefix is shortened
- * when the pair would exceed the grammar's length budget.
+ * The *end* of the suffix is the part that carries identity (a uuid, a release
+ * id, a timestamp), so an over-long input is trimmed from its description side,
+ * never from its tail. Trimming only the head was not enough: an upgrade id of
+ * `<releaseId>-<uuid>` for the 25-character internal release id
+ * `0.1.24-desktoppayload-1903` already fills the 64-character budget, and the
+ * resulting over-long id failed every Desktop upgrade for that build.
  */
 export function createConfigurationRevisionId(prefix: string, unique: string): string {
   const head = configurationReferenceSlug(prefix);
   const tail = configurationReferenceSlug(unique);
-  const budget = CONFIGURATION_REFERENCE_MAX_LENGTH - tail.length - 1;
-  const trimmedHead = head.slice(0, Math.max(1, budget)).replace(/-+$/u, '') || 'r';
-  const id = `${trimmedHead}-${tail}`;
+  const budget = CONFIGURATION_REFERENCE_MAX_LENGTH - head.length - 1;
+  const trimmedTail = tail.length <= budget
+    ? tail
+    // Keep the tail's suffix (its entropy) and drop leading dashes left behind.
+    : tail.slice(tail.length - Math.max(1, budget)).replace(/^-+/u, '');
+  let id = `${head}-${trimmedTail}`;
+  if (id.length > CONFIGURATION_REFERENCE_MAX_LENGTH) {
+    // Only an oversized prefix reaches here; shorten it, never the unique suffix.
+    const headBudget = CONFIGURATION_REFERENCE_MAX_LENGTH - trimmedTail.length - 1;
+    id = `${head.slice(0, Math.max(1, headBudget)).replace(/-+$/u, '') || 'r'}-${trimmedTail}`;
+  }
   if (!CONFIGURATION_REFERENCE_PATTERN.test(id)) {
-    throw new Error(`configuration revision id is not a valid reference: ${id}`);
+    throw new Error(`configuration revision id is not a valid reference: ${id} `
+      + `(max ${CONFIGURATION_REFERENCE_MAX_LENGTH} characters)`);
   }
   return id;
 }

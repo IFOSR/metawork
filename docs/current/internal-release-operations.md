@@ -141,6 +141,24 @@ Notes:
 - The local ad-hoc key pair only satisfies local verification; it is not the repo
   trust root, so these artifacts are not accepted by `verifyReleaseAssets`.
 
+Then prove the payload can actually update an existing installation. This is a
+mandatory gate: `updateRuntime` is the step an internal release id once broke by
+exhausting the configuration-reference grammar, and every Desktop upgrade from
+that build failed with an unclassified error that only this gate catches before
+publishing.
+
+```sh
+node scripts/verify-desktop-update.mjs \
+  apps/desktop/release/mac-arm64/MetaWork.app/Contents/Resources \
+  "$HOME/.metawork"
+```
+
+It installs the release that is on this machine into a disposable root under
+`/tmp/metawork-desktop-update-gate`, applies the candidate payload through the
+real `SourceNativeUpdater.update()`, and fails unless the upgrade commits, the
+upgrade id is a legal configuration reference, `app/current` becomes the
+candidate and the bundled memory engine is present.
+
 Confirm the payload identity before uploading:
 
 ```sh
