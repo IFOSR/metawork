@@ -1,6 +1,6 @@
-import { mkdir, mkdtemp, realpath, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, realpath, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import { afterEach, expect, it, vi } from 'vitest';
 import { captureMacOSServerProcess, finishMacOSServerExit } from '../../src/installation/macos-server-exit.js';
 
@@ -15,6 +15,13 @@ async function fixture() {
   const root = await realpath(await mkdtemp(join(tmpdir(), 'server-exit-'))); roots.push(root);
   await mkdir(join(root, 'data'));
   const args = [join(root, 'desktop-support/previous/desktop-tools/node/bin/node'), join(root, 'app/releases/previous/dist/index.js'), 'server', 'start'];
+  // The capture check compares physical paths, so the fixture needs real files
+  // and a `app/current` symlink next to the release it points at.
+  await mkdir(dirname(args[0]!), { recursive: true });
+  await writeFile(args[0]!, 'fixture', { mode: 0o755 });
+  await mkdir(dirname(args[1]!), { recursive: true });
+  await writeFile(args[1]!, 'fixture');
+  await symlink('releases/previous', join(root, 'app/current'));
   const state = { pid: 12345, alive: true, birth: 'Sat Oct 17 11:38:00 2026', args,
     files: 'p12345\nftxt\ntREG\nn/node\n', uid: process.getuid!(), fail: false, retired: false, zombie: false };
   mocks.execute.mockImplementation(async (command, argv) => {
@@ -83,12 +90,15 @@ it.each(['birth', 'pid', 'args'])('rejects process replacement or PID reuse (%s)
   expect(f.signal).not.toHaveBeenCalled();
 });
 
-it.each(['uid', 'entry', 'node'])('rejects a foreign job (%s)', async field => {
+it.each(['uid', 'entry', 'node'])('never captures a foreign job, but never fails the upgrade either (%s)', async field => {
   const f = await fixture();
   if (field === 'uid') f.state.uid++;
   if (field === 'entry') f.state.args[1] = '/other/app/releases/previous/dist/index.js';
   if (field === 'node') f.state.args[0] = '/usr/bin/node';
-  await expect(captureMacOSServerProcess(f.root)).rejects.toThrow('identity mismatch');
+  const error = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+  try {
+    expect(await captureMacOSServerProcess(f.root)).toBeNull();
+  } finally { error.mockRestore(); }
 });
 
 it.each(['data/runtime.lock', 'server-endpoint.json'])(
@@ -153,4 +163,12 @@ it('waits when launchd releases its PID between the ps and launchd observations'
   f.sleep.mockImplementation(async () => { f.state.alive = false; });
   await finishMacOSServerExit(server!, { ...f, timeoutMs: 0 });
   expect(f.signal).toHaveBeenCalledOnce();
+});
+
+it('captures a job that launchd reports through the app/current symlink', async () => {
+  const f = await fixture();
+  f.state.args[0] = join(f.root, 'app/current/desktop-tools/node/bin/node');
+  await symlink(join(f.root, 'desktop-support/previous/desktop-tools'), join(f.root, 'app/releases/previous/desktop-tools'));
+  const server = await captureMacOSServerProcess(f.root);
+  expect(server?.pid).toBe(12345);
 });

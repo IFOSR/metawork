@@ -44,7 +44,15 @@ async function identity(pid: number): Promise<string | null> {
   }
 }
 
-/** Capture BEFORE the formal stop: old Servers remove their lock before Node exits. */
+/**
+ * Capture BEFORE the formal stop: old Servers remove their lock before Node exits.
+ *
+ * Returns null when the launchd job is not provably this installation's Server,
+ * including a job whose argv cannot be resolved to a path inside the install
+ * root. Refusing to capture is a safe outcome (nothing is killed and the caller
+ * falls back to the stop CLI plus a bounded wait); throwing here used to fail the
+ * whole Desktop upgrade for an argv shape it merely did not recognise.
+ */
 export async function captureMacOSServerProcess(installRoot: string): Promise<ServerProcess | null> {
   const root = await realpath(installRoot);
   const target = await macOSBackgroundTarget(root, 'server');
@@ -56,12 +64,21 @@ export async function captureMacOSServerProcess(installRoot: string): Promise<Se
   const command = args?.join(' ');
   const processIdentity = await identity(pid);
   if (!processIdentity) return null;
-  if (!args || args.length !== 4 || args[2] !== 'server' || args[3] !== 'start'
-    || !inside(join(root, 'app/releases'), args[1]!) || !args[1]!.endsWith('/dist/index.js')
-    || !(inside(join(root, 'app/releases'), args[0]!) || inside(join(root, 'desktop-support'), args[0]!))
-    || !args[0]!.endsWith('/node/bin/node') || pid === process.pid
-    || !processIdentity.startsWith(`${process.getuid!()} `) || !processIdentity.endsWith(` ${command}`)) {
-    throw new Error('Background Server process identity mismatch');
+  // launchd may report the symlinked `app/current/...` spelling of the tools it
+  // was started with, so compare physical paths before concluding anything.
+  const executable = args?.[0] ? await realpath(args[0]).catch(() => null) : null;
+  const entrypoint = args?.[1] ? await realpath(args[1]).catch(() => null) : null;
+  const recognised = Boolean(args && args.length === 4 && args[2] === 'server' && args[3] === 'start'
+    && entrypoint && inside(join(root, 'app/releases'), entrypoint) && args[1]!.endsWith('/dist/index.js')
+    && executable && (inside(join(root, 'app/releases'), executable) || inside(join(root, 'desktop-support'), executable))
+    && args[0]!.endsWith('/node/bin/node') && pid !== process.pid
+    && processIdentity.startsWith(`${process.getuid!()} `) && processIdentity.endsWith(` ${command}`));
+  if (!recognised) {
+    // Diagnostics only: the caller must not treat an unrecognised job as
+    // authority to kill a process, and must not fail because of it either.
+    console.error(`MetaWork Server job for ${root} was not recognised as this installation's Server; `
+      + 'leaving it to the stop CLI');
+    return null;
   }
   return { root, target, pid, identity: processIdentity };
 }
