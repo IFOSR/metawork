@@ -6,7 +6,7 @@ import { WsClient } from '../api/ws';
 import { establishWebSession, resolveWebLaunchSuggestion, type WebLaunchSuggestion } from '../auth';
 import { type ConversationViewportMemory } from './ObservedConversationView';
 import { useConversationWindow, useConversationActivity, useConversationTurn } from './use-conversation';
-import { conversationHasOngoingWork, taskHasOngoingWork, turnHasOngoingWork } from './task-activity';
+import { conversationHasOngoingWork, selectStopTargets, turnHasOngoingWork } from './task-activity';
 import { turnProjection } from './turn-projection';
 import { selectInitialSessionId } from '../session-selection';
 import { type PreviewDrawerState } from '../components/ArtifactPreviewDrawer';
@@ -882,19 +882,22 @@ export function useWorkspaceController() {
     const ids = target && source ? [...source.window(target).ids] : [];
     const activity = target && source ? source.activity(target).tasks : [];
     const turnId = ids.slice().reverse().find(id => turnHasOngoingWork(activity, source?.turn(target!, id) ?? null)) ?? null;
-    const cancellable = activity.filter(task => task.canCancel && taskHasOngoingWork(task));
-    // A Turn can hand off to an Executor before its Planner trace is closed.
-    // Prefer the running Task attached to the latest observed Turn. Blocked
-    // and queued Tasks have their own controls; Stop must not cancel an old
-    // blocked Task instead of the work that is currently executing.
+    // The Task a stopped Turn produced must be cancelled even when it already
+    // left the running state. A blocked or uncertain Task is still live work
+    // the user asked to stop, and `canCancel` (which excludes terminal Tasks)
+    // is the authority for that. Filtering by the running state alone made
+    // Stop cancel the Planner trace while the Task kept its slot.
     const attachedTaskId = target && source
       ? ids.slice().reverse()
-        .map(id => source.turn(target, id)?.taskId ?? null)
-        .find(taskId => taskId && cancellable.some(task => task.taskId === taskId)) ?? null
+        .map(id => source.turn(target!, id)?.taskId ?? null)
+        .find(candidate => candidate
+          && activity.some(task => task.taskId === candidate && task.canCancel)) ?? null
       : null;
-    const tasks = attachedTaskId
-      ? cancellable.filter(task => task.taskId === attachedTaskId)
-      : cancellable;
+    // A Turn can hand off to an Executor before its Planner trace is closed.
+    // Prefer the Task attached to the latest observed Turn. Other blocked and
+    // queued Tasks have their own controls; Stop must not cancel an old
+    // blocked Task instead of the work that is currently executing.
+    const tasks = selectStopTargets(activity, attachedTaskId);
     if (target && wsRef.current && (tasks.length > 0 || turnId)) {
       // Feedback first: the request is acknowledged before any await, so a slow
       // or rejected control never looks like a dead button.

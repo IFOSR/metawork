@@ -27,6 +27,25 @@ export function turnHasOngoingWork(
   return attached ? taskHasOngoingWork(attached) : true;
 }
 
+/**
+ * The Tasks a Stop must cancel.
+ *
+ * The Task a stopped Turn produced wins over the running Tasks: it is the work
+ * that Turn created, and it may already have left the running state (a blocked
+ * or uncertain Task is still live work). `canCancel` is the authority for
+ * whether a Task may be cancelled at all - it excludes terminal Tasks.
+ */
+export function selectStopTargets(
+  tasks: readonly ConversationTaskSummary[],
+  attachedTaskId: string | null,
+): ConversationTaskSummary[] {
+  const attached = attachedTaskId
+    ? tasks.find(task => task.taskId === attachedTaskId && task.canCancel) ?? null
+    : null;
+  if (attached) return [attached];
+  return tasks.filter(task => task.canCancel && taskHasOngoingWork(task));
+}
+
 export function taskNeedsAttention(
   task: Pick<ConversationTaskSummary, 'status' | 'pendingActions'>,
 ): boolean {
