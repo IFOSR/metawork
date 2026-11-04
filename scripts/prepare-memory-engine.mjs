@@ -24,15 +24,35 @@ function argument(name, fallback) {
 
 const target = resolve(argument('--target', join(repoRoot, 'memory', 'tdai')));
 
+// `npm` is a shell script on POSIX and `npm.cmd` on Windows; spawning the bare
+// name fails there with ENOENT and status null. Same rule as build-release.mjs.
+function executableFor(command) {
+  return process.platform === 'win32' && command === 'npm' ? 'npm.cmd' : command;
+}
+
 function run(command, args, cwd) {
-  const result = spawnSync(command, args, { cwd, stdio: 'inherit', env: process.env });
+  const executable = executableFor(command);
+  const result = spawnSync(executable, args, {
+    cwd,
+    stdio: 'inherit',
+    env: process.env,
+    shell: process.platform === 'win32' && executable.endsWith('.cmd'),
+  });
   if (result.status !== 0) {
-    throw new Error(`${command} ${args.join(' ')} failed with exit code ${result.status}`);
+    throw new Error(
+      `${executable} ${args.join(' ')} failed with exit code ${result.status ?? 'unknown'}`
+      + (result.error ? `: ${result.error.message}` : ''),
+    );
   }
 }
 
 function capture(command, args, cwd) {
-  const result = spawnSync(command, args, { cwd, encoding: 'utf8' });
+  const executable = executableFor(command);
+  const result = spawnSync(executable, args, {
+    cwd,
+    encoding: 'utf8',
+    shell: process.platform === 'win32' && executable.endsWith('.cmd'),
+  });
   if (result.status !== 0) return '';
   return result.stdout.trim();
 }
