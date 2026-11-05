@@ -179,7 +179,13 @@ export class ConversationEntityStore {
   private upsert(conversationId: string, turn: ConversationTurnView, force = false): void {
     if (turn.conversationId !== conversationId) throw new Error('observation_scope_mismatch');
     const key = `${conversationId}\0${turn.id}`;
-    if (!force && (this.turns.get(key)?.revision ?? -1) >= turn.revision) return;
+    const previous = this.turns.get(key);
+    // Server read-time settlement does not invent a journal revision. Permit
+    // that monotonic correction, but never let an equal-revision stale running
+    // response reopen a settled Turn.
+    const settled = previous?.revision === turn.revision && previous.status === 'running'
+      && ['completed', 'failed', 'cancelled'].includes(turn.status);
+    if (!force && (previous?.revision ?? -1) >= turn.revision && !settled) return;
     this.turns.set(key, turn); this.notify(key);
   }
   private order(conversationId: string, ids: string[]): string[] {

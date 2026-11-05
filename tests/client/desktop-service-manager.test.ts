@@ -4,8 +4,10 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, expect, it, vi } from 'vitest';
 import { DesktopServiceManager } from '../../src/client/desktop-service-manager.js';
+import { validateEndpointManifest } from '../../src/server/server-endpoint-manifest.js';
 
-const mocks = vi.hoisted(() => ({ spawn: vi.fn(), discover: vi.fn(), endpoint: vi.fn(async () => ({ ok: true })),
+const mocks = vi.hoisted(() => ({ spawn: vi.fn(), discover: vi.fn(),
+  endpoint: vi.fn(async (_path: string, _protocolVersion: number, _deps?: { releaseId?: string }): Promise<{ ok: boolean; code?: string }> => ({ ok: true })),
   running: vi.fn(async () => true), capture: vi.fn(), finish: vi.fn() }));
 vi.mock('../../src/installation/macos-background-process.js', () => ({ startMacOSBackgroundProcess: vi.fn() }));
 vi.mock('../../src/installation/macos-server-exit.js', () => ({ captureMacOSServerProcess: mocks.capture, finishMacOSServerExit: mocks.finish }));
@@ -108,9 +110,15 @@ it.skipIf(process.platform !== 'darwin')('reclaims a launchd-owned PID whose loc
 });
 
 it.skipIf(process.platform !== 'darwin')('reuses a healthy running instance without touching it', async () => {
-  const { manager } = await fixture();
+  const { manager, root } = await fixture();
   mocks.running.mockResolvedValueOnce(true);
-  mocks.endpoint.mockResolvedValueOnce({ ok: true });
+  // Validate the advertised protocol as the real resolver does. An unconditional
+  // successful mock hid a v1 probe rejecting the healthy v2 candidate on upgrade.
+  mocks.endpoint.mockImplementationOnce(async (_path, protocolVersion, deps) => validateEndpointManifest({
+    manifestVersion: 1, releaseId: 'native', serverVersion: '0.1.24', gatewayProtocolVersion: 2,
+    pid: process.pid, startedAt: new Date().toISOString(), state: 'ready',
+    unixSocketPath: join(root, 'gateway.sock'), webOrigin: 'http://127.0.0.1:8788',
+  }, { ...deps, protocolVersion }));
   mocks.discover.mockResolvedValueOnce({ instanceId: 'i', accountId: 'a' });
   await manager.connect();
   expect(mocks.capture).not.toHaveBeenCalled();

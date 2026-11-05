@@ -94,6 +94,7 @@ import { ClientGateway } from '../gateway/client-gateway.js';
 import { BindingConversationResolver } from '../gateway/conversation-resolver.js';
 import { ConversationBindingRepository } from '../session/conversation-binding-repository.js';
 import { createAccountEventJournal } from './account-event-journal.js';
+import { settleObservedTurn } from '../session/settle-observed-turn.js';
 import { ConversationObservationService } from '../gateway/conversation-observation.js';
 import { createConversationReadModel } from './conversation-read-model-composition.js';
 import { ConversationReadProjector } from '../session/conversation-read-projector.js';
@@ -1925,6 +1926,7 @@ export async function main(cliCommand = parseCliArgs(process.argv.slice(2))) {
       status: view.status, statusLabel: view.statusLabel,
       stateVersion: view.state.stateVersion, reason: view.state.reason,
       phase: view.state.phase, pendingActions: view.state.pendingActions,
+      nextAuthorizedAction: view.nextAuthorizedAction,
       explanation: view.explanation,
       executionSettling: view.activeAttempt?.lifecycle === 'settling',
       canCancel: !isTerminalTaskStatus(view.status) };
@@ -1944,17 +1946,11 @@ export async function main(cliCommand = parseCliArgs(process.argv.slice(2))) {
     // A Turn whose Task already finished cannot still be running. Reporting the
     // truth at read time also repairs Turns left open by earlier builds; a
     // genuinely live Turn is never overridden.
-    settleTurn: turn => {
-      if (turn.status !== 'running' || !turn.taskId) return turn;
-      const live = conversationRegistry.getIfOpen(turn.conversationId)?.getInteractionTrace() ?? null;
-      if (live?.turnId === turn.id && live.status === 'running') return turn;
-      const task = taskRepo.findById(turn.taskId);
-      if (!task) return turn;
-      const status = task.status === 'cancelled'
-        ? 'cancelled' as const
-        : ['done', 'archived'].includes(task.status) ? 'completed' as const : null;
-      return status ? { ...turn, status, completedAt: turn.completedAt ?? task.updatedAt ?? null } : turn;
-    },
+    settleTurn: turn => settleObservedTurn(
+      turn,
+      conversationRegistry.getIfOpen(turn.conversationId)?.getInteractionTrace() ?? null,
+      turn.taskId ? taskRepo.findById(turn.taskId) : null,
+    ),
     metadata: async (_accountId, conversationId) => {
       const metadata = await conversationStore.readMetadata(conversationId);
       const workspace = metadata?.workspaceBinding?.workspaceId
@@ -1985,7 +1981,8 @@ export async function main(cliCommand = parseCliArgs(process.argv.slice(2))) {
           stateVersion: task.stateVersion,
           reason: task.stateDetail.reason,
           phase: task.stateDetail.phase,
-          pendingActions: task.stateDetail.pendingActions,
+          pendingActions: isTerminalTaskStatus(task.status) ? [] : task.stateDetail.pendingActions,
+          nextAuthorizedAction: 'none',
           explanation: '正在同步任务进度…',
           canCancel: !isTerminalTaskStatus(task.status),
         }),

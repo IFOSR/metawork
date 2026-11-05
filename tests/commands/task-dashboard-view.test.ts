@@ -27,6 +27,7 @@ function taskFact(overrides: Partial<TaskDashboardTaskFact> & {
       reasonMessage: rest.view?.reasonMessage ?? '',
       phase: rest.view?.phase ?? null,
       pendingActionKinds: rest.view?.pendingActionKinds ?? [],
+      nextAuthorizedAction: rest.view?.nextAuthorizedAction,
       cleanup: rest.view?.cleanup ?? { state: 'none', objects: [] },
     },
   };
@@ -56,6 +57,15 @@ function facts(input: {
 }
 
 describe('task dashboard view', () => {
+  it('only suggests resume when the canonical view identifies recoverable work', () => {
+    const task = taskFact({ taskId: 'finished_steps', status: 'needs_action' });
+    const blocked = buildTaskDashboard(facts({ tasks: [task] }));
+    expect(blocked.needsAction[0]?.actions).not.toContain('/task resume finished_steps');
+    const recoverable = { ...task, view: { ...task.view!, nextAuthorizedAction: 'explicit_resume_required' as const } };
+    expect(buildTaskDashboard(facts({ tasks: [recoverable] })).needsAction[0]?.actions)
+      .toContain('/task resume finished_steps');
+  });
+
   it('renders the six-state label instead of a legacy bucket', () => {
     const model = buildTaskDashboard(facts({
       tasks: [taskFact({ title: '半导体研究', status: 'running' })],
@@ -94,7 +104,7 @@ describe('task dashboard view', () => {
       tasks: [taskFact({
         taskId: 'task_blocked', title: '生成并校验减重方案 PPT', status: 'needs_action',
         view: { status: 'needs_action', reasonCode: 'input_required', reasonMessage: '', phase: null,
-          pendingActionKinds: ['provide_input'], cleanup: { state: 'none', objects: [] } },
+          pendingActionKinds: ['provide_input'], nextAuthorizedAction: 'explicit_resume_required', cleanup: { state: 'none', objects: [] } },
       })],
       active: 0,
     }));
@@ -149,7 +159,7 @@ describe('task dashboard view', () => {
         taskId: 'task_input', title: '生成 PPT', status: 'needs_action',
         view: { status: 'needs_action', reasonCode: 'input_required',
           reasonMessage: '上游 PPT 提纲已就绪，请确认是否沿用当前大纲继续生成',
-          phase: null, pendingActionKinds: ['provide_input'], cleanup: { state: 'none', objects: [] } },
+          phase: null, pendingActionKinds: ['provide_input'], nextAuthorizedAction: 'explicit_resume_required', cleanup: { state: 'none', objects: [] } },
       })],
     }));
     expect(formatTaskDashboard(model)).toContain('细节：上游 PPT 提纲已就绪');

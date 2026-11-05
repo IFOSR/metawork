@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import type { ConversationActivityView, PendingInteractionSummary } from '../../../src/session/conversation-activity-types';
 import type { HttpClient } from '../api/http';
 import type { ConversationCommand, WsClient } from '../api/ws';
+import { BlockedActions } from '../components/BlockedActions';
 import { taskActivityMessage, taskHasOngoingWork, taskNeedsAttention } from './task-activity';
 
 /** Each collection is a bounded page, independent of the transcript viewport. */
@@ -38,7 +39,7 @@ export function ObservedActivity({ conversationId, view, ws, http, showTasks = t
       <strong>{task.title}</strong>
       <p role="status">{taskActivityMessage(task)}</p>
       {task.progressSummary && <p>最近进度：{task.progressSummary}</p>}
-      <TaskActions conversationId={conversationId} task={task} ws={ws} />
+      <TaskActions conversationId={conversationId} task={task} ws={ws} http={http} />
       {!showTasks && task.canCancel && <TaskControl ws={ws} conversationId={conversationId}
         label={task.executionSettling ? '正在停止…' : taskHasOngoingWork(task) ? '停止任务' : '取消任务'}
         disabled={task.executionSettling} command={{
@@ -63,8 +64,8 @@ export function ObservedActivity({ conversationId, view, ws, http, showTasks = t
   </>;
 }
 
-function TaskActions({ conversationId, task, ws }: {
-  conversationId: string; task: ConversationActivityView['tasks'][number]; ws: WsClient;
+function TaskActions({ conversationId, task, ws, http }: {
+  conversationId: string; task: ConversationActivityView['tasks'][number]; ws: WsClient; http: HttpClient;
 }) {
   const [message, setMessage] = useState<string | null>(null);
   const send = (text: string) => {
@@ -72,13 +73,9 @@ function TaskActions({ conversationId, task, ws }: {
     setMessage(requestId ? '请求已发送，请查看会话中的处理结果。' : '连接尚未就绪，请连接恢复后重试。');
   };
   return <>
-    {task.status === 'needs_action' && <button onClick={() => send(`/task resume ${task.taskId} --generation ${task.executionGeneration}${task.graphRevision ? ` --revision ${task.graphRevision}` : ''}`)}>继续未完成部分</button>}
-    {task.status === 'failed' && <button onClick={() => send(`/task retry ${task.taskId}`)}>重试未完成部分</button>}
-    {/* A failed Task is historical: the ordinary next step is a new round
-        described in chat, with the recorded failure as its starting point. */}
-    {task.status === 'failed' && (
-      <p className="task-actions-hint">直接用下方说明要继续或修复什么，系统会用真实错误开启新的一轮；旧任务记录会保留，无需先清理。</p>
-    )}
+    <BlockedActions ws={ws} http={http} conversationId={conversationId} taskId={task.taskId}
+      lifecycle={{ status: task.status, reason: task.reason, pendingActions: task.pendingActions,
+        executionGeneration: task.executionGeneration, nextAuthorizedAction: task.nextAuthorizedAction ?? 'none' }} />
     <button onClick={() => send(`/task show ${task.taskId}`)}>查看任务详情</button>
     <button onClick={() => send('/task dashboard')}>查看 Dashboard</button>
     {message && <p role="status">{message}</p>}

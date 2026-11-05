@@ -6,6 +6,7 @@ import { isInstanceRunning } from '../management/lock.js';
 import { readReleaseIdentity } from '../installation/release-identity.js';
 import { discoverDesktopSession } from './desktop-session-client.js';
 import type { DesktopSessionGrant } from '../gateway/desktop-session-contract.js';
+import { GATEWAY_PROTOCOL_VERSION } from '../gateway/client-protocol.js';
 import { resolveClientEndpoint } from './client-endpoint-resolver.js';
 import { startMacOSBackgroundProcess } from '../installation/macos-background-process.js';
 import { captureMacOSServerProcess, finishMacOSServerExit } from '../installation/macos-server-exit.js';
@@ -75,7 +76,7 @@ export class DesktopServiceManager {
   }
 
   private async publishedEndpointReady(): Promise<boolean> {
-    const endpoint = await resolveClientEndpoint(join(this.runtime.installRoot, 'server-endpoint.json'), 1,
+    const endpoint = await resolveClientEndpoint(join(this.runtime.installRoot, 'server-endpoint.json'), GATEWAY_PROTOCOL_VERSION,
       { releaseId: this.runtime.releaseId });
     return endpoint.ok;
   }
@@ -85,7 +86,7 @@ export class DesktopServiceManager {
     await this.startProcess();
     const deadline = Date.now() + 30_000;
     do {
-      const endpoint = await resolveClientEndpoint(join(this.runtime.installRoot, 'server-endpoint.json'), 2,
+      const endpoint = await resolveClientEndpoint(join(this.runtime.installRoot, 'server-endpoint.json'), GATEWAY_PROTOCOL_VERSION,
         { releaseId: this.runtime.releaseId });
       if (endpoint.ok) return;
       await new Promise(resolve => setTimeout(resolve, 300));

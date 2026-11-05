@@ -76,6 +76,7 @@ function taskViewFact(context: CommandContext, taskId: string): TaskDashboardVie
     reasonMessage: view.state.reason.message,
     phase: view.state.phase,
     pendingActionKinds: view.state.pendingActions.map(action => action.kind),
+    nextAuthorizedAction: view.nextAuthorizedAction,
     cleanup: {
       state: view.state.cleanup.state,
       objects: view.state.cleanup.objects,

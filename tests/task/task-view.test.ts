@@ -233,7 +233,7 @@ describe('live pending result actions', () => {
     expect(view.pendingActions[0]?.result).toEqual(expected);
   });
 
-  it('keeps a persisted recovery action when the same kinds are already present', () => {
+  it('preserves candidate acceptance alongside an exact live result action', () => {
     const persisted = {
       actionId: 'accept:candidate',
       kind: 'accept_result' as const,
@@ -261,8 +261,41 @@ describe('live pending result actions', () => {
         actions: ['accept_result'],
       },
     }));
-    expect(view.pendingActions).toHaveLength(1);
+    expect(view.pendingActions).toHaveLength(2);
+    expect(view.pendingActions[1]?.result).toEqual(expected);
     expect(view.pendingActions[0]?.publicationId).toBe('publication_1');
+  });
+
+  it('replaces stale result identities and removes resolved or terminal controls', () => {
+    const base = facts({ pendingDecision: { owner: 'user', reason: 'uncertified_result',
+      resultId: expected.resultId, attemptId: expected.attemptId, expectedResult: expected,
+      actions: ['accept_result', 'retry_attempt'] } });
+    const stale = { ...projectTaskView(base).pendingActions[0]!, result: { ...expected, attemptId: 'old' } };
+    const withStale = { ...base, task: { ...base.task, status: 'needs_action' as const, stateDetail: stateDetail({ pendingActions: [stale] }) } };
+    expect(projectTaskView(withStale).pendingActions.map(action => action.result?.attemptId))
+      .toEqual([expected.attemptId, expected.attemptId]);
+    expect(projectTaskView({ ...withStale, pendingDecision: null }).pendingActions).toEqual([]);
+    for (const status of ['succeeded', 'failed', 'cancelled'] as const) {
+      const view = projectTaskView({ ...withStale, task: { ...withStale.task, status } });
+      expect(view.pendingActions).toEqual([]);
+      expect(view.nextAuthorizedAction).toBe('none');
+    }
+  });
+
+  it('does not suggest resume when every Subtask has finished', () => {
+    const base = facts();
+    const view = projectTaskView({ ...base, task: { ...base.task, status: 'needs_action' },
+      dispatches: [], subtasks: [{ id: 'finished', status: 'done' }], pendingDecision: null });
+    expect(view.nextAuthorizedAction).not.toBe('explicit_resume_required');
+  });
+
+  it('retains resume for unfinished work and failed delivery without repeating completed work', () => {
+    const base = facts();
+    const paused = { ...base, task: { ...base.task, status: 'needs_action' as const }, dispatches: [] };
+    expect(projectTaskView({ ...paused, subtasks: [{ id: 'remaining', status: 'blocked' }] })
+      .nextAuthorizedAction).toBe('explicit_resume_required');
+    expect(projectTaskView({ ...paused, subtasks: [{ id: 'delivering', status: 'awaiting_integration' }],
+      deliveryState: 'failed' }).nextAuthorizedAction).toBe('explicit_resume_required');
   });
 
   it('projects no action when there is no live pending decision', () => {

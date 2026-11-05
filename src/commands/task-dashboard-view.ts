@@ -13,6 +13,7 @@
  * gathers, and it never invents a status of its own.
  */
 
+import type { TaskAction } from '../task/task-view.js';
 import {
   TASK_STATUS_LABELS,
   isTerminalTaskStatus,
@@ -28,6 +29,7 @@ export interface TaskDashboardViewFact {
   readonly reasonMessage: string;
   readonly phase: TaskOperationPhase | null;
   readonly pendingActionKinds: readonly string[];
+  readonly nextAuthorizedAction?: TaskAction;
   readonly cleanup: {
     readonly state: 'none' | 'pending' | 'blocked';
     readonly objects: readonly string[];
@@ -279,7 +281,7 @@ function actionsFor(task: TaskDashboardTaskFact): string[] {
   if (kinds.has('accept_result')) actions.push(`/task accept-result ${task.taskId}`);
   if (kinds.has('retry_attempt')) actions.push(`/task retry-result ${task.taskId}`);
   if (kinds.has('resolve_recovery')) actions.push(`/task recovery ${task.taskId}`);
-  if (kinds.has('provide_input') || kinds.has('start_service') || actions.length === 0) {
+  if (task.view?.nextAuthorizedAction === 'explicit_resume_required') {
     actions.push(`/task resume ${task.taskId}`);
   }
   actions.push(`/task cancel ${task.taskId}`);

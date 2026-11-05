@@ -23,7 +23,7 @@ export function BlockedActions({ ws, http, conversationId, taskId, fallbackStatu
   /** Turn status lets the inline control remain usable while the read-only
    * TaskView query is still loading or temporarily unavailable. */
   fallbackStatus?: 'blocked' | 'failed' | null;
-  lifecycle?: GatewayTaskViewSnapshot['lifecycle'];
+  lifecycle?: Partial<GatewayTaskViewSnapshot['lifecycle']>;
   permission?: Permission;
   refresh?: () => void;
 }) {
@@ -85,7 +85,7 @@ export function BlockedActions({ ws, http, conversationId, taskId, fallbackStatu
   // `nextAuthorizedAction: none`; offering resume here only sends a command
   // that the Kernel must reject because there is no recoverable Subtask.
   const canResume = Boolean(taskId) && !pendingDecision && !canAcceptCandidate && needsAction
-    && (!lifecycle || lifecycle.nextAuthorizedAction !== 'none');
+    && lifecycle?.nextAuthorizedAction === 'explicit_resume_required';
   const canRetryRemaining = Boolean(taskId) && !pendingDecision && failed;
   const canResolveRecovery = Boolean(taskId) && (Boolean(recoveryAction) || Boolean(legacy?.recoveryDiagnosis));
   const actionableNeedsAction = needsAction && (
@@ -323,7 +323,7 @@ function primaryActionFor(
 function recommendationFor(action: BlockedPrimaryAction): string {
   switch (action) {
     case 'accept_result':
-      return '下一步：点「接受并交付」。结果已通过安全校验，接受后直接进入交付；只有你认为结果不正确时才选「重新执行」。';
+      return '结果尚未通过完整验收。请先检查内容：确认可用可点「接受并交付」，内容不完整或不正确请点「重新执行」。';
     case 'accept_candidate':
       return '下一步：点「接受候选并发布」，候选变更才会写入目标 Workspace。';
     case 'retry_attempt':

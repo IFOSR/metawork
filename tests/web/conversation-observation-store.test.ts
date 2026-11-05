@@ -15,6 +15,18 @@ function baseline(conversationId: string): ConversationReadBaseline {
 }
 
 describe('normalized Conversation observation', () => {
+  it.each(['completed', 'cancelled', 'failed'] as const)('accepts same-revision %s settlement without reopening on stale data', status => {
+    const store = new ConversationEntityStore();
+    const raw = baseline('a');
+    store.baseline('a', raw);
+    const settled = { ...raw, turns: raw.turns.map(turn => ({ ...turn, status, completedAt: 'finished' })) };
+    store.baseline('a', settled);
+    expect(store.turn('a', 'turn')?.status).toBe(status);
+    store.baseline('a', raw);
+    expect(store.turn('a', 'turn')?.status).toBe(status);
+    expect(store.window('a').cursor).toEqual({ epoch: 'epoch', revision: 1 });
+  });
+
   it('notifies revocation owners and prevents in-flight pages restoring removed content', () => {
     const store = new ConversationEntityStore(); store.baseline('a', baseline('a')); store.baseline('b', baseline('b'));
     const revoke = vi.fn(); store.onRevoked(revoke);

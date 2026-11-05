@@ -1551,10 +1551,10 @@ export class ConversationSession {
       details: {},
       eventKey: 'turn_cancel_requested',
     });
-    this.appendOutput('-> 已请求取消当前轮，正在终止 Planner 与执行器…');
+    this.appendOutput('-> 已请求取消当前轮。');
     let plannerCancellationRequested = false;
     const cancelPlannerTurn = this.deps.runtimePort.commands.cancelPlannerTurn;
-    if (cancelPlannerTurn) {
+    if (cancelPlannerTurn && this.activePlannerRuns > 0) {
       try {
         await cancelPlannerTurn(this.deps.plannerSessionId);
         plannerCancellationRequested = true;
@@ -1562,8 +1562,15 @@ export class ConversationSession {
         this.appendOutput(`终止 Planner 进程失败：${(error as Error).message}`);
       }
     }
-    const taskCancellationRequested = await this.cancelConversationWork('用户取消了当前轮');
-    if (plannerCancellationRequested || taskCancellationRequested) {
+    const taskId = active?.taskId
+      ?? [...this.taskTraceTurnIds].find(([, turnId]) => turnId === targetTurnId)?.[0]
+      ?? (this.activePlannerRuns > 0
+        ? this.getCurrentTaskId()
+          ?? this.deps.runtimePort.queries.getConversationTaskSlot?.(this.deps.conversationId)?.activeTaskId
+        : null);
+    const taskCancellationRequested = taskId
+      ? await this.cancelConversationWork(taskId, '用户取消了当前轮') : false;
+    if (plannerCancellationRequested || taskCancellationRequested || (!taskId && this.activePlannerRuns === 0)) {
       // Closing the Turn is a presentation fact. Executor cleanup continues
       // asynchronously and keeps the Conversation admission slot occupied
       // until the durable cancellation drain converges.
@@ -1572,13 +1579,9 @@ export class ConversationSession {
     this.notify();
   }
 
-  private async cancelConversationWork(reason: string): Promise<boolean> {
+  private async cancelConversationWork(taskId: string, reason: string): Promise<boolean> {
     const runtime = this.kernelExecutionRuntime;
     if (!runtime) return false;
-    const taskId = this.getCurrentTaskId()
-      ?? this.deps.runtimePort.queries.getConversationTaskSlot?.(this.deps.conversationId)?.activeTaskId
-      ?? null;
-    if (!taskId) return false;
     try {
       await runtime.cancelTask(taskId, reason);
       this.appendOutput(`已取消任务 ${taskId} 的后续执行。`);
@@ -2033,7 +2036,6 @@ export class ConversationSession {
     if (
       startsTrace
       && userInput.startsWith('/')
-      && (options.awaitAsyncWork || this.backgroundWork.size === 0)
     ) {
       const current = this.deps.interactionTraceStream?.getSnapshot();
       if (current?.turnId === interactionTurnId && current.status === 'running') {
@@ -2043,7 +2045,7 @@ export class ConversationSession {
           kind: 'command_completed',
           status: 'completed',
           title: 'Command completed',
-          summary: 'The task control command completed without active Executor work.',
+          summary: 'The control command replied; continuing execution is tracked by Task activity.',
           details: {},
           eventKey: 'command_completed',
           traceStatus: 'completed',

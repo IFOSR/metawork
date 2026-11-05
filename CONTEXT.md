@@ -1,5 +1,19 @@
 # MetaWork Planning Agent And Work Unit Context
 
+Uncertified result recovery (2026-11-04, ADR-0023): safety/deliverability do
+not certify completeness. Exhausted or unavailable completion correction waits
+for explicit user acceptance or retry. Application revalidates the originating
+user event and exact result identity; historical implicit accepts settle without
+effects. Live safe-result identities replace stale persisted result controls,
+and terminal Task views expose no result decisions. Control-command Turns end
+with their reply independently of background Task execution. Task activity owns
+continuing execution and cancellation cleanup; stale Turn cancellation never
+retargets unrelated background work. See the result-recovery implementation record.
+Read-time Turn settlement applies consistently to HTTP reads and WebSocket
+baselines/patches (2026-11-05). Independent terminal facts also converge on
+reconnect and bounded observation refresh, without rewriting journal history.
+Clients accept same-revision running-to-terminal corrections monotonically.
+
 Conversation content authority (2026-11-01, ADR-0054): account SQLite Turn Store
 owns original user input and final answer revisions. Planner JSONL is a runtime
 copy; read models and Memory consume references. Implementation and validation

@@ -11,6 +11,7 @@ import {
 } from '../configuration/agent-runtime-renderer.js';
 import { redactSensitiveText } from '../utils/redact-sensitive-text.js';
 import { RuntimeHomeMaterializer } from './runtime-home-materializer.js';
+import { PI_PROVIDER_OPTIONS_EXTENSION_SOURCE } from './pi-provider-options.js';
 import {
   TOOL_STALL_FACTS_FILE,
   TOOL_STALL_SAMPLE_MS,
@@ -124,6 +125,10 @@ export class PiCliDriver implements HarnessDriver {
       homeDirectories: ['.pi/agent/sessions'],
     });
     await this.seedProviderConfig(homePath, input.revisionId);
+    const extensionsPath = join(homePath, '.pi', 'agent', 'extensions');
+    await mkdir(extensionsPath, { recursive: true, mode: 0o700 });
+    await writeFile(join(extensionsPath, 'metawork-provider-options.ts'),
+      PI_PROVIDER_OPTIONS_EXTENSION_SOURCE, { mode: 0o600 });
     await this.seedWebExtension(homePath, input.executorAffordances, input.evidenceToolsAvailable === true);
     if (existsSync(join(this.pdfExtensionRoot, 'index.ts'))) {
       const extensions = join(homePath, '.pi', 'agent', 'extensions');

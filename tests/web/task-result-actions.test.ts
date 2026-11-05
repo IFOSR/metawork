@@ -67,7 +67,7 @@ describe('Task result action presentation', () => {
 
   it('names the recommended button so the user does not have to guess', () => {
     expect(renderBlocked({ actions: ['accept_result', 'retry_attempt'], nextAuthorizedAction: 'accept_result' }))
-      .toContain('下一步：点「接受并交付」');
+      .toContain('结果尚未通过完整验收。请先检查内容');
     expect(renderBlocked({ actions: ['retry_attempt'], nextAuthorizedAction: 'retry_attempt' }))
       .toContain('下一步：点「重新执行」');
     expect(renderBlocked({ actions: [], nextAuthorizedAction: 'explicit_resume_required' }))

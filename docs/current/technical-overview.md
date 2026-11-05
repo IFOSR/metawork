@@ -18,6 +18,20 @@ unresolved conversations retain their migration evidence.
 
 # MetaWork
 
+Result recovery (2026-11-04): an uncertified safe result waits for explicit
+acceptance or retry after completion correction is exhausted or unavailable.
+Both execution and control workflows apply those decisions through the same
+identity-checked Runtime boundary; historical implicit accepts are rejected
+without effects. Activity cards use the live result identity, and Dashboard
+does not recommend generic resume when no continuation target exists.
+Control-command replies finish their Turn independently of other background
+work; Task activity continues to represent actual execution and cleanup.
+The 2026-11-05 follow-up applies historical Turn settlement to WebSocket
+baselines/patches as well as HTTP reads, including reconnects and terminal facts
+without a new Turn event. Equal-revision terminal corrections cannot be
+overwritten by an older running view.
+See [incident and validation record](../plans/2026-11-04-result-recovery-deadlock-fix.md).
+
 New Workspace Tasks use `conversation_git` as their sole admission mode. The
 Executor receives the Conversation Worktree path, seals changes into the
 Workspace private Git repository, and the Workspace merge queue writes the
@@ -48,6 +62,10 @@ it does reclaim an instance that withdrew its endpoints and never exited (2026-1
 The connection promise never covers Pi inventory verification, so a ready client
 reconnects immediately. See ADR-0023 and the bounded shutdown implementation
 record for local acceptance.
+
+Desktop readiness probes use the shared Gateway protocol version (currently 2),
+including reconnecting to the candidate Server during a joint Desktop update.
+A healthy published endpoint is reused without entering Server exit recovery.
 
 Explicit file delivery (2026-10-15, ADR-0032): new Planner proposals require
 `fileOutputs` per Subtask. Empty arrays request inline answers/action receipts or
@@ -852,6 +870,12 @@ The Runner uses the Kernel-authorized Provider/Model binding and writes
 verified PNG, JPEG, WebP, or GIF artifacts through the same Completion Protocol.
 It is not a second AgentClass, does not use the vendored Planner Pi image mode,
 and is not replaced when the operator upgrades the local Pi CLI.
+
+Every Pi attempt home includes a provider-request extension that removes optional
+OpenAI output caps (`max_output_tokens`, `max_completion_tokens`, `max_tokens`)
+before sending the request, including response-only corrections. This prevents
+Pi's model-catalog fallback from imposing a 16,384-token output budget. Provider
+limits still apply; Anthropic's required `max_tokens` field is preserved.
 
 ## Prerequisites
 

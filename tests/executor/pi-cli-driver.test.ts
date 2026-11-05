@@ -519,10 +519,10 @@ describe('PiCliDriver', () => {
     });
   });
 
-  it('pre-creates an isolated Pi session directory', async () => {
+  it('pre-creates isolated Pi sessions and provider options without optional tools', async () => {
     const root = await mkdtemp(join(tmpdir(), 'anyfusion-pi-driver-'));
     try {
-      const driver = new PiCliDriver({ probeCommand: vi.fn() });
+      const driver = new PiCliDriver({ probeCommand: vi.fn(), webExtensionSourcePath: '' });
       const home = await driver.materializeHome({
         attemptId: 'attempt-1',
         revisionId: 'revision-1',
@@ -534,6 +534,8 @@ describe('PiCliDriver', () => {
 
       expect(await stat(home.environment.PI_CODING_AGENT_SESSION_DIR)).toBeTruthy();
       expect(home.environment.HOME).toBe(home.homePath);
+      const extension = await readFile(join(home.homePath, '.pi/agent/extensions/metawork-provider-options.ts'), 'utf8');
+      expect(extension).toContain("pi.on('before_provider_request'");
     } finally {
       await rm(root, { recursive: true, force: true });
     }

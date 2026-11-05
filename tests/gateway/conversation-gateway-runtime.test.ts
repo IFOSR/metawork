@@ -333,7 +333,7 @@ describe('ConversationGatewayRuntime', () => {
     expect(replayed.some(event => event.kind === 'final_answer')).toBe(true);
   });
 
-  it('marks a slash command result as continuing when it started background task work', async () => {
+  it('completes a task control command while Task activity tracks its background work', async () => {
     const fixture = createFixture(async (_conversationId, command, session) => {
       if (commandText(command) === '/task resume task_background') {
         session.backgroundWorkPending = true;
@@ -350,8 +350,8 @@ describe('ConversationGatewayRuntime', () => {
     await expect(receipt.completion).resolves.toEqual({ status: 'completed' });
     expect(events.find(event => event.kind === 'final_answer')?.payload).toMatchObject({
       lines: ['已发起任务恢复'],
-      backgroundWorkPending: true,
     });
+    expect(events.find(event => event.kind === 'final_answer')?.payload).not.toHaveProperty('backgroundWorkPending');
   });
 
   it('completes the Dashboard reply while the original task is still running', async () => {

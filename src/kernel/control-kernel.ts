@@ -2128,31 +2128,9 @@ export class ControlKernel {
       || event.responseBytes > MAX_CORRECTION_INPUT_BYTES
       || !snapshot.correctionSupportedAgentClasses.includes(event.authorizedBinding.agentClassRef)
     ) {
-      // A safe, deliverable response whose only defect is completion metadata
-      // does not require a semantic decision from the user. The Runtime can
-      // append the bounded acceptance marker and continue the normal handoff
-      // path. Keep real delivery, safety, external-effect and intent blockers
-      // on the explicit user-decision path below.
-      if (
-        event.attemptId
-        && event.resultId
-        && event.deliverability === 'deliverable'
-        && event.safety === 'safe'
-        && event.responseBytes <= MAX_CORRECTION_INPUT_BYTES
-        && event.violations.length > 0
-        && event.violations.every(violation => violation.code === 'completion_malformed'
-          && violation.path !== 'reportPath')
-      ) {
-        return decision(event, {
-          type: 'accept_uncertified_result',
-          generationId: snapshot.generationId,
-          graphRevision: snapshot.graphRevision,
-          taskId: event.taskId,
-          subtaskId: event.subtaskId,
-          attemptId: event.attemptId,
-          resultId: event.resultId,
-        }, 'safe deliverable has metadata-only completion defects; continue automatically');
-      }
+      // Safe text is not proof of completeness. A missing/malformed completion
+      // report also represents truncated responses; exhausted correction must
+      // leave acceptance or retry to the user.
       return decision(
         event,
         {

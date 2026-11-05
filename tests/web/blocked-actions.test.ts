@@ -34,7 +34,7 @@ describe('inline blocked actions', () => {
       lifecycle: {
         lifecycle: 'blocked', phase: 'recovery_required', userState: 'needs_action',
         userStateReason: '上次执行结果不确定', activeAttempt: null, blockingResidue: ['unknown'],
-        nextAuthorizedAction: 'resume', recoveryDiagnosis: 'unknown blocker', explanation: '',
+        nextAuthorizedAction: 'explicit_resume_required', recoveryDiagnosis: 'unknown blocker', explanation: '',
         lastProgressAt: null, lastAttemptSettledAt: null, nextWakeAt: null,
       },
       permission: null,
@@ -44,7 +44,7 @@ describe('inline blocked actions', () => {
     expect(html).toContain('查看恢复项');
   });
 
-  it('keeps a resume button visible while the TaskView query is unavailable', () => {
+  it('does not invent a resume action while the TaskView query is unavailable', () => {
     const html = renderToStaticMarkup(createElement(BlockedActions, {
       ws,
       http: {} as never,
@@ -54,7 +54,7 @@ describe('inline blocked actions', () => {
       lifecycle: undefined,
       permission: null,
     }));
-    expect(html).toContain('继续未完成部分');
+    expect(html).not.toContain('继续未完成部分');
   });
 
   it('renders nothing when the Turn needs no decision', () => {

@@ -231,7 +231,8 @@ export function projectTaskView(facts: TaskViewFacts): TaskView {
   // fact, so it must appear even when the state has not transitioned since
   // (for example after a failed metadata correction). Without this the surface
   // offers a generic resume that the Kernel can only answer with `no_op`.
-  const pendingActions = mergePendingActions(detail.pendingActions, facts.pendingDecision);
+  const pendingActions = isTerminalTaskStatus(status)
+    ? [] : mergePendingActions(detail.pendingActions, facts.pendingDecision);
   const projectedDetail: TaskStateDetail = { ...detail, pendingActions };
   const blockingResidue = deriveBlockingResidue({
     activeAttempt,
@@ -284,7 +285,12 @@ export function projectTaskView(facts: TaskViewFacts): TaskView {
     currentReplanJob: replanJob,
     currentRecovery: recovery,
     blockingResidue,
-    nextAuthorizedAction: nextAuthorizedAction(status, projectedDetail, recoveryDiagnosis),
+    nextAuthorizedAction: nextAuthorizedAction(status, projectedDetail, recoveryDiagnosis,
+      !activeAttempt && cleanup.state === 'none' && (
+        facts.deliveryState === 'failed'
+        || facts.subtasks.some(subtask => ['ready', 'blocked'].includes(subtask.status))
+        || facts.dispatches.some(dispatch => dispatch.status === 'uncertain')
+      )),
     recoveryDiagnosis,
     pendingActions,
     cleanup,
@@ -306,26 +312,19 @@ export function projectTaskView(facts: TaskViewFacts): TaskView {
   };
 }
 
-/**
- * Actions derived from a live pending result, merged after the persisted ones.
- *
- * `pendingDecision` is the durable fact of "a safe (uncertified) result is still
- * acceptable"; the persisted `state_detail.pendingActions` snapshot may predate
- * it, so the projection exposes both without inventing a new Task status.
- */
+/** Live result identity replaces persisted result controls; publication actions survive. */
 function mergePendingActions(
   persisted: readonly TaskPendingAction[],
   decision: TaskViewPendingDecisionFact | null | undefined,
 ): readonly TaskPendingAction[] {
-  if (!decision) return persisted;
-  const expected = decision.expectedResult ?? null;
-  if (!expected) return persisted;
-  const known = new Set(persisted.map(action => action.kind));
-  const actions: TaskPendingAction[] = [...persisted];
-  if (decision.actions.includes('accept_result') && !known.has('accept_result')) {
+  if (decision === undefined) return persisted;
+  const actions = persisted.filter(action => !action.result);
+  const expected = decision?.expectedResult;
+  if (!expected) return actions;
+  if (decision.actions.includes('accept_result')) {
     actions.push(pendingResultAction('accept_result', expected));
   }
-  if (decision.actions.includes('retry_attempt') && !known.has('retry_attempt')) {
+  if (decision.actions.includes('retry_attempt')) {
     actions.push(pendingResultAction('retry_attempt', expected));
   }
   return actions;
@@ -343,7 +342,7 @@ function pendingResultAction(
     reason: createTaskReason(
       'result_acceptance_required',
       kind === 'accept_result'
-        ? '结果已安全保存，但完成验收还缺少执行说明。'
+        ? '结果已安全保存，但尚未通过完成验收。请检查内容后选择接受或重新执行。'
         : '需要重新执行这一步，用新的结果替换当前安全结果。',
       [`receipt:${expected.attemptId}`, `result:${expected.resultId}`],
     ),
@@ -401,10 +400,11 @@ function nextAuthorizedAction(
   status: TaskStateStatus,
   detail: TaskStateDetail,
   diagnosis: TaskViewRecoveryDiagnosis | null,
+  hasResumeTarget: boolean,
 ): TaskAction {
+  if (isTerminalTaskStatus(status)) return 'none';
   if (detail.pendingActions.some(action => action.kind === 'accept_result')) return 'accept_result';
   if (detail.pendingActions.some(action => action.kind === 'retry_attempt')) return 'retry_attempt';
-  if (isTerminalTaskStatus(status)) return 'none';
   switch (status) {
     case 'queued':
       return 'await_conversation_slot';
@@ -424,6 +424,10 @@ function nextAuthorizedAction(
       }
     case 'needs_action':
       if (diagnosis === 'uncertain_application') return 'resolve_uncertain_application';
+      // A continuation needs unfinished work or a failed delivery to target.
+      // Kernel still revalidates the blocker, binding and effect safety when
+      // the user submits it; this projection does not authorize execution.
+      if (hasResumeTarget) return 'explicit_resume_required';
       return 'await_user_input';
     default:
       return 'none';

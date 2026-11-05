@@ -1524,59 +1524,8 @@ export class KernelExecutionRuntime {
             return null;
           }
           if (decision.action.type === 'accept_uncertified_result' || decision.action.type === 'retry_uncertified_result') {
-            const action = decision.action;
-            const pending = this.deps.cancellationCoordinator.buildSnapshot(action.taskId).uncertifiedResult;
-            const graph = this.deps.workGraphRevisionRepo.findActive(action.taskId);
-            if (!pending || pending.attemptId !== action.attemptId || pending.resultId !== action.resultId
-              || graph?.generationId !== action.generationId || graph.revision !== action.graphRevision) {
-              controlError = '该结果操作已过期，请刷新任务后重试。';
-              return null;
-            }
-            const operationKey = action.type === 'accept_uncertified_result'
-              ? TaskOperationKeys.acceptResult(action.attemptId, action.resultId)
-              : TaskOperationKeys.retryResult(action.attemptId, action.resultId);
-            const observation = this.eventFromDecision(decision, {
-              type: 'dispatch_requested', taskId: action.taskId,
-              reason: 'explicit result decision released the authorized frontier',
-            });
-            // Only local durable writes here. Acceptance, continuation, queue,
-            // application and observation either all commit or all roll back.
-            this.deps.effectOutboxRepo.transaction(() => {
-              this.deps.taskStateAuthority.reconcile({
-                taskId: action.taskId, decisionId: decision.id, operationKey,
-                actor: 'kernel-execution-runtime', reason: decision.reason,
-                resolvedResult: { attemptId: action.attemptId, resultId: action.resultId },
-                facts: () => {
-                  if (action.type === 'retry_uncertified_result') {
-                    this.lifecycle.transitionSubtask({ subtaskId: action.subtaskId, to: 'ready',
-                      actor: 'kernel-execution-runtime', reason: 'explicit user retry authorized by Kernel',
-                      changes: { error: null } });
-                  }
-                  this.deps.effectOutboxRepo.enqueue({
-                    id: `result_continuation:${operationKey}`, decisionId: decision.id,
-                    taskId: action.taskId, effectType: 'task_result_continuation',
-                    payload: { action }, availableAt: new Date().toISOString(),
-                  });
-                  const task = this.deps.taskRuntimeService.findTask(action.taskId)!;
-                  const scheduler = this.deps.conversationTaskSchedulerRepo;
-                  if (scheduler && task.conversationId) {
-                    const payload = scheduler.getQueuedPayload(task.id);
-                    scheduler.enqueueTask(task.id, task.conversationId, new Date().toISOString(), {
-                      ...(payload ?? {}), requestText: payload?.requestText ?? task.goal,
-                      generationId: action.generationId, graphRevision: action.graphRevision,
-                      workGraph: payload?.workGraph ?? null,
-                      authorizedBindingsBySubtask: payload?.authorizedBindingsBySubtask ?? null,
-                      workspaceId: task.workspaceId ?? null,
-                      plannerSessionId: task.ownerPlannerSessionId ?? this.sessionId,
-                      executionMode: 'follow-up', schedulingReason: 'explicit result decision',
-                    });
-                  }
-                  return [`result:${action.resultId}`];
-                },
-              });
-              this.deps.kernelWorkflowStore.markApplied(decision.id, observation, new Date().toISOString());
-            });
-            receipt = { taskId: action.taskId, affectedSubtaskIds: [action.subtaskId], cleanupAttemptIds: [] };
+            const observation = this.applyResultDecision(decision as Parameters<KernelExecutionRuntime['applyResultDecision']>[0]);
+            receipt = { taskId: decision.action.taskId, affectedSubtaskIds: [decision.action.subtaskId], cleanupAttemptIds: [] };
             return observation;
           }
           if (decision.action.type === 'authorize_workspace_delivery') {
@@ -1646,6 +1595,75 @@ export class KernelExecutionRuntime {
       }
     }
     return receipt;
+  }
+
+  /** Shared application owner for explicit result controls and durable replay. */
+  private applyResultDecision(decision: KernelDecision & {
+    action: Extract<KernelDecision['action'], { type: 'accept_uncertified_result' | 'retry_uncertified_result' }>;
+  }): KernelEvent {
+    const action = decision.action;
+    const source = this.deps.kernelWorkflowStore.findEvent?.(decision.eventId);
+    const requiredType = action.type === 'accept_uncertified_result'
+      ? 'partial_result_acceptance_requested' : 'task_result_retry_requested';
+    if (source?.type !== requiredType || source.taskId !== action.taskId) {
+      throw new KernelApplicationRejectionError(
+        '未确认完整性的结果需要用户明确选择接受或重新执行。', 'result_decision_requires_user',
+      );
+    }
+    const snapshot = this.deps.cancellationCoordinator.buildSnapshot(action.taskId);
+    const pending = action.type === 'accept_uncertified_result' && snapshot.acceptedResult
+      ? snapshot.acceptedResult : snapshot.uncertifiedResult;
+    const graph = this.deps.workGraphRevisionRepo.findActive(action.taskId);
+    if (!pending || pending.subtaskId !== action.subtaskId
+      || pending.attemptId !== action.attemptId || pending.resultId !== action.resultId
+      || graph?.generationId !== action.generationId || graph.revision !== action.graphRevision) {
+      throw new KernelApplicationRejectionError('该结果操作已过期，请刷新任务后重试。', 'result_identity_changed');
+    }
+    const operationKey = action.type === 'accept_uncertified_result'
+      ? TaskOperationKeys.acceptResult(action.attemptId, action.resultId)
+      : TaskOperationKeys.retryResult(action.attemptId, action.resultId);
+    const observation = this.eventFromDecision(decision, {
+      type: 'dispatch_requested', taskId: action.taskId,
+      reason: 'explicit result decision released the authorized frontier',
+    });
+    // Only local durable writes here. Acceptance, continuation, queue,
+    // application and observation either all commit or all roll back.
+    this.deps.effectOutboxRepo.transaction(() => {
+      this.deps.taskStateAuthority.reconcile({
+        taskId: action.taskId, decisionId: decision.id, operationKey,
+        actor: 'kernel-execution-runtime', reason: decision.reason,
+        resolvedResult: { attemptId: action.attemptId, resultId: action.resultId },
+        facts: () => {
+          if (action.type === 'retry_uncertified_result') {
+            this.lifecycle.transitionSubtask({ subtaskId: action.subtaskId, to: 'ready',
+              actor: 'kernel-execution-runtime', reason: 'explicit user retry authorized by Kernel',
+              changes: { error: null } });
+          }
+          this.deps.effectOutboxRepo.enqueue({
+            id: `result_continuation:${operationKey}`, decisionId: decision.id,
+            taskId: action.taskId, effectType: 'task_result_continuation',
+            payload: { action }, availableAt: new Date().toISOString(),
+          });
+          const task = this.deps.taskRuntimeService.findTask(action.taskId)!;
+          const scheduler = this.deps.conversationTaskSchedulerRepo;
+          if (scheduler && task.conversationId) {
+            const payload = scheduler.getQueuedPayload(task.id);
+            scheduler.enqueueTask(task.id, task.conversationId, new Date().toISOString(), {
+              ...(payload ?? {}), requestText: payload?.requestText ?? task.goal,
+              generationId: action.generationId, graphRevision: action.graphRevision,
+              workGraph: payload?.workGraph ?? null,
+              authorizedBindingsBySubtask: payload?.authorizedBindingsBySubtask ?? null,
+              workspaceId: task.workspaceId ?? null,
+              plannerSessionId: task.ownerPlannerSessionId ?? this.sessionId,
+              executionMode: 'follow-up', schedulingReason: 'explicit result decision',
+            });
+          }
+          return [`result:${action.resultId}`];
+        },
+      });
+      this.deps.kernelWorkflowStore.markApplied(decision.id, observation, new Date().toISOString());
+    });
+    return observation;
   }
 
   private async drainCancellation(taskId: string): Promise<void> {
@@ -2341,6 +2359,9 @@ export class KernelExecutionRuntime {
       // no_op has no action target, but still belongs to this execution's Task.
       taskId: 'taskId' in action ? action.taskId : input.request.contextTaskId,
     });
+    if (action.type === 'accept_uncertified_result' || action.type === 'retry_uncertified_result') {
+      return this.applyResultDecision(decision as Parameters<KernelExecutionRuntime['applyResultDecision']>[0]);
+    }
     if (action.type === 'resolve_recovery') {
       const application = this.deps.kernelWorkflowStore.findRecoveryItem?.(
         action.recoveryItemId,
@@ -3911,6 +3932,7 @@ export class KernelExecutionRuntime {
       acceptedActions: [
         'resume_task', 'dispatch_batch', 'probe_capacity', 'wait_for_capacity', 'wait_for_retry',
         'supersede_retry_wake', 'recover_retry_wake',
+        'accept_uncertified_result', 'retry_uncertified_result',
         'block_work', 'await_user_decision', 'park_for_replan', 'complete_task', 'request_replan', 'schedule_replan',
         'queue_generation_replan',
         'request_merge_replan',
@@ -5214,6 +5236,7 @@ export class KernelExecutionRuntime {
       acceptedActions: [
         'dispatch_batch', 'probe_capacity', 'wait_for_capacity', 'wait_for_retry',
         'supersede_retry_wake', 'recover_retry_wake',
+        'accept_uncertified_result', 'retry_uncertified_result',
         'block_work', 'await_user_decision', 'park_for_replan', 'complete_task', 'request_replan', 'schedule_replan',
         'queue_generation_replan',
         'request_merge_replan',

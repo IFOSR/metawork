@@ -5,6 +5,7 @@ import type {
 } from '../session/conversation-read-model.js';
 import type { GatewaySubscriptions } from './gateway-subscriptions.js';
 import type { ConversationActivityView } from '../session/conversation-activity-types.js';
+import type { ConversationTurnView } from '../session/conversation-read-types.js';
 
 export * from './conversation-observation-contract.js';
 import { MAX_OBSERVATION_FRAME_BYTES, type ConversationObservationFrame } from './conversation-observation-contract.js';
@@ -103,6 +104,18 @@ export class ConversationObservationService {
     let lastFreshness = '';
     let lastActivityRevision = '';
     let baselineSent = false;
+    let checkResumeSettlement = Boolean(cursor && this.deps.settleTurn);
+    // Bounded observation state, never execution ownership or durable history.
+    const unsettledTurns = new Map<string, ConversationTurnView>();
+    const settle = (turn: ConversationTurnView): ConversationTurnView => {
+      const value = this.deps.settleTurn?.(turn) ?? turn;
+      unsettledTurns.delete(turn.id);
+      if (this.deps.settleTurn && value.status === 'running') {
+        unsettledTurns.set(turn.id, turn);
+        while (unsettledTurns.size > 50) unsettledTurns.delete(unsettledTurns.keys().next().value!);
+      }
+      return value;
+    };
     let unsubscribe = () => undefined as void;
     let timer: ReturnType<typeof setInterval> | undefined;
     const close = () => {
@@ -119,7 +132,9 @@ export class ConversationObservationService {
       return false;
     };
     const baseline = () => {
-      const value = this.deps.model.baseline(input.accountId, input.conversationId);
+      const raw = this.deps.model.baseline(input.accountId, input.conversationId);
+      unsettledTurns.clear();
+      const value = { ...raw, turns: raw.turns.map(settle) };
       for (const frame of frameConversationBaseline(value, input.observationId, input.conversationId)) {
         if (!input.send(frame)) { close(); return; }
       }
@@ -133,6 +148,18 @@ export class ConversationObservationService {
         send({ kind: 'closed', reason: 'authorization_revoked' }); close(); return;
       }
       if (closed) return;
+      // A reconnect may have the latest journal cursor but an old running
+      // projection. Task completion is independently committed, so it need
+      // not produce another Turn change to make the display converge.
+      if (checkResumeSettlement) {
+        checkResumeSettlement = false;
+        const raw = this.deps.model.baseline(input.accountId, input.conversationId);
+        const changed = raw.turns.map(turn => settle(turn).status !== turn.status).some(Boolean);
+        if (changed) {
+          if (!send({ kind: 'reset', reason: 'projection_changed' })) return;
+          baseline();
+        }
+      }
       if (!cursor) {
         if (!baselineSent || this.deps.model.head(input.accountId, input.conversationId)) baseline();
       }
@@ -143,11 +170,19 @@ export class ConversationObservationService {
           baseline();
         } else {
           for (const change of changes.changes) {
-            if (!send({ kind: 'patch', change })) return;
+            if (change.removed) unsettledTurns.delete(change.turn.id);
+            const projected = change.removed ? change : { ...change, turn: settle(change.turn) };
+            if (!send({ kind: 'patch', change: projected })) return;
             cursor = { epoch: change.epoch, revision: change.revision };
           }
         }
       }
+      if (closed) return;
+      if ([...unsettledTurns.values()].some(turn => this.deps.settleTurn!(turn).status !== turn.status)) {
+        if (!send({ kind: 'reset', reason: 'projection_changed' })) return;
+        baseline();
+      }
+      if (closed) return;
       const head = this.deps.model.head(input.accountId, input.conversationId);
       const source = this.deps.sourceSequence(input.accountId, input.conversationId);
       const freshness = { kind: 'freshness' as const, sourceSequence: source,

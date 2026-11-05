@@ -125,6 +125,17 @@ describe.runIf(process.env.METAWORK_EXECUTOR_PARITY === '1')('native Executor pa
       expect(networkCalls).toBe(2);
       expect(requests.length).toBeGreaterThanOrEqual(4);
       expect(requests.every(r => r.model === 'parity')).toBe(true);
+      if (kind === 'pi' && protocol !== 'anthropic') {
+        for (const request of requests) {
+          expect(request).not.toHaveProperty('max_output_tokens');
+          expect(request).not.toHaveProperty('max_completion_tokens');
+          expect(request).not.toHaveProperty('max_tokens');
+        }
+      }
+      if (protocol === 'anthropic') {
+        // Anthropic requires this field; removing it would invalidate requests.
+        expect(requests.every(r => typeof r.max_tokens === 'number' && r.max_tokens > 0)).toBe(true);
+      }
     } finally {
       server.closeAllConnections();
       await new Promise<void>(resolve => server.close(() => resolve()));

@@ -2,6 +2,40 @@ import { describe, expect, it, vi } from 'vitest';
 import { deferred, sessionWith } from '../helpers/conversation-control.js';
 
 describe('turn cancellation', () => {
+  it('targets the Task linked to the Turn instead of the Conversation slot fallback', async () => {
+    const { session, trace, cancelTask } = sessionWith({ planning: null });
+    trace.beginTurn({ turnId: 'owned_turn', userInput: '执行任务' });
+    trace.append({ phase: 'execution', actor: 'runtime', kind: 'execution_started', status: 'running',
+      title: '执行开始', summary: '', details: {}, taskId: 'owned_task' });
+    await session.executeGatewayCommand({ kind: 'cancel_turn', turnId: 'owned_turn' });
+    expect(cancelTask).toHaveBeenCalledTimes(1);
+    expect(cancelTask).toHaveBeenCalledWith('owned_task', '用户取消了当前轮');
+    expect(trace.getSnapshot()?.status).toBe('cancelled');
+  });
+  it('closes an orphan command Turn without cancelling unrelated background work', async () => {
+    const work = deferred<void>();
+    const { session, trace, cancelTask, cancelPlannerTurn } = sessionWith({ planning: null });
+    const background = session.startBackgroundExecution('another_task', () => work.promise);
+    trace.beginTurn({ turnId: 'orphan_command', userInput: '/task retry-result old_task' });
+    try {
+      await session.executeGatewayCommand({ kind: 'cancel_turn', turnId: 'orphan_command' });
+      expect(trace.getSnapshot()).toMatchObject({ turnId: 'orphan_command', status: 'cancelled' });
+      expect(session.hasBackgroundWork()).toBe(true);
+      expect(cancelTask).not.toHaveBeenCalled();
+      expect(cancelPlannerTurn).not.toHaveBeenCalled();
+    } finally { work.resolve(); await background; }
+  });
+  it('closes a rejected recovery command even while unrelated work is still pending', async () => {
+    const work = deferred<void>();
+    const { session, trace } = sessionWith({ planning: null });
+    const background = session.startBackgroundExecution('another_task', () => work.promise);
+    try {
+      await session.submitUserInput('/task resume missing_task', { interactionTurnId: 'rejected_resume' });
+      expect(session.hasBackgroundWork()).toBe(true);
+      expect(trace.getSnapshot()).toMatchObject({ turnId: 'rejected_resume', status: 'completed' });
+    } finally { work.resolve(); await background; }
+  });
+
   it('aborts the Planner run, marks the turn cancelled and drops the late proposal', async () => {
     const plannerRun = deferred<void>();
     const { workGraphPlan } = await import('../support/planning-agent-plans.js');

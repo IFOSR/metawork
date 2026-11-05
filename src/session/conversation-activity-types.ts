@@ -1,3 +1,4 @@
+import type { TaskAction } from '../task/task-view.js';
 import type {
   TaskOperationPhase,
   TaskPendingAction,
@@ -20,6 +21,7 @@ export interface ConversationTaskSummary {
   readonly reason: TaskReason;
   readonly phase: TaskOperationPhase | null;
   readonly pendingActions: readonly TaskPendingAction[];
+  readonly nextAuthorizedAction?: TaskAction;
   readonly explanation: string;
   readonly progressSummary?: string;
   readonly canCancel: boolean;
