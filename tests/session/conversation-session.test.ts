@@ -850,7 +850,7 @@ describe('ConversationSession', () => {
     });
   });
 
-  it('registers background task work before launching it and keeps the command trace open', async () => {
+  it('registers background task work before launching it and completes the command trace independently', async () => {
     const release = deferred<void>();
     let observedRegistered = false;
     let session!: ConversationSession;
@@ -876,13 +876,17 @@ describe('ConversationSession', () => {
 
     expect(observedRegistered).toBe(true);
     expect(session.hasBackgroundWork()).toBe(true);
-    expect(trace.getSnapshot()?.events.some(event => event.kind === 'command_completed')).toBe(false);
+    expect(trace.getSnapshot()?.events.some(event => event.kind === 'command_completed')).toBe(true);
+    expect(trace.getSnapshot()).toMatchObject({
+      turnId: 'gateway_background_command', status: 'completed',
+    });
 
     release.resolve();
     for (let attempt = 0; attempt < 20 && session.hasBackgroundWork(); attempt += 1) {
       await new Promise(resolve => setTimeout(resolve, 0));
     }
     expect(session.hasBackgroundWork()).toBe(false);
+    expect(trace.getSnapshot()?.status).toBe('completed');
   });
 
   it('keeps the current turn open while its durable Task waits for an automatic retry', () => {

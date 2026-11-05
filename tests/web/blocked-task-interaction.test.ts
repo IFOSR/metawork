@@ -54,11 +54,12 @@ describe('blocked task interaction', () => {
   });
   it('shows recovery actions in the main Conversation even when normal task cards are hidden', () => {
     const html = renderToStaticMarkup(createElement(ObservedActivity, {
-      conversationId: 'conv', view: { tasks: [task('blocked')], nextCursor: null, pendingInteractions: [] },
+      conversationId: 'conv', view: { tasks: [{ ...task('blocked'),
+        nextAuthorizedAction: 'explicit_resume_required' }], nextCursor: null, pendingInteractions: [] },
       showTasks: false, ws: {} as never, http: {} as never,
     }));
     expect(html).toContain('需要处理，请继续未完成部分。');
-    expect(html).toContain('继续未完成部分');
+    expect(html).toContain('>继续未完成部分</button>');
     expect(html).toContain('查看 Dashboard');
     expect(html).toContain('查看任务详情');
   });
@@ -76,7 +77,7 @@ describe('blocked task interaction', () => {
     expect(html).not.toContain('继续未完成部分');
     // The natural-language round is the ordinary path; the internal retry is a
     // secondary explicit recovery, so it is never the highlighted primary.
-    expect(html).toContain('直接用下方说明');
+    expect(html).toContain('系统会用上面的真实错误开启新的一轮');
     expect(html).toContain('无需先清理');
     expect(html).not.toContain('class="primary">重试未完成部分');
   });

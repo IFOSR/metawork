@@ -33,6 +33,7 @@ describe('user-facing block reason', () => {
         reason: { code: 'input_required', message: 'official authorization state: logged_out' },
         pendingActions: [],
         executionGeneration: 'generation_1',
+        nextAuthorizedAction: 'explicit_resume_required',
       },
       conversationId: 'conv_1',
       taskId: 'task_1',
