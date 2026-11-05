@@ -58,31 +58,38 @@ AnyFusion 标识。
 
 ## Release
 
-当前发布版本是 **v0.1.24**，修复 Desktop 后台更新反复失败循环：更新的“停止后台”
-一步不再因为停止 CLI 的固定宽限短于真实 drain（记忆引擎不可达时很常见）而判定失败，
-成功标准改为“该安装已无存活实例”；若 Server 在撤除端点前就卡住，会按进程身份校验后
-强制结束，而不是让升级永久卡死。同时修掉了由过长内部版本号导致的升级循环：升级 id 为 `<releaseId>-<uuid>`，
-`0.1.24-desktoppayload-1903` 这类版本号会超出 64 字符的配置引用语法，使每次后台更新
-都失败并回滚。包含 v0.1.23 的全部内容：退出看门狗保障的有界关停、不再丢失的最后一次
-记忆沉积、能识别卡住实例的状态，以及 `metawork server stop --force`。
-Release 提供 macOS arm64 Desktop DMG，以及 macOS arm64、macOS x64 和 Linux x64 的签名
-Runtime、Planner、Memory 归档。Desktop 仅支持 Apple Silicon；macOS x64 和 Linux x64
-请使用 Server 安装包提供的 Web、TUI 或飞书客户端。
+当前发布版本是 **v0.1.25（Internal）**，发布于 **2026-11-05**。
+本版保留此前的 Desktop 升级修复，并完善结果恢复与运行状态：
 
-Windows Native Release：见
-[`fix/windows-native-web`](https://github.com/IFOSR/metawork/tree/fix/windows-native-web) 分支。
+- 只有实际存在可恢复工作时才显示“继续”；未通过完整验收的结果等待用户明确接受或
+  重新执行，旧决定不会抢先处理新的重试。
+- 控制命令回复后即结束该轮交互；停止操作定位关联工作，Desktop/Web 中历史遗留的
+  运行状态会自动收敛。
+- Pi 请求移除可选的 OpenAI 输出 token 上限；服务商自身限制仍适用，Anthropic 必需的
+  `max_tokens` 保留。Desktop 就绪检查统一使用共享 Gateway 协议版本。
+
+同一个 Release 已发布 **macOS arm64、macOS x64、Linux x64** 三个平台的 Server
+安装资源，以及 **macOS arm64 Desktop DMG**。Intel Mac 和 Linux 用户可通过
+Server 安装包使用 Web、TUI 或飞书客户端。
 
 | 平台 | 最新可用版本 | 下载 / 安装 |
 | --- | --- | --- |
-| macOS Apple Silicon（`arm64`）桌面版 | 0.1.24 | [最新 DMG](https://github.com/IFOSR/metawork/releases/latest/download/MetaWork-darwin-arm64.dmg) |
-| macOS Apple Silicon（`arm64`）Server | 0.1.24 | [最新安装器](https://github.com/IFOSR/metawork/releases/latest/download/install.sh) · [签名清单](https://github.com/IFOSR/metawork/releases/latest/download/manifest.darwin-arm64.json) |
-| macOS Intel（`x64`）Server | 0.1.24 | [最新安装器](https://github.com/IFOSR/metawork/releases/latest/download/install.sh) · [签名清单](https://github.com/IFOSR/metawork/releases/latest/download/manifest.darwin-x64.json) |
-| Linux / WSL2（`x64`）Server | 0.1.24 | [最新安装器](https://github.com/IFOSR/metawork/releases/latest/download/install.sh) · [签名清单](https://github.com/IFOSR/metawork/releases/latest/download/manifest.linux-x64.json) |
+| macOS Apple Silicon（`arm64`）桌面版 | 0.1.25 | [最新 DMG](https://github.com/IFOSR/metawork/releases/latest/download/MetaWork-darwin-arm64.dmg) |
+| macOS Apple Silicon（`arm64`）Server | 0.1.25 | [最新安装器](https://github.com/IFOSR/metawork/releases/latest/download/install.sh) · [签名清单](https://github.com/IFOSR/metawork/releases/latest/download/manifest.darwin-arm64.json) |
+| macOS Intel（`x64`）Server | 0.1.25 | [最新安装器](https://github.com/IFOSR/metawork/releases/latest/download/install.sh) · [签名清单](https://github.com/IFOSR/metawork/releases/latest/download/manifest.darwin-x64.json) |
+| Linux / WSL2（`x64`）Server | 0.1.25 | [最新安装器](https://github.com/IFOSR/metawork/releases/latest/download/install.sh) · [签名清单](https://github.com/IFOSR/metawork/releases/latest/download/manifest.linux-x64.json) |
 
 [最新 macOS/Linux Release 与归档](https://github.com/IFOSR/metawork/releases/latest) ·
-[最新校验文件](https://github.com/IFOSR/metawork/releases/latest/download/SHA256SUMS)。
-macOS/Linux 下载链接跟随 GitHub 最新 Release；安装器自动选择当前架构，
-按签名清单下载匹配的 Runtime 和 Planner。
+[v0.1.25 发布说明](docs/releases/v0.1.25.md)。
+本次共发布 **14 个附件**：9 个 Runtime/Planner/Memory 归档（每个平台各 3 个）、
+3 份签名清单、`install.sh` 和 Desktop DMG。以上下载链接跟随 GitHub 最新 Release；
+安装器自动选择当前架构，并按签名清单中的 SHA-256 和文件大小校验
+Runtime、Planner 和 Memory 归档。
+
+本次不包含 Intel Mac DMG、Linux 桌面安装包、原生 Windows 安装包、Linux arm64
+归档或容器镜像。Windows 专项源码开发见
+[`fix/windows-native-web`](https://github.com/IFOSR/metawork/tree/fix/windows-native-web) 分支。
+验证结果及尚未解决的全量 CI 失败项见发布说明。
 
 Desktop DMG 使用内部 ad-hoc 签名，未使用 Apple Developer ID 公证，
 当前只支持 macOS Apple Silicon（`arm64`）。Server/Web/TUI 安装器支持 Linux x64、
@@ -147,7 +154,7 @@ export PATH="$HOME/.local/bin:$PATH"
 metawork --help
 ```
 
-该命令使用**最新稳定版的签名清单**，并在安装前校验 Runtime/Planner 归档。
+该命令使用**最新稳定版的签名清单**，并在安装前校验 Runtime/Planner/Memory 归档。
 
 Linux/WSL2 默认使用文件 SecretStore。安装器会对不支持的架构明确报错，
 不会安装不匹配的归档。

@@ -70,38 +70,43 @@ existing names where changing them would break installations.
 
 ## Release
 
-The current release is **v0.1.24**. It fixes the Desktop upgrade loop: the stop
-step of a background update no longer fails just because the stop CLI's fixed
-grace window is shorter than a real drain (an unreachable memory engine made
-that routine), success is now defined by "no live instance left in this
-installation", and a Server that hangs before withdrawing its endpoints is
-reclaimed by identity-verified forced exit instead of blocking the upgrade
-forever. It also removes the upgrade loop caused by a long internal release id: an
-upgrade identifier is `<releaseId>-<uuid>`, and for ids such as
-`0.1.24-desktoppayload-1903` it overflowed the 64-character configuration
-reference grammar, so every background update failed and rolled back. It keeps
-everything from v0.1.23: bounded Server shutdown with an exit watchdog, preserved
-final memory deposition, stuck-instance status, and `metawork server stop --force`.
-The internal release includes a self-contained macOS arm64 Desktop DMG plus
-signed Runtime, Planner and Memory archives for macOS arm64, macOS x64 and
-Linux x64. Desktop is available only on Apple Silicon; macOS x64 and Linux x64
-use the Web, TUI or Feishu clients with the Server package.
+The current release is **v0.1.25 (Internal)**, published on **2026-11-05**.
+It includes the previous Desktop upgrade fixes and improves result recovery
+and execution status:
 
-Native Windows Release: see the
-[`fix/windows-native-web`](https://github.com/IFOSR/metawork/tree/fix/windows-native-web) branch.
+- Continue appears only when there is recoverable work. Uncertified results
+  wait for explicit acceptance or retry, and old decisions cannot consume a new retry.
+- Control commands finish when their reply is ready. Stop targets the associated
+  work, and historical running indicators converge automatically in Desktop/Web.
+- Pi requests no longer impose optional OpenAI output-token caps; provider limits
+  still apply and Anthropic's required `max_tokens` remains. Desktop readiness
+  checks use the shared Gateway protocol version.
+
+The same Release contains Server packages for **macOS arm64, macOS x64 and
+Linux x64**, plus a **macOS arm64 Desktop DMG**. Intel Mac and Linux users can
+use Web, TUI or Feishu with the Server package.
 
 | Platform | Latest available version | Download / install |
 | --- | --- | --- |
-| macOS Apple Silicon (`arm64`) Desktop | 0.1.24 | [Latest DMG](https://github.com/IFOSR/metawork/releases/latest/download/MetaWork-darwin-arm64.dmg) |
-| macOS Apple Silicon (`arm64`) Server | 0.1.24 | [Latest installer](https://github.com/IFOSR/metawork/releases/latest/download/install.sh) · [Signed manifest](https://github.com/IFOSR/metawork/releases/latest/download/manifest.darwin-arm64.json) |
-| macOS Intel (`x64`) Server | 0.1.24 | [Latest installer](https://github.com/IFOSR/metawork/releases/latest/download/install.sh) · [Signed manifest](https://github.com/IFOSR/metawork/releases/latest/download/manifest.darwin-x64.json) |
-| Linux / WSL2 (`x64`) Server | 0.1.24 | [Latest installer](https://github.com/IFOSR/metawork/releases/latest/download/install.sh) · [Signed manifest](https://github.com/IFOSR/metawork/releases/latest/download/manifest.linux-x64.json) |
+| macOS Apple Silicon (`arm64`) Desktop | 0.1.25 | [Latest DMG](https://github.com/IFOSR/metawork/releases/latest/download/MetaWork-darwin-arm64.dmg) |
+| macOS Apple Silicon (`arm64`) Server | 0.1.25 | [Latest installer](https://github.com/IFOSR/metawork/releases/latest/download/install.sh) · [Signed manifest](https://github.com/IFOSR/metawork/releases/latest/download/manifest.darwin-arm64.json) |
+| macOS Intel (`x64`) Server | 0.1.25 | [Latest installer](https://github.com/IFOSR/metawork/releases/latest/download/install.sh) · [Signed manifest](https://github.com/IFOSR/metawork/releases/latest/download/manifest.darwin-x64.json) |
+| Linux / WSL2 (`x64`) Server | 0.1.25 | [Latest installer](https://github.com/IFOSR/metawork/releases/latest/download/install.sh) · [Signed manifest](https://github.com/IFOSR/metawork/releases/latest/download/manifest.linux-x64.json) |
 
 [Latest macOS/Linux Release and archives](https://github.com/IFOSR/metawork/releases/latest) ·
-[Latest checksums](https://github.com/IFOSR/metawork/releases/latest/download/SHA256SUMS).
-The macOS/Linux links follow GitHub's latest Release. The installer selects the
-matching architecture and downloads both Runtime and Planner from its signed
-manifest.
+[v0.1.25 release notes](docs/releases/v0.1.25.md).
+All **14 assets** are published: nine Runtime/Planner/Memory archives (three per
+platform), three signed manifests, `install.sh`, and the Desktop DMG. The links
+above follow GitHub's latest Release. The installer selects the matching
+architecture and verifies the Runtime, Planner and Memory archives against the
+signed manifest's SHA-256 hashes and byte sizes.
+
+This release does not include an Intel Mac DMG, Linux Desktop package, native
+Windows package, Linux arm64 archives or container images. Windows-specific
+source work is on the
+[`fix/windows-native-web`](https://github.com/IFOSR/metawork/tree/fix/windows-native-web) branch.
+Validation results and outstanding full-suite CI failures are documented in the
+release notes.
 
 The Desktop DMG uses an internal ad-hoc signature and
 is not notarized with an Apple Developer ID. It currently supports macOS Apple
@@ -177,7 +182,7 @@ metawork --help
 ```
 
 This command uses the **latest stable release's signed manifest** and verifies the
-Runtime/Planner archives before installation.
+Runtime/Planner/Memory archives before installation.
 
 The setup wizard configures the model provider; Linux/WSL2 defaults to file-backed
 secrets. Unsupported architectures are rejected rather than given another platform's archive.
