@@ -1,10 +1,11 @@
 # 结果恢复与停止状态闭环修复
 
 - 日期：2026-11-04
-- 状态：源码与本地 DMG 验证完成；2026-11-05 用户授权发布，准备 v0.1.25
+- 状态：已完成；2026-11-05 按用户授权发布 v0.1.25，Apple Silicon DMG 与全部 14 个附件已上传并验证
 - 依据：ADR-0023、TaskStateAuthority 与持久化结果身份契约
 - 完成日期：2026-11-04（实现及本地验证）
 - 实现 closing commit：`4af1201c`（fix: close result recovery and stale running state loops）
+- 发布源码：`a22f9e1`；发布及 CI 记录见 [v0.1.25 发布记录](2026-11-05-v0.1.25-release.md)
 
 ## 2026-11-05 实时运行态遗漏修复
 
@@ -43,7 +44,9 @@
 最新本地 DMG：`apps/desktop/release/MetaWork-darwin-arm64-observationfix6-20261105.dmg`
 （389,204,487 字节），SHA-256：
 `d2c65f14939e875e60088b6a01804bf11fb03b25e3987c581c27d04dd8cf0e70`。
-未替换用户真实安装，未发布 Release，等待用户测试；仍为工作区改动，尚无 closing commit。
+该本地验收阶段未替换用户真实安装，也未发布 Release。后续按用户授权，
+源码以 `4af1201c` 提交，并发布版本号更新后的 v0.1.25 安装包；上传
+文件的校验值及全量 CI 未通过项见上述发布记录。
 
 ## 事故事实
 
@@ -76,7 +79,7 @@ Session/Gateway 原先使用整个会话的 backgroundWork 判断控制命令是
 - 原样打包应用通过 LaunchServices/Finder 升级验收：由 `0.1.24-tokenfix2-20261104` 升级至 `0.1.24-tokenfix3-recovery-20261104`，包括中断升级记录、过期 helper 锁、认证界面、两次重新打开、Server 独立存活及原配置/数据保留。
 - 初轮测试包因内部版本后缀排序被判为降级，未交付；最终包采用高于原测试版的版本标识，不放宽防降级检查。Electron 重复下载连接超时后使用 SHA-256 一致的本机 Electron 44.5.1 缓存完成构建。
 
-## 本地验收
+## 本地验收（发布前历史记录）
 
 本次仅构建本地 DMG，包含先前 Pi 可选输出 token 上限移除和 Desktop Gateway readiness 协议修复；不发布 GitHub Release，不替换用户数据。旧事故 Task 已接受旧结果成为终态，升级不会篡改该历史事实，也不会自动重跑；需要新的用户请求重新生成最终答案。新案例在校正耗尽后应展示明确接受/重新执行，重新执行只重做待决步骤；拒绝的控制命令回复后停止按钮应恢复，后台任务取消需使用任务自己的停止入口。
 

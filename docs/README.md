@@ -19,7 +19,7 @@ This directory contains both current technical documentation and historical plan
 
 ## Current Docs
 
-- [结果恢复与停止状态闭环](plans/2026-11-04-result-recovery-deadlock-fix.md)：2026-11-04 源码已实施。移除隐式接受未验收结果，拒绝历史自动接受抢占用户重试，统一实时结果动作和控制命令收尾；11-05 补齐 WebSocket 历史运行态校正及同版本客户端刷新，真实浏览器回归及新本地包升级验收通过，待用户测试，未发布。
+- [结果恢复与停止状态闭环](plans/2026-11-04-result-recovery-deadlock-fix.md)：移除隐式接受未验收结果，拒绝历史自动接受抢占用户重试，统一实时结果动作和控制命令收尾；补齐 WebSocket 历史运行态及同版本客户端自动收敛。2026-11-05 已发布 v0.1.25，真实浏览器及安装升级验收通过；全部 14 个附件及 DMG 校验完成，全量 CI 遗留失败详见 [发布记录](plans/2026-11-05-v0.1.25-release.md)。
 
 - [Server 关停有界与退出恢复](plans/2026-11-04-server-shutdown-bounded-exit-recovery.md)：2026-11-04 已实施。关停按 Planner → 记忆沉积 → 账户存储释放排序；Server 在 drain 前武装独立的退出看门狗（默认 60s）；实例锁只在进程真正退出时释放，`status` 能识别卡住的实例，`metawork server stop --force` 与 Desktop 停止/重连都能回收它；停止原因可审计。
 
