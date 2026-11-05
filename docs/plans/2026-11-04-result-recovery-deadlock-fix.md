@@ -1,10 +1,10 @@
 # 结果恢复与停止状态闭环修复
 
 - 日期：2026-11-04
-- 状态：源码与本地 DMG 验证完成；等待用户业务验收，未发布
+- 状态：源码与本地 DMG 验证完成；2026-11-05 用户授权发布，准备 v0.1.25
 - 依据：ADR-0023、TaskStateAuthority 与持久化结果身份契约
 - 完成日期：2026-11-04（实现及本地验证）
-- 提交：当前工作区，尚无 closing commit
+- 实现 closing commit：`4af1201c`（fix: close result recovery and stale running state loops）
 
 ## 2026-11-05 实时运行态遗漏修复
 

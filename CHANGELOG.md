@@ -5,6 +5,20 @@ AnyFusion release entries remain unchanged for auditability.
 
 The project follows [Semantic Versioning](https://semver.org/) for public releases.
 
+## [0.1.25] - 2026-11-05
+
+- Uncertified results now wait for explicit acceptance or retry after completion
+  correction is exhausted; historical implicit accepts cannot consume a new retry.
+- Result controls use the current result identity, and Continue is offered only
+  when there is a continuation target. Terminal Tasks no longer retain stale controls.
+- Control-command replies finish independently of background Tasks. Stop targets
+  the associated work, and orphan commands cannot cancel an unrelated Task.
+- Historical running indicators converge through HTTP and WebSocket observation,
+  including reconnects and same-revision client updates. No manual refresh is required.
+- Pi requests omit optional OpenAI output-token caps, including completion
+  corrections; Anthropic's required field and provider-side limits remain intact.
+- Desktop readiness probes use the current shared Gateway protocol version.
+
 ## [0.1.24] - 2026-11-04
 
 - Desktop background updates no longer fail because the release id is long. An
