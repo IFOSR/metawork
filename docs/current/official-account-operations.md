@@ -149,24 +149,24 @@ Runtime 自身按设计只监听 `127.0.0.1:8788`（`ManagementServer` 硬编码
    本机浏览器打开 `http://127.0.0.1:8788`。WebSocket 的 Origin 校验要求 loopback + 监听端口
    匹配，隧道下天然满足，无需任何改写。
 
-2. **nginx 反代 + Basic 认证（需要云安全组放行端口）**
+2. **nginx 反代 + Basic 认证（当前启用的外网入口）**
 
    `/etc/nginx/sites-available/metawork-runtime`（仓库副本 `official-server/deploy/nginx-metawork-runtime.conf`）
-   在 `9223` 终止 TLS（复用 `14.103.216.193` 证书），转发到 `127.0.0.1:8788`：
+   **由 nginx 独占公网 `8788`** 并终止 TLS（复用 `14.103.216.193` 证书）；
+   Runtime 自身改用 `METAWORK_WEB_PORT=18788` 只监听 `127.0.0.1:18788`，因此无法被直接访问：
 
+   - systemd `metawork-server.service` 内 `Environment=METAWORK_WEB_PORT=18788`；
+     `server-endpoint.json` 的 `webOrigin` 随之变为 `http://127.0.0.1:18788`；
    - 前端加 `auth_basic`（`/etc/nginx/metawork-runtime.htpasswd`，权限 `root:www-data 640`；
      600 root-only 会让 worker 读不到并返回 500）；
-   - 后端 leg 必须把 `Host` 与 `Origin` 改写成 `127.0.0.1:8788`：Runtime 的 WebSocket 与若干
-     API 只接受「loopback + 监听端口」的 Origin，否则返回 403 `forbidden_origin`；
+   - 后端 leg 必须把 `Host` 与 `Origin` 改写成 `127.0.0.1:18788`：Runtime 的 WebSocket 与若干
+     API 只接受「loopback + 自身监听端口」的 Origin，否则返回 403 `forbidden_origin`；
    - `Upgrade`/`Connection` 通过 `/etc/nginx/conf.d/metawork-websocket.conf` 的 `map` 透传，
      `proxy_read_timeout 3600s` 保证长连接不被切断。
 
-   已验证（服务器本机）：无凭据 401、有凭据 200、`/api/auth/session` 200 并下发
-   `anyfusion_web_session` Cookie、`/assets/index-*.js` 200（569 KB）、WebSocket `/ws`
-   在 `Origin: https://14.103.216.193:9223` 下返回 `101 Switching Protocols`。
-   账号密码随机生成并保存在服务器 `/root/.metawork-runtime-access.txt`（600），不入库、不入日志。
-
-   注意：该服务器当前只有 **443** 与 **9222** 可从公网访问，`9223` 被云安全组拦截
-   （外部探测超时，本机 iptables/ufw 均放行）。需要在云控制台放行 9223 后外网才可用；
-   放行后入口为 `https://14.103.216.193:9223/`。不会与官方服务的 `9222`、
-   443 上既有站点冲突。
+   外网实测（本机发起，公网 IP）：无凭据 `401`、有凭据 `/` `200`、`/api/auth/session` `200`
+   并下发 `anyfusion_web_session` Cookie、`/assets/index-*.js` `200`（569 KB）、
+   `/ws`（`Origin: https://14.103.216.193:8788`）返回 `101 Switching Protocols`。
+   入口为 `https://14.103.216.193:8788/`；账号密码随机生成并保存在服务器
+   `/root/.metawork-runtime-access.txt`（600），不入库、不入日志。
+   8788 已在云安全组放行（外部可达）；`9223` 方案已废弃并移除，服务器上不再监听该端口。
