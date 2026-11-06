@@ -150,7 +150,7 @@ Runtime 自身按设计只监听 `127.0.0.1:8788`（`ManagementServer` 硬编码
    本机浏览器打开 `http://127.0.0.1:8788`。WebSocket 的 Origin 校验要求 loopback + 监听端口
    匹配，隧道下天然满足，无需任何改写。
 
-2. **nginx 反代 + Basic 认证（当前启用的外网入口）**
+2. **nginx 反代（当前启用的外网入口，不做 HTTP 认证）**
 
    `/etc/nginx/sites-available/metawork-runtime`（仓库副本 `official-server/deploy/nginx-metawork-runtime.conf`）
    **由 nginx 独占公网 `8788`** 并终止 TLS（复用 `14.103.216.193` 证书）；
@@ -158,16 +158,19 @@ Runtime 自身按设计只监听 `127.0.0.1:8788`（`ManagementServer` 硬编码
 
    - systemd `metawork-server.service` 内 `Environment=METAWORK_WEB_PORT=18788`；
      `server-endpoint.json` 的 `webOrigin` 随之变为 `http://127.0.0.1:18788`；
-   - 前端加 `auth_basic`（`/etc/nginx/metawork-runtime.htpasswd`，权限 `root:www-data 640`；
-     600 root-only 会让 worker 读不到并返回 500）；
    - 后端 leg 必须把 `Host` 与 `Origin` 改写成 `127.0.0.1:18788`：Runtime 的 WebSocket 与若干
      API 只接受「loopback + 自身监听端口」的 Origin，否则返回 403 `forbidden_origin`；
    - `Upgrade`/`Connection` 通过 `/etc/nginx/conf.d/metawork-websocket.conf` 的 `map` 透传，
      `proxy_read_timeout 3600s` 保证长连接不被切断。
 
-   外网实测（本机发起，公网 IP）：无凭据 `401`、有凭据 `/` `200`、`/api/auth/session` `200`
-   并下发 `anyfusion_web_session` Cookie、`/assets/index-*.js` `200`（569 KB）、
+   外网实测（公网 IP 发起）：`/` 返回 `200` 且不再出现 `WWW-Authenticate` 挑战、
+   `/api/auth/session` `200` 并下发 `anyfusion_web_session` Cookie、`/assets/index-*.js` `200`、
    `/ws`（`Origin: https://14.103.216.193:8788`）返回 `101 Switching Protocols`。
-   入口为 `https://14.103.216.193:8788/`；账号密码随机生成并保存在服务器
-   `/root/.metawork-runtime-access.txt`（600），不入库、不入日志。
-   8788 已在云安全组放行（外部可达）；`9223` 方案已废弃并移除，服务器上不再监听该端口。
+   入口为 `https://14.103.216.193:8788/`。
+
+   **安全边界（已知取舍，2026-11-06 按用户要求移除 Basic 认证）**：Runtime 的
+   `GET /api/auth/session` 会对任何可达客户端直接建立传输会话，因此该入口的实际保护只有
+   「端口不公开宣传 + TLS」；任何知道 `https://14.103.216.193:8788/` 的人都能创建任务并读取
+   全部会话历史。若后续需要恢复门禁，可在该 `location` 里加 `auth_basic`，或改用
+   `allow <IP>; deny all;` 的 IP 白名单（不弹登录框）。原 Basic 凭据文件
+   `/etc/nginx/metawork-runtime.htpasswd` 与 `/root/.metawork-runtime-access.txt` 已删除。
