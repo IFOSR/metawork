@@ -105,3 +105,31 @@ Web/Desktop 顶部“登录 / 注册”或“账号与订阅”进入账号窗�
 - 隔离本机安装 `/tmp/metawork-official-acceptance` 无 internal 凭据，能启动 Web 登录/设置。Chrome 已通过真实 HTTPS 下的注册、登录、七天试用、待支付订单、退出、重新登录及 1440/390 宽度交互；Server 重启后投影为 logged_out。测试账号已删除。
 
 未完成证据：用户真实资料的客户端操作复核、真实 Planner/Executor 授权失效期间的长任务联调、完整 TUI/飞书联调。三个官方 AI 操作已取得上述真实 HTTPS 证据，Desktop 安装与升级已验收；不能以这些检查替代剩余完整执行验收。代码未创建 Git 提交或推送，等待用户验证。
+
+## huoshan 上的 MetaWork Runtime（2026-11-06）
+
+huoshan 上除官方账号服务外，另外部署了一份 MetaWork Runtime（Server + Planner + Memory），
+与 `metawork-official.service` 相互独立：两者进程、端口、数据库与密钥互不影响。
+
+- 机器：Ubuntu 24.04 LTS（`x86_64`），系统 Node `v22.19.0`（`/usr/bin/node`），无内置 Node。
+- 版本：**v0.1.26**，releaseId `0.1.26-build-1121581`，安装根 `/root/.metawork`，
+  `app/current -> releases/0.1.26-build-1121581`。
+- 产物来源：GitHub Release `v0.1.26` 的 `linux-x64` 归档
+  （`metawork-` / `planner-` / `memory-0.1.26-build-1121581-linux-x64.tar.gz`）与
+  `manifest.linux-x64.json`。
+- 传输路径：GitHub → huoshan 直连在该网络下只有约 28 KB/s，`install.sh` 下载 122 MB
+  Runtime 归档超时中断（并在 ssh 断链时被 SIGPIPE 终止）；改为在本机从 GitHub Release
+  取同一批产物，先按 `metawork-release-2026-03` 校验清单签名、再逐个校验 sha256 与字节数，
+  然后分包传输到服务器，在服务器上重新执行同一套清单签名 + 产物校验后才解包安装。
+  校验强度与 `install.sh` 等价，差别仅是下载链路。
+- 服务：systemd `metawork-server.service`（已 enabled + active）。
+  `ExecStart=/usr/bin/node /root/.metawork/app/current/dist/index.js server start`，
+  `Environment=METAWORK_SECRET_STORE=file`（无 macOS keychain 与桌面密钥库），
+  `Restart=on-failure`。仅监听 `127.0.0.1:8788`（`webOrigin` 同址），不对外暴露；
+  `/` 返回 200，`server-endpoint.json` 为 `state=ready`。
+- 共存检查：`metawork-official.service` 保持 active，`127.0.0.1:8780/healthz` 返回 200，
+  公网入口仍是 nginx `9222`。部署过程未改动官方服务的 `.env`、数据库或 nginx 配置。
+- 未配置的部分：Feishu 与 Provider。`metawork server doctor` 只报 Feishu 未启用/未配对与
+  审计日志缺失的告警，其余检查项 `OK`。
+- 升级：用同一发布流程安装新版本后执行 `systemctl restart metawork-server`；
+  回滚沿用 `<installRoot>/app/releases/` 下的历史目录。
