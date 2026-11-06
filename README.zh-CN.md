@@ -58,15 +58,16 @@ AnyFusion 标识。
 
 ## Release
 
-当前发布版本是 **v0.1.25（Internal）**，发布于 **2026-11-05**。
-本版保留此前的 Desktop 升级修复，并完善结果恢复与运行状态：
+当前发布版本是 **v0.1.26（Internal）**，发布于 **2026-11-06**。
+本版恢复 Executor 的扩展工具，并保留此前的 Desktop 升级与结果恢复修复：
 
-- 只有实际存在可恢复工作时才显示“继续”；未通过完整验收的结果等待用户明确接受或
-  重新执行，旧决定不会抢先处理新的重试。
-- 控制命令回复后即结束该轮交互；停止操作定位关联工作，Desktop/Web 中历史遗留的
-  运行状态会自动收敛。
-- Pi 请求移除可选的 OpenAI 输出 token 上限；服务商自身限制仍适用，Anthropic 必需的
-  `max_tokens` 保留。Desktop 就绪检查统一使用共享 Gateway 协议版本。
+- 执行型 Attempt 重新获得 Pi 的完整工具注册表。`pi --tools` 是同时覆盖扩展工具的
+  全局 allowlist，此前由 Executor affordance 投影推导它，导致 2026-10-28 起每个
+  Attempt 都丢掉了 `web_search`、`web_fetch`、`evidence_*`、
+  `result_reference_list/get` 与 `pdf_*`。现在 affordance 只决定装配哪些扩展。
+- 依赖上游结果的子任务可直接读取授权引用，不再因缺工具而退化成用 shell 扫描磁盘。
+- response-only completion correction 以无工具、无 session 启动；它的契约只是输出一条
+  completion trailer，不产生任何动作。
 
 同一个 Release 已发布 **macOS arm64、macOS x64、Linux x64** 三个平台的 Server
 安装资源，以及 **macOS arm64 Desktop DMG**。Intel Mac 和 Linux 用户可通过
@@ -74,13 +75,13 @@ Server 安装包使用 Web、TUI 或飞书客户端。
 
 | 平台 | 最新可用版本 | 下载 / 安装 |
 | --- | --- | --- |
-| macOS Apple Silicon（`arm64`）桌面版 | 0.1.25 | [最新 DMG](https://github.com/IFOSR/metawork/releases/latest/download/MetaWork-darwin-arm64.dmg) |
-| macOS Apple Silicon（`arm64`）Server | 0.1.25 | [最新安装器](https://github.com/IFOSR/metawork/releases/latest/download/install.sh) · [签名清单](https://github.com/IFOSR/metawork/releases/latest/download/manifest.darwin-arm64.json) |
-| macOS Intel（`x64`）Server | 0.1.25 | [最新安装器](https://github.com/IFOSR/metawork/releases/latest/download/install.sh) · [签名清单](https://github.com/IFOSR/metawork/releases/latest/download/manifest.darwin-x64.json) |
-| Linux / WSL2（`x64`）Server | 0.1.25 | [最新安装器](https://github.com/IFOSR/metawork/releases/latest/download/install.sh) · [签名清单](https://github.com/IFOSR/metawork/releases/latest/download/manifest.linux-x64.json) |
+| macOS Apple Silicon（`arm64`）桌面版 | 0.1.26 | [最新 DMG](https://github.com/IFOSR/metawork/releases/latest/download/MetaWork-darwin-arm64.dmg) |
+| macOS Apple Silicon（`arm64`）Server | 0.1.26 | [最新安装器](https://github.com/IFOSR/metawork/releases/latest/download/install.sh) · [签名清单](https://github.com/IFOSR/metawork/releases/latest/download/manifest.darwin-arm64.json) |
+| macOS Intel（`x64`）Server | 0.1.26 | [最新安装器](https://github.com/IFOSR/metawork/releases/latest/download/install.sh) · [签名清单](https://github.com/IFOSR/metawork/releases/latest/download/manifest.darwin-x64.json) |
+| Linux / WSL2（`x64`）Server | 0.1.26 | [最新安装器](https://github.com/IFOSR/metawork/releases/latest/download/install.sh) · [签名清单](https://github.com/IFOSR/metawork/releases/latest/download/manifest.linux-x64.json) |
 
 [最新 macOS/Linux Release 与归档](https://github.com/IFOSR/metawork/releases/latest) ·
-[v0.1.25 发布说明](docs/releases/v0.1.25.md)。
+[v0.1.26 发布说明](docs/releases/v0.1.26.md)。
 本次共发布 **14 个附件**：9 个 Runtime/Planner/Memory 归档（每个平台各 3 个）、
 3 份签名清单、`install.sh` 和 Desktop DMG。以上下载链接跟随 GitHub 最新 Release；
 安装器自动选择当前架构，并按签名清单中的 SHA-256 和文件大小校验

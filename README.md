@@ -70,17 +70,19 @@ existing names where changing them would break installations.
 
 ## Release
 
-The current release is **v0.1.25 (Internal)**, published on **2026-11-05**.
-It includes the previous Desktop upgrade fixes and improves result recovery
-and execution status:
+The current release is **v0.1.26 (Internal)**, published on **2026-11-06**.
+It restores the Executor's extension tools and keeps the previous Desktop
+upgrade and recovery fixes:
 
-- Continue appears only when there is recoverable work. Uncertified results
-  wait for explicit acceptance or retry, and old decisions cannot consume a new retry.
-- Control commands finish when their reply is ready. Stop targets the associated
-  work, and historical running indicators converge automatically in Desktop/Web.
-- Pi requests no longer impose optional OpenAI output-token caps; provider limits
-  still apply and Anthropic's required `max_tokens` remains. Desktop readiness
-  checks use the shared Gateway protocol version.
+- Executing Attempts receive Pi's complete tool registry again. The `pi --tools`
+  flag is a global allowlist that also covers extension tools, so deriving it
+  from the Executor affordance projection had removed `web_search`, `web_fetch`,
+  `evidence_*`, `result_reference_list/get` and the `pdf_*` tools from every
+  Attempt since 2026-10-28. Affordances now decide only what gets materialized.
+- Dependent Subtasks read authorized upstream results directly again instead of
+  working around a missing tool with shell scanning.
+- The response-only completion correction runs with no tools and no session; its
+  contract is one completion trailer and no action.
 
 The same Release contains Server packages for **macOS arm64, macOS x64 and
 Linux x64**, plus a **macOS arm64 Desktop DMG**. Intel Mac and Linux users can
@@ -88,13 +90,13 @@ use Web, TUI or Feishu with the Server package.
 
 | Platform | Latest available version | Download / install |
 | --- | --- | --- |
-| macOS Apple Silicon (`arm64`) Desktop | 0.1.25 | [Latest DMG](https://github.com/IFOSR/metawork/releases/latest/download/MetaWork-darwin-arm64.dmg) |
-| macOS Apple Silicon (`arm64`) Server | 0.1.25 | [Latest installer](https://github.com/IFOSR/metawork/releases/latest/download/install.sh) · [Signed manifest](https://github.com/IFOSR/metawork/releases/latest/download/manifest.darwin-arm64.json) |
-| macOS Intel (`x64`) Server | 0.1.25 | [Latest installer](https://github.com/IFOSR/metawork/releases/latest/download/install.sh) · [Signed manifest](https://github.com/IFOSR/metawork/releases/latest/download/manifest.darwin-x64.json) |
-| Linux / WSL2 (`x64`) Server | 0.1.25 | [Latest installer](https://github.com/IFOSR/metawork/releases/latest/download/install.sh) · [Signed manifest](https://github.com/IFOSR/metawork/releases/latest/download/manifest.linux-x64.json) |
+| macOS Apple Silicon (`arm64`) Desktop | 0.1.26 | [Latest DMG](https://github.com/IFOSR/metawork/releases/latest/download/MetaWork-darwin-arm64.dmg) |
+| macOS Apple Silicon (`arm64`) Server | 0.1.26 | [Latest installer](https://github.com/IFOSR/metawork/releases/latest/download/install.sh) · [Signed manifest](https://github.com/IFOSR/metawork/releases/latest/download/manifest.darwin-arm64.json) |
+| macOS Intel (`x64`) Server | 0.1.26 | [Latest installer](https://github.com/IFOSR/metawork/releases/latest/download/install.sh) · [Signed manifest](https://github.com/IFOSR/metawork/releases/latest/download/manifest.darwin-x64.json) |
+| Linux / WSL2 (`x64`) Server | 0.1.26 | [Latest installer](https://github.com/IFOSR/metawork/releases/latest/download/install.sh) · [Signed manifest](https://github.com/IFOSR/metawork/releases/latest/download/manifest.linux-x64.json) |
 
 [Latest macOS/Linux Release and archives](https://github.com/IFOSR/metawork/releases/latest) ·
-[v0.1.25 release notes](docs/releases/v0.1.25.md).
+[v0.1.26 release notes](docs/releases/v0.1.26.md).
 All **14 assets** are published: nine Runtime/Planner/Memory archives (three per
 platform), three signed manifests, `install.sh`, and the Desktop DMG. The links
 above follow GitHub's latest Release. The installer selects the matching
