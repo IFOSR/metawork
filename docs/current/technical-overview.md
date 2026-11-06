@@ -172,9 +172,12 @@ paths for admission and postcondition checks; it does not select the Harness
 tools. The Coordinator retains durable graph admission, execution identity,
 resource leases, settlement, publication and crash recovery, but does not
 translate `read_only` or `run_in_target` into a tool allowlist. Executor/Harness
-owns the agent loop, tool registry and capability request. A normal Pi Attempt therefore retains
-its shell and standard file tools even when the Workspace boundary is read-only;
-only an explicit response-only correction requests a reduced tool surface. See
+owns the agent loop, tool registry and capability request. A normal Pi Attempt therefore runs
+Pi's complete tool registry — its shell and standard file tools plus every extension the
+Executor materialized for that Attempt (web, evidence/ResultReference, pdf) — even when the
+Workspace boundary is read-only, and it is never launched with a tool allowlist;
+affordances decide only what gets materialized. Only an explicit response-only correction
+runs with a reduced tool surface (no tools, no session). See
 [ADR-0052](../adr/0052-executor-owned-tool-capabilities-and-kernel-boundary.md).
 
 The target configuration uses one immutable revision per Work Graph generation.

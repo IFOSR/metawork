@@ -152,8 +152,10 @@ execution loop and its tool registry; MetaWork receives the final Attempt fact,
 verifies the external postconditions, assembles the Graph result and delivers
 it. `workspaceIntent` describes the requested Workspace effect for admission
 and verification, but it never becomes a Harness tool allowlist. A normal
-Executor keeps its shell and other registered tools available; only an explicit
-response-only correction may request a reduced surface. Harness-owned tool
+Executor keeps its complete registered tool surface — shell and standard file
+tools plus every extension materialized for the Attempt — and is never launched
+with a tool allowlist; affordances decide only what gets materialized. Only an
+explicit response-only correction runs reduced (no tools, no durable session). Harness-owned tool
 errors, command failures,
 test failures, code repair, Provider backoff and multi-turn reasoning must stay
 inside the Harness. They are not user decisions and must not be promoted to a

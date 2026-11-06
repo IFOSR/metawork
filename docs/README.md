@@ -37,6 +37,8 @@ This directory contains both current technical documentation and historical plan
 
 - [会话当前状态简化](plans/2026-10-30-session-current-state-simplification-design.md)：客户端唯一当前会话、无连接级默认命令目标，按会话真实 activity 删除与展示；实施及验收记录见文档末尾。
 
+- [Executor 工具面移除启动期 allowlist](plans/2026-11-05-executor-tool-surface-without-allowlist.md)：2026-11-05 实施。`pi --tools` 是覆盖扩展工具的全局 allowlist，10-28 起由 affordance 推导它导致 web/evidence/ResultReference/pdf 工具全部静默失效（依赖上游结果的子任务退化成 190 GB 全盘 grep）；现正常 Attempt 不再传工具 allowlist，affordance 只决定装配什么，response-only correction 收紧到 `--no-session --no-tools`。已通过 lint、聚焦套件与 build，尚未安装/发布。
+
 - [Web 用户路径验收测试报告](current/2026-10-27-web-acceptance-test-report.md)（2026-10-27）：真实浏览器对照架构 A1–A17、Memory 五组与滚动 12 景验收；结论为未通过，含 P0 阻断（同会话追问被 Kernel 拒绝、失败任务不释放会话槽位、Run Contract `serviceIntent` 生产路径缺失）与证据截图。
 
 - [Agent 执行架构重构方案](plans/2026-10-27-agent-execution-architecture-realignment-plan.md) 与 [技术实施方案](plans/2026-10-27-agent-execution-architecture-realignment-implementation-plan.md)：收敛 Planner → Work Graph → Kernel → Executor 链路，让 Runtime 不再干预 Harness 内部循环。已固化“Executor 内部失败由 Harness 消化、MetaWork 验收失败默认反馈 continuation、只有硬边界或预算耗尽才交给用户”的原则。P0/P1/P2 已实施：Run Contract 投影、服务身份与失败修复 continuation（ADR-0051）、失败诊断进入 Planner 与 Executor、终态 Task 自然取代、In-place 交付语义收敛；实施记录与未完成项见文档末尾。

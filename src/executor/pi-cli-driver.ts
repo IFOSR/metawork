@@ -150,12 +150,21 @@ export class PiCliDriver implements HarnessDriver {
     const agentPath = `${input.runtimeHomePath}/.pi/agent`;
     // Workspace access describes the Runtime's filesystem boundary. It is not
     // a Planner-controlled tool allowlist. The Executor owns its own tool
-    // registry and must retain shell access for read/inspect/run tasks. The
-    // only intentionally reduced launch is the explicit response-only
-    // correction path.
-    const toolArgs = input.responseOnly
-      ? ['--no-session', '--tools', 'read']
-      : piExecutorToolArgs(input.executorAffordances);
+    // registry and must retain shell access for read/inspect/run tasks.
+    //
+    // A normal Attempt runs Pi's complete registry: the built-in workspace
+    // tools plus every extension the Executor materialized for this Attempt
+    // (web tools, evidence/ResultReference tools, pdf tools). Pi's `--tools` is
+    // a global allowlist that also covers extension and custom tools, so
+    // deriving it from affordances silently deleted those extensions. The
+    // Executor affordance projection still decides what gets materialized
+    // (see METACLAW_PI_WEB_TOOLS_ENABLED and seedWebExtension); it must not
+    // remove tools at launch.
+    //
+    // The only intentionally reduced launch is the explicit response-only
+    // correction path: its contract is one completion trailer, no action, so it
+    // runs with no tools and no session.
+    const toolArgs = input.responseOnly ? ['--no-session', '--no-tools'] : [];
     return {
       command: this.command,
       args: [
@@ -373,19 +382,6 @@ export class PiCliDriver implements HarnessDriver {
     await copyFile(this.webExtensionSourcePath, target);
     await chmod(target, 0o600);
   }
-}
-
-function piExecutorToolArgs(
-  affordances: readonly ExecutorAffordanceId[] | undefined,
-): string[] {
-  // An omitted affordance projection preserves Pi's own standard tool
-  // registry. When the authorized Executor publishes one, derive its tool
-  // surface from that Executor-owned registration, never from workspaceAccess.
-  if (!affordances) return [];
-  const tools = ['read'];
-  if (affordances.includes('workspace-command-validation')) tools.push('bash');
-  if (affordances.includes('workspace-read-write')) tools.push('edit', 'write');
-  return ['--tools', tools.join(',')];
 }
 
 class PiResultStreamTracker implements HarnessResultStreamTracker {

@@ -151,15 +151,20 @@ describe('PiCliDriver', () => {
     expect(launch.args).not.toContain('--no-session');
   });
 
-  it('derives the tool surface from the Executor affordance registration', () => {
+  it('never narrows a normal Attempt to a tool allowlist, so extension tools stay registered', () => {
     const driver = new PiCliDriver({ probeCommand: vi.fn(), piCommand: { command: 'pi', args: [] } });
     const launch = driver.buildLaunch({
       prompt: 'run hello.py', cwd: '/workspace', runtimeHomePath: '/attempt/home',
       workspaceAccess: 'read',
-      executorAffordances: ['workspace-command-validation'],
+      executorAffordances: ['workspace-read-write', 'workspace-command-validation'],
+      evidenceToolsAvailable: true,
     });
-    expect(launch.args).toContain('--tools');
-    expect(launch.args).toContain('read,bash');
+    // Pi's --tools is a global allowlist that also covers extension and custom
+    // tools; passing it would silently drop web_fetch, result_reference_get and
+    // the pdf tools the Executor materialized for this Attempt.
+    expect(launch.args).not.toContain('--tools');
+    expect(launch.args).not.toContain('--no-tools');
+    expect(launch.args).not.toContain('--no-session');
   });
 
   it('keeps image capabilities out of the standard Pi CLI launch', () => {
@@ -214,7 +219,7 @@ describe('PiCliDriver', () => {
     }
   });
 
-  it('builds a read-only launch with read tools and no durable session', () => {
+  it('builds the response-only correction launch with no tools and no durable session', () => {
     const driver = new PiCliDriver({
       probeCommand: vi.fn(),
       piCommand: { command: 'pi', args: [] },
@@ -233,8 +238,7 @@ describe('PiCliDriver', () => {
       '--mode',
       'json',
       '--no-session',
-      '--tools',
-      'read',
+      '--no-tools',
       '--provider',
       'deepseek',
       '--model',

@@ -52,8 +52,10 @@ Runtime 与 Adapter 只上报事实，不决定 fallback。`workspaceIntent` 只
 Workspace effect 和目标路径，供 admission 与验收使用，不是 Harness 工具
 allowlist。Durable Task Coordinator 继续负责持久化 admission、执行身份、租约、结算、发布和恢复，
 但不把 `read_only` 或 `run_in_target` 翻译成工具集合；Executor/Harness 自己
-拥有 agent loop、工具注册和 capability request。正常 Pi Attempt 保留 shell 和标准文件工具，只有
-显式 response-only correction 才使用缩减工具面。Permission Profile 与 Host
+拥有 agent loop、工具注册和 capability request。正常 Pi Attempt 运行 Pi 的完整工具注册表
+（shell、标准文件工具，以及 Executor 为该 Attempt 装配的所有扩展：web、evidence/ResultReference、pdf），
+即使 Workspace 边界是只读的也是如此，且启动时绝不传入工具 allowlist；affordance 只决定装配哪些扩展。
+只有显式 response-only correction 才使用缩减工具面（无工具、无 session）。Permission Profile 与 Host
 sandbox 仍由 Resource/Runtime 负责实际边界。详见
 [ADR-0052](../adr/0052-executor-owned-tool-capabilities-and-kernel-boundary.md)。
 数据库采用 v30→v31→v32 事务升级，并与

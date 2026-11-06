@@ -45,21 +45,29 @@ does not choose a Harness tool set, implement the Harness retry/repair loop, or
 promote an individual command failure into a user decision.
 
 Executor/Harness owns the execution loop and its available tools. A normal Pi
-Executor receives the tool registry declared by its Executor registration
-(`read`, `bash`, `edit`, `write` for the standard workspace class; Pi's own
-default registry is used when no projection is supplied) unless the Executor's
-own explicit response-only entrypoint requests a reduced surface. The Runtime's
-`workspaceAccess` remains a filesystem/prompt boundary;
-it must not remove `bash` from a normal Attempt. Host/container enforcement is
-responsible for making that boundary real. Fine-grained escalation remains a
-Harness/Host policy decision and is recorded as an execution fact.
+Attempt runs Pi's complete tool registry: the built-in workspace tools plus every
+extension the Executor materialized for that Attempt (web tools, evidence and
+ResultReference tools, pdf tools). Pi's `--tools` flag is a global allowlist that
+also covers extension and custom tools, so deriving it from a workspace class or
+an affordance projection silently deletes extension tools; an executing Attempt
+must not be launched with it. Executor affordances still decide what gets
+materialized — the web extension follows the web affordances, and
+evidence/ResultReference tools are installed for bound Attempts — never what gets
+removed at launch. The only intentionally reduced launch is the Executor's own
+explicit response-only correction entrypoint, whose contract is one completion
+trailer and no action: it runs with no tools and no durable session. The
+Runtime's `workspaceAccess` remains a filesystem/prompt boundary; it must not
+remove `bash` from a normal Attempt. Host/container enforcement is responsible
+for making that boundary real. Fine-grained escalation remains a Harness/Host
+policy decision and is recorded as an execution fact.
 
 ## Consequences
 
 - A `read_only` or `run_in_target` semantic classification no longer causes a
   native Pi Attempt to lose shell access.
-- Native and container Pi launches use the same Executor-owned default tool
-  surface; response-only correction remains explicitly tool-reduced.
+- An executing Attempt keeps Pi's complete registry, including the extension
+  tools the Executor materialized for it; affordances control materialization,
+  not launch-time removal. Response-only correction runs with no tools at all.
 - Planner manuals must describe effects and acceptance, not concrete tool
   permissions. AgentClass/Harness configuration may still advertise supported
   affordances for routing and host registration.
@@ -73,8 +81,25 @@ Harness/Host policy decision and is recorded as an execution fact.
 
 ## Validation
 
-The Pi driver regression test verifies that `workspaceAccess: 'read'` does not
-add `--tools read` or `--no-session`; only the explicit response-only launch
-uses that reduced surface. `npm run lint`, the focused Pi driver tests and
+The Pi driver regression tests verify that a normal Attempt launch carries no
+`--tools`/`--no-tools` flag even when Executor affordances are published, and that
+only the explicit response-only launch uses the reduced surface (`--no-session`
+with no tools). `npm run lint`, the focused Pi driver tests and
 `git diff --check` are required for the implementation change.
+
+## Amendment: no launch-time tool allowlist (2026-11-05)
+
+The 2026-10-28 implementation of the paragraph above derived `--tools
+read,bash,edit,write` from the Executor affordance projection for every Attempt
+that published one, which is effectively every Attempt. Because Pi's `--tools`
+also filters extension-registered tools, `web_search`, `web_fetch`,
+`evidence_*`, `result_reference_*` and the `pdf_*` tools disappeared from all
+Attempts from that date, contradicted this ADR's own materialization rules, and
+made every dependent Subtask improvise around a documented tool it did not have
+(the 2026-11-05 incident: a comparative Subtask spent 26 minutes scanning 190 GB
+of account data with `grep` to locate an upstream ResultReference). Launch-time
+tool allowlists are therefore removed for executing Attempts; the affordance
+projection controls only what the Executor materializes. Response-only
+correction keeps the reduced surface and now runs with no tools instead of
+`read`.
 
