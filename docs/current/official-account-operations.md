@@ -123,16 +123,17 @@ huoshan 上除官方账号服务外，另外部署了一份 MetaWork Runtime（S
   然后分包传输到服务器，在服务器上重新执行同一套清单签名 + 产物校验后才解包安装。
   校验强度与 `install.sh` 等价，差别仅是下载链路。
 - 服务：systemd `metawork-server.service`（已 enabled + active）。
-  `ExecStart=/usr/bin/node /root/.metawork/app/current/dist/index.js server start`，
-  `Environment=METAWORK_SECRET_STORE=file`（无 macOS keychain 与桌面密钥库），
-  `Restart=on-failure`。仅监听 `127.0.0.1:8788`（`webOrigin` 同址），不对外暴露；
-  `/` 返回 200，`server-endpoint.json` 为 `state=ready`。
-- 共存检查：`metawork-official.service` 保持 active，`127.0.0.1:8780/healthz` 返回 200，
-  公网入口仍是 nginx `9222`。部署过程未改动官方服务的 `.env`、数据库或 nginx 配置。
-- 未配置的部分：Feishu 与 Provider。`metawork server doctor` 只报 Feishu 未启用/未配对与
-  审计日志缺失的告警，其余检查项 `OK`。
-- 升级：用同一发布流程安装新版本后执行 `systemctl restart metawork-server`；
-  回滚沿用 `<installRoot>/app/releases/` 下的历史目录。
+  **必须通过托管启动器启动**：`ExecStart=/root/.local/bin/metawork server start`。
+  该启动器导出 `METACLAW_PLANNER_COMMAND`、`METACLAW_PLANNER_SCHEMA_PATH`、
+  `ANYFUSION_PI_SOURCE_ROOT`、`METACLAW_PI_ATTEMPT_EXTENSION`、`METACLAW_EXECUTOR_BACKEND` 等
+  运行期路径。直接 `node <installRoot>/app/current/dist/index.js server start` 会绕过它们：
+  `PlannerProcessSupervisor.resolveCommand()` 的 vendored 探测只匹配源码树
+  `planner/AnyFusion-Pi/...`，安装布局是 `planner/packages/...`，于是回退到 PATH 里的
+  `anyfusion-planner` 并失败。**症状**（2026-11-06 实测）：用户提问后 0.5 秒内 turn
+  `status=failed`、无答案、`usage_observations=0`，界面上只看到账单卡片
+  「本次账单 待确认 / 费用 暂无法计算 / Provider 未返回可验证的用量数据 no_usage_observed」，
+  真实原因藏在轨迹事件 `proposal_transport_uncertain`：
+  `Planner unavailable: spawn anyfusion-planner ENOENT`。
 
 ### 外网访问 MetaWork Runtime（2026-11-06）
 
