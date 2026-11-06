@@ -1,8 +1,9 @@
 # Executor 工具面移除启动期 allowlist
 
-- Status：Implemented（源码实施与聚焦验证完成；尚未安装/发布到本地 release）
+- Status：Implemented & published（v0.1.26 internal release）
 - Plan date：2026-11-05
-- Completion date：2026-11-05
+- Completion date：2026-11-06
+- 关闭提交：`d98cd5a6`（fix）+ `11215818`（chore(release): prepare v0.1.26）
 - 触发事故：2026-11-05 会话 `conv_hxJdxPnoc3eG` 的任务
   「调研 DeepSeek Super Agents 架构并与 MetaWork 对比」三级节点
   「异同对比与 MetaWork 可借鉴建议」（attempt `…_272aac47c8e13855_primary`）。
@@ -95,13 +96,32 @@
   `dist/pi-tool-stall/index.ts` 均随包存在。
 - 未发布、未替换真实安装与数据库。
 
-## 6. 未完成 / 后续
+## 6. 发布记录（2026-11-06）
 
-- **安装与发布**：本地运行的是 `~/.metawork/app/releases/0.1.24-tokenfix4-observation-20261105`，
-  需先由用户本地试用 `toolfix1` 包并通过后，再提交与发布；发布后新工具面才会在真实 Attempt 生效。
-- 生效后的确认方式：任一研究型子任务的 attempt 中应出现 `web_fetch` 或
+- 源码提交：`d98cd5a6` `fix(executor): stop filtering extension tools out of the Pi launch`；
+  发布准备 `11215818` `chore(release): prepare v0.1.26 internal release`（版本 0.1.26 + 发布说明）。
+  两者均只推送到 `main`，未改动其他分支。
+- GitHub Release：`v0.1.26`（Latest，published `2026-11-06T06:43:27Z`，tag 指向 `11215818`），
+  共 14 个资产：`install.sh`、3 份 manifest、9 个 Runtime/Planner/Memory 归档、
+  `MetaWork-darwin-arm64.dmg`。
+- 工作流：`Build internal Runtime release` run `42175334690`（darwin-arm64/x64、linux-x64 全部成功）；
+  `Assemble internal Desktop upload` run `42176054862`（分包 10 × 40 MiB 装回并校验后删除临时分包）。
+- Desktop DMG：releaseId `0.1.26-desktoppayload-1121581`，389,203,255 字节，
+  SHA-256 `c637036986f239d2c16d4f643bb91fa7f7c32a2904a41df765a66ca9cca8aa8a`；
+  从干净工作树（HEAD `11215818`）构建，payload 内已含 `--no-tools` 且不含
+  affordance→allowlist 分支，`codesign --verify --strict` 通过。
+- 资产一致性：三个平台的 9 个归档 sha256 与签名 manifest 逐一比对全部一致；
+  DMG 的大小与 sha256 与 Release 资产一致。
+- 本地试用包（toolfix1，未发布）作为前置验证保留：
+  `apps/desktop/release/MetaWork-darwin-arm64-toolfix1-20261105.dmg`
+  （389,203,750 字节；SHA-256 `04e233c21d203645ad230f658aa9982dbf25ac0a866aea0ba906d3e8602a48d6`，
+  releaseId `0.1.25-toolfix1-20261105`，`builtFromWorkingTree: true`）。
+
+## 7. 未完成 / 后续
+
+- **生效确认**：任一研究型子任务的 attempt 中应出现 `web_fetch` 或
   `result_reference_get` 调用（此前自 10-27 起为 0），且不再出现“只有 4 个工具”
-  的自我盘点。
+  的自我盘点。用户本机需先安装/升级到 `v0.1.26`，旧 release 目录不会自动切换。
 - 可选后续：把 completion trailer 的生成质量从根上收紧，使 response-only
   correction 的触发频次进一步下降；以及为“CPU 活跃但零产出”的工具调用补充
   停滞判定（见 2026-11-02 方案 §5 的后续项）。
