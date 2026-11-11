@@ -9399,10 +9399,15 @@ html[data-platform='desktop'] .workspace-header { column-gap: 16px; }
   .usage-chart-panel > header { align-items: baseline; flex-wrap: wrap; }
 }
 
-/* Planning detail: same shell as the Executor drawer, opened from the planning card. */
+/* Planning detail: an inline expansion of the planning card. It exists only
+   while the Manager is planning, so it uses the same surface as the card
+   instead of a separate dark overlay. */
 .planning-card-open {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
   margin-left: auto;
-  color: #8fbf9f;
+  color: var(--text-dim);
   font-size: 10px;
   letter-spacing: 0.04em;
 }
@@ -9412,125 +9417,73 @@ html[data-platform='desktop'] .workspace-header { column-gap: 16px; }
 }
 
 .live-planning-panel[role='button']:hover {
-  border-color: #46543f;
+  border-color: var(--text-dim);
 }
 
-.planning-details-row {
+.planning-detail-panel {
+  margin-top: 8px;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--bg-panel);
+  max-height: 300px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+
+.planning-detail-panel > header {
   display: flex;
-  justify-content: flex-end;
-  padding: 4px 2px 0;
-}
-
-.planning-details-link {
-  border: 1px solid #2c332c;
-  border-radius: 7px;
-  padding: 3px 8px;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 8px;
   color: var(--text-dim);
-  background: #161a15;
-  cursor: pointer;
   font-size: 11px;
 }
 
-.planning-details-link:hover {
-  border-color: #46543f;
-  color: var(--text);
+.planning-detail-panel > header span {
+  letter-spacing: 0.08em;
 }
 
-.planning-detail-overlay {
-  position: fixed;
-  inset: 0;
-  z-index: 60;
-  display: flex;
-  justify-content: flex-end;
-  background: rgba(4, 7, 4, 0.45);
-}
-
-.planning-detail-drawer {
-  flex: 0 0 clamp(380px, 40vw, 640px);
-  max-width: 92vw;
-  height: 100%;
-  box-shadow: -18px 0 40px rgba(0, 0, 0, 0.45);
-}
-
-.planning-detail-steps {
+.planning-detail-panel ol {
   display: flex;
   flex-direction: column;
-  gap: 10px;
+  gap: 5px;
   margin: 0;
   padding: 0;
   list-style: none;
 }
 
-.planning-detail-step {
-  border-left: 2px solid #2c332c;
-  padding: 0 0 0 10px;
-}
-
-.planning-detail-step[data-kind='planner_failed'],
-.planning-detail-step[data-kind='proposal_rejected'],
-.planning-detail-step[data-kind='planner_convergence_exhausted'] {
-  border-left-color: #a2543f;
-}
-
-.planning-detail-step-head {
+.planning-detail-panel li {
   display: flex;
-  align-items: baseline;
   gap: 8px;
-  font-size: 11px;
+  align-items: baseline;
+  min-width: 0;
 }
 
-.planning-detail-step-head span {
-  color: #647068;
+.planning-detail-panel li time {
+  flex-shrink: 0;
+  color: var(--text-dim);
   font-family: 'SFMono-Regular', Consolas, monospace;
   font-size: 10px;
 }
 
-.planning-detail-step p {
-  margin: 2px 0 0;
-  color: var(--text-dim);
-  font-size: 11px;
+.planning-detail-panel li div {
+  min-width: 0;
+  font-size: 12px;
 }
 
-.planning-detail-step small {
-  display: block;
-  margin-top: 2px;
-  color: #647068;
+.planning-detail-panel li strong {
+  font-weight: 500;
+}
+
+.planning-detail-panel li small {
+  color: var(--text-dim);
   font-size: 10px;
 }
 
-.planning-detail-tools {
-  margin-top: 18px;
-}
-
-.planning-detail-tools h4 {
-  margin: 0 0 6px;
-  color: var(--text-dim);
-  font-size: 11px;
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
-}
-
-.planning-detail-tools ul {
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-  margin: 0;
-  padding: 0;
-  list-style: none;
-  font-size: 11px;
-}
-
-.planning-detail-tools li {
-  display: flex;
-  align-items: baseline;
-  gap: 8px;
-}
-
-.planning-detail-tools li span {
-  color: var(--text-dim);
-}
-
-.planning-detail-tools li small {
-  color: #647068;
-  font-size: 10px;
+.planning-detail-panel li[data-kind='planner_failed'] strong,
+.planning-detail-panel li[data-kind='proposal_rejected'] strong,
+.planning-detail-panel li[data-kind='planner_convergence_exhausted'] strong {
+  color: var(--red);
 }

@@ -14,7 +14,7 @@ import { useTurnPresentation } from './use-turn-presentation';
 import { TaskDagPanel } from '../components/TaskDagPanel';
 import { TurnExecutionRecap } from '../components/TurnExecutionRecap';
 import { LivePlanningPanel, plannerActivity } from '../components/LivePlanningPanel';
-import { PlanningDetailDrawer } from '../components/PlanningDetailDrawer';
+import { PlanningDetailPanel } from '../components/PlanningDetailPanel';
 import type { ArtifactProjection, ConversationTurnProjection } from '../api/session-types';
 import { desktopBridge, reportPersistenceError } from '../platform/services';
 
@@ -450,28 +450,16 @@ const ObservedTurn = memo(function ObservedTurn({ store, conversationId, id, htt
     <ConversationTurnView turn={projection} onOpenTrajectory={onOpenTrajectory}
       onOpenArtifact={onOpenArtifact} onOpenAttachment={onOpenAttachment}
       liveExecutionPanel={latest || turnIsLive ? (plannerActivity(projection)
-        ? <LivePlanningPanel turn={projection} onOpenDetails={() => setPlanningOpen(true)} />
+        ? <>
+          <LivePlanningPanel turn={projection} expanded={planningOpen}
+            onToggle={() => setPlanningOpen(current => !current)} />
+          {planningOpen && <PlanningDetailPanel events={projection.traceEvents} />}
+        </>
         : <TaskDagPanel turn={projection} http={http}
           onSelectSubtask={(subtaskId, title) => onOpenSubtaskDetail(projection, subtaskId, title)} />) : undefined}
       blockedActions={<BlockedActions ws={ws} http={http} conversationId={conversationId} taskId={turn.taskId ?? null}
         fallbackStatus={projection.status === 'blocked' || projection.status === 'failed' ? projection.status : null}
         lifecycle={details.taskLifecycle} permission={details.pendingPermission} refresh={details.refresh} />} />
-    {!plannerActivity(projection) && (
-      <div className="planning-details-row">
-        <button type="button" className="planning-details-link" onClick={() => setPlanningOpen(true)}>
-          规划详情
-        </button>
-      </div>
-    )}
-    {planningOpen && (
-      <PlanningDetailDrawer
-        conversationId={conversationId}
-        turnId={turn.id}
-        http={http}
-        {...(projection.traceEvents.length > 0 ? { events: projection.traceEvents } : {})}
-        onClose={() => setPlanningOpen(false)}
-      />
-    )}
     {!latest && !turnIsLive && turn.taskId && (
       // A settled Turn keeps its own execution record for recall. The newest
       // Turn renders the live task DAG above, so its recap would duplicate it.

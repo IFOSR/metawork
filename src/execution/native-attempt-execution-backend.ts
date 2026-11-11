@@ -282,7 +282,12 @@ export class NativeAttemptExecutionBackend implements AttemptExecutionBackend {
     const receipt = await this.readReceipt(containerId);
     if (!receipt) return null;
     return withWorkspaceGitLock(this.stateRoot!, this.gate(containerId), async () => {
-      const current = (await this.readReceipt(containerId))!;
+      // The receipt can disappear between the preflight read and the lock (a
+      // concurrent cleanup or a recovered server). Recovery must report "no
+      // sandbox" instead of crashing startup on a null receipt (observed
+      // 2026-11-11 after repeated interrupted restarts).
+      const current = await this.readReceipt(containerId);
+      if (!current) return null;
       if (current.record.status === 'created') {
         current.record.status = 'missing';
         await this.saveReceipt(containerId, current);

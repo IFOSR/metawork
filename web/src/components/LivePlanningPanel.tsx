@@ -157,10 +157,11 @@ function hasRenderableExecutionFacts(turn: ConversationTurnProjection): boolean 
   ));
 }
 
-export function LivePlanningPanel({ turn, onOpenDetails }: {
+export function LivePlanningPanel({ turn, expanded, onToggle }: {
   turn: ConversationTurnProjection;
-  /** Opens the planning detail view; the card stays a plain status card without it. */
-  onOpenDetails?: () => void;
+  /** Expands the planning process inline; the card stays a status card without it. */
+  expanded?: boolean;
+  onToggle?: () => void;
 }) {
   const [, setNowMs] = useState(() => Date.now());
   const activity = plannerActivity(turn);
@@ -182,21 +183,27 @@ export function LivePlanningPanel({ turn, onOpenDetails }: {
 
   return (
     <section className="live-execution-panel live-planning-panel" aria-label="规划状态"
-      data-testid={onOpenDetails ? 'planning-open' : undefined}
-      role={onOpenDetails ? 'button' : undefined}
-      tabIndex={onOpenDetails ? 0 : undefined}
-      onClick={onOpenDetails}
+      data-testid={onToggle ? 'planning-open' : undefined}
+      role={onToggle ? 'button' : undefined}
+      tabIndex={onToggle ? 0 : undefined}
+      aria-expanded={onToggle ? Boolean(expanded) : undefined}
+      onClick={onToggle}
       onKeyDown={event => {
-        if (!onOpenDetails) return;
+        if (!onToggle) return;
         if (event.key === 'Enter' || event.key === ' ') {
           event.preventDefault();
-          onOpenDetails();
+          onToggle();
         }
       }}>
       <header>
         <span>PLANNING</span>
         {live && <em data-pulse aria-hidden />}
-        {onOpenDetails && <span className="planning-card-open">查看规划过程 ›</span>}
+        {onToggle && (
+          <span className="planning-card-open">
+            {expanded ? '收起规划过程' : '展开规划过程'}
+            <span aria-hidden> {expanded ? '⌃' : '⌄'}</span>
+          </span>
+        )}
       </header>
       <div className="live-execution-cards">
         <article className="execution-card" data-status={live ? 'running' : 'settled'}>

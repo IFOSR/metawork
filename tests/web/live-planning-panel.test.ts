@@ -221,15 +221,25 @@ describe('LivePlanningPanel', () => {
     expect(html).toContain('PLANNING');
   });
 
-  it('exposes the planning detail entry on the live card', () => {
-    const html = renderToStaticMarkup(createElement(LivePlanningPanel, {
+  it('toggles the inline planning process from the live card', () => {
+    const collapsed = renderToStaticMarkup(createElement(LivePlanningPanel, {
       turn: turn([
         event({ sequence: 1, kind: 'planner_started', phase: 'planning', occurredAt: new Date().toISOString() }),
       ]),
-      onOpenDetails: () => undefined,
+      expanded: false,
+      onToggle: () => undefined,
     }));
-    expect(html).toContain('data-testid="planning-open"');
-    expect(html).toContain('查看规划过程');
+    expect(collapsed).toContain('data-testid="planning-open"');
+    expect(collapsed).toContain('展开规划过程');
+    const expanded = renderToStaticMarkup(createElement(LivePlanningPanel, {
+      turn: turn([
+        event({ sequence: 1, kind: 'planner_started', phase: 'planning', occurredAt: new Date().toISOString() }),
+      ]),
+      expanded: true,
+      onToggle: () => undefined,
+    }));
+    expect(expanded).toContain('收起规划过程');
+    expect(expanded).toContain('aria-expanded="true"');
   });
 
   it('renders nothing once the turn is completed and execution started', () => {
