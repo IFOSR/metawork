@@ -116,6 +116,29 @@ function reconcile(
     record(`closed ${closedDispatchItems} orphaned dispatch item(s) for terminal tasks`);
   }
 
+  // 1b. Replan requests that can never run because their Task already reached
+  //     a terminal conclusion. They are not live work, but they keep the slot
+  //     `releasing` forever (observed 2026-11-11: a failed research Task kept a
+  //     pending_quiescence replan, so the queued retry never started).
+  //     Only pre-planning and availability-waiting rows are closed; a submitted
+  //     proposal and an active planning claim stay on the durable Kernel path.
+  const closedReplanRequests = db.prepare(`
+    UPDATE generation_replan_requests
+    SET status = 'cancelled',
+        error_summary = COALESCE(error_summary, 'reconciled: task already terminal'),
+        updated_at = ?
+    WHERE status IN ('pending_quiescence', 'waiting_for_availability')
+      AND submitted_at IS NULL
+      AND EXISTS (
+        SELECT 1 FROM tasks
+        WHERE tasks.id = generation_replan_requests.task_id
+          AND tasks.status IN ('cancelled', 'succeeded', 'failed')
+      )
+  `).run(now()).changes;
+  if (closedReplanRequests > 0) {
+    record(`closed ${closedReplanRequests} orphaned replan request(s) for terminal tasks`);
+  }
+
   // 2. Conversation slots held by terminal tasks (blocked tasks keep their
   //    slot on purpose — the Planner asks the user how to proceed).
   const staleSlots = db.prepare(`
