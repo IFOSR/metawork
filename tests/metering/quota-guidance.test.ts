@@ -18,7 +18,7 @@ describe('quota guidance', () => {
     expect(result).toMatchObject({ status: 'available', usedTokens: '30', remainingTokens: '999970' });
   });
 
-  it('returns virtual provider entries when Included quota is exhausted', () => {
+  it('returns the maintained provider directory when Included quota is exhausted', () => {
     const result = quotaGuidanceFor({
       catalog: DEFAULT_PLAN_QUOTA_CATALOG,
       planId: 'free-baseline',
@@ -27,7 +27,11 @@ describe('quota guidance', () => {
     });
     expect(result.status).toBe('exhausted');
     expect(result.providers.length).toBeGreaterThan(0);
-    expect(result.providers[0]).toMatchObject({ id: expect.any(String), url: expect.stringContaining('example.invalid') });
+    expect(result.providers[0]).toMatchObject({
+      id: 'metafusion-meta-router',
+      url: 'https://airouter.metafusion.cn/',
+      logoUrl: '/provider-metafusion.png',
+    });
   });
 
   it('keeps task guidance available when token facts are temporarily missing', () => {

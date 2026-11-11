@@ -29,4 +29,14 @@ describe('Web token usage presentation', () => {
     expect(http).toContain('/api/usage/timeline');
     expect(http).not.toContain('getBillingRecords');
   });
+
+  it('drops the meaningless period-quota card and shows the real provider directory', async () => {
+    const usage = await readFile(new URL('components/TokenUsageView.tsx', root), 'utf8');
+    // The quota window/limit/remaining block was noise in the account bill view.
+    expect(usage).not.toContain('本周期 Included');
+    expect(usage).not.toContain('quotaWindow');
+    // The maintained third-party provider keeps its own identity and logo.
+    expect(usage).toContain('第三方供应商');
+    expect(usage).toContain('provider.logoUrl');
+  });
 });

@@ -76,7 +76,7 @@ describe.skipIf(!enabled)('manager real turn from active configuration', () => {
         generationId: null,
         goal: '用一句话说明这个仓库是做什么的，不需要修改任何文件。',
         context: [],
-        workspace: { root: workspace, mode: 'read_only' },
+        workspace: { root: workspace },
         permissionProfileRef: 'engineering',
         configurationRevision: snapshot.revisionId,
         model: { providerRef: 'config', modelRef: agentClassRef },

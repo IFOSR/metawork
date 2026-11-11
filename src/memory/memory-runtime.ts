@@ -187,6 +187,7 @@ export class MemoryRuntime {
           [KERNEL_AUTH_TOKEN_ENV_VAR]: kernelAuthToken,
         },
         healthUrl: `${baseUrl}/health`,
+        preflight: { host: '127.0.0.1', port: policy.port },
         ...(options.sidecarReadyTimeoutMs
           ? { readyTimeoutMs: options.sidecarReadyTimeoutMs }
           : {}),

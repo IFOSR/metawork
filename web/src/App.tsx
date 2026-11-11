@@ -185,7 +185,6 @@ export function App() {
               ws={observationClient} http={httpRef.current} tab={tab}
               onSelectTurn={setSelectedTrajectoryTurnId}
               onOpenArtifact={handleOpenArtifact}
-              onOpenSubtaskDetail={(turn, subtaskId) => setExecutionDetail({ turn, turnId: turn.id, subtaskId, subtaskTitle: '' })}
             />
           )}
       </WorkspaceShell>

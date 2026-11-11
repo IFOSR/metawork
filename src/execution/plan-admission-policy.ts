@@ -6,6 +6,7 @@ import type {
 import type { AuthorizedExecutorBinding } from '../core/authorized-executor-binding.js';
 import type {
   WorkspaceAdmission,
+  WorkspaceAdmissionTargetFact,
   WorkspaceDeliveryPolicy,
   WorkspaceExecutionDecision,
   WorkspaceExecutionMode,
@@ -42,7 +43,7 @@ export interface PlanAdmissionRequest {
   targetGraphRevision: number;
   attachmentIds?: string[];
   availabilityExplanation?: string | null;
-  workspaceAdmission?: { targetWorkspace: { workspaceId: string; canonicalPath: string } | null };
+  workspaceAdmission?: { targetWorkspace: WorkspaceAdmissionTargetFact | null };
 }
 
 export interface PlanAdmissionSnapshot {

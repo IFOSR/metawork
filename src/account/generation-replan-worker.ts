@@ -7,6 +7,7 @@ import { allowsProduction } from '../control/production-authorization.js';
 
 import { randomUUID } from 'node:crypto';
 import type { Task } from '../core/types.js';
+import type { WorkspaceAdmissionTargetFact } from '../core/workspace-execution.js';
 import type { PlanAdmissionRequest } from '../execution/plan-admission-policy.js';
 import { PlanProposalUnavailableError, type PlanProposalRecord } from '../execution/plan-proposal-store.js';
 import { isTerminalTaskStatus } from '../task/task-state.js';
@@ -412,7 +413,7 @@ export function buildGenerationReplanProposal(input: {
   requestText: string;
   generationId: string;
   targetGraphRevision: number;
-  workspaceAdmission?: { targetWorkspace: { workspaceId: string; canonicalPath: string } | null };
+  workspaceAdmission?: { targetWorkspace: WorkspaceAdmissionTargetFact | null };
 }): PlanAdmissionRequest {
   return {
     configurationRevision: input.configurationRevision,

@@ -9,6 +9,11 @@
 
 ## 现行架构与契约（本轮收敛）
 
+- [2026-11-11 Manager 的 Workspace 事实与澄清边界](plans/2026-11-11-manager-workspace-facts-and-clarification-scope.md)
+  —— 去掉 Manager turn 的“只读/可写”Workspace 标签，改为 Runtime 拥有的执行写入事实；
+  澄清只用于用户意图歧义，系统能力问题由 Runtime 自述；Workspace Git 根失败走 rejection。
+  仅本地修改，未提交。
+
 - [2026-11-11 完成收尾与状态一致性修复](plans/2026-11-11-task-completion-status-consistency-fix.md)
   —— 真实黄金/英伟达/天气任务复用已认证结果恢复，修复鸡蛋任务 TaskView 超预算、轨迹历史冒充实时卡片及错误上下文被显示为澄清；运行于 8788。
 

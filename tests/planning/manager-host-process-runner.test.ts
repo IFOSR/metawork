@@ -39,7 +39,7 @@ function turn(overrides: Partial<ManagerTurnInput> = {}): ManagerTurnInput {
     generationId: 'generation-1',
     goal: '检查仓库结构',
     context: [],
-    workspace: { root: '/tmp/workspace', mode: 'read_only' },
+    workspace: { root: '/tmp/workspace' },
     permissionProfileRef: 'engineering',
     configurationRevision: 'revision-1',
     model: { providerRef: 'official', modelRef: 'model-a' },

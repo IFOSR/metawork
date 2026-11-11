@@ -234,39 +234,40 @@ describe('Web workspace shell', () => {
     ]);
     expect(conversationTurn).toContain('<ArtifactLink');
     expect(trajectoryView).toContain('<ArtifactLink');
-    expect(trajectoryView).toContain('<LiveExecutionPanel');
+    // The trajectory keeps its DAG and no longer repeats a task-card summary.
+    expect(trajectoryView).toContain('<WorkGraphPanel');
+    expect(trajectoryView).not.toContain('LiveExecutionPanel');
   });
 
-  it('streams executor activity inline and opens a clickable per-subtask detail drawer', async () => {
-    const [panel, drawer, app, conversationView, trajectoryView, styles] = await Promise.all([
-      readFile(new URL('components/LiveExecutionPanel.tsx', root), 'utf8'),
+  it('opens the per-subtask detail drawer from a task DAG node', async () => {
+    const [dagPanel, drawer, app, conversation, styles] = await Promise.all([
+      readFile(new URL('components/TaskDagPanel.tsx', root), 'utf8'),
       readFile(new URL('components/ExecutionDetailDrawer.tsx', root), 'utf8'),
       readShell(),
-      readFile(new URL('components/ConversationView.tsx', root), 'utf8'),
-      readFile(new URL('components/TrajectoryView.tsx', root), 'utf8'),
+      readFile(new URL('observation/ObservedConversationView.tsx', root), 'utf8'),
       readFile(new URL('styles.css', root), 'utf8'),
     ]);
 
-    // 子任务卡可点击，回调携带 subtaskId 与标题。
-    expect(panel).toContain('onSelectSubtask');
-    expect(panel).toContain('is-clickable');
-    expect(panel).toContain('查看 Executor 执行详情');
+    // 子任务 DAG 节点可点击，回调携带 subtaskId 与标题。
+    expect(dagPanel).toContain('onSelectSubtask');
+    expect(dagPanel).toContain('<WorkGraphDiagram');
     // 详情抽屉按 subtaskId 过滤 trace 事件，实时追加并自动滚底。
     expect(drawer).toContain('ExecutionDetailDrawer');
     expect(drawer).toContain('.subtaskId === subtaskId');
     expect(drawer).toContain('scrollTop = body.scrollHeight');
-    expect(drawer).toContain('等待第一个执行事件…');
+    // 未派发的子任务说明它尚未开始，而不是留空。
+    expect(drawer).toContain('尚未开始');
     // App 维护 executionDetail 状态，与文档预览抽屉互斥复用右侧槽位。
     expect(app).toContain('setExecutionDetail');
     expect(app).toContain('executionDetailOpen');
     expect(app).toContain('<ObservedExecutionDetail');
     expect(app).toContain("event.key === 'Escape'");
     expect(app).toContain('setExecutionDetail(null)');
-    // 对话与轨迹都传入 onOpenSubtaskDetail。
-    expect(conversationView).toContain('onOpenSubtaskDetail');
-    expect(trajectoryView).toContain('onOpenSubtaskDetail');
-    // 样式：可点击卡片 + 详情时间线。
-    expect(styles).toContain('.execution-card.is-clickable');
+    // 会话把 DAG 接入执行详情。
+    expect(conversation).toContain('<TaskDagPanel');
+    expect(conversation).toContain('onOpenSubtaskDetail');
+    // 样式：任务 DAG 面板 + 详情时间线。
+    expect(styles).toContain('.task-dag-panel');
     expect(styles).toContain('.execution-detail-drawer');
     expect(styles).toContain('.execution-detail-stream');
   });

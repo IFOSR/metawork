@@ -2,6 +2,8 @@ import { useEffect, useRef } from 'react';
 import type { ConversationTurnProjection } from '../api/session-types';
 import type { ExecutionTimeline, InteractionTraceEvent, WorkGraphPresentationProjection } from '../api/types';
 import { subtaskTitle } from '../work-graph-titles';
+import { markdownPreview } from '../markdown-preview';
+import { MarkdownContent } from './MarkdownContent';
 
 const KIND_LABELS: Record<string, string> = {
   executor_routed: '路由',
@@ -10,6 +12,7 @@ const KIND_LABELS: Record<string, string> = {
   subtask_execution_started: '开始执行',
   executor_progress: '进度',
   executor_heartbeat: '心跳',
+  executor_health: '健康',
   executor_result_observed: '校验',
   publication_integrated: '发布',
   delivery_completed: '交付',
@@ -69,7 +72,11 @@ export function ExecutionDetailDrawer({
       </header>
       <div className="execution-detail-body" ref={bodyRef}>
         {events.length === 0 && (
-          <div className="execution-detail-empty">等待第一个执行事件…</div>
+          <div className="execution-detail-empty">
+            <strong>尚未开始</strong>
+            {pendingPlanFacts(workGraph, subtaskId)}
+            <p>该子任务还没有派发，因此没有执行事件。派发后这里会实时显示进度与结果。</p>
+          </div>
         )}
         <ol className="execution-detail-stream">
           {events.map(event => (
@@ -79,13 +86,33 @@ export function ExecutionDetailDrawer({
                 <span className="execution-detail-kind">
                   {KIND_LABELS[event.kind] ?? event.kind}
                 </span>
-                <p className="execution-detail-summary">{event.summary || event.title}</p>
+                <div className="execution-detail-summary" title={markdownPreview(event.summary || event.title, 300)}>
+                  <MarkdownContent value={event.summary || event.title} />
+                </div>
               </div>
             </li>
           ))}
         </ol>
       </div>
     </aside>
+  );
+}
+
+/** Plan facts for a Subtask that has not been dispatched yet. */
+function pendingPlanFacts(workGraph: WorkGraphPresentationProjection | null | undefined, subtaskId: string) {
+  const node = workGraph?.nodes.find(candidate => candidate.id === subtaskId);
+  if (!node) return null;
+  return (
+    <dl className="execution-detail-pending">
+      {node.goal && (<><dt>目标</dt><dd>{node.goal}</dd></>)}
+      {node.schedulingDetail && (<><dt>当前状态</dt><dd>{node.schedulingDetail}</dd></>)}
+      {node.requiredCapabilities.length > 0 && (
+        <><dt>所需能力</dt><dd>{node.requiredCapabilities.join('、')}</dd></>
+      )}
+      {node.acceptanceCriteria.length > 0 && (
+        <><dt>验收标准</dt><dd>{node.acceptanceCriteria.join('；')}</dd></>
+      )}
+    </dl>
   );
 }
 

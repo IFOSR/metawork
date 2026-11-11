@@ -34,7 +34,7 @@ function turn(overrides: Partial<ManagerTurnInput> = {}): ManagerTurnInput {
     generationId: 'generation-1',
     goal: '检查仓库结构',
     context: ['用户：看一下 src 目录'],
-    workspace: { root: process.cwd(), mode: 'read_only' },
+    workspace: { root: process.cwd() },
     permissionProfileRef: 'engineering',
     configurationRevision: 'revision-1',
     model: { providerRef: 'official', modelRef: 'model-a' },
@@ -136,7 +136,7 @@ describe('manager agent turn', () => {
 
   it('refuses a missing workspace instead of falling back to the Server directory', async () => {
     const missing = agent('ok');
-    await expect(missing.plan(turn({ workspace: { root: '/nonexistent/metawork/workspace', mode: 'read_only' } })))
+    await expect(missing.plan(turn({ workspace: { root: '/nonexistent/metawork/workspace' } })))
       .rejects.toMatchObject({ code: 'manager_spawn_failed' });
     expect(missing.pid).toBeNull();
   });
@@ -150,10 +150,21 @@ describe('manager agent turn', () => {
     const prompt = renderTurnPrompt(turn());
     expect(prompt).toContain('检查仓库结构');
     expect(prompt).toContain('用户：看一下 src 目录');
-    expect(prompt).toContain('只读');
     expect(prompt).toContain(MANAGER_PROPOSAL_TOOL);
     expect(prompt).toContain('Never edit files');
     expect(prompt).not.toContain('secret');
+  });
+
+  it('states what the Task may write and never labels the Workspace as read-only', () => {
+    const prompt = renderTurnPrompt(turn());
+    // The Manager's own read-only tool surface belongs to its extension, never
+    // to the Workspace facts: a 只读/可写 label made the Manager ask the user
+    // for write permission instead of planning the work (2026-11-11).
+    expect(prompt).not.toContain('只读');
+    expect(prompt).not.toContain('可写');
+    expect(prompt).toContain('execution writes:');
+    expect(prompt).toContain("Conversation's Git worktree");
+    expect(prompt).toContain('workspaceEffect/fileOutputs');
   });
 });
 

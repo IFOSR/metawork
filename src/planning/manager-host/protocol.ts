@@ -60,10 +60,12 @@ export interface ManagerTurnInput {
   readonly goal: string;
   /** Ordered conversation context already rendered by the Runtime. */
   readonly context: readonly string[];
-  readonly workspace: {
-    readonly root: string;
-    readonly mode: 'read_only' | 'write';
-  };
+  /**
+   * The Runtime-owned Workspace root. It carries no access mode: the Manager's
+   * own read-only tool surface is an operational constraint of its extension,
+   * never a fact about what the Task may do in the Workspace.
+   */
+  readonly workspace: { readonly root: string };
   readonly permissionProfileRef: string;
   readonly configurationRevision: string;
   readonly model: { readonly providerRef: string; readonly modelRef: string; readonly modelId?: string };

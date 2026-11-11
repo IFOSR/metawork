@@ -93,6 +93,11 @@ describe('manager pi extension', () => {
       expect(result.systemPrompt).toContain('clarificationQuestion');
       expect(result.systemPrompt).toContain('Nullable fields are still required');
       expect(result.systemPrompt).not.toContain('reason, response,');
+      // The manager must plan deliverable work, not ask the user about its own tools.
+      expect(result.systemPrompt).toContain('plan_work_graph with workspaceIntent.operation of create_in_target');
+      expect(result.systemPrompt).toContain("Ask a clarification only when the USER'S intent is unclear");
+      expect(result.systemPrompt).toContain('Never ask about your own tool permissions');
+      expect(typeof result.systemPrompt).toBe('string');
       expect(activeTools[0]).toEqual(['read', 'ls', 'grep', 'find', 'submit_manager_proposal']);
     } finally {
       if (previousSchema === undefined) delete process.env.METAWORK_MANAGER_PLAN_SCHEMA;

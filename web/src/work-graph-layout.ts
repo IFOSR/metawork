@@ -2,8 +2,8 @@ import type { WorkGraphPresentationProjection } from './api/types';
 
 type GraphNode = WorkGraphPresentationProjection['nodes'][number];
 
-export const DAG_NODE_WIDTH = 244;
-export const DAG_NODE_HEIGHT = 112;
+export const DAG_NODE_WIDTH = 268;
+export const DAG_NODE_HEIGHT = 148;
 const COLUMN_GAP = 96;
 const ROW_GAP = 40;
 const PADDING = 24;

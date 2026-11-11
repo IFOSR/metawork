@@ -72,15 +72,15 @@ acceptance('Conversation presentation with observation resources', () => {
     let browser: Awaited<ReturnType<typeof launchBrowser>> | undefined;
     try {
       browser = await launchBrowser((http.address() as AddressInfo).port, 'conversation-presentation');
-      await waitForExpression(browser.cdp, `document.querySelector('.execution-card')?.innerText.includes('正在检索公开资料')`);
+      await waitForExpression(browser.cdp, `document.querySelector('.task-dag-panel')?.innerText.includes('正在检索公开资料')`);
       expect(await browser.cdp.evaluate(`document.querySelector('[aria-label="活动任务"]')===null`)).toBe(true);
       expect(await browser.cdp.evaluate(`!document.body.innerText.includes('搜索会话历史')`)).toBe(true);
       await browser.cdp.evaluate(`window.progress()`);
-      await waitForExpression(browser.cdp, `document.querySelector('.execution-card')?.innerText.includes('已找到资料，正在整理报告')`);
-      await browser.cdp.evaluate(`document.querySelector('.execution-card').click()`);
+      await waitForExpression(browser.cdp, `document.querySelector('.task-dag-panel')?.innerText.includes('已找到资料，正在整理报告')`);
+      await browser.cdp.evaluate(`document.querySelector('.work-graph-diagram-node').click()`);
       expect(await browser.cdp.evaluate('window.openedSubtask')).toBe('subtask');
       const liveShot = await browser.cdp.send('Page.captureScreenshot', { format: 'png' }) as { data: string };
-      await writeFile('/tmp/metawork-restored-execution-card.png', Buffer.from(liveShot.data, 'base64'));
+      await writeFile('/tmp/metawork-restored-task-dag.png', Buffer.from(liveShot.data, 'base64'));
       await browser.cdp.evaluate(`window.complete()`);
       await waitForExpression(browser.cdp, `document.querySelector('.final-answer')?.innerText.includes('报告结尾：完整结果自动显示')`);
       await waitForExpression(browser.cdp, `document.querySelector('.turn-bill')?.innerText.includes('0.25 MetaCoin') && document.querySelector('.artifact-link')?.innerText.includes('研究报告.md')`);

@@ -130,6 +130,7 @@ import { buildAccountRuntimeExecutionServices, type AccountRuntimeExecutionServi
 import { buildAccountControlExecutionServices, type AccountControlExecutionServices } from '../account/account-control-execution-services.js';
 import { buildAccountPlannerServices, type AccountPlannerServices } from '../account/account-planner-services.js';
 import { ConversationSession } from './conversation-session.js';
+import { workspaceWriteStateOf } from '../core/workspace-execution.js';
 import { ConversationInputMailbox } from './conversation-input-mailbox.js';
 import type { ConversationRuntimePort } from './conversation-runtime-port.js';
 import type { GatewaySession } from './session-transport-adapter.js';
@@ -1186,6 +1187,8 @@ export class MetaclawSession {
       orchestration: this.deps.orchestration,
       config: this.deps.config,
       taskExecutionApplicationService: this.taskExecutionApplicationService,
+      resolveWorkspaceWriteState: workspaceId =>
+        workspaceWriteStateOf(this.workspaceGitRepo.root(workspaceId)),
     });
   }
 

@@ -286,7 +286,13 @@ export function renderTurnPrompt(input: ManagerTurnInput): string {
     `conversation: ${input.conversationId}`,
     ...(input.taskId ? [`task: ${input.taskId}`] : []),
     ...(input.generationId ? [`generation: ${input.generationId}`] : []),
-    `workspace: ${input.workspace.root} (${input.workspace.mode === 'write' ? '可写' : '只读'})`,
+    `workspace: ${input.workspace.root}`,
+    // One positive, execution-side fact. The Manager's own tool surface stays
+    // read-only in its extension, but that is never a Workspace property: the
+    // Executor writes in the Conversation Git worktree and the Runtime merges
+    // the result back. Rendering a 只读/可写 label here made the Manager refuse
+    // or ask the user for write permission (2026-11-11).
+    'execution writes: the Executor commits in this Conversation\'s Git worktree and the Runtime merges the result back into the Workspace; declare file work with workspaceEffect/fileOutputs and workspaceIntent.',
     `permission profile: ${input.permissionProfileRef}`,
     `configuration revision: ${input.configurationRevision}`,
     `active tools: ${input.tools.join(', ') || '(none)'}`,

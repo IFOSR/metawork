@@ -58,6 +58,34 @@ export interface WorkspaceIntent {
 /** Kernel-owned Workspace access fact used by new admission code. */
 export type WorkspaceAdmissionKind = 'read' | 'write' | 'clarification' | 'rejected';
 
+/**
+ * Runtime-observed readiness of the Workspace Git root for Task writes.
+ * `initializing` is not a blocker: Conversation binding already started
+ * preparation and execution waits for it. Absent facts mean "unknown" (legacy
+ * proposals) and must never be read as unavailable.
+ */
+export type WorkspaceWriteState = 'ready' | 'initializing' | 'failed';
+
+/** Server-projected Workspace fact carried by a plan proposal. */
+export interface WorkspaceAdmissionTargetFact {
+  workspaceId: string;
+  canonicalPath: string;
+  writeState?: WorkspaceWriteState;
+}
+
+/**
+ * Projects a persisted Workspace Git root state into the admission fact. An
+ * absent root stays unknown so legacy proposals keep their existing behavior;
+ * only an explicitly failed root blocks writes.
+ */
+export function workspaceWriteStateOf(
+  root: { state: 'initializing' | 'ready' | 'recovering' | 'failed' } | null | undefined,
+): WorkspaceWriteState | undefined {
+  if (!root) return undefined;
+  if (root.state === 'failed') return 'failed';
+  return root.state === 'ready' ? 'ready' : 'initializing';
+}
+
 export interface WorkspaceAdmissionBinding {
   workspaceId: string | null;
   targetPaths: string[];

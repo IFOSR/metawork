@@ -2,7 +2,7 @@ import { createElement } from 'react';
 import { createRequire } from 'node:module';
 import { describe, expect, it } from 'vitest';
 import { isOfficialAuthorizationBlock, userFacingBlockReason } from '../../web/src/block-reason';
-import { collectExecutionCards } from '../../web/src/components/LiveExecutionPanel';
+import { collectExecutionCards } from '../../web/src/task-dag';
 import { BlockedActions } from '../../web/src/components/BlockedActions';
 import type { ExecutionTimeline } from '../../web/src/api/types';
 

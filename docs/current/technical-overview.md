@@ -6,6 +6,12 @@
 >
 > 本地金额表/服务/API/配置/UI、Codex driver/catalog/发现/Web、容器执行适配器及 TUI facade 已分批删除；配置/backend 为 host-only。官方账号订阅/支付金额和 docker_socket 安全拒绝规则保留。存储为唯一 fresh schema 67，历史 SQLite 升级链已删除，旧库/异常 schema 写前拒绝；快照以 staging 与排他复制保护已有目标，不自动修改已安装库。Token 新增调用来源及发生/落库时间，Executor 按调用 ID 分账，时间线/额度按 occurredAtUtc；Router 决策模型调用以 `system` 付款方逐调用计量（记录可见、不计入用户 Included）；Memory 引擎的提取/场景/画像调用经 release-owned compat patch 的有界账本与认证 drain 路由逐调用计量（`agentClassRef=memory`，挂在账户级 system Query 上，payer 由抽取 Provider 在固定版本下的所有权决定）。
 >
+> Web 任务呈现（2026-11-11）：会话里最新 Turn 直接用任务 DAG（`TaskDagPanel` → `WorkGraphDiagram`）展示
+> 子任务结构、状态、执行器/模型、当前步骤与耗时，节点点击打开执行详情抽屉；任务执行卡片已删除。同一 Turn
+> 只出现一份 DAG（历史 Turn 仍用折叠的 `TurnExecutionRecap`）。轨迹页保留自己的 DAG、Summary、阶段叙述、
+> 时间线与事件表，不再重复 Execution Summary 卡片。轨迹事件不携带 status（append-only 无法收尾，进度行与
+> 开始标记一律无状态），因此轨迹 UI 无脉冲动画、无状态列。
+>
 > 最新验证（2026-11-11，继续真实 Admin Web 验收）：根 lint/build 通过；专项 76 文件、518 项通过，包含整个 Web 测试、真实打包 Pi、Memory 进程重启和汇总恢复。此前 10 项 Web 失败已按当前 Token/Pi 契约迁移。网页已跑通三子任务最终 Manager 汇总；旧汇总失败任务重启后成功，Executor 记录仍为 3 条；恢复汇总从原始 Turn 读取用户约束。Memory 已隔离到 8421，真实网页偏好经模型提取为 L1，可搜索/详情/导出，并在新 Conversation 中通过 Manager 引用 L1/L2 版本、物化为 Executor 证据后完成任务。Manager 扩展新增显式只读 MCP 连接，修复仅写 mcp.json 而未暴露上下文工具的断点；身份及配置 pin 由服务端提供。Memory 重启补做待提取 L1，失败不推进游标；确定未启动 Executor 的资料失效走一次有上限的重新规划，不误判 Executor 不可用（自动恢复矩阵仍待扩大）。外部 Router 仍不可达，多候选未验收；完整 maintained-host suite 仍有退休模块测试和未关闭失败，不能宣布整体 PRD 完成。详见 [Planning/Web E2E 报告](../plans/2026-11-11-planning-web-e2e-fix.md)。代码仅本地修改，未提交或推送。用户明确要求后，原 8791 修复版实例已携原有账号、配置、数据库与 Memory 8421 接管 8788；旧 trial16 服务已停止，数据独立备份保留，详见报告末尾迁移记录。
 
 > 当前 Workspace 执行模型（Workspace 内部 Git / Session Worktree 方案）：所有新任务统一在 Conversation 的 Git Worktree 中执行。Worktree 变更封存后进入 Workspace FIFO 合并队列，未产生变更的问答或报告不创建合并项。历史 `in_place` 记录仅用于迁移和恢复读取，新任务不会再选择该模式。

@@ -1,5 +1,6 @@
 import { useDeferredValue, useState } from 'react';
 import type { ConversationTurnProjection } from '../api/session-types';
+import { markdownPreview } from '../markdown-preview';
 
 export function TrajectoryEventTable({
   turn,
@@ -38,7 +39,7 @@ export function TrajectoryEventTable({
               <span>{event.sequence}</span>
               <span className="actor-chip">{event.actor}</span>
               <strong>{event.title}</strong>
-              <span>{event.summary}</span>
+              <span title={markdownPreview(event.summary, 400)}>{markdownPreview(event.summary, 160)}</span>
               <time>{new Date(event.occurredAt).toLocaleTimeString()}</time>
             </summary>
             <pre>{JSON.stringify(event.details, null, 2)}</pre>

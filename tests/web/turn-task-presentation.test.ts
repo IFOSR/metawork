@@ -1,10 +1,39 @@
 import { createRequire } from 'node:module';
 import { createElement } from 'react';
 import { describe, expect, it } from 'vitest';
-import { collectExecutionCards, LiveExecutionPanel } from '../../web/src/components/LiveExecutionPanel';
+import { collectExecutionCards } from '../../web/src/task-dag';
+import { TaskDagPanel } from '../../web/src/components/TaskDagPanel';
 import type { ConversationTurnProjection } from '../../web/src/api/session-types';
 import type { ExecutionTimeline, WorkGraphPresentationProjection } from '../../web/src/api/types';
 import { projectTurnForPresentation } from '../../web/src/turn-task-presentation';
+
+
+/** Minimal DAG projection for a Turn's execution timeline. */
+function dagFromTurn(turn: ConversationTurnProjection): WorkGraphPresentationProjection {
+  const stage = turn.executionTimeline?.stages.find(item => item.phase === 'execution');
+  const nodes = (stage?.subtasks ?? []).map(subtask => ({
+    id: subtask.id,
+    // Mirrors the card rule: an internal canonical Subtask id is never shown.
+    title: /^task_[a-z0-9_-]+_r\d+_/iu.test(subtask.title)
+      ? turn.executionTimeline?.title ?? subtask.title
+      : subtask.title,
+    goal: '',
+    status: subtask.status,
+    phase: 0,
+    runnable: subtask.status === 'ready' || subtask.status === 'running',
+    dependencies: [] as string[],
+    requiredCapabilities: [] as string[],
+    acceptanceCriteria: [] as string[],
+    routing: [],
+  }));
+  return {
+    generationId: null,
+    nodes,
+    edges: [],
+    parallelGroups: [],
+    currentRunnableFrontier: nodes.filter(node => node.runnable).map(node => node.id),
+  };
+}
 
 const requireFromWeb = createRequire(new URL('../../web/package.json', import.meta.url));
 const { renderToStaticMarkup } = requireFromWeb('react-dom/server') as {
@@ -154,7 +183,7 @@ describe('Turn Task presentation', () => {
       }] },
     } as ConversationTurnProjection;
 
-    const html = renderToStaticMarkup(createElement(LiveExecutionPanel, { turn }));
+    const html = renderToStaticMarkup(createElement(TaskDagPanel, { turn, workGraph: dagFromTurn(turn) }));
 
     expect(html).toContain('Executor 尚未启动');
     expect(html).toContain('正在创建工作区、整理输入资料并生成执行上下文');
@@ -176,18 +205,18 @@ describe('Turn Task presentation', () => {
       }] },
     } as ConversationTurnProjection;
 
-    const html = renderToStaticMarkup(createElement(LiveExecutionPanel, { turn }));
+    const html = renderToStaticMarkup(createElement(TaskDagPanel, { turn, workGraph: dagFromTurn(turn) }));
 
-    expect(html).toContain('data-state="completed"');
-    expect(html).toContain('data-state="running"');
-    expect(html).toContain('data-state="waiting"');
-    // Every card names its execution state, so a finished Subtask is never
-    // indistinguishable from a running one. The badge describes execution only;
+    expect(html).toContain('data-status="completed"');
+    expect(html).toContain('data-status="running"');
+    expect(html).toContain('data-status="waiting"');
+    // Every node names its execution state, so a finished Subtask is never
+    // indistinguishable from a running one. The label describes execution only;
     // the Task's own status remains the conclusion.
-    expect(html).toContain('class="execution-card-state"');
     expect(html).toContain('已完成');
     expect(html).toContain('执行中');
     expect(html).toContain('等待中');
+    expect(html).toContain('已完成 1/3');
     expect(html).not.toContain('等待启动');
   });
 
@@ -266,7 +295,7 @@ describe('Turn Task presentation', () => {
       artifacts: [],
     } as ConversationTurnProjection;
 
-    const html = renderToStaticMarkup(createElement(LiveExecutionPanel, { turn }));
+    const html = renderToStaticMarkup(createElement(TaskDagPanel, { turn, workGraph: dagFromTurn(turn) }));
 
     expect(html).toContain('Current B1');
     expect(html).toContain('Current B2');
@@ -335,7 +364,7 @@ describe('Turn Task presentation', () => {
       artifacts: [],
     };
 
-    const html = renderToStaticMarkup(createElement(LiveExecutionPanel, { turn }));
+    const html = renderToStaticMarkup(createElement(TaskDagPanel, { turn, workGraph: dagFromTurn(turn) }));
 
     expect(html).toContain('国庆上海周边旅行建议');
     expect(html).not.toContain(internalSubtaskId);
@@ -389,8 +418,7 @@ describe('Turn Task presentation', () => {
     ] });
     expect(cards[0].state).toBe('waiting');
     expect(cards[0].executionStartedAt).toBeNull();
-    const html = renderToStaticMarkup(createElement(LiveExecutionPanel, {
-      turn: {
+    const yieldedTurn = {
         id: 'turn_1', sessionId: 'session_1', status: 'blocked', taskId: 't',
         traceEvents: [], executionTimeline: {
           taskId: 't', title: 'Site', status: 'needs_action', statusLabel: '需要处理',
@@ -405,10 +433,16 @@ describe('Turn Task presentation', () => {
             }] },
           ],
         },
-      } as unknown as ConversationTurnProjection,
+    } as unknown as ConversationTurnProjection;
+    const html = renderToStaticMarkup(createElement(TaskDagPanel, {
+      turn: yieldedTurn,
+      workGraph: dagFromTurn(yieldedTurn),
     }));
-    // A Subtask that never ran is not complete: its badge must not claim it.
-    expect(html).not.toContain('已完成');
+    // A Subtask that never ran is not complete: neither its node nor the
+    // header progress may claim it.
+    expect(html).toContain('等待中');
+    expect(html).toContain('已完成 0/1');
+    expect(html).not.toContain('已完成 1/1');
     expect(html).not.toContain('0s');
     expect(html).toContain('尚未启动');
   });

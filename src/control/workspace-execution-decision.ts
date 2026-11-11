@@ -1,6 +1,7 @@
 import type { IntentRiskLevel } from '../planning/planning-types.js';
 import {
   type WorkspaceAdmission,
+  type WorkspaceAdmissionTargetFact,
   type WorkspaceExecutionDecision,
   type WorkspaceExecutionMode,
   type WorkspaceIntent,
@@ -9,7 +10,7 @@ import { normalizeWorkspaceTargetPaths } from '../workspace/workspace-path.js';
 import { isValidFileOutput } from '../work-graph/file-outputs.js';
 
 export interface WorkspaceAdmissionFacts {
-  targetWorkspace: { workspaceId: string; canonicalPath: string } | null;
+  targetWorkspace: WorkspaceAdmissionTargetFact | null;
   /**
    * Historical Task binding read from the Task row. Retired product modes are
    * accepted here only so the admission can reject them explicitly.
@@ -111,6 +112,15 @@ export function resolveWorkspaceAdmission(
       status: 'clarification',
       question: '请先为目标任务选择工作区，然后再继续。',
       reason: 'no Workspace is bound to this Conversation',
+    };
+  }
+  if (target.writeState === 'failed') {
+    // Runtime owns the real blocker: a broken Workspace Git root is not a user
+    // intent question, so it fails the Turn with an actionable reason instead of
+    // asking the user what the Manager is allowed to do.
+    return {
+      status: 'rejected',
+      reason: `the Workspace Git root for ${target.workspaceId} is unavailable; repair the Workspace and retry`,
     };
   }
   if (intent.targetWorkspaceId && intent.targetWorkspaceId !== target.workspaceId) {

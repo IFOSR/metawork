@@ -3482,12 +3482,22 @@ export class ControlExecutionRuntime {
         lastActivityAtMs = Math.max(lastActivityAtMs, Date.parse(observation.lastActivityAt));
         if (observation.lastProgressAt) lastProgressAtMs = Math.max(lastProgressAtMs, Date.parse(observation.lastProgressAt));
       } else { lastProgressAtMs = Date.now(); lastActivityAtMs = lastProgressAtMs; }
+      // A health observation is liveness telemetry, not work. The monitor
+      // republishes `active` every 10s while the Executor streams tokens, and
+      // reporting that as progress produced a repeating "已恢复实际活动" row that
+      // described nothing that happened. Only states that need attention become
+      // a trace fact, and they never claim a step.
+      const healthOnly = event.operationHealth !== undefined && event.kind === 'status';
+      if (healthOnly && event.operationHealth!.state === 'active') {
+        this.deps.callbacks.refreshRuntimeState();
+        return;
+      }
       progressSequence += 1;
       this.appendExecutionTrace({
         phase: 'execution',
         actor: 'executor',
-        kind: 'executor_progress',
-        title: `Executor progress: ${event.kind}`,
+        kind: healthOnly ? 'executor_health' : 'executor_progress',
+        title: healthOnly ? `Executor health: ${event.operationHealth!.state}` : `Executor progress: ${event.kind}`,
         summary: safeText,
         details: {
           taskId: item.taskId,
@@ -3502,8 +3512,10 @@ export class ControlExecutionRuntime {
           executorName: executor.name,
           ...executionEventDetails({
             display,
+            // Health says nothing about what the Subtask is doing, so it must not
+            // replace the current step in a DAG node.
             step: {
-              stepKey: 'executor_progress',
+              stepKey: healthOnly ? 'executor_health' : 'executor_progress',
               stepLabel: safeText.slice(0, 120),
               progress: null,
             },

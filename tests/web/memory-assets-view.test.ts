@@ -64,3 +64,18 @@ describe('memory asset view state', () => {
       .toEqual({ kind: 'list', items: [asset] });
   });
 });
+
+describe('memory asset list presentation', () => {
+  it('pages ten assets at a time, shows the time and colours the layer badge', async () => {
+    const panel = await (await import('node:fs/promises')).readFile(
+      new URL('../../web/src/components/MemoryAssetsPanel.tsx', import.meta.url), 'utf8');
+    expect(panel).toContain('const ASSET_PAGE_SIZE = 10;');
+    // The list row carries the update time, so users need not open the detail.
+    expect(panel).toContain('dateLabel(asset.updatedAt)');
+    // Layer identity is a coloured badge, not only a text prefix.
+    expect(panel).toContain('memory-layer-badge');
+    // Bodies are Markdown; the one-line preview must not print its syntax.
+    expect(panel).toContain('<MarkdownContent value={currentDetail.content} />');
+    expect(panel).toContain('markdownPreview(asset.preview');
+  });
+});

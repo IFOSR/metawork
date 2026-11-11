@@ -3,10 +3,19 @@ import type { WorkGraphPresentationProjection } from '../api/types';
 import { DAG_NODE_HEIGHT, DAG_NODE_WIDTH, layoutWorkGraph, workGraphNodeLabel } from '../work-graph-layout';
 import { workGraphExecutionState } from '../work-graph-status';
 
-export function WorkGraphDiagram({ projection, selectedId, onSelect }: {
+export interface WorkGraphNodeDetail {
+  statusLabel: string;
+  binding: string;
+  step: string;
+  elapsed: string;
+}
+
+export function WorkGraphDiagram({ projection, selectedId, onSelect, nodeDetail }: {
   projection: WorkGraphPresentationProjection;
   selectedId: string;
   onSelect: (id: string) => void;
+  /** Live execution detail per node; the trajectory DAG renders without it. */
+  nodeDetail?: (id: string) => WorkGraphNodeDetail | null;
 }) {
   const markerId = `dag-arrow-${useId().replace(/:/g, '')}`;
   const descriptionId = useId();
@@ -40,22 +49,30 @@ export function WorkGraphDiagram({ projection, selectedId, onSelect }: {
           {layout.phases.map(({ phase, x }) => (
             <span className="work-graph-column-label" key={phase} style={{ left: x }}>依赖层级 {phase + 1}</span>
           ))}
-          {layout.nodes.map(({ node, x, y }) => (
-            <button key={node.id} type="button" className="work-graph-diagram-node"
-              style={{ left: x, top: y, width: DAG_NODE_WIDTH, height: DAG_NODE_HEIGHT }}
-              aria-pressed={node.id === selectedId}
-              aria-label={`子任务 ${numbers.get(node.id)}：${workGraphNodeLabel(node)}`}
-              title={workGraphNodeLabel(node)}
-              data-runnable={node.runnable}
-              data-status={node.executionState ?? workGraphExecutionState(node.status)}
-              onClick={() => onSelect(node.id)}>
-              <span className="work-graph-diagram-node-meta">
-                <span>子任务 {numbers.get(node.id)}</span>
-              </span>
-              <strong>{workGraphNodeLabel(node)}</strong>
-              <small>{node.dependencies.length ? `${node.dependencies.length} 个前置依赖` : '无前置依赖'}</small>
-            </button>
-          ))}
+          {layout.nodes.map(({ node, x, y }) => {
+            const detail = nodeDetail?.(node.id) ?? null;
+            return (
+              <button key={node.id} type="button" className="work-graph-diagram-node"
+                style={{ left: x, top: y, width: DAG_NODE_WIDTH, height: DAG_NODE_HEIGHT }}
+                aria-pressed={node.id === selectedId}
+                aria-label={`子任务 ${numbers.get(node.id)}：${workGraphNodeLabel(node)}${detail ? `，${detail.statusLabel}，${detail.binding}，${detail.step}` : ''}`}
+                title={workGraphNodeLabel(node)}
+                data-runnable={node.runnable}
+                data-status={node.executionState ?? workGraphExecutionState(node.status)}
+                onClick={() => onSelect(node.id)}>
+                <span className="work-graph-diagram-node-meta">
+                  <span>子任务 {numbers.get(node.id)}</span>
+                  <span>{detail?.statusLabel ?? ''}</span>
+                </span>
+                <strong>{workGraphNodeLabel(node)}</strong>
+                {detail && <span className="work-graph-diagram-node-binding">{detail.binding}</span>}
+                {detail && <span className="work-graph-diagram-node-step">{detail.step}</span>}
+                <small>
+                  {detail?.elapsed || (node.dependencies.length ? `${node.dependencies.length} 个前置依赖` : '无前置依赖')}
+                </small>
+              </button>
+            );
+          })}
         </div>
       </div>
       {layout.missingDependencies > 0 && <p role="status">部分前置子任务信息缺失，未绘制对应连线。</p>}

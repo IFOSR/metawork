@@ -6,7 +6,6 @@ import type { UsageTimelineRequest } from '../../../src/metering/token-usage-tim
 const periods = [['today', '今天'], ['week', '本周'], ['7days', '近 7 天'], ['30days', '近 30 天'],
   ['month', '本月'], ['lastMonth', '上月'], ['subscription', '本订阅周期'], ['custom', '自定义']] as const;
 const colors = ['#6a94c7', '#77a58c', '#b69465', '#9a83b5', '#bf7d79', '#6da9b0'];
-const beijingTime = (value: string) => new Intl.DateTimeFormat('zh-CN', { timeZone: 'Asia/Shanghai', year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', hourCycle: 'h23' }).format(new Date(value));
 const format = (value: string | number) => BigInt(value).toLocaleString('zh-CN');
 // BigInt ratios keep arbitrarily large counters finite and exact until rendering pixels.
 const percentage = (value: bigint, maximum: bigint) => maximum === 0n ? 0 : Number(value * 10000n / maximum) / 100;
@@ -95,18 +94,22 @@ export function TokenUsageView({ http }: { http: HttpClient }) {
           </table></div></details>
         </>}
       </section>
-      <aside className="usage-quota" aria-label="本周期官方额度">
-        <h3>本周期 Included</h3>
-        <p>{beijingTime(data.quotaWindow.start)} — {beijingTime(data.quotaWindow.end)}（北京时间，结束时刻不含）</p>
-        <dl><div><dt>额度</dt><dd>{format(data.quota.limit)}</dd></div><div><dt>已记录用量</dt><dd>{format(data.quota.usedTokens)}</dd></div>
-          <div><dt>剩余</dt><dd>{data.quota.status === 'usage_unavailable' || data.quota.status === 'unknown_plan' ? '暂不可用' : format(data.quota.remainingTokens)}</dd></div></dl>
-        <p>{data.quota.message}</p>
-        {data.quota.providers.length > 0 && <details><summary>供应商目录</summary><div className="quota-guidance-list">
-          {data.quota.providers.map(provider => <a key={provider.id} href={/^https?:\/\//u.test(provider.url) ? provider.url : undefined} target="_blank" rel="noreferrer">
-            <span><strong>{provider.name}</strong><small>{provider.description}</small></span><span aria-hidden="true">↗</span>
-          </a>)}
-        </div></details>}
-      </aside>
+      {data.quota.providers.length > 0 && (
+        <aside className="usage-quota" aria-label="第三方供应商">
+          <h3>第三方供应商</h3>
+          <p>额度用尽或需要其它模型时，可直接使用下列供应商，它们由各自账户独立计费。</p>
+          <div className="quota-guidance-list">
+            {data.quota.providers.map(provider => <a key={provider.id}
+              href={/^https?:\/\//u.test(provider.url) ? provider.url : undefined} target="_blank" rel="noreferrer">
+              {provider.logoUrl
+                ? <img className="provider-logo" src={provider.logoUrl} alt="" width={28} height={28} loading="lazy" />
+                : null}
+              <span><strong>{provider.name}</strong><small>{provider.description}</small></span>
+              <span aria-hidden="true">↗</span>
+            </a>)}
+          </div>
+        </aside>
+      )}
     </>}
   </section>;
 }

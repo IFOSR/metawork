@@ -94,7 +94,7 @@ describe.skipIf(process.env.RUN_PACKAGED_PI_E2E !== '1')('native packaged upstre
         turnTimeoutMs: 20_000, onDiagnostic: line => process.stderr.write(`${line}\n`),
       });
       const result = await agent.plan({ conversationId: 'native-review', taskId: null, generationId: null,
-        goal: 'Judge this fixture permission', context: [], workspace: { root, mode: 'read_only' },
+        goal: 'Judge this fixture permission', context: [], workspace: { root },
         permissionProfileRef: 'review', configurationRevision: 'review-r1', purpose: 'permission',
         model: { providerRef: 'review', modelRef: 'review-model' }, tools: ['submit_manager_proposal'],
       });
@@ -104,7 +104,7 @@ describe.skipIf(process.env.RUN_PACKAGED_PI_E2E !== '1')('native packaged upstre
         conversationId: 'dialogue-summary', taskId: 'task-summary', generationId: null,
         goal: 'Compare the two markers',
         context: ['Certified Subtask 1: MW-EXACT', 'Certified Subtask 2: MW-FINAL'],
-        workspace: { root, mode: 'read_only' }, permissionProfileRef: 'review',
+        workspace: { root }, permissionProfileRef: 'review',
         configurationRevision: 'review-r1', purpose: 'summary',
         model: { providerRef: 'review', modelRef: 'review-model' }, tools: ['submit_manager_proposal'],
       });
@@ -113,7 +113,7 @@ describe.skipIf(process.env.RUN_PACKAGED_PI_E2E !== '1')('native packaged upstre
       expect(requests[0]!.tools.map((item: any) => item.function.name)).toEqual(['submit_manager_proposal']);
       const planningTurn = { conversationId: 'dialogue-a', taskId: null, generationId: null,
         goal: 'Preserve the exact file content: MW-NATIVE-DIALOGUE-MARKER', context: [],
-        workspace: { root, mode: 'read_only' as const }, permissionProfileRef: 'review',
+        workspace: { root }, permissionProfileRef: 'review',
         configurationRevision: 'review-r1', model: { providerRef: 'review', modelRef: 'review-model' },
         tools: ['submit_manager_proposal'] };
       await agent.plan(planningTurn);

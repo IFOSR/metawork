@@ -369,7 +369,7 @@ e2e('Artifact preview drawer and IME-aware Enter browser flow', () => {
         )).toBe(false);
         expect(await cdp.evaluate(`document.body.innerText.includes('terminal')`)).toBe(false);
         // 点击子任务卡 → 执行详情抽屉打开，显示完整时间线。
-        await cdp.evaluate(`document.querySelector('.execution-card.is-clickable').click()`);
+        await cdp.evaluate(`document.querySelector('.work-graph-diagram-node').click()`);
         await waitForExpression(cdp, `Boolean(document.querySelector('.execution-detail-drawer'))`);
         await waitForExpression(cdp, `document.querySelectorAll('.execution-detail-stream li').length >= 3`);
         expect(await cdp.evaluate(

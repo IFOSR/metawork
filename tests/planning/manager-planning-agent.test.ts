@@ -5,6 +5,10 @@ import {
   toHarnessUsageEvent,
   toManagerTurn,
 } from '../../src/planning/manager-host/manager-planning-agent.js';
+import { renderTurnPrompt } from '../../src/planning/manager-host/manager-agent.js';
+import { resolveWorkspaceAdmission } from '../../src/control/workspace-execution-decision.js';
+import { PlanningAgentPlanSchema } from '../../src/planning/planning-agent-plan-schema.js';
+import { writesWorkspace } from '../../src/work-graph/workspace-effect.js';
 import type { PlanningProposalSubmitter } from '../../src/planning/planning-agent.js';
 import type { PlannerProposalResult } from '../../src/planning/planner-proposal.js';
 import type { PlanningContext } from '../../src/planning/planning-types.js';
@@ -57,7 +61,6 @@ function agent(mode: string, beforeCalls: string[] = []) {
     turnTimeoutMs: 5_000,
     resolveScope: () => ({
       workspaceRoot: process.cwd(),
-      writable: false,
       permissionProfileRef: 'engineering',
     }),
     beforeModelCall: async (_context, purpose) => { beforeCalls.push(purpose); },
@@ -147,7 +150,7 @@ describe('manager planning agent', () => {
     expect(() => toManagerTurn({ ...configured, configuration: {
       ...configured.configuration,
       planner: { modelPolicy: { mode: 'fixed', modelRef: 'deleted-model' } } as never,
-    } }, { workspaceRoot: process.cwd(), writable: false, permissionProfileRef: 'engineering' }))
+    } }, { workspaceRoot: process.cwd(), permissionProfileRef: 'engineering' }))
       .toThrow('manager_model_unavailable');
   });
   it('validates a Manager proposal with the product Plan schema', async () => {
@@ -180,6 +183,36 @@ describe('manager planning agent', () => {
     expect(result).toMatchObject({ outcome: 'no_action', displayText: '你好' });
     expect(scripted.calls).toHaveLength(1);
     expect(scripted.calls[0]).toMatchObject({ action: 'no_action' });
+  });
+
+  it('plans deliverable work as a Conversation Git worktree write, never as a capability question', async () => {
+    const userInput = '你基于你的逻辑，直接把这个服务给实现了吧。架构就用BS的方式。';
+    const plan = PlanningAgentPlanSchema.parse(await agent('write-plan').plan(context({ userInput })));
+    expect(plan.action).toBe('plan_work_graph');
+    // A Manager that answers "can I write?" instead of planning the work puts a
+    // system capability question in front of the user (2026-11-11 regression).
+    expect(plan.clarificationQuestion).toBeNull();
+    const graph = plan.workGraph!.subtasks;
+    const writes = graph.some(subtask => writesWorkspace(subtask, graph));
+    expect(writes).toBe(true);
+    expect(resolveWorkspaceAdmission({
+      intent: plan.workspaceIntent,
+      facts: { targetWorkspace: { workspaceId: 'workspace_main', canonicalPath: '/Users/me/project' } },
+      riskLevel: plan.risk.level,
+      writes,
+      declaredOutputPaths: graph.flatMap(subtask => subtask.fileOutputs ?? []),
+    })).toMatchObject({
+      status: 'resolved',
+      admission: { kind: 'write', workspaceId: 'workspace_main' },
+      decision: { executionMode: 'conversation_git' },
+    });
+    // The same turn's prompt carries the execution fact and no 只读 label.
+    const prompt = renderTurnPrompt(toManagerTurn(context({ userInput }), {
+      workspaceRoot: '/Users/me/project',
+      permissionProfileRef: 'engineering',
+    }));
+    expect(prompt).not.toContain('只读');
+    expect(prompt).toContain('execution writes:');
   });
 
   it('returns a Manager-owned final answer from certified Subtask context', async () => {
@@ -249,13 +282,12 @@ describe('manager planning agent', () => {
   it('maps Runtime-owned scope and usage without letting the Manager invent them', () => {
     const turn = toManagerTurn(context(), {
       workspaceRoot: '/tmp/ws',
-      writable: true,
       permissionProfileRef: 'restricted',
     }, ['fix the graph']);
     expect(turn).toMatchObject({
       conversationId: 'conversation-1',
       goal: '你好',
-      workspace: { root: '/tmp/ws', mode: 'write' },
+      workspace: { root: '/tmp/ws' },
       permissionProfileRef: 'restricted',
       configurationRevision: 'revision-1',
       model: { providerRef: 'official', modelRef: 'model-a' },
@@ -273,7 +305,7 @@ describe('manager planning agent', () => {
         limit: 100,
         message: 'Included hosted allowance is exhausted.',
       },
-    }, { workspaceRoot: '/tmp/ws', writable: false, permissionProfileRef: 'restricted' });
+    }, { workspaceRoot: '/tmp/ws', permissionProfileRef: 'restricted' });
     expect(turn.context.join('\n')).toContain('Included hosted allowance is exhausted.');
     expect(turn.context.join('\n')).toContain('Continue the requested work when possible');
   });
@@ -320,7 +352,7 @@ describe('manager composition', () => {
     expect(extension).toMatch(/index\.ts$/u);
     const composed = composeManagerPlanningAgent({
       runtimeRoot: '/tmp/metawork-runtime',
-      resolveScope: () => ({ workspaceRoot: '/tmp/ws', writable: false, permissionProfileRef: 'engineering' }),
+      resolveScope: () => ({ workspaceRoot: '/tmp/ws', permissionProfileRef: 'engineering' }),
     });
     // Project-local AGENTS/skills/extensions must never shape planning, and the
     // Manager runs in its own sandbox directory instead of the user Workspace.
@@ -397,7 +429,7 @@ describe('manager MCP configuration', () => {
     const { composeManagerPlanningAgent } = await import('../../src/planning/manager-host/composition.js');
     const composed = composeManagerPlanningAgent({
       runtimeRoot: '/tmp/metawork-runtime-mcp',
-      resolveScope: () => ({ workspaceRoot: '/tmp/ws', writable: false, permissionProfileRef: 'engineering' }),
+      resolveScope: () => ({ workspaceRoot: '/tmp/ws', permissionProfileRef: 'engineering' }),
     });
     // dist/planner-mcp.js exists in a built tree; when it does not, composition
     // must still work and simply omit the MCP server.

@@ -1,15 +1,24 @@
-import { useEffect, useState } from 'react';
-import { formatExecutionDuration } from '../execution-duration';
-import { userFacingBlockReason } from '../block-reason';
-import type { ConversationTurnProjection } from '../api/session-types';
-import type { ExecutionTimeline, InteractionTraceEvent, SubtaskCard, WorkGraphPresentationProjection } from '../api/types';
-import {
-  executorHealthBadge,
-  type ExecutorActivityState,
-} from '../executor-health';
-import { traceEventTaskId } from '../turn-task-presentation';
+import type {
+  ExecutionTimeline,
+  InteractionTraceEvent,
+  SubtaskCard,
+  WorkGraphPresentationProjection,
+} from './api/types';
+import { formatExecutionDuration } from './execution-duration';
+import { markdownPreview } from './markdown-preview';
+import type { ExecutorActivityState } from './executor-health';
+import { userFacingBlockReason } from './block-reason';
+import { traceEventTaskId } from './turn-task-presentation';
 
-interface ExecutionCard {
+/**
+ * Task DAG derivation.
+ *
+ * These functions are the single owner of "what is this Subtask doing right
+ * now": they were lifted out of the retired execution-card panel so the DAG
+ * node, its header summary and the detail drawer all read one derivation.
+ */
+
+export interface ExecutionCard {
   subtaskId: string;
   /** Attempt whose live fields are currently projected into this card. */
   activeAttemptId: string | null;
@@ -43,10 +52,10 @@ interface ExecutionCard {
  * exists because a finished card otherwise looked identical to a running one
  * (same border, frozen timer, no label), which users read as "stuck".
  */
-type ExecutionCardState = 'completed' | 'running' | 'waiting' | 'blocked' | 'failed' | 'unknown';
+export type ExecutionCardState = 'completed' | 'running' | 'waiting' | 'blocked' | 'failed' | 'unknown';
 
 /** Short execution-state label rendered in the card header. */
-const EXECUTION_STATE_LABEL: Record<ExecutionCardState, string> = {
+export const EXECUTION_STATE_LABEL: Record<ExecutionCardState, string> = {
   completed: '已完成',
   running: '执行中',
   waiting: '等待中',
@@ -55,125 +64,7 @@ const EXECUTION_STATE_LABEL: Record<ExecutionCardState, string> = {
   unknown: '状态待确认',
 };
 
-/**
- * 当前执行卡片：把安全的 InteractionTrace 里程碑按 Subtask 分组展示，
- * 显示 Executor/Harness/Provider/Model 与当前步骤。多 Subtask 并发时
- * 各卡片互不串线。完成后由调用方折叠为执行摘要。
- * 卡片可点击：打开该 Subtask 的 Executor 执行详情抽屉（实时事件流）。
- */
-export function LiveExecutionPanel({
-  turn,
-  onSelectSubtask,
-  workGraph,
-}: {
-  turn: ConversationTurnProjection;
-  onSelectSubtask?: (subtaskId: string, subtaskTitle: string) => void;
-  workGraph?: WorkGraphPresentationProjection | null;
-}) {
-  const [nowMs, setNowMs] = useState(() => Date.now());
-  const completed = turn.status !== 'running';
-
-  useEffect(() => {
-    if (completed) return;
-    const timer = window.setInterval(() => setNowMs(Date.now()), 1_000);
-    return () => window.clearInterval(timer);
-  }, [turn.id, completed]);
-
-  const cards = collectExecutionCards(turn.traceEvents, turn.executionTimeline, workGraph);
-  if (cards.length === 0) return null;
-  const cardIsActive = (state: ExecutionCardState) => state === 'running' || state === 'waiting';
-
-  return (
-    <section className={`live-execution-panel${completed ? ' is-summary' : ''}`} aria-label="执行状态">
-      <header>
-        <span>{completed ? 'EXECUTION SUMMARY' : 'LIVE EXECUTION'}</span>
-        {!completed && <em data-pulse aria-hidden />}
-      </header>
-      <div className="live-execution-cards">
-        {cards.map(card => (
-          onSelectSubtask ? (
-            <button
-              type="button"
-              className="execution-card is-clickable"
-              data-status={card.state === 'completed' ? 'settled' : card.state}
-              data-state={card.state}
-              onClick={() => onSelectSubtask(card.subtaskId, card.subtaskTitle)}
-              title="查看 Executor 执行详情"
-              key={card.subtaskId}
-            >
-              <CardBody card={card} completed={!cardIsActive(card.state)} nowMs={nowMs} />
-            </button>
-          ) : (
-            <article
-              className="execution-card"
-              data-status={card.state === 'completed' ? 'settled' : card.state}
-              data-state={card.state}
-              key={card.subtaskId}
-            >
-              <CardBody card={card} completed={!cardIsActive(card.state)} nowMs={nowMs} />
-            </article>
-          )
-        ))}
-      </div>
-    </section>
-  );
-}
-
-function CardBody({ card, completed, nowMs }: { card: ExecutionCard; completed: boolean; nowMs: number }) {
-  const elapsedText = formatExecutionDuration({
-    executionStartedAt: card.executionStartedAt,
-    executionCompletedAt: card.executionCompletedAt,
-    updatedAt: card.updatedAt,
-    running: !completed && isActiveActivity(card.activityStatus),
-    nowMs,
-  });
-  const preparation = preparationStatus(card, nowMs, completed);
-  const healthBadge = executorHealthBadge({
-    updatedAt: card.lastActivityAt ?? card.lastProgressAt,
-    nowMs,
-    running: !completed && isActiveActivity(card.activityStatus),
-    activityState: card.activityState,
-  });
-  return (
-    <>
-      <div className="execution-card-title-row">
-        <h4 title={card.subtaskTitle}>{card.subtaskTitle}</h4>
-        <span
-          className="execution-card-state"
-          data-state={card.state}
-          title={`执行状态：${EXECUTION_STATE_LABEL[card.state]}`}
-        >
-          {EXECUTION_STATE_LABEL[card.state]}
-        </span>
-      </div>
-      <dl>
-        <dt>Executor</dt><dd>{card.executorDisplayName || '—'}</dd>
-        <dt>Harness</dt><dd>{card.harnessDisplayName || '—'}</dd>
-        <dt>Provider</dt><dd>{card.providerDisplayName || '—'}</dd>
-        <dt>Model</dt><dd>{card.modelDisplayName || '—'}</dd>
-      </dl>
-      <p className="execution-card-step" data-activity={card.activityStatus}>
-        {card.healthText ?? activityLabel(card.activityStatus, card.stepLabel)}
-      </p>
-      {preparation && <p className="execution-card-preparation" data-health={preparation.level}>
-        <strong>{preparation.label}</strong><span>{preparation.detail}</span>
-      </p>}
-      {healthBadge && (
-        <p className="execution-card-health" data-health={healthBadge.level}>
-          {healthBadge.label}
-        </p>
-      )}
-      <footer>
-        {elapsedText && <time>{completed ? `用时 ${elapsedText}` : elapsedText}</time>}
-        {completed
-          ? <span className="execution-card-open-hint">查看执行详情 →</span>
-          : card.progress !== null && <progress value={Math.min(1, card.progress)} max={1} />}
-      </footer>
-    </>
-  );
-}
-
-function preparationStatus(
+export function preparationStatus(
   card: ExecutionCard,
   nowMs: number,
   completed: boolean,
@@ -290,8 +181,12 @@ export function collectExecutionCards(
       harnessDisplayName: readString(details.harnessDisplayName) || existing.harnessDisplayName,
       providerDisplayName: readString(details.providerDisplayName) || existing.providerDisplayName,
       modelDisplayName: readString(details.modelDisplayName) || existing.modelDisplayName,
-      stepKey: readString(details.stepKey) || existing.stepKey,
-      stepLabel: readString(details.stepLabel) || event.title || existing.stepLabel,
+      // Health facts describe liveness, never the current step: they must not
+      // overwrite what the Subtask is actually doing.
+      stepKey: event.kind === 'executor_health' ? existing.stepKey : readString(details.stepKey) || existing.stepKey,
+      stepLabel: event.kind === 'executor_health'
+        ? existing.stepLabel
+        : readString(details.stepLabel) || event.title || existing.stepLabel,
       progress: typeof details.progress === 'number' && Number.isFinite(details.progress)
         ? details.progress
         : existing.progress,
@@ -404,11 +299,11 @@ function activityStatusFor(event: InteractionTraceEvent): string {
   return 'active';
 }
 
-function isActiveActivity(status: string): boolean {
+export function isActiveActivity(status: string): boolean {
   return ['active', 'running', 'heartbeat', 'dependency_wait', 'capacity_wait'].includes(status);
 }
 
-function activityLabel(status: string, step: string): string {
+export function activityLabel(status: string, step: string): string {
   if (status === 'heartbeat') return '执行尚未结束，暂无新的实际进度';
   if (status === 'dependency_wait') return `等待依赖：${step}`;
   if (status === 'capacity_wait') return `等待容量：${step}`;
@@ -461,3 +356,89 @@ function looksLikeInternalTaskId(value: string): boolean {
   return /^task_[a-z0-9_-]+$/iu.test(value);
 }
 
+/** One node's live execution detail, rendered inside the DAG node. */
+export interface TaskDagNodeDetail {
+  /** 执行中 / 已完成 / 等待中 / 已阻塞 / 已失败 / 状态待确认 */
+  statusLabel: string;
+  /** Executor · Provider/Model */
+  binding: string;
+  /** Current step or the reason it has not started. */
+  step: string;
+  /** Elapsed execution text, empty when there is nothing to time. */
+  elapsed: string;
+}
+
+/** Header facts for the task DAG: where the work is and how much is done. */
+export interface TaskDagSummary {
+  state: ExecutionCardState;
+  headline: string;
+  detail: string;
+}
+
+export function taskDagNodeDetails(
+  cards: readonly ExecutionCard[],
+  nowMs: number,
+  completed: boolean,
+): Map<string, TaskDagNodeDetail> {
+  const details = new Map<string, TaskDagNodeDetail>();
+  for (const card of cards) {
+    const running = !completed && isActiveActivity(card.activityStatus);
+    const elapsed = formatExecutionDuration({
+      executionStartedAt: card.executionStartedAt,
+      executionCompletedAt: card.executionCompletedAt,
+      updatedAt: card.updatedAt,
+      running,
+      nowMs,
+    });
+    const binding = [card.executorDisplayName, [card.providerDisplayName, card.modelDisplayName]
+      .filter(Boolean).join('/')].filter(Boolean).join(' · ');
+    const preparation = preparationStatus(card, nowMs, completed);
+    // The node shows what the Subtask is doing; a health observation is appended
+    // as a secondary signal instead of replacing the step it describes.
+    const stepText = preparation
+      ? `${preparation.label}：${preparation.detail}`
+      : card.stepLabel || activityLabel(card.activityStatus, '');
+    const health = card.healthText && card.healthText !== stepText ? card.healthText : '';
+    details.set(card.subtaskId, {
+      statusLabel: EXECUTION_STATE_LABEL[card.state],
+      binding: binding || '尚未选定执行器',
+      // A DAG node is a one-line surface: flatten Markdown instead of printing it.
+      step: markdownPreview([stepText, health].filter(Boolean).join(' · '), 200),
+      elapsed: elapsed ?? '',
+    });
+  }
+  return details;
+}
+
+export function taskDagSummary(input: {
+  cards: readonly ExecutionCard[];
+  subtaskCount: number;
+  turnStatus: string;
+  artifactCount?: number;
+}): TaskDagSummary {
+  const { cards } = input;
+  const total = Math.max(input.subtaskCount, cards.length);
+  const done = cards.filter(card => card.state === 'completed').length;
+  const failed = cards.filter(card => card.state === 'failed').length;
+  const blocked = cards.filter(card => card.state === 'blocked').length;
+  const running = cards.filter(card => card.state === 'running').length;
+  const state: ExecutionCardState = failed > 0 ? 'failed'
+    : blocked > 0 ? 'blocked'
+      : running > 0 ? 'running'
+        : total > 0 && done >= total ? 'completed'
+          : 'waiting';
+  const progress = total > 0 ? `已完成 ${done}/${total}` : '等待拆解子任务';
+  const artifacts = input.artifactCount ?? 0;
+  switch (state) {
+    case 'failed':
+      return { state, headline: '执行失败', detail: `${progress} · 失败 ${failed} 项` };
+    case 'blocked':
+      return { state, headline: '已阻塞，等待处理', detail: `${progress} · 阻塞 ${blocked} 项` };
+    case 'running':
+      return { state, headline: 'Executor 执行中', detail: `${progress} · 执行中 ${running} 项` };
+    case 'completed':
+      return { state, headline: '已完成', detail: artifacts > 0 ? `${progress} · 产物 ${artifacts} 个` : progress };
+    default:
+      return { state, headline: '等待执行', detail: progress };
+  }
+}

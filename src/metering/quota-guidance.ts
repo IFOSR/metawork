@@ -10,30 +10,25 @@ export interface ProviderDirectoryEntry {
   readonly capabilities: readonly string[];
   readonly url: string;
   readonly offer: string;
+  /** Same-origin asset used to identify the provider at a glance. */
+  readonly logoUrl?: string;
 }
 
 /**
- * Product placeholder data. Keep this contract stable and replace these rows
- * with the maintained provider catalog when commercial partnerships are ready.
+ * The maintained third-party provider directory shown next to usage guidance.
+ * Entries are real services with their own account and billing; they are never
+ * presented as MetaWork Included capacity.
  */
-export const VIRTUAL_PROVIDER_DIRECTORY: readonly ProviderDirectoryEntry[] = [
+export const PROVIDER_DIRECTORY: readonly ProviderDirectoryEntry[] = [
   {
-    id: 'virtual-orbit-models',
-    name: 'Orbit Models（示例）',
-    description: '通用文本与代码模型，支持按量注册外部账户。',
-    models: ['Orbit Pro', 'Orbit Code'],
-    capabilities: ['文本生成', '代码执行规划', '长上下文'],
-    url: 'https://providers.example.invalid/orbit-models',
-    offer: '示例入口，后续替换为正式供应商链接',
-  },
-  {
-    id: 'virtual-lantern-ai',
-    name: 'Lantern AI（示例）',
-    description: '面向研究与文档任务的第三方模型服务。',
-    models: ['Lantern Research', 'Lantern Writer'],
-    capabilities: ['资料整理', '文档生成', '多语言'],
-    url: 'https://providers.example.invalid/lantern-ai',
-    offer: '示例入口，后续替换为正式供应商链接',
+    id: 'metafusion-meta-router',
+    name: 'Meta Router',
+    description: '统一的 AI 模型聚合与分发网关，兼容 OpenAI / Claude / Gemini 接口，按你的账户独立计费。',
+    models: ['OpenAI 兼容', 'Claude 兼容', 'Gemini 兼容'],
+    capabilities: ['多模型聚合', '统一网关', '跨格式转换'],
+    url: 'https://airouter.metafusion.cn/',
+    offer: '第三方供应商，自行注册并管理额度',
+    logoUrl: '/provider-metafusion.png',
   },
 ];
 
@@ -58,7 +53,7 @@ export function quotaGuidanceFor(input: {
   readonly providers?: readonly ProviderDirectoryEntry[];
 }): QuotaGuidance {
   const definition = quotaForPlan(input.catalog, input.planId);
-  const providers = input.providers ?? VIRTUAL_PROVIDER_DIRECTORY;
+  const providers = input.providers ?? PROVIDER_DIRECTORY;
   if (!definition) {
     return {
       status: 'unknown_plan', planId: input.planId, usedTokens: '0', limit: 0,

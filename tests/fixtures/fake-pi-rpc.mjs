@@ -63,10 +63,11 @@ lines.on('line', line => {
     return;
   }
 
-  if (mode === 'valid-plan' || mode === 'empty-reply' || mode === 'invalid-plan' || mode === 'valid-summary' || mode === 'summary-extra-fields') {
+  if (mode === 'valid-plan' || mode === 'write-plan' || mode === 'empty-reply' || mode === 'invalid-plan' || mode === 'valid-summary' || mode === 'summary-extra-fields') {
     const plan = mode === 'summary-extra-fields'
       ? { answer: '两个标记均存在，分别用于精确验收和发布验收。', confidence: 0.88, reason: '已核验' }
       : mode === 'valid-summary' ? { answer: '两个标记均存在，分别用于精确验收和发布验收。' }
+      : mode === 'write-plan' ? writePlan()
       : mode !== 'invalid-plan' ? validDirectReply() : { schemaVersion: 9, action: 'nope' };
     write({ type: 'turn_end', message: {}, toolResults: [{ toolName: 'submit_manager_proposal', isError: false, details: { proposal: plan } }] });
     write({
@@ -103,6 +104,61 @@ lines.on('line', line => {
   });
   write({ type: 'agent_settled', aborted: false });
 });
+
+/**
+ * The deliverable-shaped proposal: a write plan with a real workspaceIntent.
+ * The Manager must never answer "can I write?" instead of planning the work.
+ */
+function writePlan() {
+  return {
+    schemaVersion: 9,
+    id: 'plan-write',
+    action: 'plan_work_graph',
+    confidence: 0.86,
+    reason: '用户要求直接实现服务；写入由 Executor 在 Conversation worktree 完成',
+    clarificationQuestion: null,
+    task: {
+      binding: 'new',
+      taskId: null,
+      control: 'none',
+      scope: '实现 price-in 判定服务',
+      title: '实现 price-in 判定服务',
+      goal: '交付可运行的 BS 服务并完成启动验证',
+      includeRecentConversationContext: true,
+      priority: { level: 'normal', reason: '常规实现请求' },
+    },
+    risk: { level: 'low', requiresConfirmation: false, reasons: [] },
+    authorizationResolution: null,
+    workspaceIntent: {
+      targetWorkspaceId: null,
+      targetPaths: ['price-in-service/'],
+      operation: 'create_in_target',
+      confidence: 0.8,
+      reason: '用户要求在当前 Workspace 落地可运行服务',
+    },
+    workGraph: {
+      schemaVersion: 7,
+      configurationRevision: 'revision-1',
+      reason: '一次性实现并自检',
+      subtasks: [
+        {
+          id: 'build-service',
+          title: '实现 BS 服务',
+          goal: '在 price-in-service/ 下实现后端 API 与前端页面，并完成本地启动自检',
+          dependencies: [],
+          contextRefs: [{ kind: 'current_user_input' }],
+          requiredCapabilities: ['workspace-engineering'],
+          workspaceEffect: 'write',
+          deliveryKind: 'edit',
+          fileOutputs: ['price-in-service/'],
+          acceptance: [{ key: 'runnable', description: '服务可启动并通过一次请求', requiredEvidence: ['启动日志'] }],
+          riskLevel: 'low',
+        },
+      ],
+    },
+    source: 'anyfusion-planner',
+  };
+}
 
 function validDirectReply() {
   return {

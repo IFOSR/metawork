@@ -8,6 +8,7 @@ import type { AuthorizedExecutorBinding } from '../core/authorized-executor-bind
 import type { PlanningAgentPlan } from '../planning/planning-types.js';
 import {
   type WorkspaceAdmission,
+  type WorkspaceAdmissionTargetFact,
   type WorkspaceDeliveryPolicy,
   type WorkspaceExecutionDecision,
   type WorkspaceExecutionMode,
@@ -163,7 +164,7 @@ export type ControlEvent =
        * decision without re-asking the Planner.
        */
       workspaceAdmission?: {
-        targetWorkspace: { workspaceId: string; canonicalPath: string } | null;
+        targetWorkspace: WorkspaceAdmissionTargetFact | null;
       };
       /**
        * Bounded, server-produced Span routing observation (ADR-0033

@@ -35,12 +35,11 @@ export function ObservedExecutionDetail({ conversationId, initial, subtaskId, fa
 }
 
 /** Separate, bounded detail requests never block the Conversation baseline. */
-export function ObservedTurnDetails({ conversationId, turnId, ws, http, tab, onSelectTurn, onOpenArtifact, onOpenSubtaskDetail }: {
+export function ObservedTurnDetails({ conversationId, turnId, ws, http, tab, onSelectTurn, onOpenArtifact }: {
   conversationId: string; turnId: string; ws: WsClient; http: HttpClient; tab: 'trajectory';
   /** Switch which Turn this surface reads; history must stay reachable. */
   onSelectTurn?: (turnId: string) => void;
   onOpenArtifact(artifact: ArtifactProjection): void;
-  onOpenSubtaskDetail(turn: ConversationTurnProjection, subtaskId: string): void;
 }) {
   const liveSummary = useConversationTurn(ws.conversations, conversationId, turnId);
   const located = useLocatedTurn(http, conversationId, turnId, liveSummary);
@@ -107,8 +106,7 @@ export function ObservedTurnDetails({ conversationId, turnId, ws, http, tab, onS
       />
     )}
     {error && <p role="alert">{error}</p>}
-    {<TrajectoryView turn={turn} executionTraceEvents={detail.traceEvents} http={http} onOpenArtifact={onOpenArtifact}
-          onOpenSubtaskDetail={subtaskId => onOpenSubtaskDetail(turn, subtaskId)}
+    {<TrajectoryView turn={turn} http={http} onOpenArtifact={onOpenArtifact}
           onLoadMore={tab === 'trajectory' ? loadMore : undefined}
           loading={tab === 'trajectory' && loading}
           hasMore={tab === 'trajectory' && Boolean(cursor)} />}

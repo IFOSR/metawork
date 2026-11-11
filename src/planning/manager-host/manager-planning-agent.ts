@@ -27,7 +27,6 @@ const MAX_REPAIR_ATTEMPTS = 2;
 /** Workspace facts the Runtime owns; the Manager never derives them itself. */
 export interface ManagerTurnScope {
   readonly workspaceRoot: string;
-  readonly writable: boolean;
   readonly permissionProfileRef: string;
 }
 
@@ -124,7 +123,7 @@ export class ManagerPlanningAgent implements PlanningAgent {
       generationId: null, goal: input.userInput,
       context: input.results.map((item, index) =>
         `Certified Subtask ${index + 1}: ${item.title}\n${item.content}`),
-      workspace: { root: input.workspaceRoot, mode: 'read_only' },
+      workspace: { root: input.workspaceRoot },
       permissionProfileRef: 'engineering',
       configurationRevision: input.configuration.revisionId,
       model: { providerRef: model.providerRef, modelRef: model.id,
@@ -236,7 +235,7 @@ export function toManagerTurn(
       ...replan,
       ...quotaNotice,
     ],
-    workspace: { root: scope.workspaceRoot, mode: scope.writable ? 'write' : 'read_only' },
+    workspace: { root: scope.workspaceRoot },
     permissionProfileRef: scope.permissionProfileRef,
     configurationRevision: context.configuration.revisionId,
     model: {

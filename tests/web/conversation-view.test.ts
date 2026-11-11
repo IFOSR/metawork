@@ -6,7 +6,7 @@ const root = new URL('../../web/src/components/', import.meta.url);
 describe('Detailed conversation view', () => {
   it('renders safe Manager, Router, Executor and final answer sections', async () => {
     const [view, turn, narrative, step, styles] = await Promise.all([
-      readFile(new URL('ConversationView.tsx', root), 'utf8'),
+      readFile(new URL('../observation/ObservedConversationView.tsx', root), 'utf8'),
       readFile(new URL('ConversationTurn.tsx', root), 'utf8'),
       readFile(new URL('ExecutionNarrative.tsx', root), 'utf8'),
       readFile(new URL('ExecutionStep.tsx', root), 'utf8'),
@@ -15,6 +15,7 @@ describe('Detailed conversation view', () => {
 
     expect(view).toContain('ConversationTurnView');
     expect(view).toContain('liveExecutionPanel');
+    expect(view).toContain('<TaskDagPanel');
     expect(view).toContain("closest<HTMLElement>('.workspace-canvas')");
     expect(view).toContain('canvas.scrollTo');
     expect(turn).toContain("turn.status === 'completed'");
@@ -52,7 +53,7 @@ describe('Detailed conversation view', () => {
 
   it('supports collapsible execution narrative and click-locked auto-scroll', async () => {
     const [view, narrative, styles] = await Promise.all([
-      readFile(new URL('ConversationView.tsx', root), 'utf8'),
+      readFile(new URL('../observation/ObservedConversationView.tsx', root), 'utf8'),
       readFile(new URL('ExecutionNarrative.tsx', root), 'utf8'),
       readFile(new URL('../styles.css', root), 'utf8'),
     ]);
@@ -65,12 +66,11 @@ describe('Detailed conversation view', () => {
     expect(narrative).toContain('展开');
     expect(narrative).toContain('!collapsed');
 
-    // 点击锁定视野；滚回底部/回到最新解锁恢复跟随。
-    expect(view).toContain('locked');
-    expect(view).toContain('lockedRef');
+    // 离开尾部后停在用户正在读的行；回到最新恢复跟随。
+    expect(view).toContain('followingLatest');
+    expect(view).toContain('returnToLatest');
     expect(view).toContain('back-to-latest');
     expect(view).toContain('回到最新');
-    expect(view).toContain('pointerdown');
 
     expect(styles).toContain('.narrative-toggle');
     expect(styles).toContain('.back-to-latest');

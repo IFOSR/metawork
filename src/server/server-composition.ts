@@ -112,6 +112,7 @@ import { formatGatewayDoctorChecks, runGatewayDoctor } from '../gateway/doctor.j
 import { createRecoveryReplanner } from '../session/recovery-replanner.js';
 import { planWithoutClient } from '../session/detached-recovery-planner.js';
 import { ConversationSession } from '../session/conversation-session.js';
+import { workspaceWriteStateOf } from '../core/workspace-execution.js';
 import { FileConversationStore } from '../session/file-conversation-store.js';
 import { updateConversationCatalog } from '../session/conversation-catalog-mutation.js';
 import { FileWorkspaceCatalogStore } from '../storage/file-workspace-catalog-store.js';
@@ -1046,18 +1047,19 @@ export async function main(cliCommand = parseCliArgs(process.argv.slice(2))) {
     ),
   });
   const notifier = createNotificationService(config);
-  // ADR-0055 D6: when the Manager transport is selected, the Manager plans from
-  // the Conversation's user Workspace read-only; it never receives a writable
-  // scope, because planning must not mutate anything.
+  // ADR-0055 D6: the Manager plans from the Conversation's user Workspace.
+  // Its own inspection surface stays read-only in the Manager extension, but
+  // that is not a Workspace fact: Task writes happen in the Conversation Git
+  // worktree and are merged back by the Runtime. Never project a 只读/可写
+  // Workspace label into the Manager turn (2026-11-11).
   const resolveManagerScope = async (
     conversationId: string,
-  ): Promise<{ workspaceRoot: string; writable: false; permissionProfileRef: string }> => {
+  ): Promise<{ workspaceRoot: string; permissionProfileRef: string }> => {
     const metadata = await conversationStore.readMetadata(conversationId);
     const workspaceId = metadata?.workspaceBinding?.workspaceId;
     const workspace = workspaceId ? await workspaceCatalogStore.findById(workspaceId) : null;
     return {
       workspaceRoot: workspace?.canonicalPath ?? accountPaths.workspaceStore,
-      writable: false,
       permissionProfileRef: stagedConfiguration.plannerBinding?.permissionProfileRef ?? 'engineering',
     };
   };
@@ -1604,6 +1606,10 @@ export async function main(cliCommand = parseCliArgs(process.argv.slice(2))) {
       },
     });
     conversation = new ConversationSession({
+      // Runtime-owned write readiness: a failed Workspace Git root fails plan
+      // admission with its own reason instead of becoming a Manager question.
+      resolveWorkspaceWriteState: workspaceId =>
+        workspaceWriteStateOf(workspaceGitServices().conversationWorktrees.repo.root(workspaceId)),
       onBackgroundResultDelivery: async (delivery, originTurnId) => {
         if (!deliverSystemResult) throw new Error('Result delivery is unavailable');
         await deliverSystemResult(conversationId, delivery, originTurnId);

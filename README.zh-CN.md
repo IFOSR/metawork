@@ -310,7 +310,8 @@ metawork web
 metawork web --no-open
 ```
 
-启动目录会成为该 Conversation 中 Planner 的只读工作区上下文，浏览器打开
+启动目录会成为该 Conversation 的 Workspace：Manager 以自己的只读工具面检视它，
+但 Workspace 本身不是只读的。浏览器打开
 `http://127.0.0.1:8788`。普通启动会使用短时 URL fragment bootstrap 换取
 HttpOnly、SameSite=Strict session cookie；SSH、端口转发或手动打开浏览器时使用
 `--no-open`。Executor 的获批修改发生在托管的 Task/Subtask Git worktree 中，

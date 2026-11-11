@@ -69,7 +69,7 @@ describe('manager provider configuration', () => {
     const services = buildManagerPlannerServices({
       runtimeRoot: root,
       piCommand: fileURLToPath(new URL('../fixtures/fake-pi-rpc.mjs', import.meta.url)),
-      resolveScope: () => ({ workspaceRoot: root, writable: false, permissionProfileRef: 'engineering' }),
+      resolveScope: () => ({ workspaceRoot: root, permissionProfileRef: 'engineering' }),
       providerConfig: { configuration: configuration(), agentClassId: 'planner', apiKeys: { alpha: 'test-key' } },
     });
     try {

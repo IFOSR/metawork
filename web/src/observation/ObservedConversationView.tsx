@@ -11,7 +11,7 @@ import { turnProjection } from './turn-projection';
 import { ConversationTurnView } from '../components/ConversationTurn';
 import { useCompleteContent } from './use-complete-content';
 import { useTurnPresentation } from './use-turn-presentation';
-import { LiveExecutionPanel } from '../components/LiveExecutionPanel';
+import { TaskDagPanel } from '../components/TaskDagPanel';
 import { TurnExecutionRecap } from '../components/TurnExecutionRecap';
 import { LivePlanningPanel, plannerActivity } from '../components/LivePlanningPanel';
 import type { ArtifactProjection, ConversationTurnProjection } from '../api/session-types';
@@ -447,15 +447,16 @@ const ObservedTurn = memo(function ObservedTurn({ store, conversationId, id, htt
   return <div ref={root} data-observed-turn={id}>
     <ConversationTurnView turn={projection} onOpenTrajectory={onOpenTrajectory}
       onOpenArtifact={onOpenArtifact} onOpenAttachment={onOpenAttachment}
-      liveExecutionPanel={showExecution && turnIsLive ? (plannerActivity(projection)
+      liveExecutionPanel={latest || turnIsLive ? (plannerActivity(projection)
         ? <LivePlanningPanel turn={projection} />
-        : <LiveExecutionPanel turn={projection} onSelectSubtask={(subtaskId, title) => onOpenSubtaskDetail(projection, subtaskId, title)} />) : undefined}
+        : <TaskDagPanel turn={projection} http={http}
+          onSelectSubtask={(subtaskId, title) => onOpenSubtaskDetail(projection, subtaskId, title)} />) : undefined}
       blockedActions={<BlockedActions ws={ws} http={http} conversationId={conversationId} taskId={turn.taskId ?? null}
         fallbackStatus={projection.status === 'blocked' || projection.status === 'failed' ? projection.status : null}
         lifecycle={details.taskLifecycle} permission={details.pendingPermission} refresh={details.refresh} />} />
-    {!turnIsLive && turn.taskId && (
-      // A settled Turn keeps its own execution record: the live panel steps
-      // aside, but its DAG and Subtask states remain readable for recall.
+    {!latest && !turnIsLive && turn.taskId && (
+      // A settled Turn keeps its own execution record for recall. The newest
+      // Turn renders the live task DAG above, so its recap would duplicate it.
       <TurnExecutionRecap
         taskId={turn.taskId}
         http={http}

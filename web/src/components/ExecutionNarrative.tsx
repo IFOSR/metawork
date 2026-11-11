@@ -4,6 +4,7 @@ import type { InteractionTraceEvent } from '../api/types';
 import { formatExecutionDuration } from '../execution-duration';
 import { turnExecutionPresentation } from '../turn-execution-presentation';
 import { ExecutionStep } from './ExecutionStep';
+import { MarkdownContent } from './MarkdownContent';
 import { subtaskTitle, type WorkGraphTitleIndex } from '../work-graph-titles';
 
 const GROUPS: Array<{
@@ -131,13 +132,15 @@ export function ExecutionNarrative({ turn, titleBySubtask }: {
                         {history.map((entry, index) => (
                           <li key={`${entry.occurredAt}:${index}`}>
                             <time>{formatClock(entry.occurredAt)}</time>
-                            <span>{entry.text}</span>
+                            <div className="executor-attempt-entry"><MarkdownContent value={entry.text} /></div>
                           </li>
                         ))}
                         {history.length === 0 && (
                           <li className="executor-waiting">
                             <time>LIVE</time>
-                            <span>{latestText ?? 'Executor 已启动，等待第一个可公开的执行进度事件…'}</span>
+                            <div className="executor-attempt-entry">
+                              <MarkdownContent value={latestText ?? 'Executor 已启动，等待第一个可公开的执行进度事件…'} />
+                            </div>
                           </li>
                         )}
                       </ol>

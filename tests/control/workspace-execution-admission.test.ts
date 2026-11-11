@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { resolveWorkspaceAdmission } from '../../src/control/workspace-execution-decision.js';
 import { authorizedExecutorBindingFingerprint } from '../../src/core/authorized-executor-binding.js';
+import { workspaceWriteStateOf } from '../../src/core/workspace-execution.js';
 import { workspaceIntentFixture } from '../support/planning-agent-plans.js';
 
 const targetWorkspace = { workspaceId: 'workspace_main', canonicalPath: '/Users/me/project' };
@@ -76,9 +77,38 @@ describe('Kernel Workspace admission', () => {
       existingTaskBinding: { workspaceId: targetWorkspace.workspaceId, executionMode: 'worktree' },
     } })).toMatchObject({ status: 'rejected' });
   });
+
+  it('fails a write with the Runtime-owned reason when the Workspace Git root is failed', () => {
+    // A broken Workspace is a system blocker, never a user capability question.
+    const failed = resolve({
+      facts: { targetWorkspace: { ...targetWorkspace, writeState: 'failed' } },
+    });
+    expect(failed).toMatchObject({ status: 'rejected' });
+    expect(failed.status === 'rejected' ? failed.reason : '')
+      .toContain(`Workspace Git root for ${targetWorkspace.workspaceId} is unavailable`);
+  });
+
+  it('admits writes while the Git root prepares and when readiness is unknown', () => {
+    expect(resolve({ facts: { targetWorkspace: { ...targetWorkspace, writeState: 'initializing' } } }))
+      .toMatchObject({ status: 'resolved', admission: { kind: 'write' } });
+    expect(resolve({ facts: { targetWorkspace: { ...targetWorkspace, writeState: 'ready' } } }))
+      .toMatchObject({ status: 'resolved', admission: { kind: 'write' } });
+    // Legacy proposals carry no writeState; unknown must never block a Turn.
+    expect(resolve()).toMatchObject({ status: 'resolved', admission: { kind: 'write' } });
+  });
 });
 
 describe('Workspace binding identity', () => {
+  it('projects Git root readiness into the admission fact', () => {
+    expect(workspaceWriteStateOf(undefined)).toBeUndefined();
+    expect(workspaceWriteStateOf(null)).toBeUndefined();
+    expect(workspaceWriteStateOf({ state: 'ready' })).toBe('ready');
+    // Preparation and recovery are not blockers; execution waits for them.
+    expect(workspaceWriteStateOf({ state: 'initializing' })).toBe('initializing');
+    expect(workspaceWriteStateOf({ state: 'recovering' })).toBe('initializing');
+    expect(workspaceWriteStateOf({ state: 'failed' })).toBe('failed');
+  });
+
   it('keeps authorized Executor binding fingerprints stable', () => {
     const binding = {
       agentClassRef: 'pi-engineering-fixture', harnessRef: 'codex-harness', providerRef: 'openai',

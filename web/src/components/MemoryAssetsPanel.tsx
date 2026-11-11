@@ -5,13 +5,17 @@ import type {
   MemoryStatusView,
 } from '../api/memory';
 import { memoryEngineProblemNote } from './MemorySettingsPanel';
+import { MarkdownContent } from './MarkdownContent';
+import { markdownPreview } from '../markdown-preview';
 
-const ASSET_PAGE_SIZE = 50;
+/** One page of memory assets; the list never grows without bound. */
+const ASSET_PAGE_SIZE = 10;
 const TYPE_NAMES: Record<string, string> = {
   instruction: '偏好与要求', persona: '个人背景', episodic: '事件记录',
   knowledge: '知识', procedural: '做事方法',
 };
 const typeName = (type: string) => TYPE_NAMES[type] ?? '其他';
+const LAYER_NAMES: Record<'l1' | 'l2' | 'l3', string> = { l1: '原子记忆', l2: '场景经验', l3: '用户画像' };
 const dateLabel = (value: string) => {
   const date = new Date(value);
   return Number.isNaN(date.getTime()) ? '未记录' : date.toLocaleString('zh-CN', { hour12: false });
@@ -270,8 +274,13 @@ export function MemoryAssetsPanel({ api, onOpenSettings, configurationRevision }
                 <button type="button" className="memory-row" data-selected={selectedId === asset.memoryId}
                   onClick={() => { setDetail(null); setSelectedId(asset.memoryId); }}>
                   <span className="memory-type-icon" aria-hidden="true">{asset.type === 'instruction' ? '≡' : asset.type === 'persona' ? '◎' : '◷'}</span>
-                  <span className="memory-asset-body"><span className="memory-asset-preview">{asset.preview}</span>
-                    <span className="memory-asset-meta"><span>{asset.layer.toUpperCase()} · {asset.title || typeName(asset.type)}</span><span className="memory-badge" data-enabled={asset.enabled}>{asset.enabled ? '可使用' : '已停用'}</span></span>
+                  <span className="memory-asset-body"><span className="memory-asset-preview">{markdownPreview(asset.preview, 220)}</span>
+                    <span className="memory-asset-meta">
+                      <span className="memory-layer-badge" data-layer={asset.layer}>{asset.layer.toUpperCase()} {LAYER_NAMES[asset.layer]}</span>
+                      <span>{asset.title || typeName(asset.type)}</span>
+                      <span className="memory-asset-time">{dateLabel(asset.updatedAt)}</span>
+                      <span className="memory-badge" data-enabled={asset.enabled}>{asset.enabled ? '可使用' : '已停用'}</span>
+                    </span>
                   </span><span className="memory-row-arrow" aria-hidden="true">›</span>
                 </button>
               </li>)}</ul>}
@@ -291,8 +300,13 @@ export function MemoryAssetsPanel({ api, onOpenSettings, configurationRevision }
             {detailLoading && !currentDetail && <p role="status">正在读取全文…</p>}
             {detailError && <div className="memory-error" role="alert">{detailError}<button type="button" className="ghost-button" onClick={() => setDetailRevision(value => value + 1)}>重新读取</button></div>}
             {currentDetail && <>
-              <div className="memory-asset-meta"><span>{typeName(currentDetail.type)}</span><span className="memory-badge" data-enabled={currentDetail.enabled}>{currentDetail.enabled ? '可使用' : '已停用'}</span></div>
-              <p className="memory-full-content">{currentDetail.content}</p>
+              <div className="memory-asset-meta">
+                <span className="memory-layer-badge" data-layer={currentDetail.layer}>{currentDetail.layer.toUpperCase()} {LAYER_NAMES[currentDetail.layer]}</span>
+                <span>{typeName(currentDetail.type)}</span>
+                <span className="memory-asset-time">{dateLabel(currentDetail.updatedAt)}</span>
+                <span className="memory-badge" data-enabled={currentDetail.enabled}>{currentDetail.enabled ? '可使用' : '已停用'}</span>
+              </div>
+              <div className="memory-full-content"><MarkdownContent value={currentDetail.content} /></div>
               <button type="button" className="ghost-button" onClick={() => { void navigator.clipboard.writeText(currentDetail.content)
                 .then(() => setNotice('已复制全文')).catch(() => setDetailError('复制失败，请选中正文后复制。')); }}>复制全文</button>
               <div className="memory-detail-rule" />

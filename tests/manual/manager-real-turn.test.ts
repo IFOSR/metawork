@@ -94,7 +94,7 @@ describe.skipIf(!enabled)('real Manager planning turn', () => {
       generationId: null,
       goal,
       context: [`用户：${goal}`],
-      workspace: { root: workspace, mode: 'read_only' },
+      workspace: { root: workspace },
       permissionProfileRef: 'engineering',
       configurationRevision: 'verify-revision',
       model: { providerRef: provider.providerRef, modelRef: provider.modelRef },

@@ -16,7 +16,7 @@ afterEach(() => {
 });
 
 function scope() {
-  return { workspaceRoot: '/tmp/ws', writable: false, permissionProfileRef: 'engineering' };
+  return { workspaceRoot: '/tmp/ws', permissionProfileRef: 'engineering' };
 }
 
 describe('planner transport wiring', () => {

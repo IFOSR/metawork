@@ -1,4 +1,5 @@
 import type { InteractionTraceEvent } from '../api/types';
+import { markdownPreview } from '../markdown-preview';
 import { MarkdownContent } from './MarkdownContent';
 
 const ACTOR: Record<InteractionTraceEvent['actor'], string> = {
@@ -23,7 +24,7 @@ export function ExecutionStep({
         <span className="step-actor">{ACTOR[event.actor]}</span>
         <span className="step-copy">
           <strong>{event.title}</strong>
-          <small>{event.summary}</small>
+          <small>{markdownPreview(event.summary, 160)}</small>
         </span>
         <time>{formatTime(event.occurredAt)}</time>
       </summary>

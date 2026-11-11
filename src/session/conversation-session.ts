@@ -53,6 +53,7 @@ import type {
   PlanningContext,
 } from '../planning/planning-types.js';
 import type { PlannerProposalResult } from '../planning/planner-proposal.js';
+import type { WorkspaceWriteState } from '../core/workspace-execution.js';
 import {
   createPlannerProposalSubmissionId,
   plannerProposalFingerprint,
@@ -193,6 +194,11 @@ export interface ConversationSessionDeps {
   readonly plannerProposalRepo?: PlannerProposalRepo;
   readonly dispose?: () => Promise<void>;
   readonly workspace?: ConversationWorkspacePort;
+  /**
+   * Runtime-observed Workspace Git readiness for writes. Supplied by
+   * composition; the Session never reads Git state itself.
+   */
+  readonly resolveWorkspaceWriteState?: (workspaceId: string) => WorkspaceWriteState | undefined;
   readonly queryUsage?: {
     readonly lifecycle: QueryUsageLifecycle;
     readonly ingress: QueryIngress;
@@ -800,8 +806,17 @@ export class ConversationSession {
   ): Promise<PlanAdmissionRequest> {
     if (event.workspaceAdmission) return event;
     const workspace = await this.deps.workspace?.getWorkspace() ?? null;
+    // Runtime owns write readiness: a broken Workspace Git root fails admission
+    // with its own reason instead of becoming a user-facing capability question.
+    const writeState = workspace
+      ? this.deps.resolveWorkspaceWriteState?.(workspace.workspaceId)
+      : undefined;
     const targetWorkspace = workspace
-      ? { workspaceId: workspace.workspaceId, canonicalPath: workspace.path }
+      ? {
+        workspaceId: workspace.workspaceId,
+        canonicalPath: workspace.path,
+        ...(writeState ? { writeState } : {}),
+      }
       : null;
     return {
       ...event,
