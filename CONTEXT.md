@@ -27,11 +27,14 @@ real-provider and Linux acceptance remain separate gates. Never modify a user's
 personal Pi installation to build.
 
 Local model-price/cost/Query-money storage, services, configuration and APIs are
-removed; official-server subscription/payment amounts remain separate. Fresh-only
-SQLite schema 67 is defined by `src/storage/current-schema.ts`; legacy SQLite
-upgrade code is removed. Startup/update/rollback reject noncurrent or malformed
-schemas before mutation. Release snapshots refuse existing destinations and stage
-copies before exclusive publication; no automatic installed-database migration.
+removed; official-server subscription/payment amounts remain separate. SQLite
+schema 68 is defined by `src/storage/current-schema.ts`. Startup installs an empty
+database, accepts the current schema, or runs one explicit forward-only in-place
+upgrade from the immediately preceding schema (67 -> 68 widens
+`task_operation_results.outcome` with `repair_pending` by rebuilding that table);
+older, unknown or malformed schemas are rejected before mutation. Release
+snapshots refuse existing destinations and stage copies before exclusive
+publication.
 Token facts now distinguish adapter-observed call completion (`occurredAtUtc`)
 from local recording (`recordedAtUtc`), with source/response/normalization metadata.
 Executor call keys include the per-call ID. Timeline/quota use occurredAtUtc.

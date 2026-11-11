@@ -39,6 +39,42 @@ describe('Pi attempt extension', () => {
     }));
   });
 
+  it('reports an anti-bot verification page as a blocked, retryable source', async () => {
+    type Tool = { name: string; execute(id: string, params: Record<string, unknown>): Promise<unknown> };
+    const registered = new Map<string, Tool>();
+    const exports: { default?: (api: { registerTool(tool: Tool): void }) => void } = {};
+    const verification = '<html><head><title>百度安全验证</title></head><body>百度安全验证 网络不给力，请稍后重试 返回首页 问题反馈</body></html>';
+    const execFile = vi.fn((_command: string, _args: string[], _options: unknown, callback: (error: unknown, stdout: string, stderr: string) => void) => {
+      callback(null, verification, '');
+      return { stdin: { end: () => undefined } };
+    });
+    const source = ts.transpileModule(PI_WEB_EXTENSION_SOURCE, {
+      compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.CommonJS },
+    }).outputText;
+    runInNewContext(source, {
+      exports,
+      fetch: vi.fn(),
+      URL,
+      process: { env: { METACLAW_PI_WEB_TOOLS_ENABLED: '1' } },
+      require: (name: string) => {
+        if (name === '@earendil-works/pi-ai') return { Type: new Proxy({}, { get: () => () => ({}) }) };
+        if (name === '@earendil-works/pi-coding-agent') return { defineTool: (tool: Tool) => tool };
+        if (name === 'node:child_process') return { execFile };
+        throw new Error(`Unexpected extension import: ${name}`);
+      },
+    });
+    exports.default!({ registerTool: tool => { registered.set(tool.name, tool); } });
+    const result = await registered.get('web_fetch')!.execute('call', { url: 'https://www.baidu.com/s?wd=test' }) as {
+      content: Array<{ text: string }>; details: Record<string, unknown>;
+    };
+    const payload = JSON.parse(result.content[0]!.text) as Record<string, unknown>;
+    expect(payload).toMatchObject({
+      success: false, blocked: true, retryable: true, reason: 'anti_bot_or_verification_page',
+    });
+    expect(String(payload.guidance)).toContain('不要让用户逐个确认链接');
+    expect(result.details).toMatchObject({ blocked: true });
+  });
+
   it('registers attempt-scoped ResultReference list and get tools', () => {
     expect(PI_WEB_EXTENSION_SOURCE).toContain('name: "result_reference_list"');
     expect(PI_WEB_EXTENSION_SOURCE).toContain('callEvidence("result_reference_list"');

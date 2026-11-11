@@ -1,5 +1,5 @@
 /** ADR-0055 D8: the sole fresh SQLite schema. No historical upgrades or bills. */
-export const CURRENT_SCHEMA_VERSION = 67;
+export const CURRENT_SCHEMA_VERSION = 68;
 
 export const CURRENT_SCHEMA_SQL = `
       CREATE TABLE model_usage_facts (
@@ -89,7 +89,7 @@ CREATE TABLE task_operation_results (
   operation_kind TEXT NOT NULL CHECK (operation_kind IN (
     'execution', 'integration', 'delivery', 'safety_report', 'service'
   )),
-  outcome TEXT NOT NULL CHECK (outcome IN ('success', 'definite_failure', 'unknown')),
+  outcome TEXT NOT NULL CHECK (outcome IN ('success', 'definite_failure', 'unknown', 'repair_pending')),
   reason_code TEXT,
   message TEXT NOT NULL DEFAULT '',
   evidence_refs_json TEXT NOT NULL DEFAULT '[]',

@@ -294,3 +294,17 @@ P0 完成后重放该类请求，期望：Manager 直接产出 `plan_work_graph`
 仍未处理（下一批）：反爬验证页被 `web_fetch` 当作成功内容，导致 Executor 拿不到
 真实数据并最终契约失败；需要“拦截页识别 + 换源/降级 + 可重试分类”，避免把技术失败
 变成用户确认。schema 67→68（`repair_pending` CHECK）与规划详情（批 5）待做。
+
+## 第四轮：schema 68 就地升级与反爬处理（2026-11-11）
+
+- **schema 67 → 68**：`task_operation_results.outcome` 的 CHECK 扩为
+  `('success','definite_failure','unknown','repair_pending')`，并新增一次显式的就地升级
+  （`prepareDatabaseSchema`：空库安装、当前库校验、67→68 重建操作结果表并保留数据；
+  更旧/未知/异常仍拒绝）。真实实例已升级到 68，现有数据保留；修复后服务启动失败的
+  操作结果不再报 `CHECK constraint failed`，而是真实的
+  `service_start_failed` 原因（重试任务验证）。
+- **反爬/验证页**：`web_fetch` 识别百度安全验证、captcha、Cloudflare 等拦截页，返回
+  `success:false, blocked:true, retryable:true, reason:anti_bot_or_verification_page`
+  并给出“换源/官方站点/标注未核实，不要让用户逐个确认链接”的指引；`web_search` 在
+  Bing/百度返回拦截页时报告“搜索被反爬验证页拦截”而不是“网络不可用”；Executor 提示词
+  同步该规则，禁止把验证页当证据、禁止 curl 硬抓、禁止让用户确认单条链接。

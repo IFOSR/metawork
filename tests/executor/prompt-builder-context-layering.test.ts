@@ -45,6 +45,9 @@ describe('Subtask execution prompt layering', () => {
     expect(prompt).toContain('Never start a persistent background process or daemon');
     expect(prompt).toContain('startServiceAfterPublish');
     expect(prompt).toContain('Terminating a process the user explicitly asked to stop is allowed');
+    // Anti-bot pages are a retryable source failure, never a user decision.
+    expect(prompt).toContain('blocked=true web result');
+    expect(prompt).toContain('do not ask the user to approve individual links');
   });
 
   it('teaches a renderable inline chart without requesting files or inventing data', () => {

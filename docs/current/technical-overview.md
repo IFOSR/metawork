@@ -4,7 +4,7 @@
 
 > 当前状态（2026-11-10，ADR-0055 / Review R-01～R-32）：Kernel inbox、decision/application ledger 与重放已删除；直接准入由提案/结果 owner 承载。Task Runtime facade 保持进程内生命周期职责。Manager strict proposal 已删除 executorBindings/modelSelection，准入保留固定配置中的全部硬资格池；Runtime 的绑定池不等于 Manager 选择。dispatch Router 使用实际 modelId、失败 receipt 与事务内 owner 重读；评估失败或缺失不默认选路。动态资格、失败/恢复链与旧 Span 轨迹仍待收敛。
 >
-> 本地金额表/服务/API/配置/UI、Codex driver/catalog/发现/Web、容器执行适配器及 TUI facade 已分批删除；配置/backend 为 host-only。官方账号订阅/支付金额和 docker_socket 安全拒绝规则保留。存储为唯一 fresh schema 67，历史 SQLite 升级链已删除，旧库/异常 schema 写前拒绝；快照以 staging 与排他复制保护已有目标，不自动修改已安装库。Token 新增调用来源及发生/落库时间，Executor 按调用 ID 分账，时间线/额度按 occurredAtUtc；Router 决策模型调用以 `system` 付款方逐调用计量（记录可见、不计入用户 Included）；Memory 引擎的提取/场景/画像调用经 release-owned compat patch 的有界账本与认证 drain 路由逐调用计量（`agentClassRef=memory`，挂在账户级 system Query 上，payer 由抽取 Provider 在固定版本下的所有权决定）。
+> 本地金额表/服务/API/配置/UI、Codex driver/catalog/发现/Web、容器执行适配器及 TUI facade 已分批删除；配置/backend 为 host-only。官方账号订阅/支付金额和 docker_socket 安全拒绝规则保留。存储为 schema 68；仅保留 67→68 的一次显式就地升级（扩展 repair_pending 约束并重建操作结果表），更旧/未知/异常 schema 写前拒绝；快照以 staging 与排他复制保护已有目标，不自动修改已安装库。Token 新增调用来源及发生/落库时间，Executor 按调用 ID 分账，时间线/额度按 occurredAtUtc；Router 决策模型调用以 `system` 付款方逐调用计量（记录可见、不计入用户 Included）；Memory 引擎的提取/场景/画像调用经 release-owned compat patch 的有界账本与认证 drain 路由逐调用计量（`agentClassRef=memory`，挂在账户级 system Query 上，payer 由抽取 Provider 在固定版本下的所有权决定）。
 >
 > Web 任务呈现（2026-11-11）：会话里最新 Turn 直接用任务 DAG（`TaskDagPanel` → `WorkGraphDiagram`）展示
 > 子任务结构、状态、执行器/模型、当前步骤与耗时，节点点击打开执行详情抽屉；任务执行卡片已删除。同一 Turn
