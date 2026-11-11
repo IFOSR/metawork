@@ -375,6 +375,17 @@ export class PiCliDriver implements HarnessDriver {
   ): Promise<void> {
     if (!this.webExtensionSourcePath
       || (!hasWebResearchAffordances(affordances) && !evidenceToolsAvailable)) return;
+    // A previous partial build (`tsup` clears dist/ and the generated
+    // extension is a separate step) used to surface here as a generic
+    // ENOENT "configuration" failure, which the user cannot act on. Fail with
+    // the actual repair instruction instead.
+    if (!existsSync(this.webExtensionSourcePath)) {
+      throw new Error(
+        'MetaWork runtime is incomplete: missing generated Pi extension '
+        + `${this.webExtensionSourcePath}. Rebuild the complete runtime `
+        + '(npm run build, or run tsup plus the schema and pi-attempt-extension generators).',
+      );
+    }
     const extensionsDir = join(homePath, '.pi', 'agent', 'extensions');
     await mkdir(extensionsDir, { recursive: true, mode: 0o700 });
     const target = join(extensionsDir, 'metawork-web-tools.ts');

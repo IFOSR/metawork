@@ -70,6 +70,7 @@ import {
   type SecretStore,
 } from '../configuration/secret-store.js';
 import { resolveMetaWorkPaths } from '../installation/paths.js';
+import { assertCompleteRuntime } from '../installation/runtime-artifacts.js';
 import { AccountLayoutMigrator } from '../installation/account-layout-migrator.js';
 import { resolveAccountPaths } from '../account/account-paths.js';
 import { LOCAL_DEFAULT_ACCOUNT_ID } from '../account/account-id.js';
@@ -432,6 +433,13 @@ export async function main(cliCommand = parseCliArgs(process.argv.slice(2))) {
   if (cliCommand.kind === 'help') {
     process.stdout.write(`${formatCliHelp()}\n`);
     return;
+  }
+
+  // A partial build used to leave the Server healthy while every attempt
+  // failed at preparation with an unactionable ENOENT. Refuse to accept work
+  // on an incomplete runtime and name the repair step instead.
+  if (cliCommand.kind === 'server' && cliCommand.action === 'start') {
+    assertCompleteRuntime(applicationRoot);
   }
 
   // 1. 初始化目录

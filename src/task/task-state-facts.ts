@@ -171,6 +171,15 @@ const FAILED_TERMINAL_STATES = new Set(['executor_failed', 'contract_blocked', '
 const UNCERTAIN_FAILURE_KINDS = new Set([
   'unknown', 'timeout', 'network', 'infrastructure', 'heartbeat_lost',
 ]);
+// These failures stop execution but do not prove the work impossible: the
+// user (or the operator) can fix the environment and continue. Treating them
+// as definite failures made a Task that the runtime had just blocked for
+// "explicit recovery" conclude as failed (observed 2026-11-11: a missing
+// generated Pi extension surfaced as a configuration failure and the Task
+// ended failed instead of remaining resumable).
+const RECOVERABLE_BLOCK_FAILURE_KINDS = new Set([
+  'configuration', 'adapter', 'permission', 'stale',
+]);
 
 export function readTaskEvaluationInput(raw: TaskStateRawFacts): TaskEvaluationInput {
   const receiptsBySubtask = new Map<string, TaskRawReceiptFact[]>();
@@ -642,6 +651,18 @@ function resolveRequiredWork(input: {
     && latestReceipt.failureCode !== null
     && latestReceipt.failureCode !== 'unknown'
     && !uncertainFailure;
+  if (subtask.status === 'blocked' && !input.armedRetry && latestReceipt?.failureKind
+    && RECOVERABLE_BLOCK_FAILURE_KINDS.has(latestReceipt.failureKind)) {
+    const permission = latestReceipt.failureKind === 'permission';
+    const reason = createTaskReason(
+      permission ? 'input_required' : 'system_anomaly',
+      permission
+        ? '执行所需权限需要确认后才能继续。'
+        : '执行环境或配置需要处理；修复后可继续未完成部分。',
+      [`receipt:${latestReceipt.attemptId}`],
+    );
+    return { fact: { ...base, state: 'waiting_for_user', reason }, failureReason: null };
+  }
   if (subtask.status === 'blocked' && definiteFailure && !input.armedRetry) {
     const reason = failureReasonFor(latestReceipt!);
     return { fact: { ...base, state: 'failed', reason }, failureReason: reason };
