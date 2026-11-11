@@ -15,6 +15,7 @@ export function workspaceCompletionResult(input: {
   receipts: ExecutorAttemptReceiptRepo;
   results: ResultObjectRepo;
   summary?: string;
+  acceptedAttemptIds?: ReadonlySet<string>;
 }): ConversationResultDelivery | null {
   const sources = workspaceCompletionSources(input);
   if (!sources || (sources.length > 1 && !input.summary?.trim())) return null;
@@ -38,12 +39,22 @@ export function workspaceCompletionSources(input: {
   subtasks: Subtask[];
   receipts: ExecutorAttemptReceiptRepo;
   results: ResultObjectRepo;
+  /**
+   * Attempts whose result the user explicitly accepted. Task facts already
+   * treat such a receipt as its node's completion evidence; the final answer
+   * must use the same rule instead of demanding `terminalState === 'completed'`
+   * (2026-11-11: acceptance advanced the graph but completion then failed with
+   * `workspace_completion_missing_certified_results`, leaving the Task blocked).
+   */
+  acceptedAttemptIds?: ReadonlySet<string>;
 }): Array<{ title: string; content: string; subtask: Subtask; safe: NonNullable<ReturnType<typeof resolveSafeResult>> }> | null {
   const receipts = input.receipts.listByTask(input.taskId);
+  const acceptedAttemptIds = input.acceptedAttemptIds ?? new Set<string>();
+  const isAccepted = (attemptId: string) => acceptedAttemptIds.has(attemptId);
   const sources = input.subtasks.map(subtask => {
     const receipt = receipts.find(item =>
       item.subtaskId === subtask.id && item.generationId === input.generationId
-      && item.terminalState === 'completed');
+      && (item.terminalState === 'completed' || isAccepted(item.attemptId)));
     if (!receipt) return null;
     const safe = resolveSafeResult({
       accountId: input.accountId, receipt,
@@ -57,7 +68,7 @@ export function workspaceCompletionSources(input: {
     // source identity above are the certification, not that historical marker.
     const certifiedSource = receipt.attemptKind === 'contract_correction'
       && safe.sourceAttemptId === safe.resultOwnerAttemptId;
-    if (safe.object.completeness !== 'complete' && !certifiedSource) return null;
+    if (safe.object.completeness !== 'complete' && !certifiedSource && !isAccepted(receipt.attemptId)) return null;
     const content = input.results.readRange(safe.object.resultId, 0, safe.object.byteLength).content;
     return { title: subtask.title, content, subtask, safe };
   });

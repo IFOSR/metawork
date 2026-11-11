@@ -1969,6 +1969,14 @@ export class ControlExecutionRuntime {
     const beforeUpdatedAt = task.updatedAt;
     if (!await this.resumeResultContinuations(taskId)) return false;
     await this.recoverLocalServiceOperations(taskId);
+    // Recovery must also advance the graph. A recovery-only pass only drains the
+    // event queue, so a Task that became runnable through an accepted result (or
+    // any other recovery fact) stayed at `ready` with `nextWakeAt = null`
+    // forever (observed 2026-11-11: an accepted subtask completed, the dependent
+    // synthesis subtask never started). When runnable work already exists, submit
+    // a dispatch event instead of an empty recovery drain.
+    const hasRunnableWork = task.status === 'running'
+      && this.deps.subtaskRepo.listActiveByTask(taskId).some(subtask => subtask.status === 'ready');
     await this.execute(this.prepareExecution({
       taskId,
       request: {
@@ -1978,7 +1986,7 @@ export class ControlExecutionRuntime {
         origin: 'system',
         schedulingReason: reason,
       },
-      recoveryOnly: true,
+      recoveryOnly: !hasRunnableWork,
     }));
     const after = this.deps.taskRuntimeService.findTask(taskId);
     // A block may be stale: the facts can already prove the conclusion (for
@@ -5621,10 +5629,15 @@ export class ControlExecutionRuntime {
           completeness: 'complete', certification: 'certified',
         };
       } else {
+        const acceptedAttemptIds = new Set(
+          (this.deps.taskStateAuthority?.readFacts?.(task.id)?.receipts ?? [])
+            .filter(receipt => receipt.accepted === true)
+            .map(receipt => receipt.attemptId),
+        );
         const sources = workspaceCompletionSources({
           accountId: task.accountId, taskId: task.id, generationId: graph.generationId,
           subtasks: input.subtasks, receipts: this.deps.attemptReceiptRepo,
-          results: this.deps.resultObjectRepo,
+          results: this.deps.resultObjectRepo, acceptedAttemptIds,
         });
         if (!sources) throw new Error('workspace_completion_missing_certified_results');
         let summary: string | undefined;
@@ -5645,7 +5658,7 @@ export class ControlExecutionRuntime {
         completionDelivery = workspaceCompletionResult({
           accountId: task.accountId, taskId: task.id, generationId: graph.generationId,
           resultId, subtasks: input.subtasks, receipts: this.deps.attemptReceiptRepo,
-          results: this.deps.resultObjectRepo,
+          results: this.deps.resultObjectRepo, acceptedAttemptIds,
           ...(summary ? { summary } : {}),
         });
         if (!completionDelivery) throw new Error('workspace_completion_result_unavailable');

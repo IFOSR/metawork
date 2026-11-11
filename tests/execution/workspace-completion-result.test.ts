@@ -8,7 +8,7 @@ import { ResultObjectRepo } from '../../src/storage/result-object-repo.js';
 import { TaskRecoveryItemRepo } from '../../src/storage/task-recovery-item-repo.js';
 import { SqliteConversationTurnStore } from '../../src/storage/conversation-turn-repo.js';
 import { ControlExecutionRuntime } from '../../src/execution/control-execution-runtime.js';
-import { workspaceCompletionResult } from '../../src/execution/workspace-completion-result.js';
+import { workspaceCompletionResult, workspaceCompletionSources } from '../../src/execution/workspace-completion-result.js';
 import { createBackgroundResultDelivery } from '../../src/gateway/background-result-delivery.js';
 import type { ConversationResultDelivery } from '../../src/session/conversation-session.js';
 import type { Subtask } from '../../src/core/types.js';
@@ -52,6 +52,24 @@ describe('Workspace completion answer', () => {
       else expect(result).toBeNull();
       expect(f.results.findObject('safe')?.completeness).toBe('partial');
     });
+  it('accepts an explicitly accepted uncertified result as a completion source', () => {
+    // The user accepted a safe partial result. Task facts already treat the
+    // receipt as its node's evidence, so the final answer must too; otherwise
+    // acceptance advances the graph and completion then blocks with
+    // workspace_completion_missing_certified_results.
+    const f = fixture('partial');
+    const source = { ...f.receipt, graphRevision: 1, terminalState: 'uncertified_result' };
+    const receipts = { listByTask: () => [source], findByAttemptId: () => source };
+    const input = { accountId: 'local-default', taskId: 'task', generationId: 'gen',
+      subtasks: f.subtasks, receipts: receipts as never, results: f.results };
+    expect(workspaceCompletionSources(input)).toBeNull();
+    expect(workspaceCompletionSources({ ...input, acceptedAttemptIds: new Set(['attempt']) }))
+      .toMatchObject([{ title: 'Write file', content: expect.stringContaining('内容验证一致') }]);
+    expect(workspaceCompletionResult({ ...input, resultId: 'completion',
+      acceptedAttemptIds: new Set(['attempt']) }))
+      .toMatchObject({ resultId: 'completion', certification: 'certified' });
+  });
+
   it.each(['authorized', 'pending', 'cancelled', 'different-config', 'unfinished', 'other-residue'])
     ('recovers only authorized completed work: %s', async mode => {
       const task = { id: 'task', status: mode === 'cancelled' ? 'cancelled' : 'needs_action', goal: 'Compare' };

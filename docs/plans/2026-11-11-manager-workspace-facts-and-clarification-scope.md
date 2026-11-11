@@ -264,3 +264,33 @@ P0 完成后重放该类请求，期望：Manager 直接产出 `plan_work_graph`
 - 修复需要把 CHECK 扩到 `repair_pending`，即 schema 67 → 68；当前仓库没有就地升级
   机制（`schema.ts` 明确拒绝旧版本，`database-release-snapshot.ts` 只复制不升级），
   升级会要求现有实例重建数据库。属独立决策，未在本批擅自变更。
+
+## 第三轮：阻塞解除后的调度与接受结果收尾（2026-11-11）
+
+真实任务 `task_plan_event_plan_conv_NjTzOAxW1x-2_turn_sjn36GJNvp5J_int_HppUn0ofn5`
+（用户自己的 GEO 检索任务）暴露两个独立缺陷：
+
+1. **阻塞原因不是权限，而是完成契约失败**：某个检索子任务在 `web_fetch` 拿到百度
+   反爬验证页（`success:true`，正文“百度安全验证…”）后，最终完成证据与授权验收项
+   不匹配（`completion_acceptance_mismatch`），子任务以 `contract_failed` 阻塞，任务
+   进入 `needs_action`。
+2. **“接受并交付”后下游不调度**：用户接受未认证结果后，`task_result_continuation`
+   把子任务标记 done，`wakeAfterResultContinuation → recoverDue` 只做一次空队列
+   recovery drain，从不提交 `dispatch_requested`；`synthesize-report` 保持 `ready`、
+   `nextWakeAt=null`，页面一直“等待中”。
+3. **接受结果后最终收尾失败**：`workspaceCompletionSources` 只把
+   `terminalState==='completed'` 的 receipt 当来源，而 Task facts 已把“显式接受”
+   的 receipt 视为节点完成证据，导致 `workspace_completion_missing_certified_results`
+   把任务停在 `needs_action`。
+
+修复与验证：
+
+- `recoverDue` 在任务处于 `running` 且存在 `ready` 子任务时提交派发事件，而不是空 drain。
+- `workspaceCompletionSources/Result` 接受显式接受过的 receipt（来自 Task facts 的
+  `accepted` 标记）作为最终答案来源。
+- 真实环境验证：重启后上述卡住的 `synthesize-report` 自动派发并完成，任务从
+  `needs_action` 收敛为 `succeeded`；页面无“等待中/需要处理”，无残留规划卡。
+
+仍未处理（下一批）：反爬验证页被 `web_fetch` 当作成功内容，导致 Executor 拿不到
+真实数据并最终契约失败；需要“拦截页识别 + 换源/降级 + 可重试分类”，避免把技术失败
+变成用户确认。schema 67→68（`repair_pending` CHECK）与规划详情（批 5）待做。
