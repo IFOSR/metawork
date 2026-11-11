@@ -97,6 +97,11 @@ describe('manager pi extension', () => {
       expect(result.systemPrompt).toContain('plan_work_graph with workspaceIntent.operation of create_in_target');
       expect(result.systemPrompt).toContain("Ask a clarification only when the USER'S intent is unclear");
       expect(result.systemPrompt).toContain('Never ask about your own tool permissions');
+      // Running/terminating a process needs exclusive access even without edits.
+      expect(result.systemPrompt).toContain("Running or terminating a process or service is workspaceEffect 'write'");
+      expect(result.systemPrompt).toContain('task.startServiceAfterPublish=true');
+      expect(result.systemPrompt).toContain('Never ask the Executor to daemonize');
+      expect(result.systemPrompt).toContain('service_stop only for an instance MetaWork manages');
       expect(typeof result.systemPrompt).toBe('string');
       expect(activeTools[0]).toEqual(['read', 'ls', 'grep', 'find', 'submit_manager_proposal']);
     } finally {

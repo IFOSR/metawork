@@ -36,11 +36,37 @@ function plan(subtasks = [subtask()]): PlanningAgentPlan {
       reason: 'Capability-minimal work', subtasks }, source: 'anyfusion-planner' };
 }
 
+function runPlan(workspaceEffect: SubtaskProposal['workspaceEffect']): PlanningAgentPlan {
+  const candidate = plan([subtask({
+    deliveryKind: 'report', fileOutputs: [], workspaceEffect,
+  })]);
+  candidate.workspaceIntent = {
+    ...candidate.workspaceIntent!,
+    operation: 'run_in_target',
+    targetPaths: ['price-in-service/'],
+    reason: '停止 8000 端口的服务',
+  };
+  return candidate;
+}
+
 // ADR-0055: Manager proposes semantics/capabilities. Runtime admission and Router
 // own bindings/models; the retired schema-8 selection tests cannot certify v9.
 describe('validatePlanningAgentPlan schema 9', () => {
   it('accepts a capability-only proposal without selecting an Executor or Model', () => {
     expect(validatePlanningAgentPlan(plan(), configuration)).toEqual({ valid: true, errors: [] });
+  });
+
+  it('rejects a run_in_target plan whose subtasks are all shared readers', () => {
+    // Running or terminating a process needs exclusive Workspace access even
+    // when it changes no file (2026-11-11: "stop the service" was admitted as a
+    // read plan and rejected deep in admission with an internal invariant).
+    const errors = validatePlanningAgentPlan(runPlan('read_only'), configuration).errors;
+    expect(errors.join('\n')).toContain('run_in_target requires at least one subtask');
+  });
+
+  it('accepts a run_in_target plan that declares exclusive access without file outputs', () => {
+    expect(validatePlanningAgentPlan(runPlan('write'), configuration))
+      .toEqual({ valid: true, errors: [] });
   });
 
   it('tolerates the retired originalFilePolicy on a persisted proposal', () => {

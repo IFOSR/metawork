@@ -103,7 +103,7 @@ const SubtaskSchema = z.object({
   contextRefs: z.array(ContextRefSchema).max(12),
   requiredCapabilities: z.array(z.enum(ROUTING_CAPABILITY_IDS)).min(1),
   workspaceEffect: z.enum(['read_only', 'write', 'unknown']).optional().describe(
-    'Effect of this node on business Workspace files. read_only allows shared reads and private scratch writes; write includes code edits without downloadable files. unknown executes exclusively. This does not select Harness tools.',
+    'Workspace access this node needs. read_only: pure reads, analysis or reports that may share the Workspace with other readers (private scratch writes only). write: exclusive Workspace access - file edits, OR running/terminating a process or service. A command that changes no files still needs write, because it must not run beside other attempts. unknown: exclusive. This does not select Harness tools.',
   ),
   deliveryKind: z.enum(DELIVERY_KIND_VALUES).describe(
     'edit: the subtask primarily delivers workspace/file changes; report: the subtask primarily delivers a report or answer. Both delivery kinds may create ordinary user-space files while executing.',
@@ -172,7 +172,7 @@ const WorkspaceIntentSchema = z.object({
     'run_in_target',
     'read_only',
     'ambiguous',
-  ]).describe('modify_existing: change an existing target file; continue_existing_edit: keep editing a file this Conversation already changed; create_in_target: add a new file in the target Workspace; run_in_target: run a command or process in the target Workspace; read_only: answer without workspace writes; ambiguous: the side effect needs a user decision.'),
+  ]).describe('modify_existing: change an existing target file; continue_existing_edit: keep editing a file this Conversation already changed; create_in_target: add a new file in the target Workspace; run_in_target: run or terminate a command/process/service in the target Workspace (requires at least one subtask with workspaceEffect write); read_only: answer without workspace writes; ambiguous: the side effect needs a user decision.'),
   confidence: z.number().min(0).max(1),
   reason: z.string().trim().min(1).max(1000),
 }).strict();

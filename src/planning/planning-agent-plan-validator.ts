@@ -2,7 +2,7 @@ import type { PlannerConfigurationView } from '../configuration/index.js';
 import { PlanningAgentPlanSchema } from './planning-agent-plan-schema.js';
 import type { PlanningAgentPlan, PlanningContext, SubtaskProposal } from './planning-types.js';
 import { validateWorkGraph } from '../work-graph/index.js';
-import { isSharedReadCandidate } from '../work-graph/workspace-effect.js';
+import { isSharedReadCandidate, writesWorkspace } from '../work-graph/workspace-effect.js';
 import { isValidFileOutput } from '../work-graph/file-outputs.js';
 
 export interface PlanningAgentPlanValidationResult {
@@ -215,6 +215,19 @@ function validateWorkspaceIntent(plan: PlanningAgentPlan, errors: string[]): voi
     if (intent.operation !== 'read_only' && intent.targetPaths.length === 0) {
       errors.push('a writing Workspace intent must declare at least one target path');
     }
+    // Running or terminating a process claims exclusive Workspace access even
+    // when it changes no file. A graph made only of shared readers therefore
+    // cannot carry an executing intent; this is repair feedback for the Manager,
+    // not a Turn failure (observed 2026-11-11: "stop the service" was rejected
+    // in admission because the kill subtask declared workspaceEffect read_only).
+    if (intent.operation !== 'read_only' && intent.operation !== 'ambiguous') {
+      const subtasks = plan.workGraph?.subtasks ?? [];
+      if (subtasks.length > 0 && !subtasks.some(subtask => writesWorkspace(subtask, subtasks))) {
+        errors.push(`workspaceIntent.operation ${intent.operation} requires at least one subtask with `
+          + "workspaceEffect 'write' (running or terminating a process needs exclusive Workspace access "
+          + 'even when it changes no files)');
+      }
+    }
     for (const path of intent.targetPaths) {
       // A dedicated directory target keeps its trailing `/` so a fileOutput such
       // as `site/` is covered by exactly one contract in both places.
@@ -249,7 +262,8 @@ function validateWorkspaceIntent(plan: PlanningAgentPlan, errors: string[]): voi
       : [];
     if (undeclaredReaders.length > 0) {
       errors.push('these text-only report subtasks must declare workspaceEffect '
-        + '(read_only to run beside other readers, write if they change business files, unknown if undecidable): '
+        + '(read_only to run beside other readers, write if they edit files or run/terminate processes, '
+        + 'unknown if undecidable): '
         + undeclaredReaders.map(subtask => subtask.id).join(', '));
     }
     if (intent.targetWorkspaceId !== null && !/^workspace_[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/u.test(intent.targetWorkspaceId)) {

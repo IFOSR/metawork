@@ -51,7 +51,15 @@ export function resolveWorkspaceAdmission(
 
   if (!input.writes) {
     if (intent && intent.operation !== 'read_only') {
-      return { status: 'rejected', reason: 'a non-read-only intent cannot authorize a read admission' };
+      // Plan validation already turns this mismatch into repairable feedback.
+      // If a persisted or non-plan call still reaches admission, fail with a
+      // bounded, actionable reason instead of leaking the internal invariant.
+      return {
+        status: 'rejected',
+        reason: `工作区意图声明了 ${intent.operation}，但计划没有任何需要独占访问的子任务；`
+          + "请把运行或终止进程的子任务标记为 workspaceEffect 'write' 后重试"
+          + '（code: workspace_intent_requires_write）',
+      };
     }
     const declaredOutputs = safeTargetPaths(input.declaredOutputPaths ?? []);
     if (declaredOutputs === null) {

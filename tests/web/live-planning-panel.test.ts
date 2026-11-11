@@ -188,6 +188,39 @@ describe('LivePlanningPanel', () => {
     expect(html).toMatch(/\d+s/);
   });
 
+  it('renders nothing once a plain Q&A turn is completed', () => {
+    // A no_action turn ends without any terminal planning event, so the last
+    // planning fact was planner_started. The card used to stay at "规划中 0s"
+    // forever, including after reload (observed 2026-11-11).
+    const html = renderToStaticMarkup(createElement(LivePlanningPanel, {
+      turn: turn([
+        event({ sequence: 1, kind: 'query_received', phase: 'intake', occurredAt: '2026-09-18T13:00:00.000Z' }),
+        event({ sequence: 2, kind: 'planner_started', phase: 'planning', occurredAt: '2026-09-18T13:00:00.100Z' }),
+      ], 'completed'),
+    }));
+    expect(html).toBe('');
+  });
+
+  it('renders nothing once a clarification turn is sealed', () => {
+    const html = renderToStaticMarkup(createElement(LivePlanningPanel, {
+      turn: turn([
+        event({ sequence: 1, kind: 'query_received', phase: 'intake', occurredAt: '2026-09-18T13:00:00.000Z' }),
+        event({ sequence: 2, kind: 'planner_started', phase: 'planning', occurredAt: '2026-09-18T13:00:00.100Z' }),
+        event({ sequence: 3, kind: 'clarification_requested', phase: 'delivery', occurredAt: '2026-09-18T13:00:05.000Z' }),
+      ], 'completed'),
+    }));
+    expect(html).toBe('');
+  });
+
+  it('keeps the card while a running turn has only planning facts', () => {
+    const html = renderToStaticMarkup(createElement(LivePlanningPanel, {
+      turn: turn([
+        event({ sequence: 1, kind: 'planner_started', phase: 'planning', occurredAt: new Date().toISOString() }),
+      ]),
+    }));
+    expect(html).toContain('PLANNING');
+  });
+
   it('renders nothing once the turn is completed and execution started', () => {
     const html = renderToStaticMarkup(createElement(LivePlanningPanel, {
       turn: turn([

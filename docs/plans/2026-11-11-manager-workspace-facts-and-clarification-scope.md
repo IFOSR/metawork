@@ -1,8 +1,8 @@
 # Manager 的 Workspace 事实与澄清边界
 
 - 计划日期：2026-11-11。
-- 状态：P0、P1、P2 文档与真实 Web 端到端验证已完成；真模型 smoke scenario 未接入
-  `npm run smoke:metawork`。
+- 状态：P0、P1、P2 文档与真实 Web 端到端验证已完成；停服务/执行命令契约、服务所有权
+  提示与权限判定规则已修（2026-11-11 第二轮）；`execute` 三态与规划详情未做。
 - 本批验证日期：2026-11-11（单元测试仅跑本改动直接相关文件；另做真实 Server + Admin Web 验证）。
 - Closing commit：无。按仓库要求仅本地修改，未 commit、push。
 - 依据：[ADR-0055 D6](../adr/0055-no-kernel-target-architecture-and-contract-reset.md)、
@@ -211,3 +211,56 @@ P0 完成后重放该类请求，期望：Manager 直接产出 `plan_work_graph`
   （刷新后仍在，计时停在 0s）。该 Turn 的 trace 只有 `query_received` + `planner_started`，
   缺少终结性的 planning 事件，而 `web/src/components/LivePlanningPanel.tsx` 只根据最后一条
   planning 事件渲染，未结合 Turn 终态。与本批 Workspace 事实改动无关，待单独修复。
+
+
+## 第二轮：执行命令 / 停止服务（2026-11-11）
+
+### 问题与原因
+
+用户要求“把 8000 端口的服务停掉”时，Manager 正确判断该进程不是平台托管实例，改为
+`plan_work_graph + run_in_target` 去终止进程，但子任务被声明为 `workspaceEffect: read_only`
+（因为不改文件）。准入规则要求“非 read 意图必须有独占写子任务”，于是 Turn 以内部英文
+不变量 `a non-read-only intent cannot authorize a read admission` 失败；用户看到的是
+“当前请求未通过执行校验”。在此之前两次 `task_control: service_stop` 均以
+`planner_failed: 服务不存在` 静默结束：8000 端口的 uvicorn 是 Executor 自己在
+`startServiceAfterPublish=false` 的任务里用 nohup 启动的，平台既未托管也未登记。
+
+### 本批改动
+
+- `workspaceEffect` / `run_in_target` 的 schema 描述改为“独占 Workspace 访问”语义：
+  运行或终止进程即使不改文件也必须声明 `write`。Manager system prompt 同步该规则。
+- 计划校验器新增可修复 issue：非 read 意图的图里必须至少有一个 `workspaceEffect: write`
+  子任务，Manager 在同一次 Turn 内修复，而不是跌到准入。
+- 准入保留该不变量做兜底，但返回中文可行动原因（`code: workspace_intent_requires_write`）。
+- `service_stop` 找不到托管实例时不再静默：说明该进程不是平台托管实例，并给出
+  “用你的进程管理器停止”或“执行定位并终止进程的命令任务”两条路径。
+- Manager 规则：启动服务必须显式选择托管验证实例（`startServiceAfterPublish=true`，
+  随 Runtime 停止）或交付常驻部署说明（独立于 MetaWork）；禁止 daemon 化。
+- Executor 提示词：任何任务都不得 nohup/&/disown 起常驻进程；用户明确要求时允许终止
+  可识别的进程并汇报 PID/命令/端口状态。
+- 权限判定（permission 分支）：终止 attempt 之外的进程属外部副作用，仅在当前用户 Turn
+  明确要求且目标有界（PID/端口/命令）时 grant，否则 escalate 一次用户确认。
+- Web：Turn 终结且非规划失败时不再渲染规划卡（Q&A、澄清、取消后不再停留“规划中 0s”）。
+
+### 真实验证（2026-11-11，Admin Web）
+
+- **停 8000 端口（原失败场景）**：Turn `turn_xchcNevYoPO2`，plan `plan_work_graph |
+  run_in_target | effects=write | clarify=null`，admission `authorized`，Task `succeeded`
+  （65s），Executor 终止 PID 67819、`lsof` 与 `curl` 三轮验证端口释放；答复含 PID、命令行、
+  端口状态与未触碰 4173 的说明。页面无澄清、无残留规划卡。
+- **普通问答**：新会话发送 “只回复一句话：MW-CARD-OK-20261111”，答复正常，规划卡不再
+  停留（刷新后一致）。
+- **托管启动（部分验证）**：送“用平台托管方式启动 mini-service（8123）”，plan 为
+  `plan_work_graph` 且 `task.startServiceAfterPublish=1`，代码 3 个文件已写回 Workspace；
+  但服务启动验证失败，命中了下面的既有 DB 约束缺陷。
+
+### 验证中发现的既有缺陷（未在本批修复）
+
+`task_operation_results.outcome` 的 CHECK 只允许 `('success','definite_failure','unknown')`，
+而 `TaskOperationResultRepo` 与 Runtime 会写入 `repair_pending`（服务验证失败待修复路径）。
+结果是服务启动/验证失败时抛出 `CHECK constraint failed: outcome IN (...)`，Task 以
+`service_start_failed` 结束、用户看到“需要处理 / 服务启动失败”而看不到真实原因。
+- 影响：任何“服务未健康 → 自动修复”的路径都会在记录事实时崩溃。
+- 修复需要把 CHECK 扩到 `repair_pending`，即 schema 67 → 68；当前仓库没有就地升级
+  机制（`schema.ts` 明确拒绝旧版本，`database-release-snapshot.ts` 只复制不升级），
+  升级会要求现有实例重建数据库。属独立决策，未在本批擅自变更。

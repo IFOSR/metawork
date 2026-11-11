@@ -71,6 +71,20 @@ describe('Kernel Workspace admission', () => {
     expect(resolve({ intent: workspaceIntentFixture({ targetWorkspaceId: 'workspace_other' }) })).toMatchObject({ status: 'rejected' });
   });
 
+  it('rejects an executing intent that reached admission without exclusive access', () => {
+    // Plan validation normally repairs this; a persisted or non-plan caller must
+    // still get a bounded, actionable reason instead of an internal invariant.
+    const rejected = resolve({
+      intent: workspaceIntentFixture({ operation: 'run_in_target', targetPaths: ['price-in-service/'] }),
+      writes: false,
+    });
+    expect(rejected).toMatchObject({ status: 'rejected' });
+    expect(rejected.status === 'rejected' ? rejected.reason : '')
+      .toContain('workspaceEffect \'write\'');
+    expect(rejected.status === 'rejected' ? rejected.reason : '')
+      .toContain('workspace_intent_requires_write');
+  });
+
   it('rejects historical Worktree bindings instead of switching directories', () => {
     expect(resolve({ facts: {
       targetWorkspace,

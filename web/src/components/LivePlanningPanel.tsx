@@ -169,6 +169,12 @@ export function LivePlanningPanel({ turn }: { turn: ConversationTurnProjection }
   }, [turn.id, live]);
 
   if (!activity) return null;
+  // A sealed Turn keeps no planning card: Q&A and clarification turns end
+  // without an executor fact, so the last planning event would otherwise pin a
+  // "规划中 0s" card forever (observed 2026-11-11, including after reload).
+  // Planning failures stay visible; a running Turn keeps the card for the
+  // plan-accepted / execution-not-yet-projected handoff.
+  if (turn.status !== 'running' && activity.state !== 'failed') return null;
 
   return (
     <section className="live-execution-panel live-planning-panel" aria-label="规划状态">

@@ -40,6 +40,13 @@ function input(): ExecutorInput {
 }
 
 describe('Subtask execution prompt layering', () => {
+  it('forbids daemonizing a service and keeps an explicit stop path', () => {
+    const prompt = buildExecutorContextPrompt(input());
+    expect(prompt).toContain('Never start a persistent background process or daemon');
+    expect(prompt).toContain('startServiceAfterPublish');
+    expect(prompt).toContain('Terminating a process the user explicitly asked to stop is allowed');
+  });
+
   it('teaches a renderable inline chart without requesting files or inventing data', () => {
     const request = input(); request.context.currentSubtask.fileOutputs = [];
     const prompt = buildExecutorContextPrompt(request);

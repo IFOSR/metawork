@@ -70,7 +70,15 @@ export function decideManagedService(
   if (event.operation !== 'stop' && !facts.published) {
     return decision(event, { type: 'reject_request' }, '代码尚未发布到用户任务目录，不能启动服务');
   }
-  if (event.operation !== 'start' && !facts.serviceTaskId) return decision(event, { type: 'reject_request' }, '服务不存在');
+  if (event.operation !== 'start' && !facts.serviceTaskId) {
+    // A silent "service does not exist" hid the real cause on 2026-11-11: the
+    // process was started by an Executor outside Runtime ownership. Name the
+    // situation and the two ways out instead of failing the Turn with no answer.
+    return decision(event, { type: 'reject_request' },
+      'MetaWork 没有这个服务的托管记录：它可能是你在工作区里自行启动的常驻进程。'
+      + '如果它是你的常驻服务，请用你的进程管理器停止；如果需要由我停止，我可以执行一个'
+      + '定位并终止该进程（PID/端口）的命令任务。');
+  }
   return decision(event, { type: 'control_managed_service', taskId: event.taskId, serviceId: event.serviceId,
     operation: event.operation, specification: event.specification,
     ...(event.turnId ? { turnId: event.turnId } : {}),
