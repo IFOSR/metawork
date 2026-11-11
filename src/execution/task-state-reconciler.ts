@@ -15,6 +15,22 @@ import {
   type TaskResidueCategory,
 } from './task-residue-reader.js';
 import { resolveMetaWorkPaths } from '../installation/paths.js';
+import { TaskRepo } from '../storage/task-repo.js';
+import { SubtaskRepo } from '../storage/subtask-repo.js';
+import { WorkGraphRevisionRepo } from '../storage/work-graph-revision-repo.js';
+import {
+  TaskStateChangeRepo,
+  TaskStateProjectionOutbox,
+} from '../storage/task-state-change-repo.js';
+import {
+  createSqliteTaskLifecyclePort,
+  createSqliteTaskStateTransaction,
+} from '../storage/task-lifecycle-port-adapter.js';
+import { SqliteTaskStateFactsReader } from '../storage/task-state-facts-reader.js';
+import { readPendingTaskResult } from '../storage/pending-task-result.js';
+import { TaskOperationResultRepo } from '../storage/task-operation-result-repo.js';
+import { TaskStateAuthority } from '../task/task-state-authority.js';
+import type { Dependency } from '../core/types.js';
 
 export interface TaskStateReconcilerReport {
   ok: boolean;
@@ -139,6 +155,85 @@ function reconcile(
     record(`closed ${closedReplanRequests} orphaned replan request(s) for terminal tasks`);
   }
 
+  // 1c. A Task can be left `running` when its block application was cut short by
+  //     a process death (observed 2026-11-11): the Subtask is `blocked`, but the
+  //     Task itself never reached `needs_action`, so no surface offers a resume
+  //     and the Task looks "executing" forever. When no live dispatch, lease,
+  //     retry wake, replan or other residue can still advance it, conclude the
+  //     block through the Task state authority instead of guessing a status.
+  const stalledTasks = db.prepare(`
+    SELECT id, state_version, dependencies_json
+    FROM tasks
+    WHERE status = 'running'
+      AND EXISTS (
+        SELECT 1 FROM subtasks WHERE subtasks.task_id = tasks.id AND subtasks.status = 'blocked'
+      )
+      AND NOT EXISTS (
+        SELECT 1 FROM dispatch_items
+        WHERE dispatch_items.task_id = tasks.id
+          AND dispatch_items.status IN ('pending_launch', 'launching', 'running', 'cancelling', 'uncertain')
+      )
+  `).all() as Array<{ id: string; state_version: number; dependencies_json: string }>;
+  let parkedStalledTasks = 0;
+  for (const stalled of stalledTasks) {
+    // Any surviving residue (a future retry wake, an open lease, a service
+    // effect, ...) means the runtime may still advance this Task; the
+    // maintenance pass must not preempt it.
+    const residue = residueReader.blockingReasons(stalled.id, null);
+    if (residue.some(category => category !== 'generation_replan')) continue;
+    if (residue.includes('generation_replan')) {
+      // A `pending_quiescence` Job without a quiescence token only advances
+      // from a generation observation, and no live work is left to emit one.
+      // It is the same interrupted-application residue as the half-applied
+      // block. A Job that already owns a token is scheduled on the Planner
+      // path and is left alone.
+      const cancelledIdleReplans = db.prepare(`
+        UPDATE generation_replan_requests
+        SET status = 'cancelled',
+            error_summary = COALESCE(error_summary, 'reconciled: no live work can reach quiescence'),
+            updated_at = ?
+        WHERE task_id = ? AND status = 'pending_quiescence'
+          AND submitted_at IS NULL AND quiescence_token IS NULL
+      `).run(now(), stalled.id).changes;
+      if (cancelledIdleReplans === 0) continue;
+      record(`cancelled ${cancelledIdleReplans} idle replan request(s) for stalled Task ${stalled.id}`);
+    }
+    if (residueReader.blockingReasons(stalled.id, null).length > 0) continue;
+    const dependencies = JSON.parse(stalled.dependencies_json) as Dependency[];
+    const reason = '执行过程被中断，需要继续未完成部分。';
+    if (dependencies.some(dependency => dependency.status === 'waiting' && dependency.description === reason)) {
+      continue;
+    }
+    const authority = createTaskStateWriter(db, residueReader);
+    const reconciled = authority.reconcile({
+      taskId: stalled.id,
+      decisionId: `reconcile_stalled_${stalled.id}_v${stalled.state_version}`,
+      operationKey: `reconcile_stalled:${stalled.id}:${stalled.state_version}`,
+      actor: 'task-domain',
+      reason,
+      facts: () => {
+        const current = new TaskRepo(db).findById(stalled.id);
+        if (!current) return [];
+        new TaskRepo(db).update(stalled.id, {
+          dependencies: [...current.dependencies, {
+            taskId: stalled.id,
+            type: 'manual',
+            description: reason,
+            status: 'waiting',
+            createdAt: now(),
+          }],
+        });
+        return [];
+      },
+    });
+    if (!reconciled?.applied || reconciled.task.status !== 'needs_action') continue;
+    parkedStalledTasks += 1;
+    record(`parked stalled Task ${stalled.id} as needing action (blocked Subtask, no live work)`);
+  }
+  if (parkedStalledTasks > 0) {
+    record(`parked ${parkedStalledTasks} stalled Task(s) that would otherwise look executing`);
+  }
+
   // 2. Conversation slots held by terminal tasks (blocked tasks keep their
   //    slot on purpose — the Planner asks the user how to proceed).
   const staleSlots = db.prepare(`
@@ -215,4 +310,42 @@ function reconcile(
     retainedSlotResidue,
     closedScheduleEntries,
   };
+}
+
+/**
+ * The Task state authority needs the same facts reader the running Server uses.
+ * Maintenance composes a short-lived one; it only writes through the durable
+ * lifecycle port (state change ledger + projection outbox).
+ */
+function createTaskStateWriter(
+  db: import('better-sqlite3').Database,
+  residue: TaskResidueReader,
+): TaskStateAuthority {
+  const taskRepo = new TaskRepo(db);
+  const subtaskRepo = new SubtaskRepo(db);
+  const workGraphRevisionRepo = new WorkGraphRevisionRepo(db);
+  const stateChanges = new TaskStateChangeRepo(db);
+  const lifecycle = createSqliteTaskLifecyclePort(db, {
+    taskRepo,
+    subtaskRepo,
+    stateChanges,
+    projectionOutbox: new TaskStateProjectionOutbox(db),
+    workGraphRevisionRepo,
+  });
+  const facts = new SqliteTaskStateFactsReader({
+    db,
+    taskRepo,
+    subtaskRepo,
+    workGraphRevisionRepo,
+    readPendingResult: taskId => readPendingTaskResult(db, taskId),
+    residue,
+    operationResults: new TaskOperationResultRepo(db),
+  });
+  return new TaskStateAuthority({
+    facts,
+    stateChanges,
+    taskRepo,
+    lifecycle,
+    transaction: createSqliteTaskStateTransaction(db),
+  });
 }
