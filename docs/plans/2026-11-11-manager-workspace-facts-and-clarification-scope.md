@@ -1,8 +1,9 @@
 # Manager 的 Workspace 事实与澄清边界
 
 - 计划日期：2026-11-11。
-- 状态：P0、P1 与 P2 文档部分已落地，待用户真实会话验证；真模型 smoke scenario 未做。
-- 本批验证日期：2026-11-11（仅本改动直接相关文件，未跑泛化套件）。
+- 状态：P0、P1、P2 文档与真实 Web 端到端验证已完成；真模型 smoke scenario 未接入
+  `npm run smoke:metawork`。
+- 本批验证日期：2026-11-11（单元测试仅跑本改动直接相关文件；另做真实 Server + Admin Web 验证）。
 - Closing commit：无。按仓库要求仅本地修改，未 commit、push。
 - 依据：[ADR-0055 D6](../adr/0055-no-kernel-target-architecture-and-contract-reset.md)、
   [ADR-0015](../adr/0015-planner-owned-semantics-and-tool-mediated-context.md)、
@@ -175,4 +176,38 @@ P0 完成后重放该类请求，期望：Manager 直接产出 `plan_work_graph`
 - `tests/manual/manager-real-turn*.test.ts`、`tests/e2e/packaged-pi-native.test.ts`
   仅同步类型，未运行（需要真实打包 Pi）。
 
-待办：真模型验证（P2 smoke scenario）与用户在真实会话中重放截图那一轮。
+待办：把该场景接入 `npm run smoke:metawork`（P2），以及用户在自有账号下复验。
+
+## 真实环境端到端验证（2026-11-11）
+
+环境：源码构建的 8788 实例（运行根 `/tmp/mw-planning-e2e-RDW7Um`，`dist/` 重新构建，
+`METAWORK_PI_COMMAND` 指向打包 Pi），Admin 网页会话，真实模型与真实 Executor。
+截图与日志保存在 `/tmp/mw-e2e/`（临时文件，非仓库交付物）。
+
+1. **回归场景（本改动核心）**：在 Conversation `conv_DTAHMAkk0RBw`
+   （Workspace `/Users/yuanjubian/program/test`）发送“请直接在当前 Workspace 里把最小可运行版本做出来：
+   新建 price-in-service 目录，写 backend.py / index.html / README.md”。
+   - Turn `turn_xNopHU3SRTdY`，plan `plan_event_plan_conv_DTAHMAkk0RBw_turn_xNopHU3SRTdY_int_7FI--auglJ`：
+     `action=plan_work_graph`、`workspaceIntent.operation=create_in_target`、
+     `targetPaths=[price-in-service/backend.py, index.html, README.md]`、`confidence=0.95`、
+     `clarificationQuestion=null`。**没有出现“工作区只读/需要你回答”**。
+   - Admission `authorized / work graph authorized`；Task
+     `task_plan_event_plan_conv_DTAHMAkk0RBw_turn_xNopHU3SRTdY_int_7FI--auglJ` `succeeded`
+     （407s，1 个 Executor attempt）。
+   - Merge job `merge_02d46cf9…` `delivered`，三个文件 `add` 写回用户 Workspace；
+     页面显示“任务已完成 / 已发布到工作区 / 本轮更新文件（3）”，刷新后保持。
+   - 旧 Turn 2 的历史澄清卡片仍按原样保留（不重写历史），新 Turn 不再复现。
+2. **普通问答不回归**：新 Conversation `conv_Nl0NGoJO2G7-` 发送
+   “只回复一句话：MW-QA-20261111，不要修改任何文件。”
+   plan `no_action`、admission `no_action / no runtime action required`，答复
+   `MW-QA-20261111`，页面无澄清。
+3. **周边功能**：既有会话历史加载、Workspace 切换、会话搜索（“鸡蛋”过滤到 1 条）、
+   轨迹（执行 DAG：1 子任务、成功、1 attempt）、账单（Token 分组与区间）、记忆（13 条，含本次
+   新提取的 L1）、交付文件预览与“下载原文件”均正常。
+
+### 验证中发现但本批未修的既有问题
+
+- Q&A（`no_action`）Turn 完成后，“规划中 / 正在理解请求并生成计划…”卡片仍停留在对话里
+  （刷新后仍在，计时停在 0s）。该 Turn 的 trace 只有 `query_received` + `planner_started`，
+  缺少终结性的 planning 事件，而 `web/src/components/LivePlanningPanel.tsx` 只根据最后一条
+  planning 事件渲染，未结合 Turn 终态。与本批 Workspace 事实改动无关，待单独修复。
