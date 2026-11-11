@@ -3,7 +3,7 @@
 // future remote (A2A) transport needs without selecting models, AgentClasses, retry,
 // fallback, or scheduling. A2A delivery is deferred to its separate roadmap.
 import type { ExecutorResult } from '../core/types.js';
-import type { KernelFailure } from '../core/kernel-failure.js';
+import type { ControlFailure } from '../core/kernel-failure.js';
 import type { SubtaskExecutionContext } from '../execution/subtask-execution-context.js';
 import type { ParsedSkillUsageEvent } from './skill-usage-event-parser.js';
 import type { HarnessUsageEvent } from './harness-driver.js';
@@ -57,7 +57,7 @@ export interface ExecutorProgressEvent {
 
 export interface ExecutorProbeResult {
   available: boolean;
-  failure: KernelFailure | null;
+  failure: ControlFailure | null;
 }
 
 export interface ExecutorAdapter {
@@ -69,6 +69,6 @@ export interface ExecutorAdapter {
     prompt: string;
     maxBytes: number;
   }): Promise<ExecutorResult>;
-  probe(previousFailure?: KernelFailure | null): Promise<ExecutorProbeResult>;
+  probe(previousFailure?: ControlFailure | null): Promise<ExecutorProbeResult>;
   abort(attemptId?: string): void;
 }

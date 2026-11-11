@@ -25,6 +25,9 @@ export function resolveExecutorTool(command: string, options: {
       }
     } catch { /* Uninstalled/source environments have no managed recovery pointer. */ }
     if (existsSync(join(releaseRoot, 'desktop-tools'))) return join(releaseRoot, 'desktop-tools/executor/bin/pi');
+    // An incomplete installation is an error, not permission to run a user's
+    // global Pi with an unrelated version and extensions.
+    return join(releaseRoot, '.missing-tools', 'pi');
   }
   for (const directory of (options.searchPath ?? process.env.PATH ?? '').split(delimiter)) {
     if (!isAbsolute(directory)) continue;

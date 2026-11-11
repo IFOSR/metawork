@@ -36,9 +36,15 @@ export async function prepareSmokeConfiguration(
   input: PrepareSmokeConfigurationInput,
 ): Promise<{ revisionId: string }> {
   const configHome = resolve(input.configHome);
-  const provider = await readExecutorProvider(configHome);
-  const planner = await readPlannerProvider(configHome);
-  const models = await readModels(configHome, planner, provider);
+  if (input.executorCommand !== 'pi') {
+    throw new Error('Native smoke supports only the packaged Pi Executor');
+  }
+  const env = await readLegacyProviderEnvironment(configHome);
+  const plannerSource = await readPiConfiguration(join(configHome, 'planner'), 'manager', env);
+  const executorSource = await readPiConfiguration(join(configHome, 'pi-home', '.pi', 'agent'), 'executor', env);
+  const provider = executorSource.provider;
+  const planner = plannerSource.provider;
+  const models = { planner: plannerSource.model, executor: executorSource.model };
   const configuration = AnyFusionConfigurationV2Schema.parse(
     buildSmokeConfiguration({
       provider,
@@ -57,8 +63,8 @@ export async function prepareSmokeConfiguration(
   await repository.initialize();
   const secretStore = new FileSecretStore(accountPaths.secrets);
   await secretStore.initialize();
-  await secretStore.put('file-secret:anyfusion/providers/deepseek', provider.apiKey);
-  await secretStore.put('file-secret:anyfusion/providers/kimi', planner.apiKey);
+  await secretStore.put(`file-secret:anyfusion/providers/${provider.ref}`, provider.apiKey);
+  await secretStore.put(`file-secret:anyfusion/providers/${planner.ref}`, planner.apiKey);
   await repository.writeRevision({
     revisionId: compiledRevisionId(compiled, configuration),
     contentHash: compiled.contentHash,
@@ -79,15 +85,6 @@ function buildSmokeConfiguration(input: {
   executorCommand: string;
   executorTimeoutSeconds: number;
 }): AnyFusionConfigurationV2 {
-  const executorHarness = input.executorCommand === 'pi'
-    ? 'pi-cli'
-    : 'codex-cli';
-  const executorClass = input.executorCommand === 'pi'
-    ? 'pi-agent'
-    : 'codex-cli';
-  const executorProfile = input.executorCommand === 'pi'
-    ? 'public-web-research'
-    : 'workspace-engineering';
   return {
     schemaVersion: 2,
     providers: {
@@ -97,30 +94,14 @@ function buildSmokeConfiguration(input: {
     models: {
       [input.models.planner.ref]: modelDefinition(input.models.planner, ['planning', 'structured-output', 'tools']),
       [input.models.executor.ref]: modelDefinition(input.models.executor, ['coding', 'structured-output', 'tools']),
-      [`pi-${input.models.planner.modelId}`.toLowerCase().replace(/[^a-z0-9-]/g, '-')]:
-        modelDefinition({
-          ...input.models.planner,
-          ref: `pi-${input.models.planner.modelId}`.toLowerCase().replace(/[^a-z0-9-]/g, '-'),
-        }, ['coding', 'planning', 'structured-output', 'tools']),
     },
     harnesses: {
       'anyfusion-planner': {
         kind: 'planner',
         transport: 'local-process',
-        commandRef: 'release:planner',
+        commandRef: 'release:pi',
         args: [],
         driverId: 'anyfusion-planner-host-v2',
-        supportsProbe: true,
-        supportsAbort: true,
-        supportsContinuation: true,
-        enabled: true,
-      },
-      'codex-cli': {
-        kind: 'executor',
-        transport: 'local-cli',
-        command: 'codex',
-        args: [],
-        driverId: 'codex-cli',
         supportsProbe: true,
         supportsAbort: true,
         supportsContinuation: true,
@@ -140,24 +121,8 @@ function buildSmokeConfiguration(input: {
     },
     agentClasses: {
       planner: agentClass('planner', 'anyfusion-planner', input.models.planner.ref, undefined),
-      'codex-cli': agentClass(
-        'executor',
-        'codex-cli',
-        input.models.executor.ref,
-        'workspace-engineering',
-      ),
-      'pi-agent': agentClass(
-        'executor',
-        'pi-cli',
-        `pi-${input.models.planner.modelId}`.toLowerCase().replace(/[^a-z0-9-]/g, '-'),
-        'public-web-research',
-      ),
-      [executorClass]: agentClass(
-        'executor',
-        executorHarness,
-        input.models.executor.ref,
-        executorProfile,
-      ),
+      'pi-engineering': agentClass('executor', 'pi-cli', input.models.executor.ref, 'workspace-engineering'),
+      'pi-research': agentClass('executor', 'pi-cli', input.models.executor.ref, 'public-web-research'),
     },
     permissionProfiles: {
       'workspace-engineering': {
@@ -233,70 +198,30 @@ function modelDefinition(input: ModelInput, capabilities: ModelProfile['capabili
   };
 }
 
-async function readExecutorProvider(configHome: string): Promise<ProviderInput> {
-  const env = await readLegacyProviderEnvironment(configHome);
-  const codex = await readFile(join(configHome, 'codex', 'config.toml'), 'utf8');
-  const baseUrl = readTomlValue(codex, 'base_url') ?? env.OPENAI_BASE_URL;
-  const modelId = readTomlValue(codex, 'model') ?? 'executor-model';
-  const apiKey = env.OPENAI_API_KEY ?? '';
-  if (!baseUrl || !apiKey) {
-    throw new Error('Smoke configuration requires OPENAI_BASE_URL and OPENAI_API_KEY');
-  }
-  return { ref: 'deepseek', baseUrl: normalizeUrl(baseUrl), apiKey: apiKey.trim() };
-}
-
-async function readPlannerProvider(configHome: string): Promise<ProviderInput> {
-  const models = JSON.parse(await readFile(join(configHome, 'planner', 'models.json'), 'utf8')) as {
+async function readPiConfiguration(
+  home: string,
+  role: 'manager' | 'executor',
+  env: Record<string, string>,
+): Promise<{ provider: ProviderInput; model: ModelInput }> {
+  const catalog = JSON.parse(await readFile(join(home, 'models.json'), 'utf8')) as {
     providers?: Record<string, { baseUrl?: string; apiKey?: string; models?: Array<{ id?: string }> }>;
   };
-  const settings = JSON.parse(await readFile(join(configHome, 'planner', 'settings.json'), 'utf8')) as {
-    defaultProvider?: string;
+  const settings = JSON.parse(await readFile(join(home, 'settings.json'), 'utf8')) as {
+    defaultProvider?: string; defaultModel?: string;
   };
-  const ref = settings.defaultProvider ?? Object.keys(models.providers ?? {})[0];
-  const provider = ref ? models.providers?.[ref] : undefined;
-  if (!ref || !provider?.baseUrl || !provider.apiKey) {
-    throw new Error('Smoke configuration requires a Planner provider with baseUrl and apiKey');
+  const selected = settings.defaultProvider;
+  const entry = selected ? catalog.providers?.[selected] : undefined;
+  const modelId = settings.defaultModel;
+  const apiKey = entry?.apiKey ? env[entry.apiKey] ?? entry.apiKey : undefined;
+  if (!entry?.baseUrl || !apiKey?.trim() || !modelId
+    || !entry.models?.some(model => model.id === modelId)) {
+    throw new Error(`Smoke configuration requires a selected ${role} Pi provider/model with baseUrl and apiKey`);
   }
-  return { ref: 'kimi', baseUrl: normalizeUrl(provider.baseUrl), apiKey: provider.apiKey.trim() };
-}
-
-async function readModels(
-  configHome: string,
-  planner: ProviderInput,
-  executor: ProviderInput,
-): Promise<{ planner: ModelInput; executor: ModelInput }> {
-  const plannerSettings = JSON.parse(await readFile(
-    join(configHome, 'planner', 'settings.json'),
-    'utf8',
-  )) as { defaultModel?: string };
-  const plannerModels = JSON.parse(await readFile(
-    join(configHome, 'planner', 'models.json'),
-    'utf8',
-  )) as { providers?: Record<string, { models?: Array<{ id?: string }> }> };
-  const plannerModelId = plannerSettings.defaultModel
-    ?? plannerModels.providers?.kimi?.models?.[0]?.id
-    ?? 'planner-model';
-  const codex = await readFile(join(configHome, 'codex', 'config.toml'), 'utf8');
-  const executorModelId = readTomlValue(codex, 'model') ?? 'executor-model';
+  const providerRef = `smoke-${role}`;
   return {
-    planner: {
-      ref: `planner-${slug(plannerModelId)}`,
-      providerRef: planner.ref,
-      modelId: plannerModelId,
-      reasoning: 'high',
-    },
-    executor: {
-      ref: `codex-${slug(executorModelId)}`,
-      providerRef: executor.ref,
-      modelId: executorModelId,
-      reasoning: 'high',
-    },
+    provider: { ref: providerRef, baseUrl: normalizeUrl(entry.baseUrl), apiKey: apiKey.trim() },
+    model: { ref: `${role}-${slug(modelId)}`, providerRef, modelId, reasoning: 'high' },
   };
-}
-
-function readTomlValue(source: string, key: string): string | null {
-  const match = new RegExp(`^${key}\\s*=\\s*"([^"]+)"`, 'mu').exec(source);
-  return match?.[1] ?? null;
 }
 
 function normalizeUrl(value: string): string {

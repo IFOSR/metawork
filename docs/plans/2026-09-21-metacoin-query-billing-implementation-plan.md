@@ -408,7 +408,7 @@ Taskless Query 也能查到账单。进行中金额为暂计，不伪装最终�
 2. 增加 interleaving 用例：A/B Query 并发、切换 UI、旧段迟到 usage 与新段 Resume、Task 创建后关联应用崩溃。
 3. 运行 `npm test -- tests/session/query-usage-attribution.test.ts`，确认缺失功能失败。
 4. 在首个收费调用前持久化关联，沿授权应用补 Task link；恢复读取持久事实，不读取“当前 Task”。修正无 Task 的澄清展示文案。
-5. 重跑新测试及 `npm test -- tests/session/conversation-session.test.ts tests/session/session-kernel-runtime.test.ts tests/session/planning-kernel-path.test.ts`。
+5. 重跑新测试及 `npm test -- tests/session/conversation-session.test.ts tests/session/session-control-runtime.test.ts tests/session/planning-kernel-path.test.ts`。
 
 **验收：**Query 不改变 Task 创建时机；一条 observation 只有一个收费归属；零用量控制操作不凭空收费。
 
@@ -526,7 +526,7 @@ Taskless Query 也能查到账单。进行中金额为暂计，不伪装最终�
 ```bash
 npm run lint
 npm test -- tests/kernel/control-kernel.test.ts tests/kernel/task-scheduler.test.ts tests/execution/attempt-supervisor.test.ts tests/execution/task-cancellation-coordinator.test.ts tests/execution/task-state-reconciler.test.ts tests/execution/cancellation-trace.test.ts tests/account/account-startup-recovery-service.test.ts
-npm test -- tests/session/conversation-session.test.ts tests/session/session-kernel-runtime.test.ts tests/session/planning-kernel-path.test.ts
+npm test -- tests/session/conversation-session.test.ts tests/session/session-control-runtime.test.ts tests/session/planning-kernel-path.test.ts
 npx --no-install tsc --noEmit -p web/tsconfig.json
 npm run build --prefix web
 git diff --check
@@ -592,7 +592,7 @@ npx vitest run tests/acceptance/query-billing-lifecycle.test.ts
 npx vitest run tests/execution/task-slot-cleanup-fence.test.ts
 npx vitest run tests/storage/migrations.test.ts tests/storage/runtime-database-opening.test.ts tests/architecture
 npx vitest run tests/kernel tests/execution tests/account        # 56 文件 / 343 用例通过
-npx vitest run tests/session/conversation-session.test.ts tests/session/session-kernel-runtime.test.ts tests/session/planning-kernel-path.test.ts
+npx vitest run tests/session/conversation-session.test.ts tests/session/session-control-runtime.test.ts tests/session/planning-kernel-path.test.ts
 git diff --check                      # 通过
 ```
 

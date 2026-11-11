@@ -26,6 +26,7 @@ export type ConversationCommand =
   | { kind: 'get_task_view'; conversationId: string; turnId: string; taskId: string }
   | { kind: 'get_query_bill_for_turn'; turnId: string }
   | { kind: 'get_query_bill'; queryId: string }
+  | { kind: 'get_quota_guidance' }
   | { kind: 'permission_resolution_v2'; requestId: string; requestRevision: string;
       expectedExecutionGeneration: string; resolution: 'approve' | 'deny' };
 
@@ -260,7 +261,7 @@ export class WsClient {
     }, 1500);
   }
 
-  query<T>(conversationId: string, command: Extract<ConversationCommand, { kind: 'get_task_view' | 'get_query_bill_for_turn' | 'get_query_bill' | 'complete_command' }>): Promise<T> {
+  query<T>(conversationId: string, command: Extract<ConversationCommand, { kind: 'get_task_view' | 'get_query_bill_for_turn' | 'get_query_bill' | 'get_quota_guidance' | 'complete_command' }>): Promise<T> {
     if (this.queries.size >= 16) return Promise.reject(new Error('query_limit'));
     const id = `query_${crypto.randomUUID()}`;
     return new Promise<T>((resolve, reject) => {

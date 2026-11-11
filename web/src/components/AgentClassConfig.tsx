@@ -6,7 +6,6 @@ import type {
   AgentClassRoutingFacts,
   SettingsModelEntry,
   SettingsProviderEntry,
-  RoutingObjective,
 } from '../settings-model';
 import {
   evaluateModelCompatibility,
@@ -23,13 +22,6 @@ interface AgentClassConfigProps {
   onSuggestResponsibility?: () => void;
   responsibilityFeedback?: ResponsibilityRewriteFeedback;
 }
-
-const objectiveOptions: Array<{ value: RoutingObjective; label: string }> = [
-  { value: 'balanced', label: '均衡' },
-  { value: 'quality', label: '质量优先' },
-  { value: 'cost', label: '成本优先' },
-  { value: 'latency', label: '速度优先' },
-];
 
 export function AgentClassConfig({
   http,
@@ -304,21 +296,13 @@ function renderRoutePolicyPanel(input: {
               })}
             </div>
           </div>
+          {/*
+            ADR-0055 D4: in Auto mode the Router owns the AgentClass/Provider/
+            Model choice, so there is no "optimization objective" for the user to
+            pick. The stored `objective` value is preserved unchanged for old
+            revisions; new AgentClasses default to `balanced`.
+          */}
           <div className="route-field-grid">
-            <label className="route-field">
-              <span className="field-label">优化目标</span>
-              <select
-                value={draft.objective}
-                onChange={event => onChange({
-                  ...draft,
-                  objective: event.target.value as RoutingObjective,
-                })}
-              >
-                {objectiveOptions.map(option => (
-                  <option value={option.value} key={option.value}>{option.label}</option>
-                ))}
-              </select>
-            </label>
             <label className="route-field">
               <span className="field-label">默认偏好</span>
               <select

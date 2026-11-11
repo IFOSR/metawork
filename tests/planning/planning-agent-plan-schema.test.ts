@@ -8,12 +8,11 @@ import {
 function outputPlan() {
   return {
     id: 'plan_1',
-    schemaVersion: 8,
+    schemaVersion: 9,
     action: 'plan_work_graph',
     confidence: 0.9,
     reason: 'work is required',
     clarificationQuestion: null,
-    response: { directReply: null },
     task: {
       binding: 'new',
       taskId: null,
@@ -26,6 +25,8 @@ function outputPlan() {
     },
     risk: { level: 'low', requiresConfirmation: false, reasons: [] },
     authorizationResolution: null,
+    workspaceIntent: { targetWorkspaceId: null, targetPaths: ['src/'], operation: 'modify_existing',
+      originalFilePolicy: 'may_replace', confidence: 0.9, reason: 'implement requested changes' },
     workGraph: {
       schemaVersion: 7,
       configurationRevision: 'revision-2026-08-12',
@@ -37,10 +38,7 @@ function outputPlan() {
         dependencies: [],
         contextRefs: [{ kind: 'current_user_input' }],
         requiredCapabilities: ['workspace-engineering'],
-        executorBindings: [{
-          agentClassRef: 'custom-engineering',
-          modelSelection: { mode: 'fixed-by-agent-class' },
-        }],
+        workspaceEffect: 'write',
         deliveryKind: 'edit',
         fileOutputs: [] as string[],
         acceptance: [{ key: 'tests_pass', description: 'tests pass', requiredEvidence: ['test result'] }],
@@ -74,26 +72,27 @@ describe('PlanningAgent plan schemas', () => {
     expect(JSON.stringify(schema)).not.toContain('"oneOf"');
   });
 
-  it('uses constrained string references without hard-coded AgentClass or Model enums', () => {
+  it('requires capabilities and workspace effects while leaving executor/model selection to the Router', () => {
     const schema = z.toJSONSchema(PlanningAgentPlanOutputSchema, {
       target: 'draft-7',
       unrepresentable: 'any',
     });
     const serialized = JSON.stringify(schema);
 
-    expect(serialized).toContain('"executorBindings"');
-    expect(serialized).toContain('"agentClassRef"');
-    expect(serialized).toContain('"modelRef"');
+    expect(serialized).not.toContain('"executorBindings"');
+    expect(serialized).not.toContain('"agentClassRef"');
+    expect(serialized).not.toContain('"modelRef"');
+    expect(serialized).toContain('"workspaceEffect"');
+    expect(serialized).toContain('"requiredCapabilities"');
     expect(serialized).not.toContain('"codex-cli"');
     expect(serialized).not.toContain('"pi-agent"');
-    expect(serialized).toContain('[a-z][a-z0-9-]');
   });
 
   it.each([
     { mode: 'fixed-by-agent-class' },
     { mode: 'agent-class-default' },
     { mode: 'proposed', modelRef: 'review-model', reason: 'best fit for review' },
-  ])('accepts model selection mode $mode', modelSelection => {
+  ])('rejects retired planner model selection mode $mode', modelSelection => {
     const valid = outputPlan();
     const subtask = valid.workGraph.subtasks[0];
 
@@ -109,7 +108,7 @@ describe('PlanningAgent plan schemas', () => {
           }],
         }],
       },
-    }).success).toBe(true);
+    }).success).toBe(false);
   });
 
   it('accepts a stable historical artifact reference without a filesystem path', () => {

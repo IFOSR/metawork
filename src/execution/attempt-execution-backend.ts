@@ -1,10 +1,10 @@
 export type ExecutionMountMode = 'ro' | 'rw';
 
 /** Execution backends supported by the Runtime. */
-export type AttemptExecutionBackendKind = 'container' | 'native';
+export type AttemptExecutionBackendKind = 'native';
 
-/** Whether Executor prompts use container aliases or native Runtime paths. */
-export type AttemptExecutionPathMode = 'container' | 'native';
+/** Executor paths are native Runtime paths. */
+export type AttemptExecutionPathMode = 'native';
 
 export interface AttemptExecutionMount {
   source: string;
@@ -32,12 +32,13 @@ export interface CreateAttemptExecutionInput {
   imageRef: string;
   resolvedImageId: string;
   command: string;
+  /** Native process working directory; mount targets remain binding metadata. */
+  cwd?: string;
   args: string[];
   environment: Record<string, string>;
   mounts: AttemptExecutionMount[];
   controlNetwork: string;
   egressMode: 'disabled' | 'proxy';
-  nestedSandbox?: 'codex-workspace-write';
   limits: AttemptExecutionLimits;
 }
 
@@ -66,6 +67,8 @@ export interface AttemptExecutionBackend {
   start(containerId: string): Promise<void>;
   wait(containerId: string): Promise<number>;
   logs(containerId: string): Promise<string>;
+  /** Live output is independent of the bounded diagnostic log retained by the backend. */
+  onOutput?(executionId: string, listener: (chunk: Buffer | string, stream: 'stdout' | 'stderr') => void): () => void;
   pause(containerId: string): Promise<void>;
   resume(containerId: string): Promise<void>;
   inspect(containerId: string): Promise<AttemptExecutionRecord | null>;

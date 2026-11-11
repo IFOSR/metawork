@@ -132,15 +132,15 @@ describe('Settings workbench model semantics', () => {
       .toEqual(['code-gpt-55-mini']);
   });
 
-  it('explains baseline capability eligibility using the same routing capability mapping', () => {
+  it('explains model eligibility for the supported Pi Executor driver', () => {
     const facts: AgentClassRoutingFacts = {
-      agentClassRef: 'codex-cli',
-      displayName: 'Code CLI',
+      agentClassRef: 'pi-agent',
+      displayName: 'Pi',
       kind: 'executor',
-      harnessRef: 'codex-cli',
-      harnessLabel: 'Code CLI',
+      harnessRef: 'pi-cli',
+      harnessLabel: 'Pi CLI',
       transport: 'local-cli',
-      driverId: 'codex-cli',
+      driverId: 'pi-cli',
       primaryUseCases: ['repository implementation'],
       avoidUseCases: [],
       routingCapabilities: ['workspace-engineering'],
@@ -150,7 +150,7 @@ describe('Settings workbench model semantics', () => {
 
     expect(evaluateModelCompatibility(models[0]!, facts)).toEqual({
       eligible: true,
-      requiredCapabilities: ['gpt-family'],
+      requiredCapabilities: [],
       missingCapabilities: [],
     });
     expect(evaluateModelCompatibility({
@@ -158,25 +158,25 @@ describe('Settings workbench model semantics', () => {
       modelId: 'deepseek-v4-pro',
       capabilities: ['tools'],
     }, facts)).toEqual({
-      eligible: false,
-      requiredCapabilities: ['gpt-family'],
-      missingCapabilities: ['gpt-family'],
+      eligible: true,
+      requiredCapabilities: [],
+      missingCapabilities: [],
     });
   });
 
-  it('matches Codex GPT candidates across Providers without accepting unrelated models', () => {
+  it('allows Pi models across Providers and rejects removed Executor drivers', () => {
     expect(isGptRelatedModel('gpt-5.6-sol')).toBe(true);
     expect(isGptRelatedModel('openai/gpt-5.6-fast')).toBe(true);
     expect(isGptRelatedModel('deepseek-v4-pro')).toBe(false);
 
-    const codexFacts: AgentClassRoutingFacts = {
-      agentClassRef: 'codex-cli',
-      displayName: 'Code CLI',
+    const piFacts: AgentClassRoutingFacts = {
+      agentClassRef: 'pi-agent',
+      displayName: 'Pi',
       kind: 'executor',
-      harnessRef: 'codex-cli',
-      harnessLabel: 'Code CLI',
+      harnessRef: 'pi-cli',
+      harnessLabel: 'Pi CLI',
       transport: 'local-cli',
-      driverId: 'codex-cli',
+      driverId: 'pi-cli',
       primaryUseCases: [],
       avoidUseCases: [],
       routingCapabilities: ['workspace-engineering'],
@@ -187,32 +187,32 @@ describe('Settings workbench model semantics', () => {
       ...models[0]!,
       providerRef: 'other-provider',
       modelId: 'gpt-5.6-fast',
-    }, codexFacts).eligible).toBe(true);
+    }, piFacts).eligible).toBe(true);
     expect(evaluateModelCompatibility({
       ...models[0]!,
       providerRef: 'deepseek',
       modelId: 'deepseek-v4-pro',
-    }, codexFacts).missingCapabilities).toContain('gpt-family');
+    }, piFacts).eligible).toBe(true);
     expect(evaluateModelCompatibility({
       ...models[0]!,
       providerRef: 'kimi',
       modelId: 'k3',
       capabilities: [],
     }, {
-      ...codexFacts,
+      ...piFacts,
       agentClassRef: 'pi-research',
       harnessRef: 'pi-cli',
       driverId: 'pi-cli',
       routingCapabilities: ['current-web-research'],
     }).eligible).toBe(true);
-    // 名字像 Pi、真实 Driver 是 Codex：兼容性仍按 Codex 规则。
+    // 名字像 Pi、真实 Driver 已删除：兼容性仍按 Driver 而非名字判断。
     expect(evaluateModelCompatibility({
       ...models[0]!,
       providerRef: 'kimi',
       modelId: 'k3',
       capabilities: [],
     }, {
-      ...codexFacts,
+      ...piFacts,
       agentClassRef: 'pi-research',
       harnessRef: 'pi-cli',
       driverId: 'codex-cli',
@@ -220,7 +220,7 @@ describe('Settings workbench model semantics', () => {
     }).eligible).toBe(false);
     // 未知 Driver 失败关闭。
     expect(evaluateModelCompatibility(models[0]!, {
-      ...codexFacts,
+      ...piFacts,
       driverId: 'a2a-v1',
     })).toEqual({
       eligible: false,
@@ -371,8 +371,8 @@ describe('Settings workbench model semantics', () => {
     expect(appSource).not.toMatch(/智能体 [12]/u);
     expect(serviceSource).not.toMatch(/智能体 [12]/u);
 
-    expect(compositionSource).toContain("resolveDisplayName: agentId => agentId === 'pi-agent' ? 'Pi' : 'Codex CLI'");
-    expect(compositionSource).toContain('requiredAgentIds:');
+    expect(compositionSource).toContain("requiredAgentIds: () => ['pi-agent']");
+    expect(compositionSource).toContain("resolveDisplayName: () => 'Pi'");
     expect(compositionSource).not.toContain('config.agentClasses[agentId]');
 
     // 名字是被缓存的探测结果之外的东西：改名后必须重新投影并广播，

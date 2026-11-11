@@ -4,7 +4,7 @@ import { WebSocketConnection } from '../../src/management/websocket.js';
 import { ConversationObservationService, type ConversationObservationHandle } from '../../src/gateway/conversation-observation.js';
 import { GatewaySubscriptions } from '../../src/gateway/gateway-subscriptions.js';
 import { createAccountEventJournal } from '../../src/server/account-event-journal.js';
-import { runMigrations } from '../../src/storage/migrations.js';
+import { initializeDatabaseSchema } from '../../src/storage/schema.js';
 import { ConversationReadProjector } from '../../src/session/conversation-read-projector.js';
 import { SqliteConversationHistoryRepo } from '../../src/storage/conversation-history-repo.js';
 import type { ConversationTurn } from '../../src/session/conversation-store.js';
@@ -271,7 +271,7 @@ async function startObservationFixture(webDist: string): Promise<{
   let legacyReads = 0;
   const dataRoot = await mkdtemp(join(tmpdir(), 'observation-browser-db-'));
   const db = new Database(join(dataRoot, 'account.db'));
-  runMigrations(db);
+  initializeDatabaseSchema(db);
   const journal = createAccountEventJournal({ db, root: join(dataRoot, 'journal'), accountId: 'local-default', onError: error => { throw error; } });
   const projector = new ConversationReadProjector(journal.readModel);
   const history = new SqliteConversationHistoryRepo<ConversationTurn>(db, 'local-default', 'conversation',

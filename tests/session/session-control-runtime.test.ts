@@ -1,0 +1,850 @@
+import Database from 'better-sqlite3';
+import { mkdir, mkdtemp, rm } from 'node:fs/promises';
+import { join } from 'node:path';
+import { tmpdir } from 'node:os';
+import { describe, expect, it, vi } from 'vitest';
+import { initializeDatabaseSchema } from '../../src/storage/schema.js';
+import { PlanProposalRepo } from '../../src/storage/plan-proposal-repo.js';
+import { TaskRepo } from '../../src/storage/task-repo.js';
+import { TaskEngine } from '../../src/task/task-engine.js';
+import { TaskRuntimeService } from '../../src/task/task-runtime-service.js';
+import { ConversationTaskSchedulerRepo } from '../../src/storage/conversation-task-scheduler-repo.js';
+import { SessionControlRuntime } from '../../src/session/session-control-runtime.js';
+import { SessionPresentationService } from '../../src/session/session-presentation-service.js';
+import { authorizedBindingsFor, workGraphPlan } from '../support/planning-agent-plans.js';
+import type { ControlDecision, ControlEvent } from '../../src/control/control-contracts.js';
+import { TaskControlWorkflow } from '../../src/execution/task-control-workflow.js';
+import { parseApplicationSettlement } from '../../src/control/control-application-settlement.js';
+import { testPlanAdmissionDeps } from '../support/plan-admission-application.js';
+
+describe('SessionControlRuntime parallel admission', () => {
+  it('surfaces a cross-Conversation service refusal before settling the parent application', async () => {
+    const database = new Database(':memory:');
+    initializeDatabaseSchema(database);
+    database.prepare(`INSERT INTO configuration_revisions (revision_id, content_hash, source_kind, imported_at)
+      VALUES ('revision-test', 'test-content', 'native', '2026-10-23T00:00:00.000Z')`).run();
+    const taskRepo = new TaskRepo(database);
+    const taskRuntimeService = new TaskRuntimeService({
+      taskEngine: new TaskEngine(taskRepo, '/tmp/metawork-test-snapshots'),
+      taskRepo,
+    });
+    taskRuntimeService.createTask({
+      id: 'service-owner',
+      title: 'service owner',
+      goal: 'service owner',
+      accountId: 'account-a',
+      conversationId: 'conversation-other',
+    });
+    const output: string[] = [];
+    const refreshRuntimeState = vi.fn();
+    const runtime = new SessionControlRuntime({
+    ...testPlanAdmissionDeps(database, taskRuntimeService),
+      sessionId: 'planner-current',
+      conversationId: 'conversation-current',
+      accountId: 'account-a',
+      taskRuntimeService,
+      orchestration: {} as never,
+      activeExecutions: {} as never,
+      presentation: new SessionPresentationService(),
+      manageLocalService: vi.fn(),
+      callbacks: {
+        appendOutput: (...lines: string[]) => output.push(...lines),
+        refreshRuntimeState,
+        prepareTaskExecution: () => undefined,
+        setCurrentTaskId: () => undefined,
+        getCurrentTaskId: () => null,
+        setFocusContext: () => undefined,
+        resolveRequestText: () => '',
+        deliverDirectReply: () => undefined,
+        cancelTask: async () => undefined,
+      },
+    });
+
+    await expect(runtime.forInput('start the service', 'conversation-current').apply({
+      schemaVersion: 5,
+      configurationRevision: 'revision-test',
+      id: 'decision-service-cross-conversation',
+      eventId: 'event-service-cross-conversation',
+      reason: 'service control authorized',
+      action: {
+        type: 'authorize_task_control',
+        task: {
+          binding: 'reference',
+          taskId: 'service-owner',
+          control: 'service_start',
+          scope: 'service-one',
+          title: null,
+          goal: null,
+          includeRecentConversationContext: false,
+          priority: null,
+        },
+      },
+    } as ControlDecision)).rejects.toMatchObject({ code: 'service_not_in_conversation' });
+
+    expect(output).toHaveLength(1);
+    expect(output[0]).toContain('serviceId=service-one');
+    expect(output[0]).toContain('taskId=service-owner');
+    expect(refreshRuntimeState).toHaveBeenCalledTimes(1);
+    database.close();
+  });
+
+  it('settles the parent application and preserves the user-visible refusal end to end', async () => {
+    const database = new Database(':memory:');
+    initializeDatabaseSchema(database);
+    database.prepare(`INSERT INTO configuration_revisions (revision_id, content_hash, source_kind, imported_at)
+      VALUES ('revision-test', 'test-content', 'native', '2026-10-23T00:00:00.000Z')`).run();
+    const taskRepo = new TaskRepo(database);
+    const taskRuntimeService = new TaskRuntimeService({
+      taskEngine: new TaskEngine(taskRepo, '/tmp/metawork-test-snapshots'),
+      taskRepo,
+    });
+    taskRuntimeService.createTask({
+      id: 'service-owner-e2e',
+      title: 'service owner',
+      goal: 'service owner',
+      accountId: 'account-a',
+      conversationId: 'conversation-other',
+    });
+    const output: string[] = [];
+    const sessionRuntime = new SessionControlRuntime({
+    ...testPlanAdmissionDeps(database, taskRuntimeService),
+      sessionId: 'planner-current',
+      conversationId: 'conversation-current',
+      accountId: 'account-a',
+      taskRuntimeService,
+      orchestration: {} as never,
+      activeExecutions: {} as never,
+      presentation: new SessionPresentationService(),
+      manageLocalService: vi.fn(),
+      callbacks: {
+        appendOutput: (...lines: string[]) => output.push(...lines),
+        refreshRuntimeState: () => undefined,
+        prepareTaskExecution: () => undefined,
+        setCurrentTaskId: () => undefined,
+        getCurrentTaskId: () => null,
+        setFocusContext: () => undefined,
+        resolveRequestText: () => '',
+        deliverDirectReply: () => undefined,
+        cancelTask: async () => undefined,
+      },
+    });
+    const event = {
+      schemaVersion: 5,
+      configurationRevision: 'revision-test',
+      type: 'managed_service_requested',
+      id: 'event-service-cross-conversation-e2e',
+      correlationId: 'service-owner-e2e',
+      causationId: null,
+      occurredAt: '2026-10-23T00:00:00.000Z',
+      sessionId: 'planner-current',
+      taskId: 'service-owner-e2e',
+      operation: 'start',
+      serviceId: 'service-one',
+    } as ControlEvent;
+    const decision = {
+      schemaVersion: 5,
+      configurationRevision: 'revision-test',
+      id: 'decision-service-cross-conversation-e2e',
+      eventId: event.id,
+      reason: 'service control authorized',
+      action: {
+        type: 'authorize_task_control',
+        task: {
+          binding: 'reference',
+          taskId: 'service-owner-e2e',
+          control: 'service_start',
+          scope: 'service-one',
+          title: null,
+          goal: null,
+          includeRecentConversationContext: false,
+          priority: null,
+        },
+      },
+    } as ControlDecision;
+    // The owner loop records the refusal as an explicit rejection; there is no
+    // ledger application row any more.
+    const workflow = new TaskControlWorkflow({
+      kernel: { decide: () => decision },
+      buildSnapshot: () => ({}) as never,
+      runtime: sessionRuntime.forInput('start the service', 'conversation-current'),
+      clock: { now: () => '2026-10-23T00:00:00.000Z' },
+      acceptedEventTypes: ['managed_service_requested'],
+      acceptedActions: ['authorize_task_control'],
+    });
+    let rejected: unknown = null;
+    Object.defineProperty(workflow, 'submit', {
+      value: async () => {
+        try {
+          await sessionRuntime.forInput('start the service', 'conversation-current')
+            .apply(decision);
+        } catch (error) { rejected = error; }
+        return { decisions: [decision], quiescent: true, pendingRecovery: 0 };
+      },
+    });
+
+    await workflow.submit(event);
+
+    expect(rejected).toMatchObject({ code: 'service_not_in_conversation' });
+    expect(output[0]).toContain('服务任务不属于当前会话');
+    database.close();
+  });
+
+  it('resolves an existing project Workspace by Conversation id, not Planner session id', async () => {
+    const database = new Database(':memory:');
+    initializeDatabaseSchema(database);
+    const taskRepo = new TaskRepo(database);
+    const taskRuntimeService = new TaskRuntimeService({
+      taskEngine: new TaskEngine(taskRepo, '/tmp/metawork-test-snapshots'),
+      taskRepo,
+    });
+    const workspace = await mkdtemp(join(tmpdir(), 'metawork-existing-project-'));
+    await mkdir(join(workspace, 'existing'));
+    const resolvedIds: string[] = [];
+    const plan = workGraphPlan({ goal: 'update existing project', capabilityClass: 'code_edit' });
+    plan.task!.publicProjectDirectory = 'existing';
+    plan.workGraph!.subtasks[0]!.contextRefs = [];
+    const decision = {
+      schemaVersion: 5,
+      configurationRevision: 'revision-test',
+      id: 'decision-existing-project-workspace',
+      eventId: 'event-existing-project-workspace',
+      reason: 'work graph authorized',
+      action: {
+        type: 'authorize_task_plan', taskId: 'task-existing-project', task: plan.task,
+        workGraph: plan.workGraph!, scheduleState: 'eligible',
+        owner: { conversationId: 'conversation-owner', workspaceId: 'workspace-a', plannerSessionId: 'planner-runtime' },
+        authorizedBindingsBySubtask: authorizedBindingsFor(plan), generationId: 'generation-existing-project', graphRevision: 1,
+        proposalSource: 'initial',
+        workspaceExecution: {
+          executionMode: 'in_place', source: 'planner', reason: 'test',
+          deliveryPolicy: 'none', targetPaths: [],
+        },
+      },
+    } as ControlDecision;
+    const runtime = new SessionControlRuntime({
+    ...testPlanAdmissionDeps(database, taskRuntimeService),
+      sessionId: 'planner-runtime',
+      taskRuntimeService,
+      orchestration: {} as never,
+      activeExecutions: {} as never,
+      presentation: new SessionPresentationService(),
+      resolveUserWorkspaceRoot: async id => { resolvedIds.push(id); return workspace; },
+      callbacks: {
+        appendOutput: () => undefined, prepareTaskExecution: () => undefined, refreshRuntimeState: () => undefined,
+        setCurrentTaskId: () => undefined, getCurrentTaskId: () => null, setFocusContext: () => undefined,
+        resolveRequestText: () => '', deliverDirectReply: () => undefined, cancelTask: async () => undefined,
+      },
+    });
+
+    try {
+      await runtime.forInput('update existing project', 'conversation-owner').apply(decision);
+      expect(resolvedIds).toEqual(['conversation-owner']);
+      expect(taskRuntimeService.findTask('task-existing-project')).toMatchObject({ workspaceId: 'workspace-a' });
+    } finally {
+      await rm(workspace, { recursive: true, force: true });
+      database.close();
+    }
+  });
+
+  it('persists a same-Conversation queued Task without preparing execution', async () => {
+    const database = new Database(':memory:');
+    initializeDatabaseSchema(database);
+    const taskRepo = new TaskRepo(database);
+    const taskRuntimeService = new TaskRuntimeService({
+      taskEngine: new TaskEngine(taskRepo, '/tmp/metawork-test-snapshots'),
+      taskRepo,
+    });
+    taskRuntimeService.createTask({
+      id: 'task-a',
+      title: 'active task',
+      goal: 'active task',
+      accountId: 'account-a',
+      conversationId: 'conversation-a',
+      workspaceId: 'workspace-a',
+      ownerPlannerSessionId: 'planner-a',
+    });
+    const scheduler = new ConversationTaskSchedulerRepo(database);
+    scheduler.claimSlot('conversation-a', 'task-a', 'reservation-a', '2026-08-29T00:00:00.000Z');
+    const prepared: string[] = [];
+    const output: string[] = [];
+    const plan = workGraphPlan({ goal: 'queued task', capabilityClass: 'code_edit' });
+    plan.workGraph!.subtasks[0]!.contextRefs = [];
+    const decision = {
+      schemaVersion: 5,
+      configurationRevision: 'revision-test',
+      id: 'decision-queued',
+      eventId: 'event-queued',
+      reason: 'work graph authorized',
+      action: {
+        type: 'authorize_task_plan',
+        taskId: 'task_event-queued',
+        task: plan.task,
+        workGraph: plan.workGraph!,
+        scheduleState: 'queued',
+        owner: {
+          conversationId: 'conversation-a',
+          workspaceId: 'workspace-a',
+          plannerSessionId: 'planner-a',
+        },
+        authorizedBindingsBySubtask: authorizedBindingsFor(plan),
+        generationId: 'generation-b',
+        graphRevision: 1,
+        proposalSource: 'initial',
+        workspaceExecution: {
+          executionMode: 'in_place', source: 'planner', reason: 'test',
+          deliveryPolicy: 'none', targetPaths: [],
+        },
+      },
+    } as ControlDecision;
+    const proposals = new PlanProposalRepo(database);
+    proposals.save({ request: {
+      id: decision.eventId, configurationRevision: 'revision-test',
+      occurredAt: '2026-11-09T00:00:00.000Z', sessionId: 'planner-a', conversationId: 'conversation-a',
+      sourceTurnId: 'turn-queued', queryId: 'query-queued-task', attachmentIds: ['original-attachment'],
+      proposal: plan, requestText: 'queued task', generationId: 'generation-b',
+      proposalSource: 'initial', targetGraphRevision: 1,
+    } });
+    expect(proposals.findInitialForTask('task_event-queued')).toBeNull();
+    const runtime = new SessionControlRuntime({
+    ...testPlanAdmissionDeps(database, taskRuntimeService, scheduler),
+      planProposals: proposals,
+      sessionId: 'planner-a',
+      conversationId: 'conversation-a',
+      taskRuntimeService,
+      orchestration: {} as never,
+      activeExecutions: {} as never,
+      presentation: new SessionPresentationService(),
+      conversationTaskSchedulerRepo: scheduler,
+      accountId: 'account-a',
+      callbacks: {
+        appendOutput: (...lines: string[]) => output.push(...lines),
+        prepareTaskExecution: taskId => prepared.push(taskId),
+        refreshRuntimeState: () => undefined,
+        setCurrentTaskId: () => undefined,
+        getCurrentTaskId: () => null,
+        setFocusContext: () => undefined,
+        resolveRequestText: () => '',
+        deliverDirectReply: () => undefined,
+        cancelTask: async () => undefined,
+      },
+    });
+
+    await runtime.forInput('queued task', 'conversation-a', 'query-queued-task').apply(decision);
+
+    expect(proposals.findInitialForTask('task_event-queued')?.request).toMatchObject({
+      sourceTurnId: 'turn-queued', queryId: 'query-queued-task', attachmentIds: ['original-attachment'],
+    });
+    expect(prepared).toEqual([]);
+    expect(output).toContain('任务已加入当前会话队列；当前任务完成或释放后执行');
+    expect(taskRuntimeService.findTask('task_event-queued')).toMatchObject({
+      accountId: 'account-a',
+      conversationId: 'conversation-a',
+      workspaceId: 'workspace-a',
+      ownerPlannerSessionId: 'planner-a',
+    });
+    expect(scheduler.listQueuedTasks('conversation-a')).toEqual(['task_event-queued']);
+    expect(scheduler.getQueuedPayload('task_event-queued')).toMatchObject({
+      queryId: 'query-queued-task',
+    });
+  });
+
+  it('keeps clear_tasks scoped to the current Conversation', async () => {
+    const database = new Database(':memory:');
+    initializeDatabaseSchema(database);
+    const taskRepo = new TaskRepo(database);
+    const taskRuntimeService = new TaskRuntimeService({
+      taskEngine: new TaskEngine(taskRepo, '/tmp/metawork-test-snapshots'),
+      taskRepo,
+    });
+    taskRuntimeService.createTask({
+      id: 'task-a', title: 'conversation A', goal: 'conversation A',
+      accountId: 'account-a', conversationId: 'conversation-a',
+    });
+    taskRuntimeService.createTask({
+      id: 'task-b', title: 'conversation B', goal: 'conversation B',
+      accountId: 'account-a', conversationId: 'conversation-b',
+    });
+    const cancelled: string[] = [];
+    const runtime = new SessionControlRuntime({
+    ...testPlanAdmissionDeps(database, taskRuntimeService),
+      sessionId: 'planner-a',
+      conversationId: 'conversation-a',
+      accountId: 'account-a',
+      taskRuntimeService,
+      orchestration: {} as never,
+      activeExecutions: {} as never,
+      presentation: new SessionPresentationService(),
+      callbacks: {
+        appendOutput: () => undefined,
+        prepareTaskExecution: () => undefined,
+        refreshRuntimeState: () => undefined,
+        setCurrentTaskId: () => undefined,
+        getCurrentTaskId: () => null,
+        setFocusContext: () => undefined,
+        resolveRequestText: () => '',
+        deliverDirectReply: () => undefined,
+        cancelTask: async taskId => { cancelled.push(taskId); },
+      },
+    });
+
+    await runtime.forInput('clear this conversation').apply({
+      schemaVersion: 5,
+      configurationRevision: 'revision-test',
+      id: 'decision-clear',
+      eventId: 'event-clear',
+      reason: 'task control authorized',
+      action: {
+        type: 'authorize_task_control',
+        task: {
+          binding: 'reference',
+          taskId: null,
+          control: 'clear_tasks',
+          scope: 'all',
+          title: null,
+          goal: null,
+          includeRecentConversationContext: false,
+          priority: null,
+        },
+      },
+    } as ControlDecision);
+
+    expect(cancelled).toEqual(['task-a']);
+  });
+
+  it('preserves an account-capacity queue reason when slot admission loses the race', async () => {
+    const database = new Database(':memory:');
+    initializeDatabaseSchema(database);
+    const taskRepo = new TaskRepo(database);
+    const taskRuntimeService = new TaskRuntimeService({
+      taskEngine: new TaskEngine(taskRepo, '/tmp/metawork-test-snapshots'),
+      taskRepo,
+    });
+    const scheduler = new ConversationTaskSchedulerRepo(database);
+    const prepared: string[] = [];
+    const plan = workGraphPlan({ goal: 'capacity queued task', capabilityClass: 'code_edit' });
+    plan.workGraph!.subtasks[0]!.contextRefs = [];
+    const runtime = new SessionControlRuntime({
+    ...testPlanAdmissionDeps(database, taskRuntimeService, scheduler),
+      sessionId: 'planner-b',
+      accountId: 'account-a',
+      taskRuntimeService,
+      orchestration: {} as never,
+      activeExecutions: {} as never,
+      presentation: new SessionPresentationService(),
+      conversationTaskSchedulerRepo: scheduler,
+      callbacks: {
+        appendOutput: () => undefined,
+        prepareTaskExecution: taskId => prepared.push(taskId),
+        refreshRuntimeState: () => undefined,
+        setCurrentTaskId: () => undefined,
+        getCurrentTaskId: () => null,
+        setFocusContext: () => undefined,
+        resolveRequestText: () => '',
+        deliverDirectReply: () => undefined,
+        cancelTask: async () => undefined,
+      },
+    });
+    const decision = {
+      schemaVersion: 5,
+      configurationRevision: 'revision-test',
+      id: 'decision-capacity-queued',
+      eventId: 'event-capacity-queued',
+      reason: 'account task capacity',
+      action: {
+        type: 'authorize_task_plan',
+        taskId: 'task-capacity-queued',
+        task: plan.task,
+        workGraph: plan.workGraph!,
+        scheduleState: 'queued',
+        schedulingReason: 'account_task_capacity',
+        owner: {
+          conversationId: 'conversation-b',
+          workspaceId: 'workspace-b',
+          plannerSessionId: 'planner-b',
+        },
+        authorizedBindingsBySubtask: authorizedBindingsFor(plan),
+        generationId: 'generation-capacity-queued',
+        graphRevision: 1,
+        proposalSource: 'initial',
+        workspaceExecution: {
+          executionMode: 'in_place', source: 'planner', reason: 'test',
+          deliveryPolicy: 'none', targetPaths: [],
+        },
+      },
+    } as ControlDecision;
+
+    await runtime.forInput('capacity queued task').apply(decision);
+
+    expect(prepared).toEqual([]);
+    expect(database.prepare(
+      'SELECT scheduling_reason FROM task_schedule_entries WHERE task_id = ?',
+    ).get('task-capacity-queued')).toEqual({ scheduling_reason: 'account_task_capacity' });
+  });
+});
+
+describe('SessionControlRuntime abandon_task and durable clear outcomes (2026-09-06 plan)', () => {
+  function setupRuntime(options: {
+    outcomes?: Record<string, import('../../src/task/task-control-types.js').TaskClearOutcome>;
+    cancelThrows?: string;
+  } = {}) {
+    const database = new Database(':memory:');
+    initializeDatabaseSchema(database);
+    const taskRepo = new TaskRepo(database);
+    const taskRuntimeService = new TaskRuntimeService({
+      taskEngine: new TaskEngine(taskRepo, '/tmp/metawork-abandon-test'),
+      taskRepo,
+    });
+    taskRuntimeService.createTask({
+      id: 'task-old', title: 'old blocked task', goal: 'old',
+      accountId: 'account-a', conversationId: 'conversation-a',
+    });
+    taskRuntimeService.createTask({
+      id: 'task-foreign', title: 'other conversation task', goal: 'other',
+      accountId: 'account-a', conversationId: 'conversation-b',
+    });
+    const output: string[] = [];
+    const cancelCalls: Array<{ taskId: string; reason: string }> = [];
+    const runtime = new SessionControlRuntime({
+    ...testPlanAdmissionDeps(database, taskRuntimeService),
+      sessionId: 'planner-a',
+      conversationId: 'conversation-a',
+      accountId: 'account-a',
+      taskRuntimeService,
+      orchestration: {} as never,
+      activeExecutions: {} as never,
+      presentation: new SessionPresentationService(),
+      callbacks: {
+        appendOutput: (...lines: string[]) => output.push(...lines),
+        prepareTaskExecution: () => undefined,
+        refreshRuntimeState: () => undefined,
+        setCurrentTaskId: () => undefined,
+        getCurrentTaskId: () => null,
+        setFocusContext: () => undefined,
+        resolveRequestText: () => '',
+        deliverDirectReply: () => undefined,
+        cancelTask: async (taskId, reason) => {
+          cancelCalls.push({ taskId, reason });
+          if (options.cancelThrows) throw new Error(options.cancelThrows);
+          return options.outcomes?.[taskId] ?? {
+            taskId, status: 'cleared', residue: [],
+          };
+        },
+      },
+    });
+    return { runtime, output, cancelCalls, taskRuntimeService, database };
+  }
+
+  const abandonDecision = (taskId: string) => ({
+    schemaVersion: 5,
+    configurationRevision: 'revision-test',
+    id: `decision-abandon-${taskId}`,
+    eventId: `event-abandon-${taskId}`,
+    reason: 'explicit user decision',
+    action: {
+      type: 'authorize_task_control',
+      task: {
+        binding: 'reference',
+        taskId,
+        control: 'abandon_task',
+        scope: null,
+        title: null,
+        goal: null,
+        includeRecentConversationContext: false,
+        priority: null,
+      },
+    },
+  }) as ControlDecision;
+
+  it('releases the old Task and tells the user to resubmit new work', async () => {
+    const { runtime, output, cancelCalls } = setupRuntime();
+    await runtime.forInput('放弃旧任务，开新的').apply(abandonDecision('task-old'));
+    expect(cancelCalls).toHaveLength(1);
+    expect(cancelCalls[0]!.reason).toContain('abandon_task');
+    expect(output.join('\n')).toContain('旧任务 #task-old 已取消并释放');
+    expect(output.join('\n')).toContain('请重发你的新需求');
+  });
+
+  it('holds the new Task with a named phase when cancellation stays uncertain', async () => {
+    const { runtime, output } = setupRuntime({
+      outcomes: {
+        'task-old': {
+          taskId: 'task-old',
+          status: 'clear_blocked',
+          residue: [],
+          phase: 'UNIQUE constraint failed during drain',
+        },
+      },
+    });
+    await runtime.forInput('放弃旧任务，开新的').apply(abandonDecision('task-old'));
+    expect(output.join('\n')).toContain('新任务暂缓');
+    expect(output.join('\n')).toContain('UNIQUE constraint failed during drain');
+  });
+
+  it('reports in-flight cleanup for recovery_in_progress outcomes', async () => {
+    const { runtime, output } = setupRuntime({
+      outcomes: {
+        'task-old': {
+          taskId: 'task-old',
+          status: 'recovery_in_progress',
+          residue: ['dispatch', 'publication'],
+        },
+      },
+    });
+    await runtime.forInput('放弃旧任务，开新的').apply(abandonDecision('task-old'));
+    expect(output.join('\n')).toContain('后台清理中');
+    expect(output.join('\n')).toContain('dispatch, publication');
+  });
+
+  it('never abandons a Task owned by another Conversation', async () => {
+    const { runtime, output } = setupRuntime();
+    await expect(
+      runtime.forInput('放弃那个任务').apply(abandonDecision('task-foreign')),
+    ).rejects.toThrow('another Conversation');
+    expect(output.join('\n')).not.toContain('已取消并释放');
+  });
+
+  it('skips cancellation for an already-terminal old Task', async () => {
+    const { runtime, output, cancelCalls, database } = setupRuntime();
+    database.prepare(`UPDATE tasks
+      SET status = 'cancelled', state_version = state_version + 1, completed_at = ?
+      WHERE id = 'task-old'`).run(new Date().toISOString());
+    await runtime.forInput('放弃旧任务').apply(abandonDecision('task-old'));
+    expect(cancelCalls).toHaveLength(0);
+    expect(output.join('\n')).toContain('已处于终态');
+  });
+
+  it('reports the durable outcome per Task for /task clear all', async () => {
+    const { runtime, output } = setupRuntime({
+      outcomes: {
+        'task-old': { taskId: 'task-old', status: 'recovery_in_progress', residue: ['dispatch'] },
+        'task-foreign': { taskId: 'task-foreign', status: 'cleared', residue: [] },
+      },
+    });
+    await runtime.forInput('/task clear all').apply({
+      schemaVersion: 5,
+      configurationRevision: 'revision-test',
+      id: 'decision-clear-outcome',
+      eventId: 'event-clear-outcome',
+      reason: 'task control authorized',
+      action: {
+        type: 'authorize_task_control',
+        task: {
+          binding: 'none',
+          taskId: null,
+          control: 'clear_tasks',
+          scope: 'all',
+          title: null,
+          goal: null,
+          includeRecentConversationContext: false,
+          priority: null,
+        },
+      },
+    } as ControlDecision);
+    const text = output.join('\n');
+    expect(text).toContain('#task-old [已受理，后台清理中（残留: dispatch）] old blocked task');
+    expect(text).not.toContain('task-foreign');
+  });
+});
+
+describe('SessionControlRuntime abandon-and-create (2026-09-06 plan §5.4)', () => {
+  function buildAbandonAndCreateRuntime(options: {
+    cancelOutcome?: import('../../src/task/task-control-types.js').TaskClearOutcome;
+  } = {}) {
+    const database = new Database(':memory:');
+    initializeDatabaseSchema(database);
+    const taskRepo = new TaskRepo(database);
+    const taskRuntimeService = new TaskRuntimeService({
+      taskEngine: new TaskEngine(taskRepo, '/tmp/metawork-abandon-create'),
+      taskRepo,
+    });
+    taskRuntimeService.createTask({
+      id: 'task-old', title: 'old task', goal: 'old',
+      accountId: 'account-a', conversationId: 'conversation-a',
+    });
+    taskRuntimeService.createTask({
+      id: 'task-foreign', title: 'foreign task', goal: 'foreign',
+      accountId: 'account-a', conversationId: 'conversation-b',
+    });
+    const scheduler = new ConversationTaskSchedulerRepo(database);
+    scheduler.claimSlot('conversation-a', 'task-old', 'reservation-old', '2026-08-29T00:00:00.000Z');
+    const output: string[] = [];
+    const cancelled: string[] = [];
+    const prepared: string[] = [];
+    const runtime = new SessionControlRuntime({
+    ...testPlanAdmissionDeps(database, taskRuntimeService, scheduler),
+      sessionId: 'planner-a',
+      conversationId: 'conversation-a',
+      accountId: 'account-a',
+      taskRuntimeService,
+      orchestration: {} as never,
+      activeExecutions: {} as never,
+      presentation: new SessionPresentationService(),
+      conversationTaskSchedulerRepo: scheduler,
+      callbacks: {
+        appendOutput: (...lines: string[]) => output.push(...lines),
+        prepareTaskExecution: taskId => prepared.push(taskId),
+        refreshRuntimeState: () => undefined,
+        setCurrentTaskId: () => undefined,
+        getCurrentTaskId: () => null,
+        setFocusContext: () => undefined,
+        resolveRequestText: () => '',
+        deliverDirectReply: () => undefined,
+        cancelTask: async taskId => {
+          cancelled.push(taskId);
+          return options.cancelOutcome ?? { taskId, status: 'cleared', residue: [] };
+        },
+      },
+    });
+    return { runtime, output, cancelled, prepared, scheduler, taskRuntimeService };
+  }
+
+  const conflictDecision = () => {
+    const plan = workGraphPlan({ goal: 'new work', capabilityClass: 'code_edit' });
+    plan.workGraph!.subtasks[0]!.contextRefs = [];
+    return {
+      schemaVersion: 5,
+      configurationRevision: 'revision-test',
+      id: 'decision-conflict',
+      eventId: 'event-conflict',
+      reason: 'abandon-and-create authorized',
+      action: {
+        type: 'authorize_task_plan',
+        taskId: 'task-new',
+        task: plan.task,
+        workGraph: plan.workGraph!,
+        scheduleState: 'queued',
+        owner: {
+          conversationId: 'conversation-a',
+          workspaceId: 'workspace-a',
+          plannerSessionId: 'planner-a',
+        },
+        authorizedBindingsBySubtask: authorizedBindingsFor(plan),
+        generationId: 'generation-new',
+        graphRevision: 1,
+        proposalSource: 'initial',
+        workspaceExecution: {
+          executionMode: 'in_place', source: 'planner', reason: 'test',
+          deliveryPolicy: 'none', targetPaths: [],
+        },
+        conflictResolution: { oldTaskId: 'task-old' },
+      },
+    } as ControlDecision;
+  };
+
+  it('abandons the old Task first, then creates and queues the new Task', async () => {
+    const { runtime, cancelled, prepared, scheduler, taskRuntimeService } = buildAbandonAndCreateRuntime();
+    await runtime.forInput('放弃旧任务，开始新任务').apply(conflictDecision());
+    expect(cancelled).toEqual(['task-old']);
+    expect(taskRuntimeService.findTask('task-new')).toMatchObject({
+      conversationId: 'conversation-a',
+    });
+    // The old slot is still held (cancellation cleanup pending); the new Task
+    // waits in the queue and is promoted only after the slot releases.
+    expect(scheduler.listQueuedTasks('conversation-a')).toEqual(['task-new']);
+    expect(prepared).toEqual([]);
+  });
+
+  it('holds the new Task with a named phase when the old cancellation is blocked', async () => {
+    const { runtime, output, taskRuntimeService } = buildAbandonAndCreateRuntime({
+      cancelOutcome: {
+        taskId: 'task-old',
+        status: 'clear_blocked',
+        residue: [],
+        phase: 'UNIQUE constraint failed during drain',
+      },
+    });
+    await runtime.forInput('放弃旧任务，开始新任务').apply(conflictDecision());
+    expect(output.join('\n')).toContain('新任务暂缓');
+    expect(output.join('\n')).toContain('UNIQUE constraint failed during drain');
+    expect(taskRuntimeService.findTask('task-new')).toBeNull();
+  });
+
+  it('rejects abandoning an old Task owned by another Conversation', async () => {
+    const { runtime, cancelled, taskRuntimeService } = buildAbandonAndCreateRuntime();
+    const decision = conflictDecision();
+    (decision.action as { conflictResolution: { oldTaskId: string } }).conflictResolution = {
+      oldTaskId: 'task-foreign',
+    };
+    await expect(
+      runtime.forInput('放弃那个任务').apply(decision),
+    ).rejects.toThrow('another Conversation');
+    expect(cancelled).toEqual([]);
+    expect(taskRuntimeService.findTask('task-new')).toBeNull();
+  });
+});
+
+describe('SessionControlRuntime abandon-and-create holds during cleanup (closure round 3)', () => {
+  it('never creates the new Task while the old cancellation is still cleaning up', async () => {
+    const database = new Database(':memory:');
+    initializeDatabaseSchema(database);
+    const taskRepo = new TaskRepo(database);
+    const taskRuntimeService = new TaskRuntimeService({
+      taskEngine: new TaskEngine(taskRepo, '/tmp/metawork-abandon-hold'),
+      taskRepo,
+    });
+    taskRuntimeService.createTask({
+      id: 'task-old', title: 'old', goal: 'old',
+      accountId: 'account-a', conversationId: 'conversation-a',
+    });
+    const scheduler = new ConversationTaskSchedulerRepo(database);
+    scheduler.claimSlot('conversation-a', 'task-old', 'res', '2026-08-29T00:00:00.000Z');
+    const output: string[] = [];
+    const runtime = new SessionControlRuntime({
+    ...testPlanAdmissionDeps(database, taskRuntimeService, scheduler),
+      sessionId: 'planner-a',
+      conversationId: 'conversation-a',
+      accountId: 'account-a',
+      taskRuntimeService,
+      orchestration: {} as never,
+      activeExecutions: {} as never,
+      presentation: new SessionPresentationService(),
+      conversationTaskSchedulerRepo: scheduler,
+      callbacks: {
+        appendOutput: (...lines: string[]) => output.push(...lines),
+        prepareTaskExecution: () => undefined,
+        refreshRuntimeState: () => undefined,
+        setCurrentTaskId: () => undefined,
+        getCurrentTaskId: () => null,
+        setFocusContext: () => undefined,
+        resolveRequestText: () => '',
+        deliverDirectReply: () => undefined,
+        cancelTask: async taskId => ({
+          taskId,
+          status: 'recovery_in_progress' as const,
+          residue: ['dispatch'],
+        }),
+      },
+    });
+    const plan = workGraphPlan({ goal: 'new', capabilityClass: 'code_edit' });
+    plan.workGraph!.subtasks[0]!.contextRefs = [];
+    await runtime.forInput('放弃旧任务，开始新任务').apply({
+      schemaVersion: 5,
+      configurationRevision: 'revision-test',
+      id: 'decision-hold',
+      eventId: 'event-hold',
+      reason: 'abandon-and-create authorized',
+      action: {
+        type: 'authorize_task_plan',
+        taskId: 'task-new',
+        task: plan.task,
+        workGraph: plan.workGraph!,
+        scheduleState: 'queued',
+        owner: { conversationId: 'conversation-a', workspaceId: 'workspace-a', plannerSessionId: 'planner-a' },
+        authorizedBindingsBySubtask: authorizedBindingsFor(plan),
+        generationId: 'generation-new',
+        graphRevision: 1,
+        proposalSource: 'initial',
+        workspaceExecution: {
+          executionMode: 'in_place', source: 'planner', reason: 'test',
+          deliveryPolicy: 'none', targetPaths: [],
+        },
+        conflictResolution: { oldTaskId: 'task-old' },
+      },
+    } as ControlDecision);
+
+    expect(output.join('\n')).toContain('新任务暂缓');
+    expect(output.join('\n')).toContain('后台清理中');
+    expect(taskRuntimeService.findTask('task-new')).toBeNull();
+    expect(scheduler.listQueuedTasks('conversation-a')).toEqual([]);
+  });
+});

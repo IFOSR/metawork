@@ -3,34 +3,34 @@
  *
  * WorkUnitClaimService 与 ExecutorRecoveryRefreshService 是账户作用域服务。
  * ExecutorRecoveryRefreshService 的 onRecovered 回调前向引用
- * KernelExecutionRuntime，这里用可变引用 + bindKernelExecutionRuntime 绑定，
+ * ControlExecutionRuntime，这里用可变引用 + bindControlExecutionRuntime 绑定，
  * 保持与 MetaclawSession 惰性实例字段一致的语义。
  */
 
 import type Database from 'better-sqlite3';
 import { ExecutorProbeError, WorkUnitClaimService } from '../execution/work-unit-claim-service.js';
 import { ExecutorRecoveryRefreshService } from '../execution/executor-recovery-refresh-service.js';
-import { KernelExecutorStatusProjector } from '../execution/kernel-executor-status-projector.js';
-import type { KernelExecutorStatusRepo } from '../storage/kernel-executor-status-repo.js';
+import { ControlExecutorStatusProjector } from '../execution/control-executor-status-projector.js';
+import type { ControlExecutorStatusRepo } from '../storage/executor-status-repo.js';
 import { WorkUnitRepo } from '../storage/work-unit-repo.js';
 import type { ExecutionRuntime, ExecutorRegistry } from '../execution/execution-runtime.js';
-import type { KernelExecutionRuntime } from '../execution/kernel-execution-runtime.js';
+import type { ControlExecutionRuntime } from '../execution/control-execution-runtime.js';
 
 export interface AccountCoordinatorServices {
   readonly workUnitClaimService: WorkUnitClaimService;
   readonly executorRecoveryRefreshService: ExecutorRecoveryRefreshService;
-  bindKernelExecutionRuntime(runtime: KernelExecutionRuntime): void;
+  bindControlExecutionRuntime(runtime: ControlExecutionRuntime): void;
 }
 
 export function buildAccountCoordinatorServices(deps: {
   db: Database.Database;
   executionRuntime: ExecutionRuntime;
   executorRegistry: ExecutorRegistry;
-  kernelExecutorStatusRepo: KernelExecutorStatusRepo;
+  kernelExecutorStatusRepo: ControlExecutorStatusRepo;
   getConfigurationRevision: () => string;
 }): AccountCoordinatorServices {
-  const kernelExecutorStatusProjector = new KernelExecutorStatusProjector(deps.kernelExecutorStatusRepo);
-  let kernelExecutionRuntimeRef: KernelExecutionRuntime | null = null;
+  const kernelExecutorStatusProjector = new ControlExecutorStatusProjector(deps.kernelExecutorStatusRepo);
+  let kernelExecutionRuntimeRef: ControlExecutionRuntime | null = null;
 
   const workUnitClaimService = new WorkUnitClaimService(
     new WorkUnitRepo(deps.db),
@@ -82,7 +82,7 @@ export function buildAccountCoordinatorServices(deps: {
   return {
     workUnitClaimService,
     executorRecoveryRefreshService,
-    bindKernelExecutionRuntime: runtime => {
+    bindControlExecutionRuntime: runtime => {
       kernelExecutionRuntimeRef = runtime;
     },
   };

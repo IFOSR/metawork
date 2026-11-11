@@ -1,12 +1,25 @@
 import type Database from 'better-sqlite3';
 import type { ConversationDeletionPort } from '../session/conversation-deletion.js';
+import { ensurePlanProposalSchema } from './plan-proposal-repo.js';
+import { ensurePlanAdmissionResultSchema } from './plan-admission-result-repo.js';
 
 /** Account scoped cleanup. Domain identity/status facts survive without query content. */
 export class SqliteConversationDeletionStore implements ConversationDeletionPort {
-  constructor(private readonly db: Database.Database) {}
+  constructor(private readonly db: Database.Database) {
+    ensurePlanProposalSchema(db);
+    ensurePlanAdmissionResultSchema(db);
+  }
   begin(accountId: string, conversationId: string): void {
-    this.db.prepare(`INSERT OR IGNORE INTO conversation_deletions VALUES (?, ?, 'pending', ?)`)
-      .run(accountId, conversationId, new Date().toISOString());
+    this.db.transaction(() => {
+      const now = new Date().toISOString();
+      this.db.prepare(`INSERT OR IGNORE INTO conversation_deletions VALUES (?, ?, 'pending', ?)`)
+        .run(accountId, conversationId, now);
+      this.db.prepare(`UPDATE task_plan_proposals
+        SET delivery = 'invalidated', delivery_reason = 'conversation_deleted', updated_at = ?
+        WHERE delivery = 'pending'
+          AND COALESCE(json_extract(request_json, '$.conversationId'), json_extract(request_json, '$.sessionId')) = ?`)
+        .run(now, conversationId);
+    }).immediate();
   }
   pending(accountId: string): string[] {
     return (this.db.prepare("SELECT conversation_id FROM conversation_deletions WHERE account_id = ? AND state = 'pending' LIMIT 50")
@@ -27,6 +40,19 @@ export class SqliteConversationDeletionStore implements ConversationDeletionPort
         AND name IN ('executor_attempt_receipts_immutable_update', 'subtask_handoffs_immutable_update', 'result_references_immutable_update')`)
         .all() as { name: string; sql: string }[];
       for (const guard of guards) this.db.exec(`DROP TRIGGER ${guard.name}`);
+      // Proposals contain original input, attachments and prepared routing.
+      // Erase even unadmitted proposals, which have no Task row to join.
+      this.db.prepare(`DELETE FROM task_plan_admission_results WHERE proposal_id IN (
+        SELECT proposal_id FROM task_plan_proposals
+        WHERE COALESCE(json_extract(request_json, '$.conversationId'), json_extract(request_json, '$.sessionId')) = ?
+      )`).run(conversationId);
+      this.db.prepare(`DELETE FROM task_plan_origins WHERE proposal_id IN (
+        SELECT proposal_id FROM task_plan_proposals
+        WHERE COALESCE(json_extract(request_json, '$.conversationId'), json_extract(request_json, '$.sessionId')) = ?
+      )`).run(conversationId);
+      this.db.prepare(`DELETE FROM task_plan_proposals
+        WHERE COALESCE(json_extract(request_json, '$.conversationId'), json_extract(request_json, '$.sessionId')) = ?`)
+        .run(conversationId);
       const metadata = this.db.prepare('SELECT metadata_json FROM conversation_metadata_projection WHERE account_id = ? AND conversation_id = ?')
         .get(accountId, conversationId) as { metadata_json: string } | undefined;
       const plannerId = metadata ? (JSON.parse(metadata.metadata_json) as { plannerSessionId?: string }).plannerSessionId : undefined;
@@ -42,8 +68,6 @@ export class SqliteConversationDeletionStore implements ConversationDeletionPort
         this.db.prepare('DELETE FROM planner_proposal_submissions WHERE session_id = ?').run(plannerId);
         this.db.prepare('DELETE FROM planner_proposal_turns WHERE session_id = ?').run(plannerId);
         this.db.prepare('DELETE FROM interactions WHERE session_id = ? AND task_id IS NULL').run(plannerId);
-        this.db.prepare("UPDATE kernel_decisions SET event_json = '{}', snapshot_json = '{}', decision_json = '{}', reason = '' WHERE session_id = ? AND task_id IS NULL").run(plannerId);
-        this.db.prepare("UPDATE kernel_events SET event_json = '{}', status = CASE WHEN status IN ('pending','processing') THEN 'failed' ELSE status END, last_error = NULL WHERE session_id = ? AND task_id IS NULL").run(plannerId);
       }
       const tasks = this.db.prepare('SELECT id FROM tasks WHERE account_id = ? AND conversation_id = ?')
         .all(accountId, conversationId) as { id: string }[];
@@ -53,10 +77,8 @@ export class SqliteConversationDeletionStore implements ConversationDeletionPort
         const redactions: Record<string, string> = {
           tasks: "title = '[deleted]', goal = NULL, summary = '', snapshot_json = '[]', resources_json = '[]', state_detail_json = '{}', last_scheduling_reason = '', last_interruption_reason = '', archived_at = COALESCE(archived_at, datetime('now'))",
           subtasks: "title = '[deleted]', goal = '', result = '', error = NULL, acceptance_json = '[]', context_refs_json = '[]', verification_json = '{}'",
-          kernel_decisions: "event_json = '{}', snapshot_json = '{}', decision_json = '{}', reason = ''",
-          kernel_events: "event_json = '{}', status = CASE WHEN status IN ('pending','processing') THEN 'failed' ELSE status END, last_error = NULL",
-          kernel_effect_outbox: "payload_json = '{}', status = CASE WHEN status IN ('pending','sending') THEN 'failed' ELSE status END, error_summary = NULL",
-          kernel_dispatch_items: "attempt_payload_json = '{}', status = CASE WHEN status = 'pending_launch' THEN 'cancelled' ELSE status END, error_summary = NULL",
+          effect_outbox: "payload_json = '{}', status = CASE WHEN status IN ('pending','sending') THEN 'failed' ELSE status END, error_summary = NULL",
+          dispatch_items: "attempt_payload_json = '{}', status = CASE WHEN status = 'pending_launch' THEN 'cancelled' ELSE status END, error_summary = NULL",
           executor_attempt_receipts: "raw_response = '', parsing_json = '{}', verification_json = '{}', error_detail = NULL, failure_json = NULL",
           subtask_handoffs: "items_json = '[]'",
           task_schedule_entries: "payload_json = '{}', state = 'terminal'",
@@ -77,9 +99,6 @@ export class SqliteConversationDeletionStore implements ConversationDeletionPort
         }
         this.db.prepare(`UPDATE executor_attempt_runtime SET progress_json = '{}', continuation_token = NULL
           WHERE attempt_id IN (SELECT attempt_id FROM executor_attempt_receipts WHERE task_id = ?)`).run(id);
-        this.db.prepare(`UPDATE kernel_decision_applications SET observation_event_json = NULL, error_summary = NULL,
-          status = CASE WHEN status IN ('pending','applying','uncertain') THEN 'failed' ELSE status END
-          WHERE decision_id IN (SELECT id FROM kernel_decisions WHERE task_id = ?)`).run(id);
         this.db.prepare('DELETE FROM task_memory_cards WHERE task_id = ?').run(id);
         this.db.prepare('DELETE FROM task_search_index WHERE task_id = ?').run(id);
         this.db.prepare('DELETE FROM conversation_activity_views WHERE task_id = ?').run(id);
@@ -127,7 +146,7 @@ export class SqliteConversationDeletionStore implements ConversationDeletionPort
         'conversation_read_content_chunks', 'conversation_read_content_manifests', 'conversation_read_heads',
         'conversation_read_rebuilds', 'conversation_read_history_checkpoint', 'conversation_read_history_dirty',
         'conversation_history_turns', 'conversation_history_streams', 'gateway_trace_read_events', 'gateway_trace_read_heads',
-        'conversation_result_content_refs', 'planner_transcript_turns', 'conversation_memory_receipts', 'conversation_turn_outbox', 'conversation_turn_answers', 'conversation_turns', 'conversation_turn_migration',
+        'conversation_result_content_refs', 'planner_transcript_turns', 'conversation_memory_receipts', 'conversation_turn_outbox', 'conversation_turn_answers', 'conversation_turn_cancellations', 'conversation_turns', 'conversation_turn_migration',
         'memory_recall_candidates', 'memory_recall_layers', 'gateway_turn_task_observations', 'conversation_derived_content',
       ];
       for (const table of scoped) this.db.prepare(`DELETE FROM ${table} WHERE account_id = ? AND conversation_id = ?`).run(accountId, conversationId);

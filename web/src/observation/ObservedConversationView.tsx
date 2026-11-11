@@ -27,11 +27,11 @@ export interface ConversationViewportMemory {
 const FOLLOW_LATEST_THRESHOLD = 64;
 
 /** Visible rows subscribe individually; the list only observes membership and freshness. */
-export const ObservedConversationView = memo(function ObservedConversationView({ conversationId, ws, http, memory, initialTurnId, initialTaskId, onOpenTrajectory, onOpenBilling, onOpenArtifact, onOpenAttachment, onOpenSubtaskDetail }: {
+export const ObservedConversationView = memo(function ObservedConversationView({ conversationId, ws, http, memory, initialTurnId, initialTaskId, onOpenTrajectory, onOpenArtifact, onOpenAttachment, onOpenSubtaskDetail }: {
   conversationId: string; ws: WsClient; http: HttpClient; memory: ConversationViewportMemory;
   initialTurnId?: string;
   initialTaskId?: string;
-  onOpenTrajectory(turnId: string): void; onOpenBilling(turnId: string): void;
+  onOpenTrajectory(turnId: string): void;
   onOpenArtifact(artifact: ArtifactProjection): void;
   onOpenAttachment?: (conversationId: string, attachment: import('../api/session-types').ConversationAttachment) => void;
   onOpenSubtaskDetail(turn: ConversationTurnProjection, subtaskId: string, title: string): void;
@@ -403,7 +403,7 @@ export const ObservedConversationView = memo(function ObservedConversationView({
       <div style={{ height: Math.max(0, row.top - (index ? visible[index - 1]!.top + visible[index - 1]!.height : 0)) }} aria-hidden />
       <ObservedTurn id={row.id} conversationId={conversationId} store={store} ws={ws}
         latest={row.id === window.ids.at(-1)}
-        http={http} measure={measure} onOpenTrajectory={onOpenTrajectory} onOpenBilling={onOpenBilling}
+        http={http} measure={measure} onOpenTrajectory={onOpenTrajectory}
         onOpenArtifact={onOpenArtifact} onOpenAttachment={onOpenAttachment} onOpenSubtaskDetail={onOpenSubtaskDetail} />
     </Fragment>)}
     <div style={{ height: Math.max(0, total - (visible.at(-1) ? visible.at(-1)!.top + visible.at(-1)!.height : 0)) }} aria-hidden />
@@ -414,12 +414,12 @@ export const ObservedConversationView = memo(function ObservedConversationView({
   </div>;
 });
 
-const ObservedTurn = memo(function ObservedTurn({ store, conversationId, id, http, ws, latest, measure, onOpenTrajectory, onOpenBilling, onOpenArtifact, onOpenAttachment, onOpenSubtaskDetail }: {
+const ObservedTurn = memo(function ObservedTurn({ store, conversationId, id, http, ws, latest, measure, onOpenTrajectory, onOpenArtifact, onOpenAttachment, onOpenSubtaskDetail }: {
   store: ConversationEntityStore; conversationId: string; id: string; http: HttpClient; ws: WsClient; latest: boolean;
   onOpenArtifact(artifact: ArtifactProjection): void;
   onOpenAttachment?: (conversationId: string, attachment: import('../api/session-types').ConversationAttachment) => void;
   onOpenSubtaskDetail(turn: ConversationTurnProjection, subtaskId: string, title: string): void;
-  measure(id: string, height: number): void; onOpenTrajectory(id: string): void; onOpenBilling(id: string): void;
+  measure(id: string, height: number): void; onOpenTrajectory(id: string): void;
 }) {
   const turn = useConversationTurn(store, conversationId, id);
   const root = useRef<HTMLDivElement>(null);
@@ -427,7 +427,7 @@ const ObservedTurn = memo(function ObservedTurn({ store, conversationId, id, htt
   const prompt = useCompleteContent(http, store, conversationId, turn?.userInputRef, turn?.userInput ?? '');
   // Trace facts are loaded for the live Turn and for the newest Turn; a settled
   // Turn keeps its record in the recap below instead of a live panel.
-  const showExecution = latest || turn?.status === 'running' || turn?.status === 'blocked';
+  const showExecution = latest || turn?.status === 'running' || turn?.status === 'blocked' || turn?.status === 'failed';
   const turnIsLive = turn?.status === 'running' || turn?.status === 'blocked';
   const details = useTurnPresentation(ws, http, conversationId, turn, showExecution);
   useLayoutEffect(() => {
@@ -445,7 +445,7 @@ const ObservedTurn = memo(function ObservedTurn({ store, conversationId, id, htt
   }, [turn, answer.text, prompt.text, details]);
   if (!turn || !projection) return null;
   return <div ref={root} data-observed-turn={id}>
-    <ConversationTurnView turn={projection} onOpenTrajectory={onOpenTrajectory} onOpenBilling={onOpenBilling}
+    <ConversationTurnView turn={projection} onOpenTrajectory={onOpenTrajectory}
       onOpenArtifact={onOpenArtifact} onOpenAttachment={onOpenAttachment}
       liveExecutionPanel={showExecution && turnIsLive ? (plannerActivity(projection)
         ? <LivePlanningPanel turn={projection} />

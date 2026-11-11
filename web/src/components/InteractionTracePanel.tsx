@@ -19,7 +19,7 @@ const PHASE_LABEL: Record<InteractionTraceEvent['phase'], string> = {
 
 const ACTOR_LABEL: Record<InteractionTraceEvent['actor'], string> = {
   user: '用户',
-  planner: 'Planner',
+  planner: 'Manager',
   kernel: 'Kernel',
   runtime: 'Runtime',
   executor: 'Executor',

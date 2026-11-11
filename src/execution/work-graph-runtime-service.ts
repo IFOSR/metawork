@@ -3,7 +3,6 @@ import type { AuthorizedExecutorBinding } from '../core/authorized-executor-bind
 import type { Subtask, Task } from '../core/types.js';
 import type { WorkGraphSubtask as SubtaskProposal, WorkGraphProposal } from '../work-graph/types.js';
 import { buildCanonicalSubtaskIdentityMap } from '../work-graph/subtask-identity.js';
-import { isSharedReadCandidate } from '../work-graph/workspace-effect.js';
 import { SubtaskRepo } from '../storage/subtask-repo.js';
 import { TaskEventRepo } from '../storage/task-event-repo.js';
 import { TaskEventRecorder } from '../storage/task-event-recorder.js';
@@ -16,7 +15,7 @@ import {
 import { compileCompletionRequirements } from '../task/task-completion-requirements.js';
 
 export interface WorkGraphAuthorization {
-  decisionId: string;
+  operationId: string;
   generationId: string;
   revision: number;
   source: 'initial' | 'replan' | 'conflict_replan';
@@ -108,7 +107,7 @@ export class WorkGraphRuntimeService {
           revision: authorization.revision,
           generationId: authorization.generationId,
           configurationRevision: proposedGraph.configurationRevision,
-          authorizedDecisionId: authorization.decisionId,
+          authorizedOperationId: authorization.operationId,
           proposalSource: authorization.source,
           automaticReplan: authorization.automaticReplan,
           createdAt: now,
@@ -271,26 +270,8 @@ export class WorkGraphRuntimeService {
       graphRevision: authorization.revision,
       generationId: authorization.generationId,
       configurationRevision: workGraph.configurationRevision,
-      authorizedDecisionId: authorization.decisionId,
+      authorizedOperationId: authorization.operationId,
     });
-    // A text-only report reader that stays exclusive is legal but serializes
-    // independent roots. Record it so "this graph could have run in parallel"
-    // is a visible fact instead of an invisible omission.
-    const exclusiveReaders = subtasks.filter(subtask => (
-      isSharedReadCandidate(subtask, subtasks) && subtask.workspaceEffect !== 'read_only'
-    ));
-    if (exclusiveReaders.length > 0) {
-      this.taskEvents.record(taskId, null, 'work_graph_parallelism_not_used',
-        `${exclusiveReaders.length} 个纯文本报告子任务未声明 workspaceEffect=read_only，将独占串行执行`, {
-          subtaskIds: exclusiveReaders.map(subtask => subtask.id),
-          ...(exclusiveReaders.some(subtask => subtask.workspaceEffect === undefined)
-            ? { missingEffectSubtaskIds: exclusiveReaders
-              .filter(subtask => subtask.workspaceEffect === undefined).map(subtask => subtask.id) }
-            : {}),
-          graphRevision: authorization.revision,
-          generationId: authorization.generationId,
-        });
-    }
     return subtasks;
   }
 }
@@ -303,14 +284,7 @@ function subtaskToProposal(subtask: Subtask): SubtaskProposal {
     dependencies: subtask.dependencies,
     contextRefs: subtask.contextRefs,
     requiredCapabilities: subtask.requiredCapabilities as SubtaskProposal['requiredCapabilities'],
-    executorBindings: subtask.executorBindings.map(binding => ({
-      agentClassRef: binding.agentClassRef,
-      modelSelection: {
-        mode: 'proposed',
-        modelRef: binding.modelRef,
-        reason: 'recovered from Kernel-authorized binding',
-      },
-    })),
+
     deliveryKind: subtask.deliveryKind,
     workspaceEffect: subtask.workspaceEffect,
     fileOutputs: subtask.fileOutputs,

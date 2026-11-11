@@ -19,6 +19,7 @@ export interface WorkspaceBrowseResult {
   readonly parent: string | null;
   readonly crumbs: WorkspaceBrowseCrumb[];
   readonly entries: WorkspaceBrowseEntry[];
+  readonly nextCursor: string | null;
 }
 
 export interface WorkspaceDirectoryBrowserDeps {
@@ -47,7 +48,7 @@ export class WorkspaceDirectoryBrowser {
     this.maxEntries = deps.maxEntries ?? MAX_BROWSE_ENTRIES;
   }
 
-  async browse(requestedPath?: string): Promise<WorkspaceBrowseResult> {
+  async browse(requestedPath?: string, after?: string): Promise<WorkspaceBrowseResult> {
     const candidate = requestedPath?.trim() || this.defaultPath();
     if (!isAbsolute(candidate)) throw new Error('browse_path_invalid');
     const canonical = await resolveCanonical(candidate);
@@ -59,11 +60,12 @@ export class WorkspaceDirectoryBrowser {
     });
     // 上限在 realpath 之前应用，以便界定每请求的系统调用数量；
     // 因此实际返回条数可能少于 maxEntries。
-    const names = dirents
+    const remainingNames = dirents
       .filter(entry => entry.isDirectory() || entry.isSymbolicLink())
       .map(entry => entry.name)
       .sort(compareNames)
-      .slice(0, this.maxEntries);
+      .filter(name => after === undefined || compareNames(name, after) > 0);
+    const names = remainingNames.slice(0, this.maxEntries);
     const entries: WorkspaceBrowseEntry[] = [];
     for (const name of names) {
       const target = await resolveDirectory(resolve(canonical, name));
@@ -75,6 +77,9 @@ export class WorkspaceDirectoryBrowser {
       parent: canonical === dirname(canonical) ? null : dirname(canonical),
       crumbs: buildCrumbs(canonical),
       entries,
+      // Advance over inspected names, including broken links, so an empty
+      // page never hides later directories or loops on the same cursor.
+      nextCursor: remainingNames.length > names.length ? names.at(-1) ?? null : null,
     };
   }
 }

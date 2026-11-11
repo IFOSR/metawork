@@ -337,3 +337,29 @@ no AccountRuntime can produce a new turn during the deposition now comes from
 the earlier shutdown stages — closed client/Gateway admission and a completed
 drain — instead of from a disposed account registry. Each shutdown step is
 attempted even when an earlier step fails, and storage is always released.
+
+
+## Management export clarification — 2026-11-10
+
+PRD FR-M1 / AC-12 is implemented as an independent Web Memory tab; settings
+retain the switch and extraction-model selection. The user confirmed a versioned
+JSON package rather than an archive. Authenticated `GET /api/memory/export` reads
+the account bound by Server composition, never a client-selected account, through
+MemoryService and Memory Port. `format: "metawork-memory"`, `version: 1` includes
+export time, account ID, total and all managed L1/L2/L3 enabled/disabled entries:
+full content, background, revision, local/engine IDs, type, title, source,
+Workspace, timestamps and enabled state. An explicit field whitelist excludes
+credentials; L0 conversation bodies and import are outside this asset contract.
+Layer plus engine ID identifies an asset; layer-local IDs may overlap.
+
+One engine scan per MemoryService, 10,000 entries and 32 MiB compact UTF-8 JSON
+are the request limits. Serialized input is also bounded before constructing the
+package. Oversized output, changed totals, duplicate/missing pages or unavailable
+engines fail without a partial package; user cancellation, page unmount and
+connection closure abort pending work through Memory Port. The existing engine
+API has no transactional snapshot, so equal-count concurrent edits are not fully
+detectable and the package makes no point-in-time guarantee. Memory disabled
+still means no sidecar and no requests: browsing/export requires an operational
+runtime. No persistent body cache, additional engine or execution eligibility
+change is introduced. Local validation is recorded in the
+[review report](../plans/2026-11-10-metawork-full-code-review-report.md).

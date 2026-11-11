@@ -6,7 +6,7 @@ import { LOCAL_DEFAULT_ACCOUNT_ID } from '../account/account-id.js';
 import { resolveAccountPaths } from '../account/account-paths.js';
 import { createDatabase } from '../storage/database.js';
 import { ConversationTaskSchedulerRepo } from '../storage/conversation-task-scheduler-repo.js';
-import { KernelDispatchItemRepo } from '../storage/kernel-dispatch-item-repo.js';
+import { ControlDispatchItemRepo } from '../storage/dispatch-item-repo.js';
 import { WorkspacePublicationRepo } from '../storage/workspace-publication-repo.js';
 import { WorkUnitRepo } from '../storage/work-unit-repo.js';
 import { WorkUnitClaimService } from './work-unit-claim-service.js';
@@ -81,7 +81,7 @@ function reconcile(
   const scheduler = new ConversationTaskSchedulerRepo(db);
   const residueReader = new TaskResidueReader({
     db,
-    dispatchItemRepo: new KernelDispatchItemRepo(db),
+    dispatchItemRepo: new ControlDispatchItemRepo(db),
     publicationRepo: new WorkspacePublicationRepo(db),
     workUnitClaimService: new WorkUnitClaimService(new WorkUnitRepo(db)),
   });
@@ -97,7 +97,7 @@ function reconcile(
   //    `cancelling`, `uncertain` and backend-backed items are left alone: they
   //    are resolved along the durable Kernel path, never by a SQL shortcut.
   const closedDispatchItems = db.prepare(`
-    UPDATE kernel_dispatch_items AS item
+    UPDATE dispatch_items AS item
     SET status = 'cancelled',
         terminal_at = COALESCE(terminal_at, ?),
         cancel_requested_at = COALESCE(cancel_requested_at, ?),

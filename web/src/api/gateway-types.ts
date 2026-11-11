@@ -29,7 +29,8 @@ export type GatewayEventKind =
   | 'delivery_status'
   | 'command_completion'
   | 'task_view_snapshot'
-  | 'usage_billing_projection';
+  | 'token_usage_projection'
+  | 'quota_guidance_projection';
 
 export const GATEWAY_EVENT_KINDS: readonly GatewayEventKind[] = [
   'conversation_resource',
@@ -58,7 +59,8 @@ export const GATEWAY_EVENT_KINDS: readonly GatewayEventKind[] = [
   // ADR-0041 只读查询响应：Web 不消费，但识别为合法 kind（未知可选扩展允许忽略）。
   'command_completion',
   'task_view_snapshot',
-  'usage_billing_projection',
+  'token_usage_projection',
+  'quota_guidance_projection',
 ];
 
 export interface GatewayEventEnvelope {

@@ -117,6 +117,7 @@ export interface WorkspaceGitPort {
   bind(binding: ConversationExecutionBinding): ConversationExecutionBinding;
   change(binding: ConversationExecutionBinding, resultCommit: string, held?: boolean, proposedId?: string): string;
   enqueue(changeId: string, requestId: string): WorkspaceMergeJob;
+  deliveryAllowed(taskId: string): boolean;
   job(jobId: string): WorkspaceMergeJob | null;
   head(workspaceId: string): WorkspaceMergeJob | null;
   queue(workspaceId: string, afterSequence?: number): WorkspaceMergeJob[];

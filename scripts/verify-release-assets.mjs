@@ -100,10 +100,13 @@ export async function verifyReleaseAssets(directory, tag, options = {}) {
       || (previewRelease
         ? manifest.releaseId !== expectedReleaseId
         : manifest.releaseId !== `${expectedReleaseId}${revision.slice(0, 7)}`)
-      || manifest.planner?.revision !== revision
+      || (manifest.planner && manifest.planner.revision !== revision)
       || !['https://github.com/IFOSR/metawork', 'https://github.com/IFOSR/metawork.git']
         .includes(manifest.metawork.source)
-      || manifest.planner.source !== manifest.metawork.source
+      || (manifest.planner && manifest.planner.source !== manifest.metawork.source)
+      || (!manifest.planner && !manifest.pi)
+      || (manifest.pi && (!/^\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?$/u.test(manifest.pi.version)
+        || !/^[a-f0-9]{64}$/u.test(manifest.pi.lockSha256 ?? '')))
       || !manifest.memory
       || typeof manifest.memory.source !== 'string'
       || typeof manifest.memory.revision !== 'string'
@@ -114,11 +117,12 @@ export async function verifyReleaseAssets(directory, tag, options = {}) {
       releaseId: manifest.releaseId, revision, compatibility: manifest.compatibility,
       minimumInstallerVersion: manifest.minimumInstallerVersion,
       minimumNodeVersion: manifest.minimumNodeVersion,
+      ...(manifest.pi ? { piVersion: manifest.pi.version, piLockSha256: manifest.pi.lockSha256 } : {}),
     });
     identity ??= currentIdentity;
     if (identity !== currentIdentity) throw new Error(`${target}: mixed release set`);
     files.push({ name, byteSize: body.length, sha256: createHash('sha256').update(body).digest('hex') });
-    for (const kind of ['metawork', 'planner', 'memory']) {
+    for (const kind of ['metawork', ...(manifest.planner ? ['planner'] : []), ...(manifest.pi ? ['pi'] : []), 'memory']) {
       const artifact = manifest[kind];
       const expectedName = `${kind}-${manifest.releaseId}-${target}${target.startsWith('win32') ? '.zip' : '.tar.gz'}`;
       const expectedUrl = `https://github.com/IFOSR/metawork/releases/download/${tag}/${expectedName}`;

@@ -11,30 +11,34 @@ import { WorkGraphRuntimeService } from '../execution/work-graph-runtime-service
 import { SubtaskRepo } from '../storage/subtask-repo.js';
 import { TaskEventRepo } from '../storage/task-event-repo.js';
 import { WorkGraphRevisionRepo } from '../storage/work-graph-revision-repo.js';
-import { KernelEffectOutboxRepo } from '../storage/kernel-effect-outbox-repo.js';
+import { ControlEffectOutboxRepo } from '../storage/effect-outbox-repo.js';
 import { TaskExecutionEvidenceRepo } from '../execution/execution-evidence-port.js';
-import { KernelExecutorStatusRepo } from '../storage/kernel-executor-status-repo.js';
+import { ControlExecutorStatusRepo } from '../storage/executor-status-repo.js';
 import { ExecutorAttemptReceiptRepo } from '../storage/executor-attempt-receipt-repo.js';
 import { ConversationTaskSchedulerRepo } from '../storage/conversation-task-scheduler-repo.js';
+import { PlanProposalRepo } from '../storage/plan-proposal-repo.js';
+import { SqliteTurnCancellationStore } from '../storage/turn-cancellation-repo.js';
 
 export interface AccountRepositories {
+  readonly planProposalRepo: PlanProposalRepo;
+  readonly turnCancellationStore: SqliteTurnCancellationStore;
   readonly executionProgressService: ExecutionProgressService;
   readonly subtaskRepo: SubtaskRepo;
   readonly taskEventRepo: TaskEventRepo;
   readonly workGraphRevisionRepo: WorkGraphRevisionRepo;
-  readonly effectOutboxRepo: KernelEffectOutboxRepo;
+  readonly effectOutboxRepo: ControlEffectOutboxRepo;
   readonly taskExecutionEvidenceRepo: TaskExecutionEvidenceRepo;
   readonly attemptReceiptRepo: ExecutorAttemptReceiptRepo;
   readonly workGraphRuntimeService: WorkGraphRuntimeService;
-  readonly kernelExecutorStatusRepo: KernelExecutorStatusRepo;
+  readonly kernelExecutorStatusRepo: ControlExecutorStatusRepo;
   readonly conversationTaskSchedulerRepo: ConversationTaskSchedulerRepo;
 }
 
-export function buildAccountRepositories(db: Database.Database): AccountRepositories {
+export function buildAccountRepositories(db: Database.Database, accountId: string): AccountRepositories {
   const subtaskRepo = new SubtaskRepo(db);
   const taskEventRepo = new TaskEventRepo(db);
   const workGraphRevisionRepo = new WorkGraphRevisionRepo(db);
-  const effectOutboxRepo = new KernelEffectOutboxRepo(db);
+  const effectOutboxRepo = new ControlEffectOutboxRepo(db);
   const taskExecutionEvidenceRepo = new TaskExecutionEvidenceRepo(db);
   const attemptReceiptRepo = new ExecutorAttemptReceiptRepo(db);
   const workGraphRuntimeService = new WorkGraphRuntimeService(
@@ -45,6 +49,8 @@ export function buildAccountRepositories(db: Database.Database): AccountReposito
   );
 
   return {
+    planProposalRepo: new PlanProposalRepo(db),
+    turnCancellationStore: new SqliteTurnCancellationStore(db, accountId),
     executionProgressService: new ExecutionProgressService(db),
     subtaskRepo,
     taskEventRepo,
@@ -53,7 +59,7 @@ export function buildAccountRepositories(db: Database.Database): AccountReposito
     taskExecutionEvidenceRepo,
     attemptReceiptRepo,
     workGraphRuntimeService,
-    kernelExecutorStatusRepo: new KernelExecutorStatusRepo(db),
+    kernelExecutorStatusRepo: new ControlExecutorStatusRepo(db),
     conversationTaskSchedulerRepo: new ConversationTaskSchedulerRepo(db),
   };
 }

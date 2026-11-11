@@ -32,6 +32,11 @@ export interface MemoryRuntimeControllerOptions {
   sidecarReadyTimeoutMs?: number;
   logger?: (message: string) => void;
   now?: () => number;
+  /** Pinned configuration revision of the active snapshot for payer resolution. */
+  getConfigurationRevision?: () => string;
+  usageObserver?: (event: import('../metering/usage-normalizer.js').RawUsageEvent) => void;
+  resolveUsagePayer?: import('../metering/usage-payer.js').UsagePayerResolver;
+  queryLifecycle?: Pick<import('../metering/query-lifecycle.js').QueryUsageLifecycle, 'beginQuery'>;
 }
 
 export interface MemoryConfigurationApplyResult {
@@ -152,6 +157,12 @@ function buildOptions(
       : {}),
     ...(options.logger ? { logger: options.logger } : {}),
     ...(options.now ? { now: options.now } : {}),
+    ...(options.usageObserver ? { usageObserver: options.usageObserver } : {}),
+    ...(options.resolveUsagePayer ? { resolveUsagePayer: options.resolveUsagePayer } : {}),
+    ...(options.queryLifecycle ? { queryLifecycle: options.queryLifecycle } : {}),
+    ...(options.getConfigurationRevision
+      ? { configurationRevision: options.getConfigurationRevision() }
+      : {}),
   };
 }
 

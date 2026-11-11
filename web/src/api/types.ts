@@ -111,7 +111,7 @@ export interface WorkGraphPresentationProjection {
         providerDisplayName: string;
         modelDisplayName: string;
       };
-      estimatedCost?: number;
+
       estimatedLatencyMs?: number;
       rejectedCandidates: Array<{
         providerDisplayName: string;
@@ -202,7 +202,7 @@ export type AgentReadinessStatus = 'checking' | 'installed' | 'missing' | 'broke
 export interface AgentReadiness {
   path?: string;
   managed?: boolean;
-  agentId: 'pi-agent' | 'codex-cli';
+  agentId: 'pi-agent';
   required: boolean;
   displayName: string;
   status: AgentReadinessStatus;
@@ -243,17 +243,7 @@ export interface ConfigurationCompletionResult {
     capabilities: string[];
     capabilityState: ConfigurationCompletionFieldState;
     contextLimit?: number;
-    costInputPerMillion?: number;
-    costOutputPerMillion?: number;
-    pricing?: {
-      source: 'openrouter' | 'catalog' | 'user';
-      usdInputPerToken?: number;
-      usdOutputPerToken?: number;
-      exchangeRate: 7;
-      fetchedAt?: string;
-      catalogModelId?: string;
-      overrideReason?: string;
-    };
+
     latencyTier?: string;
     qualityTier?: string;
   }>;
@@ -289,28 +279,10 @@ export interface ProviderModelDiscoveryResult {
     description?: string;
     publicFacts?: ModelPublicFacts;
     contextLimit?: number;
-    costInputPerMillion?: number;
-    costOutputPerMillion?: number;
-    pricing?: {
-      source: 'openrouter' | 'catalog' | 'user';
-      usdInputPerToken?: number;
-      usdOutputPerToken?: number;
-      exchangeRate: 7;
-      fetchedAt?: string;
-      catalogModelId?: string;
-    };
+
   }>;
   prices?: Record<string, {
-    inputCnyPerMillion?: number;
-    outputCnyPerMillion?: number;
-    pricing?: {
-      source: 'openrouter' | 'catalog' | 'user';
-      usdInputPerToken?: number;
-      usdOutputPerToken?: number;
-      exchangeRate: 7;
-      fetchedAt?: string;
-      catalogModelId?: string;
-    };
+
   }>;
 }
 
@@ -411,9 +383,6 @@ import type {
   ArtifactProjection,
   ConversationWorkspaceProjection,
   ConversationTurnProjection,
-  QueryBillProjection,
-  TaskUsageSummary,
-  TurnBillUserView,
   WebSessionMetadata,
 } from './session-types';
 
@@ -523,13 +492,7 @@ export type ServerMessage =
     artifacts: ArtifactProjection[];
   }
   | { type: 'trace_snapshot'; trace: InteractionTrace }
-  | {
-    type: 'billing';
-    turnId: string;
-    queryBill: QueryBillProjection | null;
-    taskUsageSummary: TaskUsageSummary | null;
-    turnBilling?: TurnBillUserView | null;
-  }
+
   | { type: 'configuration_runtime_state'; state: ConfigurationRuntimeState }
   | {
       type: 'trace_delta';

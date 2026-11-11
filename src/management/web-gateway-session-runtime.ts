@@ -26,31 +26,7 @@ import {
   type AttachmentBudgetEntry,
 } from '../gateway/attachment-budget.js';
 import type { ArtifactProjection } from '../delivery/user-artifact-types.js';
-import type {
-  BillQueryService,
-  QueryBillProjection,
-  TaskUsageSummary,
-  TurnBillUserView,
-} from '../billing/bill-query-service.js';
-import type {
-  BillingRecordPageView,
-  BillingRecordView,
-  BillingStatusFilter,
-  BillingTaskView,
-  TaskBillingDetailView,
-} from './web-session-types.js';
 import { turnStatusFromTimeline } from './web-conversation-projector.js';
-
-function isSystemCommandTurn(turn: ConversationTurn): boolean {
-  return turn.interactionKind === 'system_command' || turn.userInput.trim().startsWith('/');
-}
-
-/** 账单页请求摘要：单行、截断，只作为展示摘要，不含原始 Prompt 全文。 */
-function singleLineSummary(userInput: string, limit = 80): string | null {
-  const collapsed = userInput.replace(/\s+/gu, ' ').trim();
-  if (!collapsed) return null;
-  return collapsed.length > limit ? `${collapsed.slice(0, limit)}…` : collapsed;
-}
 
 const WEB_WORKSPACE_PRINCIPAL = 'web:local-web-user';
 
@@ -81,31 +57,17 @@ export interface WebGatewaySessionRuntimeDeps {
   readonly accountId: string;
   readonly catalog: WebSessionRuntimeCatalog;
   readonly gateway: WebGatewayAdapter;
-  /** Canonical point read; billing must not depend on a former Web presentation writer. */
-  readonly readBillingTurnFacts?: (conversationId: string, turnId: string) => Promise<{
-    userInput: string;
-    traceEvents?: ConversationTurn['traceEvents'];
-  } | null>;
   /** 会话附件存储；提供后用户消息可携带附件并自动增强 Planner 提示。 */
   readonly attachments?: GatewayAttachmentStore;
   /** Read-only durable execution projection used to rebuild a turn after reconnect. */
   readonly projectExecutionTimeline?: (taskId: string) => ExecutionTimeline | null;
   readonly projectExecutionTimelines?: (taskIds: readonly string[]) => ReadonlyMap<string, ExecutionTimeline | null>;
-  /** Explicit account/Task authorization for billing detail projections. */
-  readonly authorizeTask?: (accountId: string, taskId: string) => boolean;
-  /** Account-scoped historical Task catalog used by the billing page. */
-  readonly listAccountTasks?: (accountId: string) => readonly {
-    id: string;
-    title: string;
-  }[];
   /** Read-only published artifact projection used to rebuild completed turns. */
   readonly projectTaskArtifacts?: (taskId: string) => ArtifactProjection[];
   readonly projectTasksArtifacts?: (taskIds: readonly string[]) => ReadonlyMap<string, ArtifactProjection[]>;
   /** Read-only durable Query -> Task association used to rebuild legacy Turns. */
   readonly resolveTaskIdForTurn?: (turnId: string) => string | null;
   readonly resolveTaskIdsForTurns?: (turnIds: readonly string[]) => ReadonlyMap<string, string | null>;
-  /** Read-only billing projection shared with the other Gateway surfaces. */
-  readonly billing?: BillQueryService;
   readonly normalizeTurnPresentation?: (turn: ConversationTurn) => ConversationTurn;
   readonly createId?: (prefix: string) => string;
   readonly now?: () => string;
@@ -321,151 +283,6 @@ class WebGatewayClientSession {
     const workspaceId = await this.deps.catalog.workspaceIdForConversation(conversationId);
     if (!workspaceId || workspaceId !== requestedWorkspaceId) throw new Error('conversation_denied');
     return conversationId;
-  }
-
-  async listBillingRecords(input: {
-    readonly cursor?: string;
-    readonly filter?: BillingStatusFilter;
-    readonly limit?: number;
-  } = {}): Promise<BillingRecordPageView> {
-    const billing = this.deps.billing;
-    if (!billing) return { items: [], nextCursor: null };
-    const limit = input.limit ?? 20;
-    const page = billing.listQueryBillsPage
-      ? billing.listQueryBillsPage({
-        accountId: this.deps.accountId,
-        limit,
-        ...(input.filter && input.filter !== 'all' ? { filter: input.filter } : {}),
-        ...(input.cursor ? { cursor: input.cursor } : {}),
-      })
-      : {
-        items: billing.listQueryBills({ accountId: this.deps.accountId, limit }),
-        nextCursor: null as string | null,
-      };
-    const filter = input.filter ?? 'all';
-    const filtered = page.items.filter(bill => filter === 'all' || bill.userStatus === filter);
-    const summaries = new Map<string, string | null>();
-    const taskTitles = new Map<string, string | null>();
-    const routing = new Map<string, {
-      providerDisplayName: string | null;
-      modelDisplayName: string | null;
-    }>();
-    const items: BillingRecordView[] = [];
-    for (const bill of filtered) {
-      items.push({
-        bill,
-        requestSummary: await this.billingRequestSummary(bill, summaries),
-        taskTitle: await this.billingTaskTitle(bill.taskId, taskTitles),
-        ...(await this.billingRoutingFacts(bill, routing)),
-      });
-    }
-    return { items, nextCursor: page.nextCursor };
-  }
-
-  async listBillingTasks(): Promise<readonly BillingTaskView[]> {
-    const billing = this.deps.billing;
-    const tasks = this.deps.listAccountTasks?.(this.deps.accountId) ?? [];
-    return tasks.map(task => ({
-      taskId: task.id,
-      taskTitle: task.title,
-      queryCount: billing?.listQueryBillsForTask(this.deps.accountId, task.id).length ?? 0,
-    }));
-  }
-
-  async getTaskBillingDetail(taskId: string): Promise<TaskBillingDetailView | null> {
-    const billing = this.deps.billing;
-    if (!billing) return null;
-    if (this.deps.authorizeTask) {
-      try {
-        if (!this.deps.authorizeTask(this.deps.accountId, taskId)) return null;
-      } catch {
-        return null;
-      }
-    }
-    const bills = billing.listQueryBillsForTask(this.deps.accountId, taskId);
-    if (!this.deps.authorizeTask && bills.length === 0) return null;
-    const summaries = new Map<string, string | null>();
-    const routing = new Map<string, {
-      providerDisplayName: string | null;
-      modelDisplayName: string | null;
-    }>();
-    const items: BillingRecordView[] = [];
-    for (const bill of bills) {
-      items.push({
-        bill,
-        requestSummary: await this.billingRequestSummary(bill, summaries),
-        taskTitle: null,
-        ...(await this.billingRoutingFacts(bill, routing)),
-      });
-    }
-    return {
-      taskId,
-      taskTitle: await this.billingTaskTitle(taskId, new Map()),
-      items,
-    };
-  }
-
-  private async billingRoutingFacts(
-    bill: QueryBillProjection,
-    cache: Map<string, { providerDisplayName: string | null; modelDisplayName: string | null }>,
-  ): Promise<{ providerDisplayName: string | null; modelDisplayName: string | null }> {
-    const key = `${bill.conversationId ?? ''}:${bill.turnId ?? ''}`;
-    const cached = cache.get(key);
-    if (cached) return cached;
-    let result: {
-      providerDisplayName: string | null;
-      modelDisplayName: string | null;
-    } = { providerDisplayName: null, modelDisplayName: null };
-    if (bill.conversationId && bill.turnId) {
-      const turn = await (this.deps.readBillingTurnFacts ?? this.deps.catalog.readTurn?.bind(this.deps.catalog))?.(bill.conversationId, bill.turnId).catch(() => null) ?? null;
-      for (const event of [...(turn?.traceEvents ?? [])].reverse()) {
-        const details = event.details as Record<string, unknown> | undefined;
-        if (!details) continue;
-        const provider = details.providerDisplayName;
-        const model = details.modelDisplayName;
-        if (typeof provider === 'string' || typeof model === 'string') {
-          result = {
-            providerDisplayName: typeof provider === 'string' ? provider : null,
-            modelDisplayName: typeof model === 'string' ? model : null,
-          };
-          break;
-        }
-      }
-    }
-    cache.set(key, result);
-    return result;
-  }
-
-  /** 请求摘要只取会话目录中的 userInput 单行截断；不含 Prompt 原文全文。 */
-  private async billingRequestSummary(
-    bill: QueryBillProjection,
-    cache: Map<string, string | null>,
-  ): Promise<string | null> {
-    const key = `${bill.conversationId ?? ''}:${bill.turnId ?? ''}`;
-    if (cache.has(key)) return cache.get(key) ?? null;
-    let summary: string | null = null;
-    if (bill.conversationId && bill.turnId) {
-      const turn = await (this.deps.readBillingTurnFacts ?? this.deps.catalog.readTurn?.bind(this.deps.catalog))?.(bill.conversationId, bill.turnId).catch(() => null) ?? null;
-      summary = turn ? singleLineSummary(turn.userInput) : null;
-    }
-    cache.set(key, summary);
-    return summary;
-  }
-
-  private async billingTaskTitle(
-    taskId: string | null,
-    cache: Map<string, string | null>,
-  ): Promise<string | null> {
-    if (!taskId) return null;
-    if (cache.has(taskId)) return cache.get(taskId) ?? null;
-    let title: string | null = null;
-    try {
-      title = this.deps.projectExecutionTimeline?.(taskId)?.title ?? null;
-    } catch {
-      title = null;
-    }
-    cache.set(taskId, title);
-    return title;
   }
 
   async createSession(): Promise<WebSessionCreationResult> {
@@ -777,9 +594,6 @@ class WebGatewayClientSession {
     const ids = [...latestTurnByTask.keys()];
     const timelines = this.deps.projectExecutionTimelines?.(ids);
     const artifacts = this.deps.projectTasksArtifacts?.(ids);
-    const billing = this.deps.billing?.forHistoryPage?.(
-      this.deps.accountId, record.turns.map(turn => turn.id), ids,
-    ) ?? this.deps.billing;
     for (const [taskId, index] of latestTurnByTask) {
       if (timelines) timelineByTask.set(taskId,
         timelineForTask(timelines.get(taskId), taskId)
@@ -799,7 +613,6 @@ class WebGatewayClientSession {
           hydrateDurableFacts,
           timelineByTask,
           artifactsByTask,
-          billing,
         );
       }),
     };
@@ -811,16 +624,11 @@ class WebGatewayClientSession {
     hydrateDurableFacts: boolean,
     timelineByTask: Map<string, ExecutionTimeline | null>,
     artifactsByTask: Map<string, ArtifactProjection[]>,
-    billingService: BillQueryService | undefined,
   ): import('./web-session-types.js').ConversationTurnProjection {
-    const billing = this.projectBillingForTurn(turn.id, taskId, isSystemCommandTurn(turn), false, billingService);
     if (!taskId) {
       return {
         ...structuredClone(turn),
         traceEvents: filterTraceEventsForTask(turn.traceEvents, null),
-        queryBill: billing.queryBill,
-        taskUsageSummary: billing.taskUsageSummary,
-        turnBilling: billing.turnBilling,
       };
     }
     if (!hydrateDurableFacts) {
@@ -830,9 +638,6 @@ class WebGatewayClientSession {
         taskId,
         traceEvents: filterTraceEventsForTask(turn.traceEvents, taskId),
         executionTimeline: executionTimeline ? structuredClone(executionTimeline) : null,
-        queryBill: billing.queryBill,
-        taskUsageSummary: billing.taskUsageSummary,
-        turnBilling: billing.turnBilling,
       };
     }
     if (!timelineByTask.has(taskId)) {
@@ -868,100 +673,6 @@ class WebGatewayClientSession {
       executionTimeline: executionTimeline ? structuredClone(executionTimeline) : null,
       artifactRefs,
       artifacts,
-      queryBill: billing.queryBill,
-      taskUsageSummary: billing.taskUsageSummary,
-      turnBilling: billing.turnBilling,
-    };
-  }
-
-  private projectBillingForTurn(
-    turnId: string,
-    taskId: string | null,
-    systemCommand = false,
-    liveTurn = false,
-    billing = this.deps.billing,
-  ): {
-    queryBill: QueryBillProjection | null;
-    taskUsageSummary: TaskUsageSummary | null;
-    turnBilling: TurnBillUserView | null;
-  } {
-    if (!billing) {
-      if (systemCommand) return { queryBill: null, taskUsageSummary: null, turnBilling: null };
-      const projectedAt = this.deps.now?.() ?? new Date().toISOString();
-      return {
-        queryBill: null,
-        taskUsageSummary: null,
-        turnBilling: {
-          turnId,
-          queryId: null,
-          conversationId: null,
-          taskId,
-          userStatus: 'unconfirmed',
-          headline: '费用暂时无法确认',
-          amountMicroCoin: null,
-          amountIsFinal: false,
-          diagnosticCode: 'missing_billing_projection',
-          diagnosticMessage: '账单事实存在，但页面投影暂时不可用',
-          observedUsageCount: 0,
-          missingCategories: [],
-          usageBreakdown: [],
-          stageBreakdown: [],
-          billId: null,
-          finalizedAt: null,
-          projectedAt,
-        },
-      };
-    }
-    // 系统命令 Turn 不产生账单卡（账单简化设计 §3.1）。
-    const queryBill = billing.getQueryBillForTurn(this.deps.accountId, turnId);
-    let turnBilling: TurnBillUserView | null = null;
-    if (!systemCommand) {
-      try {
-        turnBilling = billing.getTurnBillUserView(this.deps.accountId, turnId, {
-          liveFallback: liveTurn,
-        });
-      } catch {
-        // 投影失败也必须给用户明确原因，不得静默空白（账单简化设计 §5）。
-        turnBilling = {
-          turnId,
-          queryId: queryBill?.queryId ?? null,
-          conversationId: queryBill?.conversationId ?? null,
-          taskId,
-          userStatus: 'unconfirmed',
-          headline: '费用暂时无法确认',
-          amountMicroCoin: null,
-          amountIsFinal: false,
-          diagnosticCode: 'missing_billing_projection',
-          diagnosticMessage: '账单事实存在，但页面投影暂时不可用',
-          observedUsageCount: 0,
-          missingCategories: [],
-          usageBreakdown: [],
-          stageBreakdown: [],
-          billId: queryBill?.billId ?? null,
-          finalizedAt: null,
-          projectedAt: this.deps.now?.() ?? new Date().toISOString(),
-        };
-      }
-    } else {
-      // Legacy presentation records can misclassify a real AI Turn as a
-      // system command. A durable Query is stronger evidence than that
-      // presentation hint; retain its billing projection, while suppressing
-      // the card for commands that have no Query fact.
-      try {
-        const durableBilling = billing.getTurnBillUserView(this.deps.accountId, turnId, {
-          liveFallback: liveTurn,
-        });
-        if (durableBilling?.queryId) turnBilling = durableBilling;
-      } catch {
-        // A command without a durable Query remains intentionally silent.
-      }
-    }
-    return {
-      queryBill,
-      taskUsageSummary: taskId
-        ? billing.getTaskUsageSummaryForAccount(this.deps.accountId, taskId)
-        : null,
-      turnBilling,
     };
   }
 
@@ -1043,25 +754,6 @@ export class WebGatewaySessionRuntime {
 
   readBrowsableSession(clientId: string, sessionId: string, cursor?: string): Promise<WebSessionRecordProjection | null> {
     return this.client(clientId).readBrowsableSession(sessionId, cursor);
-  }
-
-  listBillingRecords(
-    clientId: string,
-    input: {
-      readonly cursor?: string;
-      readonly filter?: BillingStatusFilter;
-      readonly limit?: number;
-    } = {},
-  ): Promise<BillingRecordPageView> {
-    return this.client(clientId).listBillingRecords(input);
-  }
-
-  listBillingTasks(clientId: string): Promise<readonly BillingTaskView[]> {
-    return this.client(clientId).listBillingTasks();
-  }
-
-  getTaskBillingDetail(clientId: string, taskId: string): Promise<TaskBillingDetailView | null> {
-    return this.client(clientId).getTaskBillingDetail(taskId);
   }
 
   createSession(clientId: string): Promise<WebSessionCreationResult> {

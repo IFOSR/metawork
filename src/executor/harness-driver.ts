@@ -34,6 +34,9 @@ export interface HarnessUsageCounter {
 }
 
 export interface HarnessUsageEvent {
+  /** Adapter observation time, not a claimed Provider timestamp. */
+  readonly occurredAtUtc?: string;
+  readonly providerResponseId?: string | null;
   readonly sourceEventKey: string;
   readonly callId: string;
   readonly agentClassRef?: string | null;
@@ -93,7 +96,7 @@ export interface HarnessLaunchInput {
   /** Executor-owned affordances used to register the Harness tool surface. */
   executorAffordances?: readonly ExecutorAffordanceId[];
   requiredCapabilities?: readonly string[];
-  executionTarget?: 'host' | 'container';
+  executionTarget?: 'host';
 }
 
 export interface HarnessLaunchSpec {

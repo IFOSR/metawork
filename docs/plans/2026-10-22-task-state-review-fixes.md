@@ -3,7 +3,7 @@
 - 日期：2026-10-22。
 - 状态：F01–F15 的主要复现缺陷已修复，源码回归通过；完整安装/发布计划未关闭。
 - 源码修复日期：2026-10-22；关闭提交：无，当前工作区未提交，未安装、未发布。
-- 输入：[评审报告](2026-10-22-task-state-code-review.md)、[设计](2026-10-22-task-state-simple-design.md)、[实施方案](2026-10-22-task-state-implementation-plan.md)。
+- 输入：[评审报告](../archive/plans/2026-10-22-task-state-code-review.md)、[设计](../archive/plans/2026-10-22-task-state-simple-design.md)、[实施方案](../archive/plans/2026-10-22-task-state-implementation-plan.md)。
 - 基于已有未提交实施继续修改，未 stash/reset 或覆盖其他工作。下述结果替代原实施记录中的旧测试结论。
 
 ## 修复对应关系

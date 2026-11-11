@@ -5,6 +5,20 @@ AnyFusion release entries remain unchanged for auditability.
 
 The project follows [Semantic Versioning](https://semver.org/) for public releases.
 
+## [0.1.26] - 2026-11-06
+
+- Restore the Executor's extension tools. Pi's `--tools` flag is a global
+  allowlist that also covers extension-registered tools, so deriving it from the
+  Executor affordance projection removed `web_search`, `web_fetch`,
+  `evidence_*`, `result_reference_*` and the `pdf_*` tools from every Attempt
+  since 2026-10-28. Launching Attempts now use Pi's complete registry and
+  affordances only decide what gets materialized.
+- Dependent Subtasks can read authorized upstream results again through
+  `result_reference_get` instead of improvising shell scans for them.
+- The response-only completion correction entrypoint runs with no tools and no
+  durable session (`--no-session --no-tools`); its contract is one completion
+  trailer and no action.
+
 ## [0.1.25] - 2026-11-05
 
 - Uncertified results now wait for explicit acceptance or retry after completion

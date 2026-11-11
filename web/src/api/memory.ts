@@ -50,7 +50,7 @@ export interface MemoryStatusView {
   engineReady: boolean;
   ftsAvailable: boolean;
   modelName: string | null;
-  modelPricing: { costInputPerMillion?: number; costOutputPerMillion?: number } | null;
+
   selectableProviders: Array<{
     providerRef: string;
     displayName: string;
@@ -62,8 +62,7 @@ export interface MemoryStatusView {
       displayName: string;
       supportsStructuredOutput: boolean;
       enabled: boolean;
-      costInputPerMillion?: number;
-      costOutputPerMillion?: number;
+
     }>;
   }>;
 }
@@ -79,7 +78,17 @@ export interface MemoryAssetQuery {
 
 export interface MemoryAssetDetail extends MemoryAssetView { content: string }
 
+export interface MemoryPackage {
+  format: 'metawork-memory';
+  version: 1;
+  exportedAt: string;
+  accountId: string;
+  total: number;
+  items: Array<MemoryAssetDetail & { background: string | null; revision: string | null }>;
+}
+
 export interface MemoryApiClient {
+  exportAssets(signal?: AbortSignal): Promise<MemoryPackage>;
   status(signal?: AbortSignal): Promise<MemoryStatusView>;
   listAssets(input?: MemoryAssetQuery, signal?: AbortSignal): Promise<MemoryAssetListView>;
   getAsset(memoryId: string, signal?: AbortSignal): Promise<MemoryAssetDetail>;
@@ -108,6 +117,7 @@ export function memoryAssetViewState(view: MemoryAssetListView | null):
 
 export function createMemoryApiClient(request: (path: string, init?: RequestInit) => Promise<unknown>): MemoryApiClient {
   return {
+    exportAssets: signal => request('/api/memory/export', signal ? { signal } : undefined) as Promise<MemoryPackage>,
     status: signal => request('/api/memory/status', signal ? { signal } : undefined) as Promise<MemoryStatusView>,
     listAssets: (input = { limit: 50, offset: 0 }, signal) => {
       const params = new URLSearchParams({ limit: String(input.limit), offset: String(input.offset) });

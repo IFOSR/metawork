@@ -5,11 +5,11 @@
  * 程度”。两者都用于展示、影子统计和最终单的完整性声明，缺失绝不填零。
  */
 
-import type { BillingResource } from '../billing/pricing.js';
+import type { UsageResource } from './usage-resource.js';
 import type { UsageObservation, UsageQuality } from './contracts.js';
 
 export interface ExpectedUsageCategory {
-  readonly resource: BillingResource;
+  readonly resource: UsageResource;
   readonly metric: string;
 }
 

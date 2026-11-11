@@ -18,6 +18,17 @@ export interface MemoryFlushSchedulerOptions {
   intervalMs?: number;
   now?: () => number;
   logger?: (message: string) => void;
+  /**
+   * Extra bounded maintenance that must run on the same tick, for example
+   * draining the engine's model-call ledger into MetaWork metering. It must
+   * never throw: a metering failure cannot fail deposition.
+   */
+  onMaintenance?: () => Promise<void>;
+  /**
+   * Receives `null` after a clean tick and the failure text otherwise. Memory is
+   * optional: this only feeds a user-visible warning, never a turn failure.
+   */
+  onTickResult?: (error: string | null) => void;
 }
 
 export class MemoryFlushScheduler {
@@ -56,15 +67,29 @@ export class MemoryFlushScheduler {
   }
 
   /** One periodic pass. Never throws. */
+  /** Observes tick outcomes so the runtime can publish a degraded reason. */
+  private report(error: string | null): void {
+    try { this.options.onTickResult?.(error); } catch { /* observation only */ }
+  }
+
   async tick(): Promise<void> {
     if (this.tickWork) return this.tickWork;
     this.tickWork = (async () => {
       try {
+        try {
+          await this.options.onMaintenance?.();
+        } catch (error) {
+          // Independent of deposition: a usage-drain failure is logged and the
+          // next tick retries, because the engine keeps its own ledger.
+          this.logger(`memory maintenance tick failed: ${(error as Error).message}`);
+        }
         await this.options.service.flushPending({ accountId: this.options.accountId });
         this.lastError = null;
+        this.report(null);
       } catch (error) {
         this.lastError = (error as Error).message;
         this.logger(`memory flush scheduler tick failed: ${this.lastError}`);
+        this.report(this.lastError);
       } finally {
         this.lastRunAt = (this.options.now ?? Date.now)();
       }

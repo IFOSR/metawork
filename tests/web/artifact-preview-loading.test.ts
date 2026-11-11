@@ -17,6 +17,9 @@ describe('artifact preview loading', () => {
     vi.stubGlobal('fetch', fetchMock);
     expect(await new HttpClient().getArtifactPreview('ppt-id')).toEqual(result);
     expect(fetchMock).toHaveBeenCalledTimes(2);
+    // A previous 410 may already be cached by an older Server. Bypass it when
+    // publication is repaired instead of keeping the drawer unavailable.
+    expect(fetchMock.mock.calls.every(call => call[1]?.cache === 'no-store')).toBe(true);
   });
 
   it('opens an authorized PPT as file details without calling the unsupported preview endpoint', async () => {

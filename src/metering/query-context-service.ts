@@ -16,7 +16,6 @@ import type {
 } from './ports.js';
 
 export interface BeginQueryInput {
-  readonly externalAccountRef?: string | null;
   readonly accountId: string;
   readonly ingress: QueryIngress;
   readonly requestKey: string;
@@ -25,9 +24,6 @@ export interface BeginQueryInput {
   readonly requestId: string;
   readonly turnId?: string | null;
   readonly executionSegmentId?: string | null;
-  readonly priceBookVersion: string;
-  readonly feePolicyVersion: string;
-  readonly payerPolicyVersion: string;
   readonly acceptedAt: string;
 }
 
@@ -37,7 +33,7 @@ export type BeginQueryResult =
 
 export type BindTaskResult =
   | { readonly status: 'linked' | 'already_linked'; readonly link: QueryTaskLink }
-  | { readonly status: 'conflict'; readonly reason: 'different_cost_task' };
+  | { readonly status: 'conflict'; readonly reason: 'different_task' };
 
 export interface QueryContextServiceDeps {
   readonly store: QueryContextStore;
@@ -47,7 +43,7 @@ export interface QueryContextServiceDeps {
 export interface QueryContextService {
   beginQuery(input: BeginQueryInput): BeginQueryResult;
   /** 只在 Kernel 授权的应用事实上调用；重复调用幂等。 */
-  bindCostTask(input: {
+  bindTask(input: {
     readonly queryId: string;
     readonly taskId: string;
     readonly decisionId: string;
@@ -57,7 +53,7 @@ export interface QueryContextService {
   /** 恢复路径只读取持久事实，不读取“当前 Task”。 */
   resolveAttribution(queryId: string): {
     readonly queryId: string;
-    readonly costTaskId: string | null;
+    readonly taskId: string | null;
   };
 }
 
@@ -67,9 +63,6 @@ function validateBeginInput(input: BeginQueryInput): void {
     ['requestKey', input.requestKey],
     ['requestPayloadDigest', input.requestPayloadDigest],
     ['requestId', input.requestId],
-    ['priceBookVersion', input.priceBookVersion],
-    ['feePolicyVersion', input.feePolicyVersion],
-    ['payerPolicyVersion', input.payerPolicyVersion],
     ['acceptedAt', input.acceptedAt],
   ];
   for (const [label, value] of required) {
@@ -97,7 +90,6 @@ export function createQueryContextService(
         return { status: 'reused', context: existing };
       }
       const context: QueryUsageContext = Object.freeze({
-        externalAccountRef: input.externalAccountRef ?? null,
         queryId: deps.createQueryId(input),
         accountId: input.accountId,
         ingress: input.ingress,
@@ -107,39 +99,36 @@ export function createQueryContextService(
         requestId: input.requestId,
         turnId: input.turnId ?? null,
         executionSegmentId: input.executionSegmentId ?? null,
-        priceBookVersion: input.priceBookVersion,
-        feePolicyVersion: input.feePolicyVersion,
-        payerPolicyVersion: input.payerPolicyVersion,
         acceptedAt: input.acceptedAt,
       });
       deps.store.insert(context);
       return { status: 'created', context };
     },
 
-    bindCostTask(input) {
+    bindTask(input) {
       const existing = deps.store.findTaskLink(input.queryId);
       if (existing) {
-        return existing.costTaskId === input.taskId
+        return existing.taskId === input.taskId
           ? { status: 'already_linked', link: existing }
-          : { status: 'conflict', reason: 'different_cost_task' };
+          : { status: 'conflict', reason: 'different_task' };
       }
       const link: QueryTaskLink = Object.freeze({
         queryId: input.queryId,
-        costTaskId: input.taskId,
+        taskId: input.taskId,
         decisionId: input.decisionId,
         basis: input.basis,
         linkedAt: input.linkedAt,
       });
       const outcome = deps.store.linkTask(link);
       if (outcome === 'conflict') {
-        return { status: 'conflict', reason: 'different_cost_task' };
+        return { status: 'conflict', reason: 'different_task' };
       }
       return { status: outcome, link };
     },
 
     resolveAttribution(queryId) {
       const link = deps.store.findTaskLink(queryId);
-      return { queryId, costTaskId: link?.costTaskId ?? null };
+      return { queryId, taskId: link?.taskId ?? null };
     },
   };
 }

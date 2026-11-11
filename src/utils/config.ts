@@ -10,7 +10,7 @@ import { loadEnvFileIfExists } from './env-file.js';
 const DEFAULT_CONFIG: Config = {
   version: 1,
   executor: {
-    command: 'codex',
+    command: 'pi',
     timeout: 300,
     max_duration: 3600,
   },

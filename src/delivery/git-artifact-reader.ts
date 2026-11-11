@@ -1,12 +1,24 @@
 import { execFile, execFileSync, spawn } from 'node:child_process';
 import { promisify } from 'node:util';
-import { dirname, join } from 'node:path';
 import { createHash } from 'node:crypto';
-import { boundedPathSegment } from '../utils/bounded-path-segment.js';
 import type { ArtifactVersion } from '../storage/artifact-version-repo.js';
-import { assertGitPath, assertOid } from '../execution/workspace-git-service.js';
+import {
+  assertGitPath,
+  assertOid,
+  internalRootFromArtifactObjectRoot,
+  workspaceGitRepositoryPath,
+} from '../execution/workspace-git-service.js';
 
 const execFileAsync = promisify(execFile);
+
+/**
+ * The repository is derived from the single layout owner, never from a guessed
+ * neighbour directory: the artifact object root sits inside the workspace store,
+ * whose parent owns `workspace-git`.
+ */
+function workspaceRepository(objectRoot: string, workspaceId: string): string {
+  return workspaceGitRepositoryPath(internalRootFromArtifactObjectRoot(objectRoot), workspaceId);
+}
 
 /** The locator never supplies a filesystem root. Only the authenticated account's object root does. */
 export function readGitArtifact(version:ArtifactVersion,objectRoot:string,maxBytes=1024**3):Buffer {
@@ -14,7 +26,7 @@ export function readGitArtifact(version:ArtifactVersion,objectRoot:string,maxByt
   if(!commit||!path)throw new Error('git_artifact_reference_missing');
   assertOid(commit);assertGitPath(path);
   if(version.objectUri!==`git-object:${version.workspaceId}:${commit}:${encodeURIComponent(path)}`)throw new Error('git_artifact_locator_mismatch');
-  const repository=join(dirname(dirname(dirname(objectRoot))),'workspace-git',boundedPathSegment(version.workspaceId,{prefix:'w'}),'repository.git');
+  const repository=workspaceRepository(objectRoot,version.workspaceId);
   const env=Object.fromEntries(Object.entries(process.env).filter(([key])=>!key.startsWith('GIT_')));
   Object.assign(env,{GIT_CONFIG_NOSYSTEM:'1',GIT_CONFIG_GLOBAL:'/dev/null',GIT_CONFIG_SYSTEM:'/dev/null',GIT_TERMINAL_PROMPT:'0'});
   const git=(args:string[],limit=1024*1024)=>execFileSync('git',['-c','core.hooksPath=/dev/null','--git-dir',repository,...args],{env,timeout:120000,maxBuffer:limit,stdio:['ignore','pipe','pipe']});
@@ -40,7 +52,7 @@ export async function readGitArtifactAsync(version: ArtifactVersion, objectRoot:
   if (!commit || !path) throw new Error('git_artifact_reference_missing');
   assertOid(commit); assertGitPath(path);
   if (version.objectUri !== `git-object:${version.workspaceId}:${commit}:${encodeURIComponent(path)}`) throw new Error('git_artifact_locator_mismatch');
-  const repository = join(dirname(dirname(dirname(objectRoot))), 'workspace-git', boundedPathSegment(version.workspaceId, { prefix: 'w' }), 'repository.git');
+  const repository = workspaceRepository(objectRoot, version.workspaceId);
   const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith('GIT_')));
   Object.assign(env, { GIT_CONFIG_NOSYSTEM: '1', GIT_CONFIG_GLOBAL: '/dev/null', GIT_CONFIG_SYSTEM: '/dev/null', GIT_TERMINAL_PROMPT: '0' });
   const git = async (args: string[]): Promise<Buffer> => {

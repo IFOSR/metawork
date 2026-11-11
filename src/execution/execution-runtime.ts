@@ -11,7 +11,7 @@ import type { SubtaskExecutionContext } from './subtask-execution-context.js';
 import type { SubtaskResult } from './execution-aggregator.js';
 import type { ActiveExecutionControl } from './active-execution-control.js';
 import type { WorkGraphAcceptanceCriterion } from '../work-graph/index.js';
-import { kernelFailure, type KernelFailure } from '../core/kernel-failure.js';
+import { kernelFailure, type ControlFailure } from '../core/kernel-failure.js';
 import { authorizedExecutorBindingFingerprint, type AuthorizedExecutorBinding } from '../core/authorized-executor-binding.js';
 import type {
   RuntimeConfigurationView,
@@ -26,7 +26,8 @@ import { PERMISSION_PROFILE_IDS, type PermissionProfileId } from '../resource/in
 // Shared normalized result of running a task's work graph. Previously exported by
 // the retired core/execution-planning-service module; kept here on the live path.
 // Recovery strategy is not represented here: the Adapter emits a structured
-// KernelFailure and ControlKernel alone decides retry, fallback, replan or block.
+// ControlFailure is a fact; the Task Runtime control-loop policy alone decides
+// retry, fallback, replan or block.
 export interface ExecutionResult {
   taskId: string;
   executionId: string;
@@ -34,7 +35,7 @@ export interface ExecutionResult {
   executorName: string;
   output: string;
   error: string | null;
-  failure: KernelFailure | null;
+  failure: ControlFailure | null;
   artifacts: string[];
   subtaskResults: SubtaskResult[];
   durationMs: number;
@@ -54,7 +55,7 @@ export interface ExecutorRegistryDeps {
 
 export interface ExecutorRegistrationInspection {
   configured: boolean;
-  bindingSource: 'container' | 'local_cli' | 'unbound';
+  bindingSource: 'local_cli' | 'unbound';
   adapterName: string | null;
 }
 
@@ -119,11 +120,7 @@ export class ExecutorRegistry {
       && agentClass.permissionProfileRef
       && harness?.enabled,
     );
-    const bindingSource = harness?.transport === 'container'
-      ? 'container'
-      : harness?.transport === 'local-cli'
-        ? 'local_cli'
-        : 'unbound';
+    const bindingSource = harness?.transport === 'local-cli' ? 'local_cli' : 'unbound';
     return {
       configured,
       bindingSource: configured ? bindingSource : 'unbound',
@@ -133,7 +130,7 @@ export class ExecutorRegistry {
 
   async probe(
     binding: AuthorizedExecutorBinding,
-    previousFailure?: KernelFailure | null,
+    previousFailure?: ControlFailure | null,
   ): Promise<ExecutorProbeResult> {
     let adapter: ExecutorAdapter | null;
     try {
@@ -296,7 +293,7 @@ export class ExecutionRuntime implements ActiveExecutionControl {
 
   probeExecutor(
     binding: AuthorizedExecutorBinding,
-    previousFailure?: KernelFailure | null,
+    previousFailure?: ControlFailure | null,
   ): Promise<ExecutorProbeResult> {
     return this.registry.probe(binding, previousFailure);
   }

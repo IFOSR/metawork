@@ -547,7 +547,7 @@ export class ConversationGatewayRuntime {
           interactionTurnId: turnId,
           requestId: mailboxCommand.requestId,
           idempotencyKey: mailboxCommand.idempotencyKey,
-          billingIngress: origin?.surface === 'feishu' ? 'feishu'
+          usageIngress: origin?.surface === 'feishu' ? 'feishu'
             : origin?.surface === 'web' ? 'web' : 'tui',
           principalId: mailboxCommand.principalId,
           ...(mailboxCommand.command.kind === 'user_message'

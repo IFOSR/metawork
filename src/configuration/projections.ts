@@ -3,7 +3,7 @@ import { compileExecutorCapabilityProfile } from '../routing/executor-capability
 import { mergeKnownModelCapabilities } from './model-capability-catalog.js';
 import type {
   ConfigurationSnapshot,
-  KernelConfigurationView,
+  ControlConfigurationView,
   ModelPolicy,
   PermissionProfile,
   PlannerConfigurationView,
@@ -36,6 +36,7 @@ export function buildPlannerConfigurationView(
     .map(([id, model]) => ({
       id,
       providerRef: model.providerRef,
+      modelId: model.modelId,
       ...(model.description ? { description: model.description } : {}),
       ...(model.publicFacts ? { publicFacts: clonePublicFacts(model.publicFacts) } : {}),
       capabilities: mergeKnownModelCapabilities(model.modelId, model.capabilities),
@@ -45,12 +46,10 @@ export function buildPlannerConfigurationView(
         : undefined,
       region: snapshot.config.providers[model.providerRef]!.region,
       contextLimit: model.contextLimit,
-      costTier: model.costTier,
+
       latencyTier: model.latencyTier,
       qualityTier: model.qualityTier,
-      costInputPerMillion: model.costInputPerMillion,
-      costOutputPerMillion: model.costOutputPerMillion,
-      pricing: model.pricing ? { ...model.pricing } : undefined,
+
     }))
     .sort((left, right) => left.id.localeCompare(right.id));
   const planner = snapshot.config.agentClasses.planner;
@@ -88,9 +87,9 @@ export function buildPlannerConfigurationView(
   });
 }
 
-export function buildKernelConfigurationView(
+export function buildControlConfigurationView(
   snapshot: ConfigurationSnapshot,
-): KernelConfigurationView {
+): ControlConfigurationView {
   const executorCapabilityProfiles = new Map(Object.entries(snapshot.config.agentClasses)
     .filter(([, agentClass]) => agentClass.kind === 'executor' && agentClass.enabled)
     .map(([agentClassRef, agentClass]) => [
@@ -149,12 +148,10 @@ export function buildKernelConfigurationView(
         capabilities: mergeKnownModelCapabilities(model.modelId, model.capabilities),
         reasoning: model.reasoning,
         contextLimit: model.contextLimit,
-        costTier: model.costTier,
+
         latencyTier: model.latencyTier,
         qualityTier: model.qualityTier,
-        costInputPerMillion: model.costInputPerMillion,
-        costOutputPerMillion: model.costOutputPerMillion,
-        pricing: model.pricing ? { ...model.pricing } : undefined,
+
         enabled: model.enabled,
       }]),
   );
@@ -184,7 +181,7 @@ export function buildKernelConfigurationView(
     ...(snapshot.config.routing?.span ? {
       spanRouting: {
         enabled: snapshot.config.routing.span.enabled,
-        model: snapshot.config.routing.span.model,
+        ...(snapshot.config.routing.span.model ? { model: snapshot.config.routing.span.model } : {}),
         ...(snapshot.config.routing.span.providerRef
           ? { providerRef: snapshot.config.routing.span.providerRef } : {}),
         ...(snapshot.config.routing.span.modelRef

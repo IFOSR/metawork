@@ -1,7 +1,7 @@
 import { prepareStandardAgentConfiguration } from './standard-agent-configuration.js';
 import { prepareVerifiedModelCapabilities } from './model-capability-catalog.js';
 import {
-  buildKernelConfigurationView,
+  buildControlConfigurationView,
   buildPlannerConfigurationView,
   buildRuntimeConfigurationView,
 } from './projections.js';
@@ -13,7 +13,7 @@ import type { ConfigurationService } from './configuration-service.js';
 import type {
   AnyFusionConfigurationV2,
   ConfigurationSnapshot,
-  KernelConfigurationView,
+  ControlConfigurationView,
   PlannerConfigurationView,
   RuntimeConfigurationView,
 } from './types.js';
@@ -92,13 +92,13 @@ export interface ConfigurationRuntimeCoordinatorDeps {
   onActivated?: (input: {
     snapshot: ConfigurationSnapshot;
     planner: PlannerConfigurationView;
-    kernel: KernelConfigurationView;
+    kernel: ControlConfigurationView;
     runtime: RuntimeConfigurationView;
   }) => void | Promise<void>;
   onActivationFailed?: (input: {
     snapshot: ConfigurationSnapshot;
     planner: PlannerConfigurationView;
-    kernel: KernelConfigurationView;
+    kernel: ControlConfigurationView;
     runtime: RuntimeConfigurationView;
   }) => void | Promise<void>;
   /**
@@ -136,13 +136,13 @@ export class ConfigurationRuntimeCoordinator {
   private readonly listeners = new Set<(event: ConfigurationRuntimeEvent) => void>();
   private activeSnapshot: ConfigurationSnapshot;
   private plannerView: PlannerConfigurationView;
-  private kernelView: KernelConfigurationView;
+  private kernelView: ControlConfigurationView;
   private runtimeView: RuntimeConfigurationView;
 
   constructor(private readonly deps: ConfigurationRuntimeCoordinatorDeps) {
     this.activeSnapshot = deps.initialSnapshot;
     this.plannerView = buildPlannerConfigurationView(deps.initialSnapshot);
-    this.kernelView = buildKernelConfigurationView(deps.initialSnapshot);
+    this.kernelView = buildControlConfigurationView(deps.initialSnapshot);
     this.runtimeView = buildRuntimeConfigurationView(deps.initialSnapshot);
   }
 
@@ -154,7 +154,7 @@ export class ConfigurationRuntimeCoordinator {
     return this.plannerView;
   }
 
-  getKernelView(): KernelConfigurationView {
+  getControlView(): ControlConfigurationView {
     return this.kernelView;
   }
 
@@ -457,7 +457,7 @@ export class ConfigurationRuntimeCoordinator {
   private replaceLiveSnapshot(snapshot: ConfigurationSnapshot): void {
     this.activeSnapshot = snapshot;
     this.plannerView = buildPlannerConfigurationView(snapshot);
-    this.kernelView = buildKernelConfigurationView(snapshot);
+    this.kernelView = buildControlConfigurationView(snapshot);
     this.runtimeView = buildRuntimeConfigurationView(snapshot);
     // Consumers are notified by activate() after the live views are replaced.
   }

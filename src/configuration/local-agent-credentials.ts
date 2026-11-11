@@ -6,7 +6,6 @@ import { assertSecretReference, type SecretStore } from './secret-store.js';
 
 export interface LocalAgentCredentialImportInput {
   home?: string;
-  codexHomes?: readonly string[];
   piHomes?: readonly string[];
   plannerHomes?: readonly string[];
   environment?: NodeJS.ProcessEnv;
@@ -74,51 +73,24 @@ async function importCandidatesForProviders(
 async function readLocalAgentCredentialCandidates(
   input: {
     home?: string;
-    codexHomes?: readonly string[];
     piHomes?: readonly string[];
     plannerHomes?: readonly string[];
   },
   environment: NodeJS.ProcessEnv,
 ): Promise<CredentialCandidate[]> {
   const home = input.home ?? homedir();
-  const codexHomes = uniquePaths([
-    join(home, '.codex'),
-    ...(input.codexHomes ?? []),
-  ]);
   const piHomes = uniquePaths([
     join(home, '.pi'),
     ...(input.piHomes ?? []),
   ]);
   const plannerHomes = uniquePaths(input.plannerHomes ?? []);
   return [
-    ...(await Promise.all(codexHomes.map(path => readCodexCredentials(path, environment)))).flat(),
     ...(await Promise.all(piHomes.map(path => readPiCredentials(path, environment)))).flat(),
     ...(await Promise.all(plannerHomes.map(path => readModelCredentials(path, environment)))).flat(),
   ];
 }
 
-async function readCodexCredentials(
-  codexHome: string,
-  environment: NodeJS.ProcessEnv,
-): Promise<CredentialCandidate[]> {
-  const [auth, config] = await Promise.all([
-    readJson(join(codexHome, 'auth.json')),
-    readText(join(codexHome, 'config.toml')),
-  ]);
-  if (!config) return [];
 
-  const providerRef = matchValue(config, /^\s*model_provider\s*=\s*"([^"]+)"/mu);
-  const providerSection = providerRef
-    ? matchSection(config, `model_providers.${providerRef}`)
-    : '';
-  const baseUrl = matchValue(providerSection, /^\s*base_url\s*=\s*"([^"]+)"/mu);
-  const envKey = matchValue(providerSection, /^\s*env_key\s*=\s*"([^"]+)"/mu)
-    ?? 'OPENAI_API_KEY';
-  const environmentKey = environment[envKey]?.trim();
-  const authKey = auth && typeof auth[envKey] === 'string' ? auth[envKey].trim() : '';
-  const apiKey = environmentKey || authKey;
-  return apiKey ? [{ providerRef, baseUrl, apiKey }] : [];
-}
 
 async function readPiCredentials(
   piHome: string,
@@ -225,24 +197,9 @@ async function readJson(path: string): Promise<Record<string, unknown> | null> {
   }
 }
 
-function matchSection(text: string, sectionName: string): string {
-  const lines = text.split(/\r?\n/u);
-  const header = `[${sectionName}]`;
-  const start = lines.findIndex(line => line.trim() === header);
-  if (start < 0) return '';
 
-  const sectionLines: string[] = [];
-  for (const line of lines.slice(start + 1)) {
-    const trimmed = line.trim();
-    if (trimmed.startsWith('[') && trimmed.endsWith(']')) break;
-    sectionLines.push(line);
-  }
-  return sectionLines.join('\n');
-}
 
-function matchValue(text: string, pattern: RegExp): string | undefined {
-  return pattern.exec(text)?.[1]?.trim();
-}
+
 
 function isUsableCredential(value: string): boolean {
   return value.length > 0 && !value.startsWith('$');

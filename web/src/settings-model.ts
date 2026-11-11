@@ -29,21 +29,9 @@ export interface SettingsModelEntry {
   capabilities: string[];
   capabilityState: ConfigurationFieldState;
   contextLimit?: number;
-  costInputPerMillion?: number;
-  costOutputPerMillion?: number;
-  pricing?: {
-    source: 'openrouter' | 'catalog' | 'user';
-    usdInputPerToken?: number;
-    usdOutputPerToken?: number;
-    exchangeRate: 7;
-    fetchedAt?: string;
-    catalogModelId?: string;
-    overrideReason?: string;
-  };
   latencyTier?: string;
   qualityTier?: string;
   reasoning?: string;
-  costTier?: string;
   routingNotes?: {
     summary?: string;
     strengths?: string[];
@@ -56,7 +44,7 @@ export interface SettingsModelEntry {
 }
 
 export type RoutingMode = 'auto' | 'fixed';
-export type RoutingObjective = 'balanced' | 'quality' | 'cost' | 'latency';
+export type RoutingObjective = 'balanced' | 'quality' | 'latency';
 
 export interface AgentClassRoutingDraft {
   enabled?: boolean;
@@ -130,7 +118,6 @@ export interface AgentClassRoutingFacts {
 
 export const DEFAULT_AGENT_DISPLAY_NAMES: Readonly<Record<string, string>> = {
   'pi-agent': '智能体 1',
-  'codex-cli': '智能体 2',
 };
 
 export function resolveAgentDisplayName(
@@ -241,12 +228,9 @@ export function executorManualInputKey(
           capabilities: [...model.capabilities].sort(),
           routingNotes: model.routingNotes,
           contextLimit: model.contextLimit,
-          costInputPerMillion: model.costInputPerMillion,
-          costOutputPerMillion: model.costOutputPerMillion,
           latencyTier: model.latencyTier,
           qualityTier: model.qualityTier,
           reasoning: model.reasoning,
-          costTier: model.costTier,
           enabled: model.enabled,
         }
         : { ref, missing: true };
@@ -414,8 +398,7 @@ export function humanizeProviderRef(providerRef: string): string {
 
 export function humanizeAgentClassRef(agentClassRef: string): string {
   const names: Record<string, string> = {
-    planner: 'Planner',
-    'codex-cli': 'Code CLI',
+    planner: 'Manager',
     'pi-agent': 'Pi Agent',
     'deepseek-cli': 'DeepSeek CLI',
     'kimi-cli': 'Kimi CLI',
@@ -434,9 +417,7 @@ export function evaluateModelCompatibility(
   // Executor 兼容性由服务端投影的真实 driverId 决定，不按名字猜测；
   // 未知或不受支持的 Driver 失败关闭。
   if (facts.kind === 'executor') {
-    if (facts.driverId === 'codex-cli') {
-      required.add('gpt-family');
-    } else if (facts.driverId !== 'pi-cli') {
+    if (facts.driverId !== 'pi-cli') {
       return {
         eligible: false,
         requiredCapabilities: [],
@@ -481,8 +462,6 @@ export function mergeCompletedModelFacts(
     capabilities: string[];
     capabilityState: ConfigurationFieldState;
     contextLimit?: number;
-    costInputPerMillion?: number;
-    costOutputPerMillion?: number;
     latencyTier?: string;
     qualityTier?: string;
   },
@@ -492,12 +471,6 @@ export function mergeCompletedModelFacts(
     capabilities: completed.capabilities,
     capabilityState: completed.capabilityState,
     ...(completed.contextLimit !== undefined ? { contextLimit: completed.contextLimit } : {}),
-    ...(completed.costInputPerMillion !== undefined
-      ? { costInputPerMillion: completed.costInputPerMillion }
-      : {}),
-    ...(completed.costOutputPerMillion !== undefined
-      ? { costOutputPerMillion: completed.costOutputPerMillion }
-      : {}),
     ...(completed.latencyTier ? { latencyTier: completed.latencyTier } : {}),
     ...(completed.qualityTier ? { qualityTier: completed.qualityTier } : {}),
   };

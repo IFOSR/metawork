@@ -23,6 +23,7 @@ import type {
 import { safeHostEnvironment } from './harness-driver.js';
 import { buildExecutorContextPrompt } from './prompt-builder.js';
 import { readFileSync } from 'node:fs';
+import { kernelFailure } from '../core/kernel-failure.js';
 import {
   ToolStallFuse,
   TOOL_STALL_FACTS_FILE,
@@ -42,6 +43,7 @@ const DEFAULT_RESIDUAL_GRACE_MS = 1_000;
 
 export interface LocalCliChildProcessInput extends HarnessLaunchSpec {
   attemptId: string;
+  executionBinding?: ExecutorInput['executionBinding'];
   idleTimeoutMs?: number;
   onLine?: (
     line: string,
@@ -249,6 +251,7 @@ export class LocalCliExecutorAdapter implements ExecutorAdapter {
       const streamTracker = this.driver.createResultStreamTracker?.();
       const rawResult = await this.processRunner.run({
         attemptId: executionBinding.attemptId,
+        executionBinding,
         command: launch.command,
         args: [...launch.args],
         cwd: launch.cwd,
@@ -258,6 +261,11 @@ export class LocalCliExecutorAdapter implements ExecutorAdapter {
           ...runtimeHome.environment,
           ...launch.environment,
           ...scratchEnvironment,
+          METACLAW_ATTEMPT_ID: executionBinding.attemptId,
+          METACLAW_CAPABILITY_MCP_URL: executionBinding.capabilityBinding?.mcpUrl ?? '',
+          METACLAW_CAPABILITY_URL: executionBinding.capabilityBinding?.jsonUrl ?? '',
+          METACLAW_CAPABILITY_USE_URL: executionBinding.capabilityBinding?.useUrl ?? '',
+          METACLAW_CAPABILITY_TOKEN: executionBinding.capabilityBinding?.bearerToken ?? '',
           METACLAW_EVIDENCE_MCP_URL: input.context.evidenceTools.binding?.mcpUrl ?? '',
           METACLAW_EVIDENCE_JSON_URL: input.context.evidenceTools.binding?.jsonUrl ?? '',
           METACLAW_EVIDENCE_TOKEN: input.context.evidenceTools.binding?.bearerToken ?? '',
@@ -518,7 +526,8 @@ export class LocalCliExecutorAdapter implements ExecutorAdapter {
       const summary = result.detail?.trim() || `Harness driver is unavailable: ${this.driver.id}`;
       return {
         available: false,
-        failure: normalizeExecutorFailure(summary),
+        failure: kernelFailure({ kind: 'configuration', scope: 'agent_class',
+          code: 'executor_program_unavailable', summary }),
       };
     } catch (error) {
       const summary = error instanceof Error ? error.message : String(error);

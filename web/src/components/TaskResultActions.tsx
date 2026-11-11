@@ -39,7 +39,7 @@ export function TaskResultActions({ delivery, workspaceChanges }: {
 function sourceLabel(source: 'explicit_user' | 'planner' | 'fallback' | 'kernel_safety' | null): string {
   switch (source) {
     case 'explicit_user': return '用户明确要求';
-    case 'planner': return 'Planner 判断';
+    case 'planner': return 'Manager 判断';
     case 'fallback': return '系统默认规则';
     case 'kernel_safety': return 'Kernel 规则';
     default: return '未知来源';

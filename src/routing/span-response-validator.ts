@@ -1,4 +1,4 @@
-import { SPAN_MODEL, type SpanEvaluationRequest, type SpanUsage } from './span-routing-types.js';
+import type { SpanEvaluationRequest, SpanUsage } from './span-routing-types.js';
 
 export type SpanResponseValidationResult =
   | {
@@ -81,7 +81,7 @@ export function validateSpanDecisionsResponse(input: {
 
   return {
     ok: true,
-    resolvedModel: model === SPAN_MODEL ? SPAN_MODEL : model,
+    resolvedModel: model,
     probabilities,
     ...(usage ? { usage } : {}),
   };
@@ -94,7 +94,6 @@ function parseUsage(value: unknown): SpanUsage | undefined {
   for (const [fields, key] of [
     [['inputTokens', 'input_tokens'], 'inputTokens'],
     [['outputTokens', 'output_tokens'], 'outputTokens'],
-    [['cost'], 'cost'],
   ] as const) {
     const field = fields.find(candidate => record[candidate] !== undefined);
     if (!field) continue;

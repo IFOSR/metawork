@@ -131,6 +131,7 @@ export class WorkspaceGitRepo implements WorkspaceGitPort {
       }
       const change = this.db.prepare('SELECT * FROM task_workspace_changes WHERE change_id=?').get(changeId) as Row | undefined;
       if (!change) throw new Error('workspace_change_not_found');
+      if (!this.deliveryAllowed(change.task_id)) throw new Error('workspace_delivery_task_stopped');
       const root = this.db.prepare('SELECT next_sequence FROM workspace_git_roots WHERE workspace_id=?').get(change.workspace_id) as Row;
       const id=`merge_${randomUUID()}`;
       this.db.prepare('UPDATE workspace_git_roots SET next_sequence=next_sequence+1 WHERE workspace_id=?').run(change.workspace_id);
@@ -142,6 +143,10 @@ export class WorkspaceGitRepo implements WorkspaceGitPort {
   }
   job(jobId: string): WorkspaceMergeJob | null {
     const row=this.db.prepare('SELECT * FROM workspace_merge_jobs WHERE job_id=?').get(jobId) as Row | undefined; return row?fromJob(row):null;
+  }
+  deliveryAllowed(taskId: string): boolean {
+    const task = this.db.prepare('SELECT status FROM tasks WHERE id=?').get(taskId) as Row | undefined;
+    return !!task && !['cancelled', 'failed'].includes(task.status);
   }
   head(workspaceId: string): WorkspaceMergeJob | null {
     const row=this.db.prepare("SELECT * FROM workspace_merge_jobs WHERE workspace_id=? AND state NOT IN ('delivered','cancelled') ORDER BY sequence LIMIT 1").get(workspaceId) as Row | undefined; return row?fromJob(row):null;
@@ -209,7 +214,7 @@ export class WorkspaceGitRepo implements WorkspaceGitPort {
   stoppedOwners(workspaceId:string):Array<{conversationId:string;token:string;attemptId:string;taskId:string;generationId:string;access?:'read'|'write'}> {
     const current = this.db.prepare(`SELECT o.conversation_id,o.token,o.access_mode,d.attempt_id,d.task_id,d.generation_id
       FROM conversation_attempt_owners o JOIN conversation_git_worktrees w ON w.conversation_id=o.conversation_id
-      JOIN kernel_dispatch_items d ON d.attempt_id=o.attempt_id
+      JOIN dispatch_items d ON d.attempt_id=o.attempt_id
       LEFT JOIN attempt_sandboxes a ON a.attempt_id=o.attempt_id
       WHERE w.workspace_id=? AND ((a.cleanup_status='removed' AND a.status='removed')
         OR (a.attempt_id IS NULL AND d.status IN ('terminal','cancelled')))`).all(workspaceId) as Row[];

@@ -5,11 +5,11 @@ function asRecord(value: unknown): Record<string, unknown> {
 }
 
 /**
- * 常规保存（「保存并激活」）不修改 Planner：用当前运行中的 Planner 原样覆盖
- * 候选配置里的 Planner。
+ * 常规保存（「保存并激活」）不修改 Manager：用当前运行中的 Manager 原样覆盖
+ * 候选配置里的 Manager。
  *
  * 注意必须是「覆盖」而不是「删除」：若提交的配置里缺少 `agentClasses.planner`，
- * 服务端会把 Planner 结构的消失归类为进程级变更（restart_required），
+ * 服务端会把 Manager 结构的消失归类为进程级变更（restart_required），
  * 从而误报「需要重启服务后生效」。
  */
 export function keepActivePlanner(input: {
@@ -28,13 +28,13 @@ export function keepActivePlanner(input: {
 }
 
 /**
- * 从「完整候选配置」中提取 Planner 更新作用域：
+ * 从「完整候选配置」中提取 Manager 更新作用域：
  *
  * - 只应用 `agentClasses.planner`（连同它依赖的 Model 与 Provider）
- * - 其余 AgentClass、运行时策略、以及未被 Planner 引用的模型/Provider
+ * - 其余 AgentClass、运行时策略、以及未被 Manager 引用的模型/Provider
  *   均保持当前运行中配置不变
  *
- * 这样「更新 Planner」就不会顺带用尚未更新的 Planner 改写其它设置；
+ * 这样「更新 Manager」就不会顺带用尚未更新的 Manager 改写其它设置；
  * 其它设置仍由常规的「保存并激活」提交。
  */
 export function buildPlannerScopedConfiguration(input: {
@@ -42,12 +42,12 @@ export function buildPlannerScopedConfiguration(input: {
   activeConfig: Record<string, unknown>;
   /** 由草稿构建出的完整候选配置。 */
   candidateConfig: Record<string, unknown>;
-  /** 完整候选对应的密钥集合；只有 Planner 依赖的 Provider 会被保留。 */
+  /** 完整候选对应的密钥集合；只有 Manager 依赖的 Provider 会被保留。 */
   candidateSecrets?: Record<string, string>;
 }): { config: Record<string, unknown>; activationSecrets: Record<string, string> } {
   const plannerEntry = asRecord(asRecord(input.candidateConfig.agentClasses).planner);
   if (Object.keys(plannerEntry).length === 0) {
-    throw new Error('Planner 配置不可用');
+    throw new Error('Manager 配置不可用');
   }
   const policy = asRecord(plannerEntry.modelPolicy);
   const modelRefs: unknown[] = policy.mode === 'auto'

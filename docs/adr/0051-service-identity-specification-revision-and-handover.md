@@ -101,7 +101,7 @@ Schema 60 把 `repair_pending` 加入归一化操作结论。
 5. 发现的启动契约不声明端口与健康检查：Runtime 分配回环端口，仅在契约声明端口时
    传入 `HOST`/`PORT`，并把进程状态记录为 `running`（进程存活）。`running` 不等于
    `healthy`，公开视图的访问地址为空而不是伪造 URL。
-6. `kernel_dispatch_items.terminal` 仅表示该调度项不再占用调度容量。
+6. `dispatch_items.terminal` 仅表示该调度项不再占用调度容量。
    `terminal_disposition` 区分 `executed` 与 `not_started`（让位：资源分区冲突、
    Executor 不可用）。成功只由 `terminal_state = completed` 的 receipt 证明，投影
    不得由调度状态推断“已完成”，也不得由调度尝试时长推断执行耗时。

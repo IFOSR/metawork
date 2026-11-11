@@ -10,7 +10,6 @@ export function ConversationView({
   onOpenArtifact,
   onOpenSubtaskDetail,
   onOpenTrajectory,
-  onOpenBilling,
   onRetryDelivery,
   hasOlderHistory = false,
   historyLoading = false,
@@ -21,7 +20,6 @@ export function ConversationView({
   onOpenArtifact?: (artifact: ArtifactProjection) => void;
   onOpenSubtaskDetail?: (subtaskId: string, subtaskTitle: string) => void;
   onOpenTrajectory?: (turnId: string) => void;
-  onOpenBilling?: (turnId: string) => void;
   onRetryDelivery?: (turnId: string) => void;
   hasOlderHistory?: boolean;
   historyLoading?: boolean;
@@ -91,7 +89,7 @@ export function ConversationView({
       <div className="workspace-empty">
         <span>READY</span>
         <h2>从一个明确目标开始</h2>
-        <p>Planner、Kernel 与 Executor 的安全执行步骤会按发生顺序显示在这里。</p>
+        <p>规划、校验与执行步骤会按发生顺序显示在这里。</p>
       </div>
     );
   }
@@ -121,7 +119,7 @@ export function ConversationView({
           ) : undefined}
           onOpenArtifact={onOpenArtifact}
           onOpenTrajectory={onOpenTrajectory}
-          onOpenBilling={onOpenBilling}
+
           onRetryDelivery={onRetryDelivery}
         />
       ))}

@@ -158,6 +158,11 @@ export class MemorySidecar {
       env: buildSidecarEnvironment(this.options.env, this.options.environment ?? process.env),
       stdio: ['ignore', 'pipe', 'pipe'],
     });
+    // The sidecar is intentionally not allowed to stream unredacted memory or
+    // provider diagnostics into the Server log. Drain both pipes so a verbose
+    // extraction cannot block on a full OS pipe buffer.
+    child.stdout?.resume();
+    child.stderr?.resume();
     this.child = child;
     child.on('exit', (code, signal) => {
       this.child = null;

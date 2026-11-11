@@ -12,7 +12,7 @@ export function buildApplicationConfig(snapshot: ConfigurationSnapshot): Config 
   return {
     version: 2,
     executor: {
-      command: defaultExecutorCommand(snapshot) ?? 'codex',
+      command: defaultExecutorCommand(snapshot) ?? 'pi',
       timeout: Math.ceil((snapshot.config.runtimePolicy.executorIdleTimeoutMs ?? 300_000) / 1_000),
     },
     orchestration: {

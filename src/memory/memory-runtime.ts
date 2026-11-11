@@ -27,6 +27,7 @@ import { SqliteMemoryTurnSource } from '../storage/memory-turn-source.js';
 import { TaskExecutionEvidenceRepo } from '../execution/execution-evidence-port.js';
 import { MemoryEvidenceService } from './memory-evidence-service.js';
 import { MemoryFlushScheduler } from './memory-flush-scheduler.js';
+import { createMemoryUsageDrainer } from './memory-usage.js';
 import { MemorySanitizer } from './memory-sanitizer.js';
 import { MemoryService } from './memory-service.js';
 import { MemorySidecar } from './memory-sidecar.js';
@@ -57,6 +58,16 @@ export interface MemoryRuntimeOptions {
   sidecarReadyTimeoutMs?: number;
   logger?: (message: string) => void;
   now?: () => number;
+  /**
+   * Metring seam for the engine's own model calls (extraction/scene/persona).
+   * The engine owns that call site, so MetaWork records the tokens it drains
+   * from the authenticated usage route.
+   */
+  usageObserver?: (event: import('../metering/usage-normalizer.js').RawUsageEvent) => void;
+  resolveUsagePayer?: import('../metering/usage-payer.js').UsagePayerResolver;
+  queryLifecycle?: Pick<import('../metering/query-lifecycle.js').QueryUsageLifecycle, 'beginQuery'>;
+  /** Pinned configuration revision this runtime was built for. */
+  configurationRevision?: string;
 }
 
 export interface MemoryRuntimeStatus {
@@ -93,6 +104,9 @@ export const MEMORY_INSTALLATION_USER_KEY_SECRET_REFERENCE = 'file-secret:anyfus
 
 export class MemoryRuntime {
   private scheduler: MemoryFlushScheduler | null = null;
+  /** Last extraction failure; published as a degraded reason, never a blocker. */
+  private flushError: string | null = null;
+  private usageDrainer: (() => Promise<void>) | null = null;
   private sidecar: MemorySidecar | null = null;
   private stopping = false;
   private constructor(
@@ -143,7 +157,7 @@ export class MemoryRuntime {
     const userKey = await readSecret(
       options.secretStore, MEMORY_INSTALLATION_USER_KEY_SECRET_REFERENCE, undefined, 'user key',
     );
-    const kernelAuthToken = await resolveKernelAuthToken(options);
+    const kernelAuthToken = await resolveControlAuthToken(options);
 
     const baseUrl = `http://127.0.0.1:${policy.port}`;
     let sidecar: MemorySidecar | null = null;
@@ -251,21 +265,52 @@ export class MemoryRuntime {
 
   private attachScheduler(options: MemoryRuntimeOptions): void {
     if (!this.service) return;
+    const service = this.service;
+    const drainer = options.usageObserver
+      ? createMemoryUsageDrainer({
+        accountId: options.accountId,
+        drainUsage: () => service.drainEngineUsage(),
+        ...(options.queryLifecycle ? { queryLifecycle: options.queryLifecycle } : {}),
+        usageObserver: options.usageObserver,
+        ...(options.resolveUsagePayer ? { resolveUsagePayer: options.resolveUsagePayer } : {}),
+        configurationRevision: options.configurationRevision ?? 'unknown',
+        providerRef: this.policy.providerRef,
+        modelRef: this.policy.modelRef,
+        ...(options.now ? { now: () => new Date(options.now!()) } : {}),
+      })
+      : null;
+    this.usageDrainer = drainer ? async () => { await drainer.drain(); } : null;
     this.scheduler = new MemoryFlushScheduler({
-      service: this.service,
+      service,
       accountId: options.accountId,
       intervalMs: 60_000,
       ...(options.now ? { now: options.now } : {}),
+      ...(this.usageDrainer ? { onMaintenance: this.usageDrainer } : {}),
       logger: this.logger,
+      // An unusable extraction model (quota, bad model id) is a warning: memory
+      // degrades with a reason while planning and execution continue normally.
+      onTickResult: error => this.recordFlushOutcome(options.db, error),
     });
     this.scheduler.start();
   }
 
+  /** Persists the extraction outcome so `/api/memory/status` can warn. */
+  private recordFlushOutcome(db: Database.Database, error: string | null): void {
+    const next = error ? `memory_extraction_failed: ${error.slice(0, 200)}` : null;
+    if (next === this.flushError) return;
+    this.flushError = next;
+    this.recordRuntimeState(db);
+  }
+
   get status(): MemoryRuntimeStatus {
     const engineReady = this.sidecar?.status.healthy ?? Boolean(this.service);
+    const detail = this.flushError ?? this.detail;
+    const degradedByFlush = this.flushError !== null && this.service !== null;
     return {
-      mode: this.service ? 'enabled' : this.policy.mode === 'enabled' ? 'degraded' : this.policy.mode,
-      ...(this.detail ? { detail: this.detail } : {}),
+      mode: degradedByFlush
+        ? 'degraded'
+        : this.service ? 'enabled' : this.policy.mode === 'enabled' ? 'degraded' : this.policy.mode,
+      ...(detail ? { detail } : {}),
       engineReady,
       ftsAvailable: this.sidecar?.status.ftsAvailable ?? Boolean(this.service),
       providerRef: this.policy.providerRef,
@@ -467,6 +512,11 @@ export class MemoryRuntime {
     if (this.stopping) return;
     this.stopping = true;
     try {
+      // Final usage drain before the engine stops, so a call that just finished
+      // is not lost with the sidecar process.
+      await this.usageDrainer?.().catch(error => {
+        this.logger(`memory usage drain failed: ${(error as Error).message}`);
+      });
       await this.drain();
     } catch (error) {
       this.logger(`memory shutdown drain failed: ${(error as Error).message}`);
@@ -580,7 +630,7 @@ export function writeMemorySidecarConfig(input: {
  * the account SecretStore, so that a restart keeps the same gate without ever
  * writing it into the Server environment.
  */
-async function resolveKernelAuthToken(options: MemoryRuntimeOptions): Promise<string> {
+async function resolveControlAuthToken(options: MemoryRuntimeOptions): Promise<string> {
   const reference = MEMORY_KERNEL_AUTH_SECRET_REFERENCE;
   try {
     const existing = await options.secretStore.get(reference);

@@ -31,6 +31,19 @@ function run(command, args, cwd) {
   }
 }
 
+/** Files a patch creates, parsed from `new file mode` + `+++ b/<path>` pairs. */
+function patchAddedFiles(patchPath) {
+  const lines = readFileSync(patchPath, 'utf8').split('\n');
+  const added = [];
+  for (let index = 0; index < lines.length - 1; index += 1) {
+    if (!lines[index].startsWith('new file mode ')) continue;
+    const target = lines.slice(index + 1, index + 6)
+      .find(line => line.startsWith('+++ b/'));
+    if (target) added.push(target.slice('+++ b/'.length));
+  }
+  return added;
+}
+
 function capture(command, args, cwd) {
   const result = spawnSync(command, args, { cwd, encoding: 'utf8' });
   if (result.status !== 0) return '';
@@ -60,6 +73,14 @@ if (!head.startsWith(lock.revision)) {
 // CI build and a local rebuild produce the same packaged sidecar.
 const compatibilityPatch = join(repoRoot, 'memory', 'tdai-metawork-compat.patch');
 if (existsSync(compatibilityPatch)) {
+  // A reused checkout keeps its earlier patch application through a checkout of
+  // the same tree. Restore the pinned upstream content and drop the files the
+  // patch itself adds, so applying it is deterministic on every build.
+  run('git', ['-C', target, 'reset', '--quiet'], repoRoot);
+  run('git', ['-C', target, 'checkout', '--', '.'], repoRoot);
+  for (const added of patchAddedFiles(compatibilityPatch)) {
+    rmSync(join(target, added), { force: true });
+  }
   run('git', ['-C', target, 'apply', '--whitespace=nowarn', compatibilityPatch], repoRoot);
 }
 

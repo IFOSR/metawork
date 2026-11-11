@@ -1,20 +1,23 @@
-import type { KernelEvent } from '../kernel/control-kernel.js';
+import type { ControlEvent } from '../control/control-contracts.js';
 import type { AuthorizedExecutorBinding } from '../core/authorized-executor-binding.js';
-import type { KernelWorkflowStore } from '../kernel/kernel-workflow.js';
 import type { RetryWakeRepo, RetryWakeRecord } from '../storage/retry-wake-repo.js';
 
 export interface RetryWakeWorkerDeps {
   retryWakeRepo: RetryWakeRepo;
-  kernelWorkflowStore: Pick<KernelWorkflowStore, 'enqueue' | 'isDecisionApplied'>;
-  findSessionId(sourceDecisionId: string, taskId: string): string | null;
-  processTimer(event: Extract<KernelEvent, { type: 'timer_tick' }>, reason: string): Promise<void>;
+  /**
+   * Applies the continuation on the Task's own control loop. The producer is
+   * the wake row itself, so nothing is queued for another workflow to drain.
+   */
+  processTimer(event: Extract<ControlEvent, { type: 'timer_tick' }>, reason: string): Promise<void>;
   now(): string;
 }
 
 /**
- * Durable retry continuation delivery. The database row, rather than a
- * process-local timer, owns the wake. A fired row without an event is replayed
- * on the next pass, so a crash between the two writes cannot strand a Task.
+ * Durable retry continuation delivery. The database row — not a process-local
+ * timer and not the retired decision ledger — owns the wake. The row carries the
+ * Session and the authorized binding, so the worker applies the continuation
+ * directly. A `fired` row without an event is replayed on the next pass, which
+ * keeps a crash between the two writes from stranding a Task.
  */
 export class RetryWakeWorker {
   constructor(private readonly deps: RetryWakeWorkerDeps) {}
@@ -22,24 +25,17 @@ export class RetryWakeWorker {
   async run(now = this.deps.now()): Promise<number> {
     let delivered = 0;
     for (const candidate of this.deps.retryWakeRepo.listDueOrFiredWithoutTimer(now)) {
-      // The Wake is a continuation of the wait_for_retry Decision. Until the
-      // parent application is durably applied, delivering its Timer would let
-      // the continuation race a stale Kernel snapshot.
-      if (!this.deps.kernelWorkflowStore.isDecisionApplied(candidate.sourceDecisionId)) {
-        continue;
-      }
       const wake = candidate.status === 'armed'
         ? this.deps.retryWakeRepo.claimDueWake(candidate.wakeId, now, now)
         : candidate;
       if (!wake) continue;
-      if (!this.deps.kernelWorkflowStore.isDecisionApplied(wake.sourceDecisionId)) {
-        continue;
-      }
-      const sessionId = this.deps.findSessionId(wake.sourceDecisionId, wake.taskId);
-      if (!sessionId) {
+      if (!wake.sessionId) {
+        // The Session is part of the durable wake fact. A row without it cannot
+        // be delivered and must surface as an explicit recovery item.
         this.deps.retryWakeRepo.markRecoveryRequired(wake.wakeId, now);
         continue;
       }
+      const sessionId = wake.sessionId;
       const timerEventId = `retry_timer_${wake.wakeId}`;
       const marked = this.deps.retryWakeRepo.markFired(
         wake.wakeId,
@@ -49,7 +45,7 @@ export class RetryWakeWorker {
       if (!marked && !this.deps.retryWakeRepo.findByTimerEvent(timerEventId)) continue;
       const current = this.deps.retryWakeRepo.findById(wake.wakeId);
       if (!current || current.status !== 'fired') continue;
-      let event: Extract<KernelEvent, { type: 'timer_tick' }>;
+      let event: Extract<ControlEvent, { type: 'timer_tick' }>;
       try {
         event = timerEvent(current, timerEventId, sessionId, now);
       } catch {
@@ -57,7 +53,6 @@ export class RetryWakeWorker {
         continue;
       }
       try {
-        this.deps.kernelWorkflowStore.enqueue(event, now);
         await this.deps.processTimer(
           event,
           `Retry Wake ${current.wakeId} delivery`,
@@ -82,7 +77,7 @@ function timerEvent(
   id: string,
   sessionId: string,
   now: string,
-): Extract<KernelEvent, { type: 'timer_tick' }> {
+): Extract<ControlEvent, { type: 'timer_tick' }> {
   try {
     const binding = JSON.parse(wake.authorizedBindingJson) as AuthorizedExecutorBinding;
     if (!binding.agentClassRef || !binding.harnessRef || !binding.providerRef

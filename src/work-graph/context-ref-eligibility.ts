@@ -73,8 +73,7 @@ export function buildEligibleContextRefKeys(input: {
       continue;
     }
     if (ref.kind === 'task_resource') {
-      if (input.targetTask?.resources.includes(ref.locator)
-        || (!input.targetTask && input.userInput.includes(ref.locator))) {
+      if (input.targetTask?.resources.includes(ref.locator)) {
         eligible.add(contextRefKey(ref));
       }
       continue;

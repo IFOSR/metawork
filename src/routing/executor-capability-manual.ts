@@ -268,7 +268,7 @@ function renderModelProfile(
     if (model.contextLimit) lines.push(`  - 上下文上限：${model.contextLimit}`);
     lines.push(
       `  - 推理等级：${translateTier(model.reasoning)}；质量：${translateTier(model.qualityTier)}；`
-      + `延迟：${translateTier(model.latencyTier)}；成本：${translateTier(model.costTier)}`,
+      + `延迟：${translateTier(model.latencyTier)}`,
     );
   }
 

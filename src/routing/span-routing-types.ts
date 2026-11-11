@@ -3,7 +3,7 @@
  *
  * These types are pure data. Kernel imports them, but the external adapter that
  * performs the network call lives in `span-routing-advisor.ts` and is never
- * reachable from `ControlKernel`.
+ * reachable from the old Kernel.
  */
 
 export const SPAN_OBSERVATION_SCHEMA_VERSION = 1 as const;
@@ -14,7 +14,6 @@ export const SPAN_OBSERVATION_POLICY_VERSION = 'span-routing-v1' as const;
  * ranking on data produced under a different contract.
  */
 export const SPAN_QUESTION_VERSION = 'span-fit-v5' as const;
-export const SPAN_MODEL = 'inception/mercury-decide:free' as const;
 /** Canonical response contract for user-selected Chat Completions models. */
 
 /** Per-request and per-proposal limits (design §6). */
@@ -47,10 +46,14 @@ export type SpanSkipReason =
   | 'single_candidate'
   | 'no_eligible_candidate';
 
+/**
+ * Token-only decision-model usage (ADR-0055 D8). The local price chain is gone:
+ * billing happens in `official-server`, so an adapter must not carry a
+ * per-call money amount into MetaWork facts.
+ */
 export interface SpanUsage {
   inputTokens?: number;
   outputTokens?: number;
-  cost?: number;
 }
 
 export interface SpanRoutingCandidate {

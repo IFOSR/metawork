@@ -223,6 +223,14 @@ export class MemoryService {
    * Failures are contained per conversation: one bad conversation never stops
    * the others and never touches the conversation or execution path.
    */
+  /**
+   * Drain the engine's model-call ledger. Exposed on the service so the
+   * scheduler owns one periodic tick for both deposition and usage reporting.
+   */
+  async drainEngineUsage() {
+    return this.port.drainUsage ? await this.port.drainUsage() : [];
+  }
+
   async flushPending(input: { accountId: string }): Promise<MemoryFlushOutcome[]> {
     const now = this.now();
     const idle = this.cursors.listPendingCandidates({
@@ -436,35 +444,7 @@ export class MemoryService {
     layer?: MemoryLayer;
     enabled?: boolean;
   }): Promise<{ items: MemoryAsset[]; total: number; unfilteredTotal: number }> {
-    const scope = this.scopeFor(input.accountId);
-    const assets = new Map<string, MemoryAsset>();
-    let offset = 0;
-    // Read through the account-scoped port. No body cache or second search index.
-    for (;;) {
-      const page = await this.port.listAssets({ limit: 100, offset, includeDisabled: true }, scope);
-      const previousSize = assets.size;
-      for (const asset of page.items) {
-        const layer = asset.layer ?? 'l1';
-        const binding = this.bindings.findByTdaiMemoryId(asset.id, input.accountId, layer)
-          ?? this.bind({
-            accountId: input.accountId,
-            tdaiMemoryId: asset.id,
-            content: asset.content,
-            layer,
-            revision: asset.revision,
-            title: asset.title ?? asset.type,
-            source: asset.source,
-          });
-        assets.set(asset.id, {
-          ...asset, memoryId: binding.memoryId, enabled: binding.enabled,
-          workspaceId: binding.workspaceId, source: binding.source,
-          layer: binding.layer, revision: binding.tdaiRevision ?? asset.revision, title: binding.tdaiTitle || asset.title || asset.type,
-        });
-      }
-      offset += page.items.length;
-      if (offset >= page.total) break;
-      if (assets.size === previousSize) throw new Error('memory_asset_listing_incomplete');
-    }
+    const assets = await this.collectAssets({ accountId: input.accountId });
     const query = input.query?.trim().toLocaleLowerCase();
     const items = [...assets.values()].filter(asset =>
       (input.includeDisabled || asset.enabled)
@@ -479,6 +459,73 @@ export class MemoryService {
     };
   }
 
+  private exportInProgress = false;
+
+  /** Export every account asset; reject size limits, count drift and incomplete pages. This is not an engine snapshot. */
+  async exportAssets(input: { accountId: string; signal?: AbortSignal }): Promise<MemoryAsset[]> {
+    if (this.exportInProgress) throw new Error('memory_export_busy');
+    this.exportInProgress = true;
+    try {
+      const assets = await this.collectAssets({ ...input, maxEntries: 10_000, maxBytes: 32 * 1024 * 1024 });
+      return [...assets.values()];
+    } finally {
+      this.exportInProgress = false;
+    }
+  }
+
+  private async collectAssets(input: {
+    accountId: string; signal?: AbortSignal; maxEntries?: number; maxBytes?: number;
+  }): Promise<Map<string, MemoryAsset>> {
+    const scope = this.scopeFor(input.accountId);
+    const assets = new Map<string, MemoryAsset>();
+    let offset = 0;
+    // Read through the account-scoped port. No body cache or second search index.
+    let bytes = 0;
+    let expectedTotal: number | undefined;
+    for (;;) {
+      input.signal?.throwIfAborted();
+      const page = await this.port.listAssets({ limit: 100, offset, includeDisabled: true, ...(input.signal ? { signal: input.signal } : {}) }, scope);
+      input.signal?.throwIfAborted();
+      if (!Number.isSafeInteger(page.total) || page.total < 0) throw new Error('memory_asset_listing_incomplete');
+      if (input.maxEntries !== undefined && page.total > input.maxEntries) throw new Error('memory_export_too_large');
+      const previousSize = assets.size;
+      if (input.maxEntries !== undefined) {
+        expectedTotal ??= page.total;
+        if (expectedTotal !== page.total) throw new Error('memory_export_changed');
+      }
+      for (const asset of page.items) {
+        if (input.maxBytes !== undefined) {
+          bytes += Buffer.byteLength(JSON.stringify(asset), 'utf8');
+          if (bytes > input.maxBytes) throw new Error('memory_export_too_large');
+        }
+        const layer = asset.layer ?? 'l1';
+        const binding = this.bindings.findByTdaiMemoryId(asset.id, input.accountId, layer)
+          ?? this.bind({
+            accountId: input.accountId,
+            tdaiMemoryId: asset.id,
+            content: asset.content,
+            layer,
+            revision: asset.revision,
+            title: asset.title ?? asset.type,
+            source: asset.source,
+          });
+        assets.set(`${layer}:${asset.id}`, {
+          ...asset, memoryId: binding.memoryId, enabled: binding.enabled,
+          workspaceId: binding.workspaceId, source: binding.source,
+          layer: binding.layer, revision: binding.tdaiRevision ?? asset.revision, title: binding.tdaiTitle || asset.title || asset.type,
+        });
+      }
+      offset += page.items.length;
+      if (input.maxEntries !== undefined && assets.size > input.maxEntries) throw new Error('memory_export_too_large');
+      if (offset >= page.total) {
+        if (input.maxEntries !== undefined && (offset !== page.total || assets.size !== page.total)) throw new Error('memory_asset_listing_incomplete');
+        break;
+      }
+      if (assets.size === previousSize) throw new Error('memory_asset_listing_incomplete');
+    }
+    return assets;
+  }
+
   /** User management can read disabled assets; execution eligibility is unchanged. */
   async getAsset(input: { accountId: string; memoryId: string }): Promise<MemoryAsset | null> {
     const binding = this.bindings.findByMemoryId(input.memoryId, input.accountId);
@@ -488,7 +535,7 @@ export class MemoryService {
     // Management must not inherit the Executor's bounded materialization scan.
     for (;;) {
       const page = await this.port.listAssets({ limit: 100, offset, includeDisabled: true }, scope);
-      const asset = page.items.find(item => item.id === binding.tdaiMemoryId);
+      const asset = page.items.find(item => item.id === binding.tdaiMemoryId && (item.layer ?? 'l1') === binding.layer);
       if (asset) return {
         ...asset, memoryId: binding.memoryId, enabled: binding.enabled,
         workspaceId: binding.workspaceId, source: binding.source,

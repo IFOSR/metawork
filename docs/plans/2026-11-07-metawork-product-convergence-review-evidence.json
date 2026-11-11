@@ -1,0 +1,129 @@
+{
+  "reviewDate": "2026-11-07",
+  "head": "83c3f80029950e70957253f85cc5d1fb823c355a",
+  "scope": "HEAD plus existing working tree; not a release validation",
+  "environment": {
+    "node": "22.23.3",
+    "os": "Darwin",
+    "arch": "arm64"
+  },
+  "rootSuite": {
+    "command": "npm test -- --reporter=json --outputFile=/tmp/metawork-convergence-review-tests.json",
+    "success": false,
+    "passed": 4592,
+    "failed": 14,
+    "skippedOrPending": 40,
+    "total": 4646,
+    "files": 655,
+    "durationSeconds": 160.58,
+    "failures": [
+      {
+        "file": "tests/e2e/publication-delivery-recovery.test.ts",
+        "test": "Durable delivery end-to-end control loop preserves integrated output after real copy failure and resume without executing again",
+        "error": "TypeError: Cannot read properties of undefined (reading 'id')"
+      },
+      {
+        "file": "tests/e2e/publication-delivery-recovery.test.ts",
+        "test": "Durable delivery end-to-end control loop preserves integrated output after real copy failure and restart without executing again",
+        "error": "TypeError: Cannot read properties of undefined (reading 'id')"
+      },
+      {
+        "file": "tests/e2e/publication-delivery-recovery.test.ts",
+        "test": "Durable delivery end-to-end control loop preserves integrated output after real copy failure and copy_before_save without executing again",
+        "error": "TypeError: Cannot read properties of undefined (reading 'status')"
+      },
+      {
+        "file": "tests/e2e/publication-delivery-recovery.test.ts",
+        "test": "Durable delivery end-to-end control loop preserves integrated output after real copy failure and cancel without executing again",
+        "error": "TypeError: Cannot read properties of undefined (reading 'id')"
+      },
+      {
+        "file": "tests/e2e/task-result-service-acceptance.test.ts",
+        "test": "user acceptance through the real Session / Kernel / publication loop runs a real backend API smoke while the independent UI waits for user acceptance",
+        "error": "Assertion failure with structured runtime diagnostics; see review report."
+      },
+      {
+        "file": "tests/e2e/task-result-service-acceptance.test.ts",
+        "test": "user acceptance through the real Session / Kernel / publication loop accepts an uncertified result into the public directory without another Executor",
+        "error": "AssertionError: expected 'queued' to be 'succeeded' // Object.is equality"
+      },
+      {
+        "file": "tests/e2e/task-result-service-acceptance.test.ts",
+        "test": "user acceptance through the real Session / Kernel / publication loop modifies the explicitly selected project at its original relative root",
+        "error": "AssertionError: expected 'failed' to be 'succeeded' // Object.is equality"
+      },
+      {
+        "file": "tests/e2e/task-result-service-acceptance.test.ts",
+        "test": "user acceptance through the real Session / Kernel / publication loop launches a real published service and gates completion on health=true",
+        "error": "Error: 服务不存在"
+      },
+      {
+        "file": "tests/e2e/task-result-service-acceptance.test.ts",
+        "test": "user acceptance through the real Session / Kernel / publication loop launches a real published service and gates completion on health=false",
+        "error": "Error: 服务不存在"
+      },
+      {
+        "file": "tests/e2e/task-state-recovery-journeys.test.ts",
+        "test": "user result and service recovery journeys recovers a SIGKILL after acceptance commit from the disk database exactly once",
+        "error": "AssertionError: expected 'queued' to be 'succeeded' // Object.is equality"
+      },
+      {
+        "file": "tests/e2e/task-state-recovery-journeys.test.ts",
+        "test": "user result and service recovery journeys recovers acceptance after state commit but before result staging",
+        "error": "Assertion failure with structured runtime diagnostics; see review report."
+      },
+      {
+        "file": "tests/e2e/task-state-recovery-journeys.test.ts",
+        "test": "user result and service recovery journeys restarts a handed-over service without reviving its succeeded task",
+        "error": "AssertionError: expected 'failed' to be 'succeeded' // Object.is equality"
+      },
+      {
+        "file": "tests/e2e/task-state-recovery-journeys.test.ts",
+        "test": "user result and service recovery journeys reports port_in_use for an occupied required service port",
+        "error": "AssertionError: expected 'service_start_failed' to be 'port_in_use' // Object.is equality"
+      },
+      {
+        "file": "tests/e2e/task-state-recovery-journeys.test.ts",
+        "test": "user result and service recovery journeys waits for a slot and respects cancellation before staging (cancel: false)",
+        "error": "AssertionError: expected { n: +0 } to deeply equal { n: 1 }"
+      }
+    ]
+  },
+  "additionalChecks": {
+    "build": "passed (root build including Web)",
+    "desktopLint": "passed",
+    "desktopTests": {
+      "passed": 26,
+      "failed": 0,
+      "files": 10
+    },
+    "officialServerTests": {
+      "passed": 24,
+      "failed": 0
+    },
+    "rootLint": "passed (npm run lint, exit 0)"
+  },
+  "reviewProbes": {
+    "trailingSlashIntent": {
+      "plannerSchema": "accepted",
+      "workspaceAdmission": "rejected",
+      "temporaryTestRemoved": true
+    },
+    "sealedResultDelta": {
+      "fileBytesUnchanged": true,
+      "beforeSealChangedPaths": [
+        "answer.md"
+      ],
+      "afterSealChangedPaths": [],
+      "deltasEqual": false
+    }
+  },
+  "notExecuted": [
+    "Linux native suite",
+    "real provider paid model calls",
+    "clean-machine installation",
+    "three-client live acceptance",
+    "non-loopback live Server acceptance",
+    "exhaustive fault injection"
+  ]
+}

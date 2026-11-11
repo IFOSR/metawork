@@ -217,7 +217,7 @@ export function OfficialAccountPanel({ onStatus }: { onStatus: (status: Official
       {error && <p role="alert" className="official-error">{error}</p>}
       {message && <p role="status" className="official-message">{message}</p>}
       {status?.reason && <p className="official-note">{status.reason}</p>}
-      <footer>订阅包含软件使用权及合理额度的 MetaWork 内置 AI；Planner / Executor 的模型费用另计。退款请联系客服。使用内置 AI 时，仅当前操作所需文本及模型公开资料会发送至官方服务及其模型供应商；官方不记录输入正文，用量元数据保留 30 天。</footer>
+      <footer>订阅包含软件使用权及合理额度的 MetaWork 内置 AI；Manager / Executor 的模型费用另计。退款请联系客服。使用内置 AI 时，仅当前操作所需文本及模型公开资料会发送至官方服务及其模型供应商；官方不记录输入正文，用量元数据保留 30 天。</footer>
     </dialog>
     <dialog ref={payDialog} className="official-payment-dialog" aria-labelledby="official-payment-title" onClose={() => setPayment(null)}>
       {payment && <>

@@ -5,7 +5,7 @@ import { pipeline } from 'node:stream/promises';
 import { withWorkspaceGitLock } from './workspace-git-lock.js';
 import { execFile, spawn } from 'node:child_process';
 import { lstat, mkdir, readFile, readdir, readlink, realpath, rm, stat, writeFile } from 'node:fs/promises';
-import { dirname, isAbsolute, join, relative } from 'node:path';
+import { dirname, isAbsolute, join, relative, resolve } from 'node:path';
 import { boundedPathSegment } from '../utils/bounded-path-segment.js';
 import type { ConversationGitWorktree, GitTreeEntry, WorkspaceGitRoot } from '../workspace/workspace-git-contracts.js';
 export type { ConversationGitWorktree, WorkspaceGitRoot } from '../workspace/workspace-git-contracts.js';
@@ -29,13 +29,28 @@ export interface WorkspaceGitServiceOptions {
   maxTotalBytes?: number;
 }
 
+/**
+ * The one layout contract for the private Git store. `internalRoot` owns both the
+ * `workspace-git` repository tree and (one level down) the workspace store that
+ * holds `objects/sha256/artifacts`, so readers of pinned artifacts derive the
+ * repository from the same rule the writer uses instead of guessing paths.
+ */
+export function workspaceGitRepositoryPath(internalRoot: string, workspaceId: string): string {
+  return join(internalRoot, 'workspace-git', boundedPathSegment(workspaceId, { prefix: 'w' }), 'repository.git');
+}
+
+/** Inverse of the layout above: `<store>/objects/sha256/artifacts` → `internalRoot`. */
+export function internalRootFromArtifactObjectRoot(objectRoot: string): string {
+  return dirname(dirname(dirname(dirname(resolve(objectRoot)))));
+}
+
 /** Byte-preserving private Git. User repository config, filters and hooks never run. */
 export class WorkspaceGitService {
   constructor(private readonly options: WorkspaceGitServiceOptions) {}
 
   paths(workspaceId: string): Pick<WorkspaceGitRoot, 'repositoryPath' | 'integrationPath'> {
-    const root = join(this.options.internalRoot, 'workspace-git', boundedPathSegment(workspaceId, { prefix: 'w' }));
-    return { repositoryPath: join(root, 'repository.git'), integrationPath: join(root, 'integration') };
+    const repositoryPath = workspaceGitRepositoryPath(this.options.internalRoot, workspaceId);
+    return { repositoryPath, integrationPath: join(dirname(repositoryPath), 'integration') };
   }
 
   /** The user Workspace is deliberately outside the private repository. This
@@ -371,7 +386,6 @@ export class WorkspaceGitService {
     }
     return changes;
   }
-
 
   async treeWithEntries(repositoryPath: string, base: string, changes: Array<{ path: string; entry: GitTreeEntry | null }>): Promise<string> {
     const index = join(repositoryPath, `metawork-index-${randomUUID()}`);

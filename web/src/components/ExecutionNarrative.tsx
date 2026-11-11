@@ -10,7 +10,7 @@ const GROUPS: Array<{
   title: string;
   phases: InteractionTraceEvent['phase'][];
 }> = [
-  { title: 'Planner', phases: ['intake', 'planning'] },
+  { title: 'Manager', phases: ['intake', 'planning'] },
   { title: '授权与路由', phases: ['authorization', 'routing'] },
   { title: '执行', phases: ['execution'] },
   { title: '验证与交付', phases: ['verification', 'delivery'] },
@@ -83,7 +83,7 @@ export function ExecutionNarrative({ turn, titleBySubtask }: {
             </div>
             {stage?.proposal && (
               <div className="narrative-stage-fact">
-                <strong>Planner 已形成执行提案</strong>
+                <strong>Manager 已形成执行提案</strong>
                 <span>{stage.proposal.subtasks.length} 个子任务，{stage.proposal.dependencies.length} 条依赖</span>
               </div>
             )}

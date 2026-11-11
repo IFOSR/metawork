@@ -1,7 +1,6 @@
 import { readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { isDeepStrictEqual } from 'node:util';
-import { parse as parseToml } from 'smol-toml';
 import type { RuntimePrivateConfigurationBinding } from '../configuration/types.js';
 import { authorizedExecutorBindingFingerprint, type AuthorizedExecutorBinding } from '../core/authorized-executor-binding.js';
 
@@ -25,7 +24,7 @@ export async function verifyExecutorRuntimeHome(input: {
     throw new Error('Executor configuration manifest binding mismatch');
   }
   const expected = manifest.runtimeConfiguration;
-  if (driverId !== 'pi-cli' && driverId !== 'codex-cli') return;
+  if (driverId !== 'pi-cli') return;
   if (!expected) throw new Error('Executor effective configuration is missing');
   if (driverId === 'pi-cli') {
     const registry = record(await readJson('.pi/agent/models.json'));
@@ -37,17 +36,6 @@ export async function verifyExecutorRuntimeHome(input: {
     if (matches.length !== 1) throw new Error('Executor configuration mismatch: selected Model must exist exactly once');
     compare(matches[0], expected.model, 'selected Model');
     compare(await readJson('.pi/agent/settings.json'), expected.settings, 'execution settings');
-  } else {
-    let config: Record<string, unknown>;
-    try {
-      config = parseToml(await readFile(join(homePath, 'config.toml'), 'utf8'));
-    } catch {
-      throw new Error('Executor configuration could not be read: config.toml');
-    }
-    // The concrete model/provider are supplied by the authorized CLI arguments.
-    const { model_providers, model, model_provider, ...settings } = config;
-    compare(record(model_providers)[authorizedBinding.providerRef], expected.provider, 'selected Provider');
-    compare(settings, expected.settings, 'execution settings');
   }
 
   async function readJson(path: string): Promise<unknown> {

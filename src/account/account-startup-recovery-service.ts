@@ -1,3 +1,11 @@
+import {
+  evaluatePlanAdmission,
+  planAdmissionSnapshotFromControl,
+} from '../execution/plan-admission-entry.js';
+import type {
+  PlanAdmissionRequest,
+  PlanAdmissionResult,
+} from '../execution/plan-admission-policy.js';
 import { WorkspaceGitRecovery } from '../execution/workspace-git-recovery.js';
 import type Database from 'better-sqlite3';
 import { AttemptExecutionBackendReconciler } from '../execution/attempt-execution-backend-reconciler.js';
@@ -6,8 +14,8 @@ import type { TaskCompletionDeliveryInput } from '../delivery/verification-and-d
 import type { NotificationService } from '../notifications/types.js';
 import { SessionPersistenceService } from '../session/session-persistence-service.js';
 import { SessionPresentationService } from '../session/session-presentation-service.js';
-import type { KernelEvent } from '../kernel/control-kernel.js';
-import type { KernelDecision, KernelSnapshot } from '../kernel/control-kernel.js';
+import type { ControlEvent } from '../control/control-contracts.js';
+import type { ControlDecision, ControlSnapshot } from '../control/control-contracts.js';
 import type { PlanningAgent } from '../planning/planning-agent.js';
 import { PlanningContextBuilder } from '../planning/planning-context-builder.js';
 import {
@@ -17,31 +25,30 @@ import {
 import { RetryWakeWorker } from './retry-wake-worker.js';
 import { clearStaleCapacityBlocks } from './capacity-block-convergence.js';
 import type {
-  KernelConfigurationView,
+  ControlConfigurationView,
   PlannerConfigurationView,
 } from '../configuration/types.js';
-import type { KernelDispatchItemRecord } from '../storage/kernel-dispatch-item-repo.js';
+import type { ControlDispatchItemRecord } from '../storage/dispatch-item-repo.js';
 import type { AccountConversationExecutionBinder, ConversationExecutionBinding } from './account-conversation-execution-binder.js';
-import type { AccountKernelExecutionServices } from './account-kernel-execution-services.js';
-import type { AccountKernelServices } from './account-kernel-services.js';
+import type { AccountControlExecutionServices } from './account-control-execution-services.js';
+import type { AccountControlServices } from './account-control-services.js';
 import type { AccountRepositories } from './account-repositories.js';
 import type { AccountRuntimeExecutionServices } from './account-runtime-execution-services.js';
 import type { AccountTaskServices } from './account-task-services.js';
 import type { AccountWorkspaceServices } from './account-workspace-services.js';
 import type { AccountCoordinatorServices } from './account-coordinator-services.js';
-import type { AccountKernelCoordinator } from './account-kernel-coordinator.js';
+import type { AccountControlCoordinator } from './account-control-coordinator.js';
 import { buildEligibleContextRefKeys } from '../work-graph/index.js';
 import {
   inspectApplicationAgainstSources,
   isRetrySafeLegacySystemBindingReplan,
   legacySystemBindingRecoveryEvent,
   type ApplicationPostconditionFactSource,
-} from '../execution/kernel-application-recovery.js';
+} from '../execution/control-application-recovery.js';
 import {
   createSubtaskLifecyclePort,
   type SubtaskLifecyclePort,
 } from '../task/task-lifecycle-transition-port.js';
-import { reconcileUncertainCancellations } from '../execution/cancellation-reconciliation.js';
 import { TaskResidueReader } from '../execution/task-residue-reader.js';
 import { AttemptTerminalService } from '../execution/attempt-terminal-service.js';
 import type { QueuedTaskPayload } from '../storage/conversation-task-scheduler-repo.js';
@@ -49,7 +56,7 @@ import type { AuthorizedExecutorBinding } from '../core/authorized-executor-bind
 import type { QueryUsageLifecycle } from '../metering/query-lifecycle.js';
 import type { RecoveryReplan } from '../session/recovery-replanner.js';
 import type { ConfigurationSnapshot } from '../configuration/types.js';
-import { buildKernelConfigurationView, buildPlannerConfigurationView } from '../configuration/projections.js';
+import { buildControlConfigurationView, buildPlannerConfigurationView } from '../configuration/projections.js';
 import type { ConversationResultDelivery } from '../session/conversation-session.js';
 import type { ExecutionTraceAppendInput } from '../execution/execution-trace.js';
 
@@ -71,12 +78,6 @@ export class AccountStartupRecoveryService {
   private getRetryWakeWorker(): RetryWakeWorker {
     return this.retryWakeWorker ??= new RetryWakeWorker({
       retryWakeRepo: this.deps.runtimeExecutionServices.retryWakeRepo,
-      kernelWorkflowStore: this.deps.kernelServices.kernelWorkflowRepo,
-      findSessionId: (decisionId, taskId) => (
-        this.deps.kernelServices.kernelDecisionRepo.findById(decisionId)?.sessionId
-        ?? this.originForTask(taskId)
-        ?? null
-      ),
       processTimer: (event, reason) => this.withSystemBinding(event.sessionId, () => (
         this.deps.kernelExecutionServices.kernelExecutionRuntime.recoverRetryWake(event, reason)
       )),
@@ -91,17 +92,17 @@ export class AccountStartupRecoveryService {
     readonly recoveryReplan?: RecoveryReplan;
     readonly recoveryPlan?: PlanningAgent['plan'];
     readonly resolveConfigurationSnapshot?: (revisionId: string) => Promise<ConfigurationSnapshot>;
-    readonly kernelServices: AccountKernelServices;
+    readonly kernelServices: AccountControlServices;
     readonly repositories: AccountRepositories;
     readonly workspaceServices: AccountWorkspaceServices;
     readonly taskServices: AccountTaskServices;
     readonly taskStateAuthority: import('../task/task-state-authority.js').TaskStateAuthority;
     readonly coordinatorServices: AccountCoordinatorServices;
     readonly runtimeExecutionServices: AccountRuntimeExecutionServices;
-    readonly kernelExecutionServices: AccountKernelExecutionServices;
-    readonly kernelCoordinator: AccountKernelCoordinator;
+    readonly kernelExecutionServices: AccountControlExecutionServices;
+    readonly kernelCoordinator: AccountControlCoordinator;
     readonly plannerConfiguration: PlannerConfigurationView;
-    readonly kernelConfiguration: KernelConfigurationView;
+    readonly kernelConfiguration: ControlConfigurationView;
     readonly planningAgent: PlanningAgent;
     readonly binder: AccountConversationExecutionBinder;
     readonly notifier: NotificationService;
@@ -138,7 +139,7 @@ export class AccountStartupRecoveryService {
     try {
       this.deps.queryUsageLifecycle?.finalizeQueriesForTask(taskId, finalizedAt);
     } catch {
-      // Billing reconciliation is durable and must not turn Task completion
+      // Usage attribution is durable and must not turn Task completion
       // into an execution failure.
     }
     if (this.hasReleasableResidue(taskId, this.activeGenerationId(taskId))) {
@@ -259,11 +260,14 @@ export class AccountStartupRecoveryService {
 
   private async loadRecoveryConfigurations(): Promise<void> {
     if (!this.deps.resolveConfigurationSnapshot) return;
-    const revisions = this.deps.db.prepare(`
-      SELECT DISTINCT configuration_revision AS revision FROM kernel_events WHERE status IN ('pending', 'processing')
-      UNION SELECT configuration_revision AS revision FROM work_graph_revisions WHERE status = 'active'
+    const active = this.deps.db.prepare(`
+      SELECT DISTINCT configuration_revision AS revision FROM work_graph_revisions WHERE status = 'active'
     `).all() as Array<{ revision: string }>;
-    for (const { revision } of revisions) {
+    const revisions = new Set([
+      ...active.map(({ revision }) => revision),
+      ...this.deps.kernelServices.recoveryItems.listRecoveryConfigurationRevisions(),
+    ]);
+    for (const revision of revisions) {
       if (!revision || this.configurations.has(revision)) continue;
       const snapshot = await this.deps.resolveConfigurationSnapshot(revision);
       if (snapshot.revisionId !== revision) throw new Error('recovery configuration revision mismatch');
@@ -346,7 +350,7 @@ export class AccountStartupRecoveryService {
           `execution backend ${record.containerId} was reconciled during startup`,
           now,
         );
-        this.deps.kernelServices.kernelWorkflowRepo.enqueue({
+        await this.observeControlEvent({
           schemaVersion: 5,
           configurationRevision: dispatch.configurationRevision,
           type: 'sandbox_lost',
@@ -354,7 +358,7 @@ export class AccountStartupRecoveryService {
           correlationId: record.taskId,
           causationId: record.attemptId,
           occurredAt: now,
-          sessionId: this.originForDispatch(dispatch.decisionId),
+          sessionId: this.originForDispatch(dispatch.taskId),
           taskId: record.taskId,
           subtaskId: record.subtaskId,
           attemptId: record.attemptId,
@@ -366,25 +370,19 @@ export class AccountStartupRecoveryService {
           attemptKind: dispatch.attemptKind,
           sourceAttemptId: dispatch.sourceAttemptId,
           recoveryMode: dispatch.recoveryMode,
-        });
+        }, 'startup sandbox loss recovery');
       }
     }
 
     await this.recoverWorkspaceGit();
 
-    // §5.3.5: reconcile uncertain cancellation applications FIRST, so a
-    // re-applied cancellation becomes a durable cancelled Task before the
-    // recovery sweep below releases its Conversation slot.
-    const cancellationReconciliation = reconcileUncertainCancellations({
-      store: this.deps.kernelServices.kernelWorkflowRepo,
-      coordinator: this.deps.runtimeExecutionServices.cancellationCoordinator,
-      taskRuntimeService: this.deps.taskServices.taskRuntimeService,
-    });
-    void cancellationReconciliation;
+    // Cancellation is a synchronous Task Runtime fence: the fence row and the
+    // Task state change commit together, so only the asynchronous cleanup drain
+    // needs recovery here.
     await this.deps.runtimeExecutionServices.cancellationCoordinator.recover();
     this.deps.repositories.effectOutboxRepo.reconcileSending(now);
     await this.deliverPendingEffects(now);
-    await this.recoverKernelCoordinator();
+    await this.recoverControlCoordinator();
     await this.convergeRecovery(now);
 
     for (const taskId of recoveryTaskIds) {
@@ -397,7 +395,7 @@ export class AccountStartupRecoveryService {
         if (!dispatch) {
           throw new Error(`startup orphan has no authorized dispatch identity: ${workUnit.claimedAttemptId}`);
         }
-        const sessionId = this.originForDispatch(dispatch.decisionId);
+        const sessionId = this.originForDispatch(dispatch.taskId);
         await this.withSystemBinding(sessionId, async () => {
           if (!backendLossAttemptIds.has(workUnit.claimedAttemptId!)) {
             this.deps.runtimeExecutionServices.attemptRunner.landHeartbeatLost({
@@ -423,7 +421,7 @@ export class AccountStartupRecoveryService {
         });
       }
 
-      if (taskClaims.length === 0 && !this.deps.kernelServices.kernelWorkflowRepo.hasRecoverableWork(task.id)) {
+      if (taskClaims.length === 0 && !this.hasOwnedRecoverableWork(task.id)) {
         const subtasks = this.deps.repositories.subtaskRepo.listActiveByTask(task.id);
         const orphan = subtasks.find(subtask => subtask.status === 'running');
         if (orphan) {
@@ -445,15 +443,16 @@ export class AccountStartupRecoveryService {
             }
             if (currentTask?.status === 'running' || currentTask?.status === 'needs_action') continue;
           } else {
-            this.deps.kernelServices.kernelWorkflowRepo.enqueue(
+            await this.observeControlEvent(
               startupOrphanEvent({
-                sessionId: this.originForDispatch(dispatch.decisionId),
+                sessionId: this.originForDispatch(dispatch.taskId),
                 taskId: task.id,
                 subtaskId: orphan.id,
                 attemptId: dispatch.attemptId,
                 dispatch,
                 occurredAt: now,
               }),
+              'startup orphan dispatch recovery',
             );
           }
         }
@@ -473,14 +472,8 @@ export class AccountStartupRecoveryService {
    * converges.
    */
   private async convergeRecovery(now: string): Promise<boolean> {
-    const workflow = this.deps.kernelServices.kernelWorkflowRepo;
-    workflow.reconcileProcessing();
-    this.convergeTerminalTaskBilling(now);
-    const retriedTaskIds = [...new Set([
-      ...this.convergeUncertainApplications(now),
-      ...workflow.listPendingTaskIds('task_resume_requested'),
-    ])];
-    this.enqueueRetrySafeSystemBindingRecoveries(now);
+    this.convergeTerminalTaskUsage(now);
+    const retriedTaskIds = [...new Set(this.convergeUncertainApplications(now))];
     // Re-queuing an application is not convergence on its own: the same pass
     // must drain the Task so the retried Decision is actually re-applied and
     // the next verdict is observed (2026-09-25 review, bounded retry closure).
@@ -540,7 +533,7 @@ export class AccountStartupRecoveryService {
         const configurationRevision = this.deps.repositories.workGraphRevisionRepo
           .findActive(task.id)?.configurationRevision;
         if (sessionId && configurationRevision) {
-          changed += this.enqueueRetryWakeRecovery({
+          changed += await this.enqueueRetryWakeRecovery({
             taskId: task.id,
             sourceDecisionId: recoveryWake.sourceDecisionId,
             configurationRevision,
@@ -551,102 +544,44 @@ export class AccountStartupRecoveryService {
         }
         continue;
       }
-      const decision = this.deps.kernelServices.kernelDecisionRepo
-        .listByTask(task.id)
-        .slice()
-        .reverse()
-        .find(record => (
-          record.decision.action.type === 'wait_for_retry'
-          && this.deps.kernelServices.kernelWorkflowRepo.isDecisionApplied(record.id)
-        ));
-      const action = decision?.decision.action;
-      if (decision && action?.type === 'wait_for_retry') {
-        const subtask = this.deps.repositories.subtaskRepo.findById(action.subtaskId);
-        if (subtask) {
-          const activeGenerationId = this.activeGenerationId(task.id);
-          if (activeGenerationId && activeGenerationId !== subtask.generationId) {
-            const sessionId = decision.sessionId ?? this.originForTask(task.id);
-            const configurationRevision = decision.configurationRevision;
-            if (sessionId) {
-              const enqueued = this.enqueueRetryWakeRecovery({
-                taskId: task.id,
-                sourceDecisionId: decision.id,
-                sessionId,
-                configurationRevision,
-                reason: 'wait_for_retry targets a stale generation',
-                now,
-              });
-              changed += enqueued ? 1 : 0;
-            }
-            continue;
-          }
-          const generationId = activeGenerationId ?? subtask.generationId;
-          const armed = wakeRepo.arm({
-            wakeId: `retry_wake_${decision.id}`,
-            taskId: task.id,
-            subtaskId: action.subtaskId,
-            generationId,
-            sourceDecisionId: decision.id,
-            sourceAttemptId: action.sourceAttemptId,
-            configurationRevision: decision.configurationRevision,
-            bindingFingerprint: action.bindingFingerprint,
-            authorizedBindingJson: JSON.stringify(action.authorizedBinding),
-            resumeAt: action.resumeAt,
-            wakeKind: 'retry',
-            status: 'armed',
-            timerEventId: null,
-            consumedDecisionId: null,
-            createdAt: now,
-            updatedAt: now,
-          });
-          const persistedWake = wakeRepo.findByDecision(decision.id);
-          if (persistedWake?.status === 'armed' || persistedWake?.status === 'fired') {
-            changed += armed ? 1 : 0;
-            continue;
-          }
-          if (persistedWake?.status === 'consumed' || persistedWake?.status === 'superseded') {
-            const enqueued = this.enqueueRetryWakeRecovery({
-              taskId: task.id,
-              sourceDecisionId: decision.id,
-              sessionId: decision.sessionId ?? this.originForTask(task.id) ?? '',
-              configurationRevision: decision.configurationRevision,
-              reason: `wait_for_retry Wake is already ${persistedWake.status}`,
-              now,
-            });
-            changed += enqueued ? 1 : 0;
-            continue;
-          }
-        }
-      }
-      const sessionId = decision?.sessionId ?? this.originForTask(task.id);
-      const configurationRevision = decision?.configurationRevision
-        ?? this.deps.repositories.workGraphRevisionRepo.findActive(task.id)?.configurationRevision;
+      const sessionId = this.originForTask(task.id);
+      const configurationRevision = this.deps.repositories.workGraphRevisionRepo
+        .findActive(task.id)?.configurationRevision;
       if (!sessionId || !configurationRevision) continue;
-      this.enqueueRetryWakeRecovery({
+      // Nothing to rebuild: the wake row is the continuation fact. Without one the
+      // Task cannot resume on its own and must surface as a recovery item.
+      changed += await this.enqueueRetryWakeRecovery({
         taskId: task.id,
-        sourceDecisionId: decision?.id ?? task.id,
+        sourceDecisionId: task.id,
         configurationRevision,
         sessionId,
-        reason: 'kernel_retry blocker has no durable Retry Wake or reconstructable wait_for_retry Decision',
+        reason: 'kernel_retry blocker has no durable Retry Wake',
         now,
-      });
+      }) ? 1 : 0;
       await this.recoverTask(task.id, 'missing Retry Wake recovery observation');
-      changed += 1;
     }
     return changed;
   }
 
-  private enqueueRetryWakeRecovery(input: {
+  /** Owner facts that still owe work for this Task. */
+  private hasOwnedRecoverableWork(taskId: string): boolean {
+    if (this.deps.kernelServices.recoveryItems.countPending(taskId) > 0) return true;
+    if (this.deps.runtimeExecutionServices.retryWakeRepo.findBlockingByTask(taskId).length > 0) return true;
+    return this.deps.runtimeExecutionServices.dispatchItemRepo.listByTask(taskId)
+      .some(item => ['pending_launch', 'launching', 'running', 'cancelling', 'uncertain'].includes(item.status));
+  }
+
+  private async enqueueRetryWakeRecovery(input: {
     taskId: string;
     sourceDecisionId: string;
     configurationRevision: string;
     sessionId: string;
     reason: string;
     now: string;
-  }): boolean {
+  }): Promise<boolean> {
     if (!input.sessionId) return false;
     const recoveryId = `retry_wake_recovery_${input.taskId}`;
-    return this.deps.kernelServices.kernelWorkflowRepo.enqueue({
+    return this.observeControlEvent({
       schemaVersion: 5,
       configurationRevision: input.configurationRevision,
       type: 'recovery_required_observed',
@@ -658,25 +593,25 @@ export class AccountStartupRecoveryService {
       taskId: input.taskId,
       recoveryItemId: recoveryId,
       reason: input.reason,
-    });
+    }, 'retry wake recovery observation');
   }
 
   /**
-   * Billing finalization is a Task-terminal consequence, not a Conversation
+   * Usage finalization is a Task-terminal consequence, not a Conversation
    * slot consequence. A completed Task can already have released its slot
    * before the process dies, and older releases could also miss the terminal
    * callback entirely. Revisit every durable terminal Task on the same startup
-   * and periodic convergence pass; the billing lifecycle resolves its linked
+   * and periodic convergence pass; the Query usage lifecycle resolves its linked
    * Queries idempotently.
    */
-  private convergeTerminalTaskBilling(now: string): void {
+  private convergeTerminalTaskUsage(now: string): void {
     const terminalStatuses = new Set(['succeeded', 'failed', 'cancelled']);
     for (const task of this.deps.taskServices.taskRuntimeService.listTasks()) {
       if (!terminalStatuses.has(task.status)) continue;
       try {
         this.deps.queryUsageLifecycle?.finalizeQueriesForTask(task.id, now);
       } catch {
-        // Billing reconciliation is durable and must not reopen or fail a
+        // Usage attribution is durable and must not reopen or fail a
         // terminal Task; the next convergence pass retries it.
       }
     }
@@ -706,7 +641,7 @@ export class AccountStartupRecoveryService {
         ?? this.configurationRevisionForRecoveryItem(task.id, fact.recoveryItemId);
       const sessionId = this.originForTask(task.id);
       if (!configurationRevision || !sessionId) continue;
-      this.deps.kernelServices.kernelWorkflowRepo.enqueue({
+      await this.observeControlEvent({
         schemaVersion: 5,
         configurationRevision,
         type: 'recovery_required_observed',
@@ -718,7 +653,7 @@ export class AccountStartupRecoveryService {
         taskId: task.id,
         recoveryItemId: fact.recoveryItemId,
         reason: fact.reason,
-      });
+      }, 'account recovery_required convergence');
       signalled = true;
       await this.withSystemBinding(sessionId, () => (
         this.deps.kernelExecutionServices.kernelExecutionRuntime.recoverDue(
@@ -771,13 +706,13 @@ export class AccountStartupRecoveryService {
       }
     }
     const sources = this.recoveryFactSource();
-    const stuck = this.deps.kernelServices.kernelWorkflowRepo
-      .listUncertainApplications(undefined, taskId)
-      .filter(application => {
-        const inspection = inspectApplicationAgainstSources(application, sources);
+    const stuck = this.deps.kernelServices.recoveryItems
+      .listPending(taskId)
+      .filter(item => {
+        const inspection = inspectApplicationAgainstSources(item, sources);
         if (inspection.verdict === 'unresolved') return true;
         return inspection.verdict === 'retry_safe'
-          && application.applyAttempts >= MAX_UNSAFE_APPLICATION_RETRIES;
+          && item.applyAttempts >= MAX_UNSAFE_APPLICATION_RETRIES;
       })
       .at(-1);
     if (stuck) {
@@ -837,7 +772,7 @@ export class AccountStartupRecoveryService {
           WHERE d.publication_id = workspace_publications.id AND d.status <> 'failed' AND s.status = 'awaiting_integration'))
     `).all() as Array<{ task_id: string }>;
     for (const publication of publications) taskIds.add(publication.task_id);
-    const continuations = this.deps.db.prepare(`SELECT DISTINCT task_id FROM kernel_effect_outbox
+    const continuations = this.deps.db.prepare(`SELECT DISTINCT task_id FROM effect_outbox
       WHERE effect_type IN ('task_result_continuation', 'task_remaining_work')
         AND status <> 'sent'`).all() as Array<{ task_id: string }>;
     for (const continuation of continuations) taskIds.add(continuation.task_id);
@@ -874,15 +809,25 @@ export class AccountStartupRecoveryService {
       return false;
     }
     this.lastBlockedRecheckAt = nowMs;
-    const target = this.deps.kernelServices.kernelDecisionRepo
-      .listCurrentByAction('wait_for_capacity')[0];
-    if (!target?.taskId || !target.subtaskId || !target.sessionId) return false;
+    // A capacity wait is an owner fact: the Task carries a `kernel_capacity`
+    // blocker, and its ready Subtask is the one to re-dispatch.
+    const target = this.deps.taskServices.taskRuntimeService.listTasksByStatus('needs_action')
+      .flatMap(task => task.dependencies
+        .filter(dependency => dependency.type === 'kernel_capacity' && dependency.status === 'waiting')
+        .map(dependency => ({ task, dependency })))
+      .flatMap(({ task, dependency }) => {
+        const subtask = this.deps.repositories.subtaskRepo.listActiveByTask(task.id)
+          .find(item => item.status === 'ready');
+        const sessionId = this.originForTask(task.id);
+        return subtask && sessionId ? [{ task, dependency, subtask, sessionId }] : [];
+      })[0];
+    if (!target) return false;
     return this.withSystemBinding(target.sessionId, () => (
       this.deps.kernelExecutionServices.kernelExecutionRuntime.recheckCapacity({
-        taskId: target.taskId!,
-        subtaskId: target.subtaskId!,
-        blockedDecisionId: target.id,
-        blockedAt: target.createdAt,
+        taskId: target.task.id,
+        subtaskId: target.subtask.id,
+        blockedDecisionId: `capacity_wait:${target.task.id}:${target.dependency.createdAt}`,
+        blockedAt: target.dependency.createdAt,
         recheckAfterMs: this.deps.blockedRecheckIntervalMs,
         occurredAt: new Date(nowMs).toISOString(),
       })
@@ -899,10 +844,18 @@ export class AccountStartupRecoveryService {
       replanRepo: this.deps.runtimeExecutionServices.generationReplanRepo,
       planner: this.buildReplanPlannerPort(),
       findTask: taskId => this.deps.taskServices.taskRuntimeService.findTask(taskId),
+      // A client-less replan is admitted against the Task's own Workspace.
+      resolveTaskWorkspace: task => {
+        if (!task.workspaceId) return null;
+        const root = this.deps.workspaceServices.workspaceGitRepo.root(task.workspaceId);
+        if (!root) return null;
+        return { workspaceId: task.workspaceId, canonicalPath: root.userRoot };
+      },
       now: () => new Date().toISOString(),
     });
     try {
       const report = await worker.run();
+      await this.recoverControlCoordinator();
       return { claimed: report.claimed };
     } catch {
       // A worker failure must never take the account periodic review down; the
@@ -935,17 +888,27 @@ export class AccountStartupRecoveryService {
         this.deps.repositories.attemptReceiptRepo.listByTask(taskId)
       ),
       resolveTurnAttachmentIds: taskId => {
-        const decisions = this.deps.kernelServices.kernelDecisionRepo.listByTask(taskId);
-        const origin = decisions.find(record => record.eventType === 'plan_proposed');
-        if (!origin) return [];
-        const event = this.deps.kernelServices.kernelWorkflowRepo.findEvent(origin.eventId);
-        return event?.type === 'plan_proposed' ? [...(event.attachmentIds ?? [])] : [];
+        return [...(this.deps.repositories.planProposalRepo.findInitialForTask(taskId)?.request.attachmentIds ?? [])];
       },
-      findPersistedProposal: eventId => {
-        const event = this.deps.kernelServices.kernelWorkflowRepo.findEvent(eventId);
-        return event?.type === 'plan_proposed' ? event : null;
+      findActiveGraph: taskId => this.deps.repositories.workGraphRevisionRepo.findActive(taskId),
+      submitProposal: async ({ proposal }) => {
+        this.deps.repositories.planProposalRepo.assertAdmissionOpen(proposal.id);
+        const snapshot = this.buildCoordinatorSnapshot(
+          {
+            ...proposal,
+            schemaVersion: 5,
+            type: 'plan_proposed',
+            correlationId: proposal.proposal.id,
+            causationId: null,
+          } as unknown as Extract<ControlEvent, { type: 'plan_proposed' }>,
+        ) as unknown as Extract<ControlSnapshot, { type: 'plan_admission' }>;
+        const admission = evaluatePlanAdmission(
+          proposal,
+          planAdmissionSnapshotFromControl(snapshot),
+        );
+        this.deps.repositories.planProposalRepo.markForwarded(proposal.id, new Date().toISOString());
+        await this.applyAdmissionInOwnerBinding(proposal, admission);
       },
-      drainKernel: async () => { await this.recoverKernelCoordinator(); },
     };
   }
 
@@ -965,20 +928,51 @@ export class AccountStartupRecoveryService {
     ));
   }
 
-  private originForDispatch(decisionId: string): string {
-    const decision = this.deps.kernelServices.kernelDecisionRepo.findById(decisionId);
-    if (!decision?.sessionId) {
-      throw new Error(`startup recovery cannot resolve Conversation origin for decision ${decisionId}`);
+  private originForDispatch(taskId: string): string {
+    const sessionId = this.originForTask(taskId);
+    if (!sessionId) {
+      throw new Error(`startup recovery cannot resolve Conversation origin for Task ${taskId}`);
     }
-    return decision.sessionId;
+    return sessionId;
   }
 
+  /**
+   * The Task's owning Conversation is the durable origin, so recovery routing
+   * never depends on the retired decision ledger.
+   */
   private originForTask(taskId: string): string | null {
-    const decision = this.deps.kernelServices.kernelDecisionRepo.listByTask(taskId).at(-1);
-    return decision?.sessionId ?? null;
+    const task = this.deps.taskServices.taskRuntimeService.findTask(taskId);
+    return task?.ownerPlannerSessionId ?? task?.conversationId ?? null;
   }
 
-  private async recoverKernelCoordinator(): Promise<void> {
+  /**
+   * The producer applies its own observation. Startup recovery derives these
+   * facts from durable rows, so nothing needs to be queued for another workflow
+   * to drain; a failure to apply is retried by the next convergence pass.
+   */
+  private async observeControlEvent(
+    event: ControlEvent,
+    reason: string,
+  ): Promise<boolean> {
+    const taskId = event.taskId;
+    if (!taskId) return false;
+    const sessionId = 'sessionId' in event && typeof event.sessionId === 'string'
+      ? event.sessionId
+      : this.originForTask(taskId);
+    if (!sessionId) return false;
+    try {
+      await this.withSystemBinding(sessionId, () => (
+        this.deps.kernelExecutionServices.kernelExecutionRuntime.submitControlEvent(event, reason)
+      ));
+      return true;
+    } catch {
+      // The Task may have concluded or lost its generation between the fact and
+      // the application; the next pass re-derives it instead of failing startup.
+      return false;
+    }
+  }
+
+  private async recoverControlCoordinator(): Promise<void> {
     await this.deps.kernelCoordinator.recover({
       buildSnapshot: event => this.buildCoordinatorSnapshot(event),
       runtime: {
@@ -994,22 +988,22 @@ export class AccountStartupRecoveryService {
    * never stay uncertain forever while the Task remains `running`.
    */
   private convergeUncertainApplications(now: string): string[] {
-    const workflow = this.deps.kernelServices.kernelWorkflowRepo;
+    const recoveryItems = this.deps.kernelServices.recoveryItems;
     const sources = this.recoveryFactSource();
     const retriedTaskIds = new Set<string>();
-    for (const application of workflow.listUncertainApplications()) {
-      const inspection = inspectApplicationAgainstSources(application, sources);
+    for (const item of recoveryItems.listPending()) {
+      const inspection = inspectApplicationAgainstSources(item, sources);
       if (inspection.verdict === 'applied') {
-        workflow.resolveUncertainApplication(application.decisionId, 'applied', now);
+        recoveryItems.resolveRecoveryItem(item.id, 'assume_applied', now);
         continue;
       }
       // Bounded retry: after the declared budget the application stays
       // `uncertain` so it surfaces as explicit `recovery_required` instead of
       // oscillating forever between pending and uncertain.
       if (inspection.verdict === 'retry_safe'
-        && application.applyAttempts < MAX_UNSAFE_APPLICATION_RETRIES) {
-        workflow.resolveUncertainApplication(application.decisionId, 'retry', now);
-        const action = application.decision.action;
+        && item.applyAttempts < MAX_UNSAFE_APPLICATION_RETRIES) {
+        recoveryItems.resolveRecoveryItem(item.id, 'retry', now);
+        const action = item.decision.action;
         if ('taskId' in action && action.taskId) retriedTaskIds.add(action.taskId);
       }
     }
@@ -1063,10 +1057,9 @@ export class AccountStartupRecoveryService {
     taskId: string,
     recoveryItemId: string,
   ): string | null {
-    const application = this.deps.kernelServices.kernelWorkflowRepo
-      .findRecoveryItem(recoveryItemId);
-    if (application?.decision.configurationRevision) {
-      return application.decision.configurationRevision;
+    const item = this.deps.kernelServices.recoveryItems.findRecoveryItem(recoveryItemId);
+    if (item?.decision.configurationRevision) {
+      return item.decision.configurationRevision;
     }
     return this.deps.runtimeExecutionServices.generationReplanRepo
       .find(recoveryItemId)?.configurationRevision ?? null;
@@ -1098,8 +1091,7 @@ export class AccountStartupRecoveryService {
         .map(item => ({
           attemptId: item.attemptId,
           decisionId: item.decisionId,
-          causationId: this.deps.kernelServices.kernelDecisionRepo.findById(item.decisionId)
-            ?.causationId ?? null,
+          causationId: null,
           subtaskId: item.subtaskId,
           generationId: item.generationId,
           attemptKind: item.attemptKind,
@@ -1114,7 +1106,7 @@ export class AccountStartupRecoveryService {
           ? {
               revision: record.revision,
               generationId: record.generationId,
-              authorizedDecisionId: record.authorizedDecisionId,
+              authorizedOperationId: record.authorizedOperationId,
               status: record.status,
             }
           : null;
@@ -1265,43 +1257,11 @@ export class AccountStartupRecoveryService {
     }
   }
 
-  private enqueueRetrySafeSystemBindingRecoveries(now: string): void {
-    for (const task of this.deps.taskServices.taskRuntimeService.listTasks()) {
-      const activeRevision = this.deps.repositories.workGraphRevisionRepo.findActive(task.id);
-      if (!activeRevision) continue;
-      for (const application of this.deps.kernelServices.kernelWorkflowRepo.listRecoveryItems(task.id)) {
-        const action = application.decision.action;
-        if (action.type !== 'authorize_task_plan') continue;
-        const request = this.deps.runtimeExecutionServices.generationReplanRepo.findByGeneration(
-          task.id,
-          action.generationId,
-          activeRevision.revision,
-        );
-        if (!isRetrySafeLegacySystemBindingReplan({
-          taskId: task.id,
-          application,
-          activeRevision,
-          replanRequest: request,
-        })) continue;
-        const decision = this.deps.kernelServices.kernelDecisionRepo.findById(application.decisionId);
-        if (!decision?.sessionId) continue;
-        this.deps.kernelServices.kernelWorkflowRepo.enqueue(
-          legacySystemBindingRecoveryEvent({
-            taskId: task.id,
-            application,
-            sessionId: decision.sessionId,
-            occurredAt: now,
-          }),
-        );
-      }
-    }
-  }
-
-  private buildCoordinatorSnapshot(event: KernelEvent): KernelSnapshot {
+  private buildCoordinatorSnapshot(event: ControlEvent): ControlSnapshot {
     if (event.type === 'plan_proposed') {
       const pinned = this.configurations.get(event.configurationRevision);
       const plannerConfiguration = pinned ? buildPlannerConfigurationView(pinned) : this.deps.plannerConfiguration;
-      const kernelConfiguration = pinned ? buildKernelConfigurationView(pinned) : this.deps.kernelConfiguration;
+      const kernelConfiguration = pinned ? buildControlConfigurationView(pinned) : this.deps.kernelConfiguration;
       if (plannerConfiguration.revisionId !== event.configurationRevision
         || kernelConfiguration.revisionId !== event.configurationRevision) {
         throw new Error('recovery configuration revision unavailable');
@@ -1370,7 +1330,7 @@ export class AccountStartupRecoveryService {
       const task = event.taskId
         ? this.deps.taskServices.taskRuntimeService.findTask(event.taskId)
         : null;
-      const application = this.deps.kernelServices.kernelWorkflowRepo
+      const application = this.deps.kernelServices.recoveryItems
         .findRecoveryItem(event.recoveryItemId);
       const effect = this.deps.repositories.effectOutboxRepo.find(event.recoveryItemId);
       return {
@@ -1397,13 +1357,13 @@ export class AccountStartupRecoveryService {
     throw new Error(`account Kernel coordinator cannot recover event type ${event.type}`);
   }
 
-  private async applyCoordinatorDecision(decision: KernelDecision): Promise<KernelEvent | null> {
+  private async applyCoordinatorDecision(decision: ControlDecision): Promise<ControlEvent | null> {
     if (decision.action.type === 'resolve_recovery') {
       const now = new Date().toISOString();
-      if (this.deps.kernelServices.kernelWorkflowRepo.findRecoveryItem(
+      if (this.deps.kernelServices.recoveryItems.findRecoveryItem(
         decision.action.recoveryItemId,
       )) {
-        this.deps.kernelServices.kernelWorkflowRepo.resolveRecoveryItem(
+        this.deps.kernelServices.recoveryItems.resolveRecoveryItem(
           decision.action.recoveryItemId,
           decision.action.resolution,
           now,
@@ -1417,20 +1377,22 @@ export class AccountStartupRecoveryService {
       }
       return null;
     }
-    const persisted = this.deps.kernelServices.kernelDecisionRepo.findById(decision.id);
-    if (!persisted?.sessionId) {
+    const source = this.deps.repositories.planProposalRepo.find(decision.eventId)?.request;
+    const userInput = source?.requestText ?? '';
+    const taskId = source?.taskId
+      ?? ('taskId' in decision.action ? decision.action.taskId : null);
+    const sessionId = taskId ? this.originForTask(taskId) : null;
+    if (!sessionId) {
       throw new Error(
         `startup recovery cannot resolve Conversation origin for decision ${decision.id}`,
       );
     }
-    const source = this.deps.kernelServices.kernelWorkflowRepo.findEvent(decision.eventId);
-    const userInput = source?.type === 'plan_proposed' ? source.requestText : '';
-    const task = source?.taskId
-      ? this.deps.taskServices.taskRuntimeService.findTask(source.taskId)
+    const task = taskId
+      ? this.deps.taskServices.taskRuntimeService.findTask(taskId)
       : null;
-    return this.withSystemBinding(persisted.sessionId, () => (
-      this.deps.kernelExecutionServices.sessionKernelRuntime
-        .forInput(userInput, task?.conversationId)
+    return this.withSystemBinding(sessionId, () => (
+      this.deps.kernelExecutionServices.sessionControlRuntime
+        .forInput(userInput, source?.conversationId ?? task?.conversationId, source?.queryId)
         .apply(decision)
     ));
   }
@@ -1449,6 +1411,27 @@ export class AccountStartupRecoveryService {
       await this.deps.onSystemResultDelivery?.(sessionId, delivery);
     }
     return result;
+  }
+
+  /** Applies a direct admission in the Conversation that owns the proposal. */
+  private async applyAdmissionInOwnerBinding(
+    proposal: PlanAdmissionRequest,
+    admission: PlanAdmissionResult,
+  ): Promise<void> {
+    const task = proposal.taskId
+      ? this.deps.taskServices.taskRuntimeService.findTask(proposal.taskId)
+      : null;
+    const sessionId = proposal.sessionId;
+    await this.withSystemBinding(sessionId, () => (
+      this.deps.kernelExecutionServices.sessionControlRuntime.applyPlanAdmission(admission, {
+        proposalId: proposal.id,
+        userInput: proposal.requestText,
+        ...(proposal.conversationId ?? task?.conversationId
+          ? { conversationId: proposal.conversationId ?? task!.conversationId! }
+          : {}),
+        queryId: proposal.queryId ?? null,
+      })
+    ));
   }
 
   private systemBinding(
@@ -1495,18 +1478,9 @@ export class AccountStartupRecoveryService {
           return work;
         },
       },
-      sessionKernelCallbacks: {
+      sessionControlCallbacks: {
         appendOutput: () => undefined,
         onDecisionApplying: () => undefined,
-        deliverDirectReply: (userInput, reply) => {
-          persistenceService.recordInteraction({
-            taskId: null,
-            sessionId,
-            userInput,
-            systemOutput: reply,
-            executorUsed: 'planning-agent',
-          });
-        },
         prepareTaskExecution: (taskId, request) => {
           this.deps.kernelExecutionServices.taskExecutionApplicationService
             .prepareTaskExecution(taskId, request);
@@ -1516,8 +1490,7 @@ export class AccountStartupRecoveryService {
         getCurrentTaskId: () => null,
         setFocusContext: () => undefined,
         resolveRequestText: eventId => {
-          const event = this.deps.kernelServices.kernelWorkflowRepo.findEvent(eventId);
-          return event?.type === 'plan_proposed' ? event.requestText : '';
+          return this.deps.repositories.planProposalRepo.find(eventId)?.request.requestText ?? '';
         },
         cancelTask: (taskId, reason) =>
           this.deps.kernelExecutionServices.kernelExecutionRuntime.cancelTaskWithOutcome(taskId, reason),
@@ -1551,7 +1524,7 @@ function promotedExecutionRequest(payload: QueuedTaskPayload, taskId: string) {
     authorizedWorkGraph: payload.workGraph as import('../work-graph/types.js').WorkGraphProposal,
     authorizedBindingsBySubtask: payload.authorizedBindingsBySubtask as Record<string, AuthorizedExecutorBinding[]>,
     workGraphAuthorization: {
-      decisionId: payload.kernelDecisionId ?? `queued_${taskId}`,
+      operationId: payload.kernelDecisionId ?? `queued_${taskId}`,
       generationId: payload.generationId,
       revision: payload.graphRevision,
       source: payload.proposalSource ?? 'initial' as const,
@@ -1565,9 +1538,9 @@ function startupOrphanEvent(input: {
   taskId: string;
   subtaskId: string;
   attemptId: string;
-  dispatch: KernelDispatchItemRecord;
+  dispatch: ControlDispatchItemRecord;
   occurredAt: string;
-}): Extract<KernelEvent, { type: 'execution_outcome' }> {
+}): Extract<ControlEvent, { type: 'execution_outcome' }> {
   const dispatch = input.dispatch;
   if (!dispatch) throw new Error(`missing dispatch for ${input.attemptId}`);
   return {

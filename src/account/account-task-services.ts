@@ -10,7 +10,6 @@ import { TaskRuntimeService } from '../task/task-runtime-service.js';
 import type { TaskLifecyclePort } from '../task/task-lifecycle-transition-port.js';
 import { AgentClassService } from '../executor/agent-class-service.js';
 import type { AttemptExecutionBackend } from '../execution/attempt-execution-backend.js';
-import { DockerCliAttemptExecutionBackend } from '../execution/docker-cli-attempt-execution-backend.js';
 import { NativeAttemptExecutionBackend } from '../execution/native-attempt-execution-backend.js';
 
 export interface AccountTaskServices {
@@ -43,8 +42,7 @@ export function buildAccountTaskServices(deps: {
 }
 
 export function createDefaultAttemptExecutionBackend(stateRoot?: string): AttemptExecutionBackend {
-  const backend = (process.env.METACLAW_EXECUTOR_BACKEND ?? 'native').trim().toLowerCase();
-  if (backend === 'docker' || backend === 'container') return new DockerCliAttemptExecutionBackend();
+  const backend = (process.env.METAWORK_EXECUTOR_BACKEND ?? 'native').trim().toLowerCase();
   // `in_place` is the retired name of the native backend. A Desktop shell that
   // still launches the Runtime with it must keep working: the running shell is
   // only replaced after this Runtime starts, so rejecting the old value would
@@ -52,5 +50,5 @@ export function createDefaultAttemptExecutionBackend(stateRoot?: string): Attemp
   if (backend === 'native' || backend === 'in_place' || backend === '') {
     return new NativeAttemptExecutionBackend(stateRoot);
   }
-  throw new Error(`Unsupported METACLAW_EXECUTOR_BACKEND: ${backend}; use native or docker`);
+  throw new Error(`Unsupported METAWORK_EXECUTOR_BACKEND: ${backend}; use native`);
 }

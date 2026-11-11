@@ -3,9 +3,10 @@ import type Database from 'better-sqlite3';
 import type { WorkUnitEvent } from '../core/types.js';
 import type { ExecutorRegistrationInspection } from '../execution/execution-runtime.js';
 import { AgentClassRepo } from '../storage/agent-class-repo.js';
-import { KernelDecisionRepo } from '../storage/kernel-decision-repo.js';
 import { TaskEventRepo } from '../storage/task-event-repo.js';
 import { WorkUnitRepo } from '../storage/work-unit-repo.js';
+import { WorkGraphRevisionRepo } from '../storage/work-graph-revision-repo.js';
+import { SubtaskRepo } from '../storage/subtask-repo.js';
 
 const TASK_HISTORY_LIMIT = 20;
 const ACTIVE_WORK_UNIT_STATES = new Set(['starting', 'claimed', 'running', 'waiting']);
@@ -56,7 +57,6 @@ type TaskHistoryEntry =
 
 export class CommandReadServices {
   private readonly agentClasses: AgentClassRepo;
-  private readonly kernelDecisions: KernelDecisionRepo;
   private readonly taskEvents: TaskEventRepo;
   private readonly workUnits: WorkUnitRepo;
 
@@ -66,7 +66,6 @@ export class CommandReadServices {
     private readonly dependencies: CommandReadServicesDependencies = {},
   ) {
     this.agentClasses = new AgentClassRepo(db);
-    this.kernelDecisions = new KernelDecisionRepo(db);
     this.taskEvents = new TaskEventRepo(db);
     this.workUnits = new WorkUnitRepo(db);
   }
@@ -164,19 +163,12 @@ export class CommandReadServices {
       return `Error: task not found ${taskId}`;
     }
 
-    const kernelDecisions = this.kernelDecisions.listByTask(taskId).map(record => {
-      const plan = record.event.type === 'plan_proposed' ? record.event.proposal : null;
-      return {
-        ...record,
-        plan,
-        planSchemaVersion: plan?.schemaVersion ?? null,
-        decisionPlanSchemaVersion: plan?.schemaVersion ?? null,
-        outcome: 'issued',
-        decision: { plan, runtimeAction: record.action } as Record<string, unknown>,
-      };
-    });
-    const decisions = kernelDecisions
-      .sort((left, right) => left.createdAt.localeCompare(right.createdAt));
+    // Authorized graphs are owner facts; the retired decision ledger is gone.
+    const revisions = new WorkGraphRevisionRepo(this.db).listPresentationIdentitiesByTasks([taskId]);
+    const revision = revisions[0] ?? null;
+    const authorizedSubtasks = revision
+      ? new SubtaskRepo(this.db).listByTask(taskId).filter(subtask => revision.subtaskIds.includes(subtask.id))
+      : [];
     const workUnitEvents = collapseWorkUnitHeartbeats(
       this.workUnits.listEventsByTask(taskId).filter(event => FEEDBACK_WORK_UNIT_EVENTS.has(event.eventType)),
     );
@@ -187,40 +179,23 @@ export class CommandReadServices {
       `Executor 路由反馈：#${task.id} [${task.status.toUpperCase()}] ${task.title}`,
       '',
       '1. Planner 提议',
-      ...(decisions.length > 0
-        ? decisions.flatMap(record => {
-            const auditPlan = readAuditPlan(record.plan);
-            return [
-              `  - ${record.createdAt} schema=v${record.planSchemaVersion ?? '?'} action=${auditPlan.action} reason=${auditPlan.reason}`,
-              ...(auditPlan.subtasks.length > 0
-                ? auditPlan.subtasks.map(subtask => `    ${subtask.id}: ${subtask.routing}`)
-                : ['    无 WorkGraph']),
-            ];
-          })
+      ...(revision
+        ? [
+            `  - revision=${revision.graphRevision} subtasks=${revision.subtaskIds.length}`,
+            ...(authorizedSubtasks.length > 0
+              ? authorizedSubtasks.map(subtask => `    ${subtask.id}: ${subtask.title} [${subtask.status}]`)
+              : ['    无 WorkGraph']),
+          ]
         : ['  - 该任务没有可关联的 Planner 路由记录（旧任务可能未保存 taskId 关联）。']),
       '',
-      '2. ControlKernel 决策',
-      ...(decisions.length > 0
-        ? decisions.flatMap(record => {
-            const decision = isRecord(record.decision) ? record.decision : {};
-            const auditPlan = readAuditPlan(decision.plan);
-            return [
-              `  - ${record.createdAt} schema=v${record.decisionPlanSchemaVersion ?? '?'} outcome=${record.outcome} action=${String(decision.runtimeAction ?? '-')} reason=${record.reason}`,
-              ...(auditPlan.subtasks.length > 0
-                ? auditPlan.subtasks.map(subtask => `    ${subtask.id}: ${subtask.routing}`)
-                : ['    无获批 WorkGraph']),
-            ];
-          })
-        : ['  - 无']),
-      '',
-      '3. WorkUnit 过程',
+      '2. WorkUnit 过程',
       ...(workUnitEvents.length > 0
         ? workUnitEvents.map(event =>
             `  - ${event.createdAt} ${event.workUnitId} ${event.eventType} state=${event.state ?? '-'} subtask=${event.subtaskId ?? '-'} ${event.message}`
           )
         : ['  - 无']),
       '',
-      '4. Executor 结果',
+      '3. Executor 结果',
       ...(executorEvents.length > 0
         ? executorEvents.map(event =>
             `  - ${event.createdAt} ${event.eventType} subtask=${event.subtaskId ?? '-'} ${event.message}`
@@ -250,53 +225,6 @@ export class CommandReadServices {
 
 function formatList(values: string[]): string {
   return values.join(', ') || '-';
-}
-
-function readAuditPlan(value: unknown): { action: string; reason: string; subtasks: Array<{ id: string; routing: string }> } {
-  if (!isRecord(value)) return { action: '-', reason: '-', subtasks: [] };
-  const graph = isRecord(value.workGraph) ? value.workGraph : null;
-  const rawSubtasks = graph && Array.isArray(graph.subtasks) ? graph.subtasks : [];
-  return {
-    action: String(value.action ?? '-'),
-    reason: String(value.reason ?? '-'),
-    subtasks: rawSubtasks.filter(isRecord).map(subtask => {
-      const capabilities = stringArray(subtask.requiredCapabilities);
-      const bindings = executorBindingSummaries(subtask.executorBindings);
-      const preferences = stringArray(subtask.preferredAgentClassList);
-      const legacyCandidates = stringArray(subtask.candidateAgentClasses);
-      return {
-        id: String(subtask.id ?? '-'),
-        routing: bindings.length > 0
-          ? `capabilities=${formatList(capabilities)} bindings=${formatList(bindings)}`
-          : preferences.length > 0 || capabilities.length > 0
-          ? `capabilities=${formatList(capabilities)} preferences=${formatList(preferences)}`
-          : `legacyHint=${String(subtask.agentClassHint ?? '-')} legacyCandidates=${formatList(legacyCandidates)}`,
-      };
-    }),
-  };
-}
-
-function executorBindingSummaries(value: unknown): string[] {
-  if (!Array.isArray(value)) return [];
-  return value.filter(isRecord).map(binding => {
-    const agentClassRef = String(binding.agentClassRef ?? '-');
-    const selection = isRecord(binding.modelSelection) ? binding.modelSelection : null;
-    if (!selection) {
-      const modelRef = typeof binding.modelRef === 'string' ? binding.modelRef : '-';
-      return `${agentClassRef}@${modelRef}`;
-    }
-    const mode = String(selection.mode ?? '-');
-    const modelRef = typeof selection.modelRef === 'string' ? `:${selection.modelRef}` : '';
-    return `${agentClassRef}[${mode}${modelRef}]`;
-  });
-}
-
-function stringArray(value: unknown): string[] {
-  return Array.isArray(value) ? value.filter((item): item is string => typeof item === 'string') : [];
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return Boolean(value) && typeof value === 'object' && !Array.isArray(value);
 }
 
 function excerpt(value: string | null, maxLength = 200): string {

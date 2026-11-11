@@ -265,7 +265,7 @@ export interface ExecutorResult {
   exitCode: number;
   durationMs: number;
   interrupted?: boolean;
-  failure?: import('./kernel-failure.js').KernelFailure;
+  failure?: import('../control/control-failure.js').ControlFailure;
   diagnostics?: Record<string, unknown>;
 }
 

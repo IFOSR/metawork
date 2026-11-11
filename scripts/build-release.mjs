@@ -1,8 +1,9 @@
 #!/usr/bin/env node
 import { spawnSync } from 'node:child_process';
-import { existsSync } from 'node:fs';
-import { resolve } from 'node:path';
+import { existsSync, mkdirSync, writeFileSync } from 'node:fs';
+import { join, resolve } from 'node:path';
 import { architectureName, platformName } from './package-release.mjs';
+import { assertPiRuntimePin } from './lib/pi-runtime-pin.mjs';
 
 function parseArguments(argv) {
   const options = {
@@ -15,6 +16,7 @@ function parseArguments(argv) {
     signingKey: undefined,
     artifactBaseUrl: undefined,
     packageOnly: false,
+    piCommand: undefined,
   };
   for (let index = 0; index < argv.length; index += 1) {
     const argument = argv[index];
@@ -34,6 +36,7 @@ function parseArguments(argv) {
       case '--signing-key': options.signingKey = resolve(requireValue()); break;
       case '--artifact-base-url': options.artifactBaseUrl = requireValue(); break;
       case '--package-only': options.packageOnly = true; break;
+      case '--pi-command': options.piCommand = requireValue(); break;
       default: throw new Error(`unknown option: ${argument}`);
     }
   }
@@ -99,7 +102,6 @@ function assertNativeTarget(options) {
 function main() {
   const options = parseArguments(process.argv.slice(2));
   assertNativeTarget(options);
-  const plannerRoot = resolve('planner', 'AnyFusion-Pi');
   const packageArgs = [
     'scripts/package-release.mjs',
     '--platform',
@@ -115,13 +117,24 @@ function main() {
     ...(options.artifactBaseUrl ? ['--artifact-base-url', options.artifactBaseUrl] : []),
   ];
 
+  // ADR-0055 D6: the packaged Manager and Executor run the upstream Pi version
+  // installed on this packaging host. Record exactly which one and fail fast
+  // when it is missing, mismatched or needs a newer Node than MetaWork supports.
+  const piPin = assertPiRuntimePin({ ...(options.piCommand ? { command: options.piCommand } : {}) });
+  const pinPath = join(options.outDir ?? resolve('dist-release'), 'pi-runtime-pin.json');
+  mkdirSync(join(pinPath, '..'), { recursive: true });
+  writeFileSync(pinPath, `${JSON.stringify({
+    ...piPin,
+    pinnedAt: new Date().toISOString(),
+    host: { platform: process.platform, arch: process.arch, node: process.versions.node },
+  }, null, 2)}\n`);
+  packageArgs.push('--pi-command', piPin.commandPath, '--pi-pin', pinPath);
+  process.stdout.write(`packaged Pi pin: ${piPin.version} (${piPin.releaseDir})\n`);
+
   if (!options.packageOnly) {
     run('npm', ['ci']);
     run('npm', ['run', 'build']);
-    run('npm', ['ci', '--ignore-scripts'], plannerRoot);
-    run('npm', ['run', 'build:offline'], plannerRoot);
     run('npm', ['ci', '--omit=dev']);
-    run('npm', ['ci', '--omit=dev'], plannerRoot);
     assertBetterSqlite3Runtime(process.cwd());
   }
   run(process.execPath, packageArgs);

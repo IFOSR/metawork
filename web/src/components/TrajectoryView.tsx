@@ -4,7 +4,7 @@ import { TrajectorySummary } from './TrajectorySummary';
 import { TrajectoryTimeline } from './TrajectoryTimeline';
 import { useEffect, useState } from 'react';
 import type { HttpClient } from '../api/http';
-import type { WorkGraphPresentationProjection } from '../api/types';
+import type { InteractionTraceEvent, WorkGraphPresentationProjection } from '../api/types';
 import { WorkGraphPanel } from './WorkGraphPanel';
 import { ExecutionNarrative } from './ExecutionNarrative';
 import { LiveExecutionPanel } from './LiveExecutionPanel';
@@ -13,6 +13,7 @@ import { workGraphTitleIndex } from '../work-graph-titles';
 
 export function TrajectoryView({
   turn,
+  executionTraceEvents,
   http,
   onOpenArtifact,
   onOpenSubtaskDetail,
@@ -21,6 +22,8 @@ export function TrajectoryView({
   hasMore = false,
 }: {
   turn: ConversationTurnProjection | null;
+  /** Live cards use the latest facts, independently of the browsed history page. */
+  executionTraceEvents?: InteractionTraceEvent[];
   http?: HttpClient | null;
   onOpenArtifact?: (artifact: ArtifactProjection) => void;
   onOpenSubtaskDetail?: (subtaskId: string, subtaskTitle: string) => void;
@@ -49,7 +52,8 @@ export function TrajectoryView({
   return (
     <div className="trajectory-view">
       {turn && (
-        <LiveExecutionPanel turn={turn} onSelectSubtask={onOpenSubtaskDetail} workGraph={workGraph} />
+        <LiveExecutionPanel turn={executionTraceEvents ? { ...turn, traceEvents: executionTraceEvents } : turn}
+          onSelectSubtask={onOpenSubtaskDetail} workGraph={workGraph} />
       )}
       <TrajectorySummary turn={turn} />
       <ExecutionNarrative turn={turn} titleBySubtask={titleBySubtask} />

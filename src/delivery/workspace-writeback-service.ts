@@ -43,6 +43,7 @@ export class WorkspaceWritebackService {
         if(actual?.kind==='directory' && !file.before && file.after){
           // Replacing a tracked directory is safe only when its tracked children
           // have already been deleted and no ignored/user files remain.
+          await verifyOwner();
           await rmdir(path).catch(()=>{throw new WorkspaceWritebackConflict(file.relativePath,'目录仍有用户内容，不能替换');});
           actual=null;
         }
@@ -51,6 +52,7 @@ export class WorkspaceWritebackService {
         await this.assertParents(root.userRoot,file.relativePath,[]);
         this.repo.fileState(jobId,file.ordinal,'prepared');
         if(!file.after){
+          await verifyOwner();
           await unlink(path); await syncDirectory(dirname(path));
           let empty=dirname(path);
           while(empty!==root.userRoot){try{await rmdir(empty);}catch{break;}empty=dirname(empty);}
@@ -70,6 +72,7 @@ export class WorkspaceWritebackService {
         }
         await verifyOwner(); await this.assertParents(root.userRoot,file.relativePath,[]);
         if(!matches(await observe(path),file.before,file.beforeSha256))throw new WorkspaceWritebackConflict(file.relativePath,'写入前文件再次改变');
+        await verifyOwner();
         if(file.before)await rename(temp,path);
         else if(file.after.kind==='symlink'){
           await symlink(content.toString('utf8'),path);await unlink(temp);

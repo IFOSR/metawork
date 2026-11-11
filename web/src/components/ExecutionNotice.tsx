@@ -24,6 +24,8 @@ export function ExecutionNotice({ turn, failure, receipts }: {
   const subtasks = turn.executionTimeline?.stages.find(stage => stage.phase === 'execution')?.subtasks ?? [];
   const dependencies = turn.executionTimeline?.stages.find(stage => stage.phase === 'planning')?.proposal?.dependencies ?? [];
   const stageLabels: Record<string, string> = {
+    planning: '规划',
+    routing: 'Router 决策',
     attempt: 'Executor 调用', workspace_preflight: 'Workspace 预检',
     dispatch: '任务派发', completion: '结果校验',
   };

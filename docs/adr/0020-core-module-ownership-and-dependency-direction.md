@@ -168,7 +168,7 @@ The ownership matrix gains one explicit seam: cross-module status contracts.
 - **Presentation (Gateway/TUI/Web/Feishu) never owns a status contract.** It
   consumes the read-only `TaskView` projection in `src/task/task-view.ts`
   (`projectTaskView`) and renders `userState` with `userStateReason`; `phase` is reserved for internal execution details. It may not interpret `tasks.status`,
-  `kernel_dispatch_items.status`, `work_units.state` or
+  `dispatch_items.status`, `work_units.state` or
   `kernel_decision_applications.status` as user-facing prose.
 - **Planning** still may not depend on Kernel, Runtime repositories or Executor
   process implementations. The durable Replan Job consumer therefore lives in

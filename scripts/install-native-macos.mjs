@@ -2,11 +2,9 @@ import { spawnSync } from 'node:child_process';
 import { existsSync, readFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { prepareSourcePi } from './lib/packaged-pi.mjs';
 
 const runtimeRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..');
-const plannerRoot = resolve(
-  process.env.ANYFUSION_PI_SOURCE_ROOT ?? join(runtimeRoot, 'planner', 'AnyFusion-Pi'),
-);
 // The memory engine ships with every release. A source checkout points at it
 // with METAWORK_MEMORY_ENGINE_ROOT (CI prebuilds it into memory/tdai).
 const memoryRoot = resolve(
@@ -51,7 +49,7 @@ function resolveProductEnvironment(canonicalName, compatibilityName, defaultValu
   return value;
 }
 
-function main() {
+async function main() {
   if (process.platform !== 'darwin') {
     throw new Error(`install-native-macos requires macOS; found ${process.platform}`);
   }
@@ -74,8 +72,7 @@ function main() {
 
   run('npm', ['ci'], runtimeRoot);
   run('npm', ['run', 'build'], runtimeRoot);
-  run('npm', ['ci', '--ignore-scripts'], plannerRoot);
-  run('npm', ['run', 'build:offline'], plannerRoot);
+  await prepareSourcePi(runtimeRoot);
 
   const packageVersion = JSON.parse(
     readFileSync(join(runtimeRoot, 'package.json'), 'utf8'),
@@ -93,8 +90,6 @@ function main() {
     releaseId,
     '--source-root',
     runtimeRoot,
-    '--planner-root',
-    plannerRoot,
   ];
   if (existsSync(join(memoryRoot, 'dist', 'gateway', 'server.js'))) {
     args.push('--memory-root', memoryRoot);
@@ -107,7 +102,7 @@ function main() {
 }
 
 try {
-  main();
+  await main();
 } catch (error) {
   process.stderr.write(
     `MetaWork native installation failed: ${error instanceof Error ? error.message : String(error)}\n`,

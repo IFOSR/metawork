@@ -3,38 +3,30 @@ import { describe, expect, it } from 'vitest';
 
 const root = new URL('../../web/src/', import.meta.url);
 
-describe('Web billing presentation', () => {
-  it('keeps the conversation bill card after the task result and opens the billing tab', async () => {
-    const [turn, card, app] = await Promise.all([
+describe('Web token usage presentation', () => {
+  it('opens account-wide token usage without adding an amount card to a Turn', async () => {
+    const [turn, app, usage] = await Promise.all([
       readFile(new URL('components/ConversationTurn.tsx', root), 'utf8'),
-      readFile(new URL('components/TurnBillCard.tsx', root), 'utf8'),
-      Promise.all(['App.tsx', 'observation/use-workspace-controller.ts'].map(path => readFile(new URL(path, root), 'utf8'))).then(parts => parts.join('\n')),
+      readFile(new URL('App.tsx', root), 'utf8'),
+      readFile(new URL('components/TokenUsageView.tsx', root), 'utf8'),
     ]);
-
-    expect(turn.indexOf('className="final-answer"')).toBeLessThan(
-      turn.indexOf('<TurnBillCard'),
-    );
-    expect(card).toContain('onOpenBilling');
-    expect(card).toContain('阶段与模型用量');
-    expect(card).toContain('查看账单详情');
-    expect(card).not.toContain('<details');
-    expect(app).toContain('setTab(\'billing\')');
-    expect(app).toContain('selectedBillingTurnId');
+    expect(app).toContain('<TokenUsageView http={http} />');
+    expect(turn).not.toContain('TurnBillCard');
+    expect(usage).toContain('Total tokens');
+    expect(usage).toContain('Included');
+    expect(usage).toContain('On-demand');
   });
 
-  it('binds the billing tab to the selected Query instead of loading historical records', async () => {
-    const [billingView, app] = await Promise.all([
-      readFile(new URL('components/BillingView.tsx', root), 'utf8'),
-      Promise.all(['App.tsx', 'observation/use-workspace-controller.ts'].map(path => readFile(new URL(path, root), 'utf8'))).then(parts => parts.join('\n')),
+  it('offers period and Provider grouping controls over the token timeline', async () => {
+    const [usage, http] = await Promise.all([
+      readFile(new URL('components/TokenUsageView.tsx', root), 'utf8'),
+      readFile(new URL('api/http.ts', root), 'utf8'),
     ]);
-
-    expect(billingView).toContain('bill: QueryBillProjection | null');
-    expect(billingView).toContain('<QueryBill');
-    expect(billingView).not.toContain('getBillingRecords');
-    expect(billingView).not.toContain('getBillingTasks');
-    expect(app).toContain('<ObservedTurnDetails');
-    const details = await readFile(new URL('observation/ObservedTurnDetails.tsx', root), 'utf8');
-    expect(details).toContain("kind: 'get_query_bill_for_turn', turnId");
-    expect(details).toContain('<BillingView bill={turn.queryBill ?? null}');
+    expect(usage).toContain('时间区间');
+    expect(usage).toContain('Group By');
+    expect(usage).toContain('按 Provider');
+    expect(usage).toContain('按天用量趋势');
+    expect(http).toContain('/api/usage/timeline');
+    expect(http).not.toContain('getBillingRecords');
   });
 });

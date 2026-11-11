@@ -100,6 +100,24 @@ describe('WorkspaceDirectoryBrowser', () => {
     const result = await browser.browse(root);
 
     expect(result.entries).toHaveLength(2);
+    expect(result.nextCursor).toBe('Beta');
+    const next = await browser.browse(root, result.nextCursor!);
+    expect(next.entries.map(entry => entry.name)).toEqual(['linked-alpha']);
+    expect(next.nextCursor).toBe('linked-file');
+    const last = await browser.browse(root, next.nextCursor!);
+    expect(last.entries.map(entry => entry.name)).toEqual(['zeta']);
+    expect(last.nextCursor).toBeNull();
+  });
+
+  it('advances past empty pages containing broken or non-directory links', async () => {
+    const root = await fixture();
+    await symlink(join(root, 'missing'), join(root, '0-broken'));
+    const browser = new WorkspaceDirectoryBrowser({ maxEntries: 1 });
+    const first = await browser.browse(root);
+    expect(first.entries).toEqual([]);
+    expect(first.nextCursor).toBe('0-broken');
+    const next = await browser.browse(root, first.nextCursor!);
+    expect(next.entries.map(entry => entry.name)).toEqual(['alpha']);
   });
 
   it('rejects relative, missing, and non-directory paths', async () => {

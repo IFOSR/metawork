@@ -1,84 +1,147 @@
 #!/usr/bin/env node
-// Real Span routing-advisor smoke test using OpenRouter System One.
+// Live routing decision-model smoke.
 //
-// By default performs ONE live System One API call against
-// `inception/mercury-decide:free`.
-// --integration runs four sample workloads through the production advisor,
-// ControlKernel and SQLite replay (three calls; single-candidate makes none).
-// Both modes use the MetaWork credential and print finite safe summaries.
-// Neither mode prints the key, the raw request, or the raw provider payload.
+// The decision model is a normal Provider/Model choice (ADR-0055 D4): this
+// script sends one joint `choice` request to the configured System One endpoint
+// (for example the Jev server on the `way` host) and validates the answer with
+// the same rules as the Server. `--integration` runs four representative
+// workloads through the production Router decision adapter and SQLite replay.
 //
-// Credential resolution order:
-//   1. --api-key-env <NAME> (reads that environment variable)
-//   2. OPENROUTER_API_KEY
-//   3. --credentials <path> (or METAWORK_CREDENTIALS), a credentials.json that
-//      contains the fixed `file-secret:anyfusion/internal/routing-span` entry.
+// Target resolution order:
+//   1. --base-url / --model / --api-key-env (explicit operator override)
+//   2. the active MetaWork account revision (`routing.span` Provider/Model and
+//      that Provider's stored credential)
+//   3. --credentials <path> for the legacy internal routing credential slot
 //
-// The Provider namespace is deliberately NOT consulted: a Provider that happens
-// to be named `routing-span` must never supply the advisor credential.
-//
-// Intentionally NOT wired into `npm test`: a live third-party call must stay an
-// explicit, credentialed operator action.
-
+// Neither mode prints the key, the raw request or the raw provider payload, and
+// a live third-party call stays an explicit, credentialed operator action.
 import { readFileSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
-import { fileURLToPath } from 'node:url';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { stripVTControlCharacters } from 'node:util';
-import { OpenRouter } from '@openrouter/sdk';
+import { load } from 'js-yaml';
 
-const SPAN_MODEL = 'inception/mercury-decide:free';
+const INSTALL_ROOT = process.env.METAWORK_INSTALL_ROOT ?? process.env.METACLAW_INSTALL_ROOT ?? join(homedir(), '.metawork');
+const ACCOUNT_ID = process.env.METAWORK_ACCOUNT_ID ?? 'local-default';
 const SPAN_SECRET_KEY = 'routing-span';
-const SPAN_MODEL_VERSION = /^inception\/mercury-decide(?::free|-\d{8})?$/u;
+const DEFAULT_TIMEOUT_MS = 15_000;
+
 function parseArgs(argv) {
-  const options = { credentials: process.env.METAWORK_CREDENTIALS ?? '' };
+  const options = {
+    credentials: process.env.METAWORK_CREDENTIALS ?? '',
+    installRoot: INSTALL_ROOT,
+    accountId: ACCOUNT_ID,
+  };
+  const read = index => argv[index + 1] ?? argv[index].slice(argv[index].indexOf('=') + 1);
   for (let index = 0; index < argv.length; index += 1) {
     const arg = argv[index];
     if (arg === '--integration') options.integration = true;
-    else if (arg === '--credentials') options.credentials = argv[++index] ?? '';
-    else if (arg.startsWith('--credentials=')) options.credentials = arg.slice('--credentials='.length);
-    else if (arg === '--api-key-env') options.apiKeyEnv = argv[++index] ?? '';
-    else if (arg.startsWith('--api-key-env=')) options.apiKeyEnv = arg.slice('--api-key-env='.length);
+    else if (arg.startsWith('--credentials')) options.credentials = read(index);
+    else if (arg.startsWith('--api-key-env')) options.apiKeyEnv = read(index);
+    else if (arg.startsWith('--base-url')) options.baseUrl = read(index);
+    else if (arg.startsWith('--model')) options.model = read(index);
+    else if (arg.startsWith('--install-root')) options.installRoot = read(index);
+    else if (arg.startsWith('--account')) options.accountId = read(index);
+    else if (arg.startsWith('--timeout')) options.timeoutMs = Number(read(index));
   }
   return options;
 }
 
-function credentialCandidates(explicitPath) {
+function credentialCandidates(installRoot, explicitPath) {
   if (explicitPath) return [explicitPath];
-  const homes = [
+  return [
     process.env.METAWORK_HOME,
     process.env.METACLAW_HOME,
     process.env.METAWORK_CONFIG_HOME,
+    installRoot,
     join(homedir(), '.config', 'metawork'),
     join(homedir(), '.metawork'),
     join(homedir(), '.anyfusion'),
-  ].filter(Boolean);
-  return homes.map(root => join(root, 'credentials.json'));
+  ].filter(Boolean).map(root => join(root, 'credentials.json'));
 }
 
-function resolveApiKey(options) {
-  const envName = options.apiKeyEnv || 'OPENROUTER_API_KEY';
-  const fromEnv = process.env[envName]?.trim();
-  if (fromEnv) return { apiKey: fromEnv, source: `env:${envName}` };
-  for (const candidate of credentialCandidates(options.credentials)) {
-    let document;
+function readCredentials(installRoot, explicitPath) {
+  for (const candidate of credentialCandidates(installRoot, explicitPath)) {
     try {
-      document = JSON.parse(readFileSync(candidate, 'utf8'));
+      return { path: candidate, document: JSON.parse(readFileSync(candidate, 'utf8')) };
     } catch {
       continue;
-    }
-    const value = document?.internal?.[SPAN_SECRET_KEY];
-    if (typeof value === 'string' && value.trim()) {
-      return { apiKey: value.trim(), source: 'secret-store:internal/routing-span' };
     }
   }
   return null;
 }
 
-function buildRequest() {
+/** Reads the active revision's `routing.span` Provider/Model selection. */
+function readActiveSpanConfiguration(installRoot, accountId) {
+  const configDirectory = join(installRoot, 'accounts', accountId, 'config');
+  let config;
+  try {
+    config = load(readFileSync(join(configDirectory, 'active', 'config.yaml'), 'utf8'));
+  } catch {
+    return null;
+  }
+  const span = config?.routing?.span;
+  if (!span || typeof span !== 'object') return null;
+  const model = span.modelRef ? config.models?.[span.modelRef] : undefined;
+  const provider = model ? config.providers?.[model.providerRef] : undefined;
+  if (!model || !provider) return { enabled: span.enabled === true, configured: false };
   return {
-    model: SPAN_MODEL,
+    enabled: span.enabled === true,
+    configured: true,
+    baseUrl: typeof provider.baseUrl === 'string' ? provider.baseUrl : undefined,
+    model: typeof model.modelId === 'string' ? model.modelId : undefined,
+    providerRef: model.providerRef,
+    apiKeyRef: typeof provider.apiKeyRef === 'string' ? provider.apiKeyRef : undefined,
+  };
+}
+
+/** `file-secret:anyfusion/<group>/<name>` maps onto credentials.json `<group>.<name>`. */
+function resolveSecret(document, reference) {
+  if (typeof reference !== 'string') return null;
+  const match = /^file-secret:anyfusion\/([a-z][a-z0-9-]*)\/([A-Za-z0-9][A-Za-z0-9._-]*)$/u.exec(reference);
+  if (!match) return null;
+  const value = document?.[match[1]]?.[match[2]];
+  return typeof value === 'string' && value.trim() ? value.trim() : null;
+}
+
+function resolveTarget(options) {
+  const credentials = readCredentials(options.installRoot, options.credentials);
+  // An explicit credentials file is a self-contained override: never mix in the
+  // machine's active revision when the operator named a source.
+  const active = options.credentials ? null : readActiveSpanConfiguration(options.installRoot, options.accountId);
+  const envName = options.apiKeyEnv || 'METAWORK_SPAN_API_KEY';
+  const fromEnv = process.env[envName]?.trim()
+    ?? (options.apiKeyEnv ? undefined : process.env.OPENROUTER_API_KEY?.trim());
+  const baseUrl = options.baseUrl?.trim() || active?.baseUrl;
+  const model = options.model?.trim() || active?.model;
+  let apiKey = fromEnv ?? null;
+  let source = fromEnv ? `env:${envName}` : null;
+  if (!apiKey && active?.providerRef && credentials) {
+    apiKey = resolveSecret(credentials.document, active.apiKeyRef)
+      ?? credentials.document?.providers?.[active.providerRef]
+      ?? null;
+    if (apiKey) source = `secret-store:providers/${active.providerRef}`;
+  }
+  if (!apiKey && credentials) {
+    const value = credentials.document?.internal?.[SPAN_SECRET_KEY];
+    if (typeof value === 'string' && value.trim()) {
+      apiKey = value.trim();
+      source = 'secret-store:internal/routing-span';
+    }
+  }
+  return {
+    baseUrl: baseUrl ? baseUrl.replace(/\/+$/u, '') : null,
+    model: model ?? null,
+    apiKey,
+    source,
+    active,
+  };
+}
+
+function buildRequest(model) {
+  return {
+    model,
     state: {
       subtask: {
         title: 'Implement the parser entry point',
@@ -104,56 +167,82 @@ function buildRequest() {
   };
 }
 
+/** Same wire shape as `defaultSpanDecisionClient` (state is a JSON string). */
+async function requestDecision(target, request, signal) {
+  const response = await fetch(`${target.baseUrl}/systemone`, {
+    method: 'POST',
+    headers: { authorization: `Bearer ${target.apiKey}`, 'content-type': 'application/json' },
+    body: JSON.stringify({ model: request.model, state: JSON.stringify(request.state), questions: request.questions }),
+    signal,
+  });
+  if (!response.ok) {
+    const error = new Error(`routing decision provider returned HTTP ${response.status}`);
+    error.httpStatus = response.status;
+    throw error;
+  }
+  return response.json();
+}
+
+function describeMissingTarget(target) {
+  if (!target.baseUrl || !target.model) {
+    return 'No decision model configured. Set --base-url/--model, enable 系统路由 with a Provider/Model, '
+      + 'or point METAWORK_INSTALL_ROOT at an installation whose active revision selects a decision model.';
+  }
+  return 'No decision-model credential found. Set METAWORK_SPAN_API_KEY, --api-key-env <NAME>, '
+    + 'or --credentials <credentials.json>.';
+}
+
 async function main() {
   const options = parseArgs(process.argv.slice(2));
-  const resolved = resolveApiKey(options);
-  if (!resolved) {
-    console.error('No Span credential found. Set OPENROUTER_API_KEY or configure the advanced-settings key.');
+  const target = resolveTarget(options);
+  if (!target.baseUrl || !target.model || !target.apiKey) {
+    console.error(describeMissingTarget(target));
     process.exitCode = 2;
     return;
   }
   if (options.integration) {
-    const root = fileURLToPath(new URL('../', import.meta.url));
-    const result = spawnSync(process.execPath, [join(root, 'node_modules/vitest/vitest.mjs'), 'run',
-      'tests/e2e/span-routing.test.ts', '-t', 'compares representative workload'], {
-      cwd: root, encoding: 'utf8', timeout: 60_000, maxBuffer: 1024 * 1024,
-      env: { ...process.env, SPAN_LIVE_INTEGRATION: '1', SPAN_INTEGRATION_API_KEY: resolved.apiKey },
+    const root = join(import.meta.dirname, '..');
+    // This machine-readable path needs successful tests' console samples too;
+    // Vitest may otherwise select its minimal reporter in agent environments.
+    const result = spawnSync(process.execPath, [join(root, 'node_modules/vitest/vitest.mjs'), 'run', '--reporter=default',
+      'tests/e2e/span-router-integration.test.ts', '-t', 'routes representative workload'], {
+      cwd: root, encoding: 'utf8', timeout: 90_000, maxBuffer: 2 * 1024 * 1024,
+      env: {
+        ...process.env,
+        SPAN_LIVE_INTEGRATION: '1',
+        SPAN_INTEGRATION_API_KEY: target.apiKey,
+        SPAN_INTEGRATION_BASE_URL: target.baseUrl,
+        SPAN_INTEGRATION_MODEL: target.model,
+      },
       stdio: ['ignore', 'pipe', 'pipe'],
     });
     const samples = stripVTControlCharacters(result.stdout ?? '').split(/\r?\n/u)
       .map(line => line.trim()).filter(line => line.startsWith('{"scenario":'))
       .flatMap(line => { try { return [JSON.parse(line)]; } catch { return []; } });
     const ok = result.status === 0 && samples.length === 4;
-    console.log(JSON.stringify({ ok, credentialSource: resolved.source, samples,
-      ...(ok ? {} : { errorCode: 'span_integration_failed' }) }, null, 2));
+    console.log(JSON.stringify({ ok, credentialSource: target.source, baseUrl: target.baseUrl, model: target.model,
+      samples, ...(ok ? {} : { errorCode: 'span_integration_failed' }) }, null, 2));
     if (!ok) process.exitCode = 1;
     return;
   }
-  const client = new OpenRouter({ apiKey: resolved.apiKey, retryConfig: { strategy: 'none' } });
   const startedAt = Date.now();
   const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), 5_000);
+  const timeout = setTimeout(() => controller.abort(), options.timeoutMs || DEFAULT_TIMEOUT_MS);
   try {
-    const request = buildRequest();
-    const response = await client.systemOne.create(
-      { decisionsRequest: { ...request, state: JSON.stringify(request.state) } },
-      { signal: controller.signal, timeoutMs: 5_000, retries: { strategy: 'none' } },
-    );
+    const request = buildRequest(target.model);
+    const response = await requestDecision(target, request, controller.signal);
     const model = typeof response?.model === 'string' ? response.model : '';
     const answers = response?.answers && typeof response.answers === 'object' ? response.answers : {};
-    const expected = Object.keys(buildRequest().questions);
-    // Mirror the product validator: a missing choice or partial probability
-    // map is never a successful smoke run.
+    const expected = Object.keys(request.questions);
+    // Mirror the product validator: a missing choice or partial probability map
+    // is never a successful smoke run.
     const received = Object.keys(answers);
     const answersComplete = received.length === expected.length
       && expected.every(questionId => Object.hasOwn(answers, questionId));
-    const candidateIds = Object.keys(buildRequest().state.candidates);
-    const answer = answers.candidates && typeof answers.candidates === 'object'
-      ? answers.candidates
-      : null;
+    const candidateIds = Object.keys(request.state.candidates);
+    const answer = answers.candidates && typeof answers.candidates === 'object' ? answers.candidates : null;
     const rawProbabilities = answer?.probabilities && typeof answer.probabilities === 'object'
-      ? answer.probabilities
-      : {};
+      ? answer.probabilities : {};
     const probabilities = {};
     let answersValid = answersComplete;
     if (!answer || answer.type !== 'choice' || !candidateIds.includes(answer.choice)
@@ -163,34 +252,37 @@ async function main() {
     }
     for (const candidateId of candidateIds) {
       const value = rawProbabilities[candidateId];
-      const validAnswer = typeof value === 'number' && Number.isFinite(value)
-        && value >= 0 && value <= 1;
+      const validAnswer = typeof value === 'number' && Number.isFinite(value) && value >= 0 && value <= 1;
       probabilities[candidateId] = validAnswer ? Number(value.toFixed(6)) : null;
       if (!validAnswer) answersValid = false;
     }
-    const valid = SPAN_MODEL_VERSION.test(model) && answersValid;
+    // The endpoint may answer with its own resolved snapshot id (Jev echoes the
+    // served weights path). It must identify the model this run asked for.
+    const modelValid = model.length > 0 && (model === target.model || model.includes(target.model));
+    const valid = modelValid && answersValid;
     console.log(JSON.stringify({
       ok: valid,
-      credentialSource: resolved.source,
-      model: SPAN_MODEL_VERSION.test(model) ? model : null,
+      credentialSource: target.source,
+      baseUrl: target.baseUrl,
+      model: modelValid ? model : null,
       probabilities,
-      usage: Object.fromEntries(['cost', 'inputTokens', 'outputTokens'].flatMap(field => {
-        const value = response?.usage?.[field];
+      usage: Object.fromEntries(['inputTokens', 'outputTokens'].flatMap(field => {
+        const value = response?.usage?.[field] ?? response?.usage?.[field === 'inputTokens' ? 'input_tokens' : 'output_tokens'];
         return typeof value === 'number' && Number.isFinite(value) && value >= 0 ? [[field, value]] : [];
       })),
       durationMs: Date.now() - startedAt,
-      ...(valid ? {} : { errorCode: SPAN_MODEL_VERSION.test(model) ? 'span_invalid_response' : 'span_unexpected_model' }),
+      ...(valid ? {} : { errorCode: modelValid ? 'span_invalid_response' : 'span_unexpected_model' }),
     }, null, 2));
     if (!valid) process.exitCode = 1;
   } catch (error) {
-    // Only a finite code plus an optional HTTP status: the raw SDK/provider
-    // message can contain request or credential material.
-    const status = [error?.status, error?.statusCode, error?.response?.status]
+    // Only a finite code plus an optional HTTP status: the raw provider message
+    // can contain request or credential material.
+    const status = [error?.httpStatus, error?.status, error?.statusCode, error?.response?.status]
       .find(value => typeof value === 'number' && Number.isInteger(value) && value >= 100 && value <= 599);
     const timedOut = error?.name === 'AbortError' || error?.name === 'TimeoutError';
     console.error(JSON.stringify({
       ok: false,
-      credentialSource: resolved.source,
+      credentialSource: target.source,
       errorCode: timedOut ? 'span_timeout' : 'span_http_error',
       ...(typeof status === 'number' ? { httpStatus: status } : {}),
       durationMs: Date.now() - startedAt,

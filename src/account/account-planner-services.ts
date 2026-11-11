@@ -1,76 +1,56 @@
 /**
- * 账户级 Planner 服务簇（ADR-0031 第 2 节）。
+ * 账户级 Planner 服务簇（ADR-0031 第 2 节，ADR-0055 D6）。
  *
- * Planner 进程（plannerSupervisor）与 PlanningAgent 是账户级服务：一个账户
- * 一个 Planner 进程，多个 Conversation 通过各自的 sessionId 复用同一
- * PlanningAgent。按账户构造一次。
+ * 一个账户一个 PlanningAgent，多个 Conversation 通过各自的 sessionId 复用它。
+ * 当前实现是 Manager 传输：MetaWork 启动打包的上游 Pi 进程，不再有 vendored
+ * Planner 进程，因此这里没有 supervisor。
  */
 
-import type Database from 'better-sqlite3';
 import type { PlanningAgent } from '../planning/planning-agent.js';
-import { createDefaultPlanningAgent } from '../planning/anyfusion-planning-agent.js';
+import { resolvePlanningTransport } from '../planning/manager-host/transport-selection.js';
 import {
-  getDefaultPlannerProcessSupervisor,
-  type PlannerProcessController,
-} from '../planning/planner-process-supervisor.js';
-import { PlannerRunRepo } from '../storage/planner-run-repo.js';
-import type { RevisionedAgentBinding } from '../core/authorized-executor-binding.js';
+  buildManagerPlannerServices,
+  type ManagerTransportInput,
+} from '../planning/manager-host/session-transport.js';
+
+/** Fails loudly: used only where a test never plans. */
+const unavailablePlanningAgent: PlanningAgent = {
+  plan: async () => { throw new Error('planning agent: this test does not plan'); },
+  submit: async () => { throw new Error('planning agent: this test does not plan'); },
+} as unknown as PlanningAgent;
 
 export interface AccountPlannerServices {
-  readonly plannerSupervisor: PlannerProcessController | null;
   readonly planningAgent: PlanningAgent;
+  readonly managerPermissionJudge?: import('../resource/manager-permission-judge.js').ManagerPermissionJudge;
 }
 
 export function buildAccountPlannerServices(deps: {
-  db: Database.Database;
-  plannerBinding: RevisionedAgentBinding | null;
-  plannerBindingFingerprint: string;
-  plannerModelId?: string;
-  getPlannerBinding?: () => {
-    plannerBinding: RevisionedAgentBinding | null;
-    plannerBindingFingerprint: string;
-  };
-  plannerSupervisor?: PlannerProcessController;
+  /** Explicitly injected agent (tests, embedded composition). */
   planningAgent?: PlanningAgent;
+  /** Manager transport configuration; required when no agent is injected. */
+  managerTransport?: ManagerTransportInput;
+  /** Present only when a caller deliberately runs the legacy vendored Planner. */
+  legacyPlanningAgent?: PlanningAgent;
 }): AccountPlannerServices {
-  if (deps.plannerBinding && !deps.planningAgent && process.env.NODE_ENV !== 'test') {
-    const runtimeBinding = deps.plannerSupervisor?.runtimeBinding;
-    if (!runtimeBinding) {
-      throw new Error('revision-bound Planner supervisor is required');
-    }
-    if (
-      runtimeBinding.configurationRevision !== deps.plannerBinding.configurationRevision
-      || runtimeBinding.bindingFingerprint !== deps.plannerBindingFingerprint
-      || runtimeBinding.provider !== deps.plannerBinding.providerRef
-      || runtimeBinding.modelId !== deps.plannerModelId
-    ) {
+  if (deps.planningAgent) return { planningAgent: deps.planningAgent };
+  const transport = resolvePlanningTransport(process.env);
+  if (transport === 'vendored-planner') {
+    if (!deps.legacyPlanningAgent) {
       throw new Error(
-        `Planner supervisor binding mismatch for revision `
-        + deps.plannerBinding.configurationRevision,
+        'METAWORK_MANAGER_TRANSPORT=vendored-planner requires an injected legacy planning agent; '
+        + 'the vendored Planner runtime is removed',
       );
     }
+    return { planningAgent: deps.legacyPlanningAgent };
   }
-  const plannerSupervisor = deps.plannerSupervisor
-    ?? (deps.planningAgent ? null : getDefaultPlannerProcessSupervisor());
-
-  const planningAgent = deps.planningAgent ?? createDefaultPlanningAgent({
-    runner: plannerSupervisor!,
-    audit: new PlannerRunRepo(deps.db),
-    resolvePlannerAuditBinding: async configurationRevision => {
-      const current = deps.getPlannerBinding?.() ?? {
-        plannerBinding: deps.plannerBinding,
-        plannerBindingFingerprint: deps.plannerBindingFingerprint,
-      };
-      if (!current.plannerBinding) throw new Error('请先在设置中配置模型并启用智能体。');
-      if (configurationRevision !== current.plannerBinding.configurationRevision) {
-        throw new Error(`Planner audit binding revision is unavailable: ${configurationRevision}`);
-      }
-      return {
-        plannerBinding: current.plannerBinding,
-        plannerBindingFingerprint: current.plannerBindingFingerprint,
-      };
-    },
-  });
-
-  return { plannerSupervisor, planningAgent };
+  if (!deps.managerTransport) {
+    // Test suites that never plan only need a placeholder account service. It is
+    // deliberately unavailable rather than silent: a test that plans by accident
+    // fails with this message instead of running an unconfigured runtime.
+    if (process.env.NODE_ENV === 'test') return { planningAgent: unavailablePlanningAgent };
+    throw new Error(
+      'planning requires a Manager transport (runtime root plus the Conversation Workspace resolver)',
+    );
+  }
+  return buildManagerPlannerServices(deps.managerTransport);
 }

@@ -5,20 +5,16 @@
  * 调度、不创建 Task、不操作钱包。
  */
 
-import type { Payer } from '../billing/cost-policy.js';
-import type { BillingResource } from '../billing/pricing.js';
+import type { Payer } from './usage-payer.js';
+import type { UsageResource } from './usage-resource.js';
 import type { MeteringReason, MeteringStage, SourceScope, UsageQuality } from './contracts.js';
 import type { CumulativeSnapshot, NormalizationIssue } from './usage-normalizer.js';
 
 export const QUERY_INGRESSES = ['web', 'feishu', 'tui', 'cli', 'system'] as const;
 export type QueryIngress = (typeof QUERY_INGRESSES)[number];
 
-/**
- * 一个 Query 的持久归因上下文。`priceBookVersion` / `feePolicyVersion` /
- * `payerPolicyVersion` 在接受时固定，所有自动 retry 沿用同一版本。
- */
+/** A durable, idempotent request identity shared by every model call in a Query. */
 export interface QueryUsageContext {
-  readonly externalAccountRef?: string | null;
   readonly queryId: string;
   readonly accountId: string;
   readonly ingress: QueryIngress;
@@ -29,15 +25,12 @@ export interface QueryUsageContext {
   readonly requestId: string;
   readonly turnId: string | null;
   readonly executionSegmentId: string | null;
-  readonly priceBookVersion: string;
-  readonly feePolicyVersion: string;
-  readonly payerPolicyVersion: string;
   readonly acceptedAt: string;
 }
 
 export interface QueryTaskLink {
   readonly queryId: string;
-  readonly costTaskId: string;
+  readonly taskId: string;
   /** 授权的 Kernel application / decision 事实；不得来自 UI 焦点。 */
   readonly decisionId: string;
   readonly basis: 'authorized_application' | 'authorized_execution_segment';
@@ -81,7 +74,7 @@ export interface PersistedUsageObservation {
   readonly taskId: string | null;
   readonly stage: MeteringStage | null;
   readonly reason: MeteringReason;
-  readonly resource: BillingResource;
+  readonly resource: UsageResource;
   readonly metric: string;
   readonly unit: string;
   readonly quantityNumerator: string;
@@ -125,6 +118,8 @@ export interface QueryContextStore {
 }
 
 export interface MeteringStore {
+  /** Normalized observations and their call projection commit together. */
+  transaction?<T>(write: () => T): T;
   openSpan(span: MeteringSpanRecord): void;
   closeSpan(spanId: string, state: 'closed' | 'uncertain', closedAt: string): boolean;
   listOpenSpans(queryId: string): MeteringSpanRecord[];
@@ -133,4 +128,43 @@ export interface MeteringStore {
   listObservations(queryId: string): PersistedUsageObservation[];
   listCumulativeSnapshots(sourceIds: readonly string[]): CumulativeSnapshot[];
   recordIssues(issues: readonly (NormalizationIssue & { queryId: string })[]): void;
+  /** Token-only fact stream used by the product quota surface. */
+  recordModelUsageFact?(fact: ModelUsageFact): void;
+  listModelUsageFacts?(input: ModelUsageFilter): ModelUsageFact[];
+  /** Stream account-scoped facts without materializing the entire period. */
+  iterateModelUsageFacts?(input: ModelUsageFilter): Iterable<ModelUsageFact>;
+}
+
+export interface ModelUsageFilter {
+  readonly accountId: string;
+  readonly queryId?: string;
+  readonly taskId?: string;
+  /** Restrict quota and product projections to one owning role. */
+  readonly agentClassRef?: string;
+  /** Platform Included usage is quota-bearing; user_direct is On-demand. */
+  readonly payer?: Payer;
+  readonly from?: string;
+  readonly to?: string;
+}
+
+export interface ModelUsageFact {
+  readonly usageId: string;
+  readonly callIdempotencyKey: string;
+  readonly queryId: string;
+  readonly taskId: string | null;
+  readonly providerRef: string | null;
+  readonly modelId: string | null;
+  readonly agentClassRef?: string | null;
+  readonly payer?: Payer;
+  readonly inputTokens: string | null;
+  readonly outputTokens: string | null;
+  readonly cacheReadTokens: string | null;
+  readonly cacheWriteTokens: string | null;
+  readonly reasoningTokens: string | null;
+  readonly usageSource: 'reported' | 'provider_unavailable';
+  readonly occurredAtUtc: string;
+  readonly recordedAtUtc: string;
+  readonly sourceId: string;
+  readonly providerResponseId: string | null;
+  readonly normalizationVersion: string;
 }

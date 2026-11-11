@@ -7,6 +7,7 @@ interface BrowseState {
   parent: string | null;
   crumbs: Array<{ name: string; path: string }>;
   entries: Array<{ name: string; path: string }>;
+  nextCursor: string | null;
 }
 
 /**
@@ -131,6 +132,19 @@ export function WorkspaceCreator({
       });
   };
 
+  const loadMore = () => {
+    if (!http || !state?.nextCursor || busy) return;
+    setLoading(true);
+    setError(null);
+    void http.browseWorkspaceDirectory(state.path, state.nextCursor)
+      .then(result => setState(previous => previous && previous.path === result.path
+        ? { ...result, entries: [...previous.entries, ...result.entries]
+          .filter((entry, index, entries) => entries.findIndex(other => other.name === entry.name) === index) }
+        : result))
+      .catch((cause: Error) => setError(browseErrorLabel(cause.message)))
+      .finally(() => setLoading(false));
+  };
+
   const selectNative = async () => {
     if (busy) return;
     setSelecting(true); setError(null);
@@ -213,7 +227,12 @@ export function WorkspaceCreator({
               <strong>{entry.name}</strong>
             </button>
           ))}
-          {!loading && !error && state?.entries.length === 0 && (
+          {state?.nextCursor && (
+            <button type="button" className="workspace-creator-row" disabled={busy} onClick={loadMore}>
+              加载更多目录
+            </button>
+          )}
+          {!loading && !error && !state?.nextCursor && state?.entries.length === 0 && (
             <div className="workspace-creator-empty">该目录下没有子目录</div>
           )}
           {loading && <div className="workspace-creator-empty">正在读取目录…</div>}

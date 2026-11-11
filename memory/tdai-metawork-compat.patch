@@ -1,3 +1,47 @@
+diff --git a/src/adapters/standalone/llm-runner.ts b/src/adapters/standalone/llm-runner.ts
+index cf127ca..71cbfb9 100644
+--- a/src/adapters/standalone/llm-runner.ts
++++ b/src/adapters/standalone/llm-runner.ts
+@@ -21,6 +21,7 @@ import path from "node:path";
+ import { generateText, tool, stepCountIs, jsonSchema } from "ai";
+ import { createOpenAI } from "@ai-sdk/openai";
+ import { report } from "../../core/report/reporter.js";
++import { recordEngineUsage } from "../../gateway/usage-ledger.js";
+ import { createNoThinkFetch, type DisableThinkingStrategy } from "../../utils/no-think-fetch.js";
+ import type {
+   LLMRunner,
+@@ -238,6 +239,16 @@ export class StandaloneLLMRunner implements LLMRunner {
+         );
+       }
+
++      // Token usage is reported from the aggregated step usage so a tool loop
++      // charges every model call, not only the last step.
++      const usage = result.totalUsage ?? result.usage;
++      recordEngineUsage({
++        model: this.model,
++        inputTokens: usage?.inputTokens,
++        outputTokens: usage?.outputTokens,
++        success: true,
++      });
++
+       // Metric
+       if (params.instanceId) {
+         report("llm_call", {
+@@ -258,6 +269,14 @@ export class StandaloneLLMRunner implements LLMRunner {
+       const errMsg = err instanceof Error ? err.message : String(err);
+       this.logger?.error(`${TAG} run() failed after ${totalMs}ms: ${errMsg}`);
+
++      // A failed call is reported too: MetaWork records it as a call with
++      // missing usage instead of pretending it never happened.
++      recordEngineUsage({
++        model: this.model,
++        success: false,
++        error: errMsg,
++      });
++
+       if (params.instanceId) {
+         report("llm_call", {
+           taskId: params.taskId,
 diff --git a/src/core/store/sqlite.ts b/src/core/store/sqlite.ts
 index 5ea6ac7..39db426 100644
 --- a/src/core/store/sqlite.ts
@@ -25,7 +69,7 @@ index cbef188..5d2cbc5 100644
 @@ -868,6 +868,16 @@ export class TcvdbMemoryStore implements IMemoryStore {
      }
    }
- 
+
 +  async queryL0ForDeletion(sessionKey: string, limit: number): Promise<L0QueryRow[]> {
 +    await this._ensureInit();
 +    if (this.degraded) throw new Error("memory_store_unavailable");
@@ -45,17 +89,32 @@ index 7cf62ce..973f169 100644
 +++ b/src/core/store/types.ts
 @@ -286,6 +286,7 @@ export interface IMemoryStore {
    // ── L0 Read ──────────────────────────────────────────────
- 
+
    countL0(): MaybePromise<number>;
 +  queryL0ForDeletion?(sessionKey: string, limit: number): MaybePromise<L0QueryRow[]>;
    queryL0ForL1(sessionKey: string, afterRecordedAtMs?: number, limit?: number): MaybePromise<L0QueryRow[]>;
    queryL0GroupedBySessionId(sessionKey: string, afterRecordedAtMs?: number, limit?: number): MaybePromise<L0SessionGroup[]>;
    getAllL0Texts(): MaybePromise<Array<{ record_id: string; message_text: string; recorded_at: string }>>;
 diff --git a/src/core/tdai-core.ts b/src/core/tdai-core.ts
-index 036ac8d..1a6a5c8 100644
+index 036ac8d..5da2967 100644
 --- a/src/core/tdai-core.ts
 +++ b/src/core/tdai-core.ts
-@@ -283,6 +283,13 @@ export class TdaiCore {
+@@ -152,12 +152,13 @@ export class TdaiCore {
+       this.scheduler = createPipelineManager(this.cfg, this.logger, this.sessionFilter);
+       // Wire runners after store is ready (or after store init fails — runners
+       // still work in degraded mode with JSONL fallback and no embedding)
+-      this.storeReady
++      await this.storeReady
+         .then(() => this.wirePipelineRunners())
+         .catch((err) => {
+           this.logger.error(`${TAG} Store init failed; wiring pipeline runners in degraded mode: ${err instanceof Error ? err.message : String(err)}`);
+           this.wirePipelineRunners();
+         });
++      await this.ensureSchedulerStarted();
+     }
+ 
+     this.logger.debug?.(`${TAG} TDAI Core initialized`);
+@@ -283,6 +284,13 @@ export class TdaiCore {
      });
    }
  
@@ -70,10 +129,10 @@ index 036ac8d..1a6a5c8 100644
     * Search L1 structured memories.
     * Maps to: `tdai_memory_search` tool.
 diff --git a/src/gateway/server.ts b/src/gateway/server.ts
-index 1da5592..9bc379f 100644
+index 1da5592..d8b1482 100644
 --- a/src/gateway/server.ts
 +++ b/src/gateway/server.ts
-@@ -17,12 +17,17 @@
+@@ -17,12 +17,18 @@
  import http from "node:http";
  import { URL } from "node:url";
  import { timingSafeEqual } from "node:crypto";
@@ -87,11 +146,12 @@ index 1da5592..9bc379f 100644
  import { initDataDirectories } from "../utils/pipeline-factory.js";
  import { SessionFilter } from "../utils/session-filter.js";
 +import { buildFtsQuery } from "../core/store/sqlite.js";
++import { drainEngineUsage } from "./usage-ledger.js";
 +import type { MemoryRecord } from "../core/record/l1-writer.js";
  import type {
    HealthResponse,
    RecallRequest,
-@@ -43,10 +48,125 @@ import type { Logger } from "../core/types.js";
+@@ -43,10 +49,125 @@ import type { Logger } from "../core/types.js";
  import { validateAndNormalizeRaw, fillTimestamps, SeedValidationError } from "../core/seed/input.js";
  import { executeSeed } from "../core/seed/seed-runtime.js";
  import type { SeedProgress } from "../core/seed/types.js";
@@ -99,10 +159,10 @@ index 1da5592..9bc379f 100644
 +import type { SceneIndexEntry } from "../core/scene/scene-index.js";
 +import { parseSceneBlock } from "../core/scene/scene-format.js";
 +import { stripSceneNavigation } from "../core/scene/scene-navigation.js";
- 
+
  const TAG = "[tdai-gateway]";
  const VERSION = "0.1.0";
- 
+
 +interface MetaWorkScopeBody {
 +  team_id?: string;
 +  agent_id?: string;
@@ -217,9 +277,9 @@ index 1da5592..9bc379f 100644
  // ============================
  // Console logger (for standalone gateway — no OpenClaw logger available)
  // ============================
-@@ -112,11 +232,49 @@ function safeEqual(a: string, b: string): boolean {
+@@ -112,11 +233,49 @@ function safeEqual(a: string, b: string): boolean {
  // ============================
- 
+
  export class TdaiGateway {
 +  private metaWorkL0Tail: Promise<void> = Promise.resolve();
    private config: GatewayConfig;
@@ -264,12 +324,12 @@ index 1da5592..9bc379f 100644
 +    sendError(res, 403, "memory_scope_mismatch");
 +    return false;
 +  }
- 
+
    constructor(configOverrides?: Partial<GatewayConfig>) {
      this.config = loadGatewayConfig(configOverrides);
-@@ -260,6 +418,33 @@ export class TdaiGateway {
+@@ -260,6 +419,35 @@ export class TdaiGateway {
        if (!this.checkAuth(req, res)) return;
- 
+
        switch (`${method} ${pathname}`) {
 +        // MetaWork's anti-corruption adapter speaks the v3 data-plane shape.
 +        // Keep these routes as a thin compatibility layer over the same Core
@@ -298,13 +358,15 @@ index 1da5592..9bc379f 100644
 +          return await this.handleMetaWorkProfileDelete(req, res);
 +        case "POST /v3/metawork/profile/query":
 +          return await this.handleMetaWorkProfileQuery(req, res);
++        case "POST /v3/metawork/usage/drain":
++          return this.handleMetaWorkUsageDrain(res);
          case "POST /recall":
            return await this.handleRecall(req, res);
          case "POST /capture":
-@@ -355,6 +540,469 @@ export class TdaiGateway {
+@@ -355,6 +543,480 @@ export class TdaiGateway {
    // Route handlers
    // ============================
- 
+
 +  private sendMetaWorkResponse(res: http.ServerResponse, data: unknown): void {
 +    sendJson(res, 200, { code: 0, message: "ok", data });
 +  }
@@ -640,7 +702,7 @@ index 1da5592..9bc379f 100644
 +      return { entry, matches };
 +    }).filter(item => item.matches > 0)
 +      .sort((a, b) => b.matches - a.matches
-+        || b.entry.heat - a.entry.heat
++        || b.entry.heat - a.entry.hea
 +        || b.entry.updated.localeCompare(a.entry.updated)
 +        || profileId(scope, "l2", a.entry.filename).localeCompare(profileId(scope, "l2", b.entry.filename)))
 +      .slice(0, Math.min(5, Math.max(1, body.limit ?? 3)))
@@ -723,6 +785,17 @@ index 1da5592..9bc379f 100644
 +    this.sendMetaWorkResponse(res, { deleted: true });
 +  }
 +
++  /**
++   * Drain decision-model usage recorded by the standalone runner.
++   *
++   * MetaWork owns the account and the payer policy; this route only reports the
++   * exact per-call tokens the engine observed. Draining clears the ledger, so a
++   * reported call is never reported twice.
++   */
++  private handleMetaWorkUsageDrain(res: http.ServerResponse): void {
++    this.sendMetaWorkResponse(res, { items: drainEngineUsage() });
++  }
++
 +  private async handleMetaWorkProfileQuery(req: http.IncomingMessage, res: http.ServerResponse): Promise<void> {
 +    const body = await parseJsonBody<MetaWorkScopeBody & { limit?: number; offset?: number }>(req);
 +    const scope = readMetaWorkScope(body);
@@ -771,7 +844,7 @@ index 1da5592..9bc379f 100644
    private handleHealth(res: http.ServerResponse): void {
      const response: HealthResponse = {
        status: this.core.getVectorStore() ? "ok" : "degraded",
-@@ -362,6 +1010,7 @@ export class TdaiGateway {
+@@ -362,6 +1024,7 @@ export class TdaiGateway {
        uptime: Math.floor((Date.now() - this.startTime) / 1000),
        stores: {
          vectorStore: !!this.core.getVectorStore(),
@@ -791,3 +864,134 @@ index 50b2ff4..6fd5a1e 100644
      embeddingService: boolean;
    };
  }
+diff --git a/src/gateway/usage-ledger.ts b/src/gateway/usage-ledger.ts
+new file mode 100644
+index 0000000..5e4fc5d
+--- /dev/null
++++ b/src/gateway/usage-ledger.ts
+@@ -0,0 +1,71 @@
++/**
++ * Release-owned usage ledger (MetaWork compatibility patch).
++ *
++ * The standalone Gateway owns the only model call site in the memory engine, so
++ * it can report the exact token usage of every extraction/scene/persona call.
++ * MetaWork drains this ledger over the authenticated v3 route; draining clears
++ * it so one call is reported exactly once.
++ *
++ * The ledger is bounded: a caller that never drains must not grow the sidecar's
++ * memory without limit. Dropping the oldest entries is safe because MetaWork
++ * treats these rows as runtime observation facts, not a billing ledger.
++ */
++
++import { randomUUID } from "node:crypto";
++
++export interface EngineUsageEntry {
++  seq: number;
++  /** Per-process identity, so a restarted engine never reuses a sequence key. */
++  instanceId: string;
++  occurredAt: string;
++  model: string;
++  inputTokens: number | null;
++  outputTokens: number | null;
++  success: boolean;
++  error: string | null;
++}
++
++export const MAX_ENGINE_USAGE_ENTRIES = 2048;
++
++const instanceId = randomUUID();
++let nextSeq = 1;
++let entries: EngineUsageEntry[] = [];
++
++function tokenCount(value: unknown): number | null {
++  return typeof value === "number" && Number.isFinite(value) && value >= 0 ? value : null;
++}
++
++/** Record one finished model call. Never throws into the runner. */
++export function recordEngineUsage(input: {
++  occurredAt?: string;
++  model: string;
++  inputTokens?: unknown;
++  outputTokens?: unknown;
++  success: boolean;
++  error?: string | null;
++}): void {
++  try {
++    entries.push({
++      seq: nextSeq++,
++      instanceId,
++      occurredAt: input.occurredAt ?? new Date().toISOString(),
++      model: input.model,
++      inputTokens: tokenCount(input.inputTokens),
++      outputTokens: tokenCount(input.outputTokens),
++      success: input.success,
++      error: input.error ?? null,
++    });
++    if (entries.length > MAX_ENGINE_USAGE_ENTRIES) {
++      entries = entries.slice(entries.length - MAX_ENGINE_USAGE_ENTRIES);
++    }
++  } catch {
++    /* usage reporting must never break memory extraction */
++  }
++}
++
++/** Return every recorded call and clear the ledger. */
++export function drainEngineUsage(): EngineUsageEntry[] {
++  const drained = entries;
++  entries = [];
++  return drained;
++}
+diff --git a/src/utils/pipeline-factory.ts b/src/utils/pipeline-factory.ts
+index ce87801..c4ea839 100644
+--- a/src/utils/pipeline-factory.ts
++++ b/src/utils/pipeline-factory.ts
+@@ -370,6 +370,7 @@ export function createL1Runner(opts: {
+           logger,
+           instanceId: getInstanceId?.(),
+         });
++        if (!l1Result.success) throw new Error('memory_l1_extraction_failed');
+ 
+         totalExtracted += l1Result.extractedCount;
+         totalStored += l1Result.storedCount;
+diff --git a/src/utils/pipeline-manager.ts b/src/utils/pipeline-manager.ts
+index bccf293..05f9820 100644
+--- a/src/utils/pipeline-manager.ts
++++ b/src/utils/pipeline-manager.ts
+@@ -1105,14 +1105,9 @@ export class MemoryPipelineManager {
+   /**
+    * Recovery: re-enqueue sessions that have pending work from before restart.
+    *
+-   * On restart, message buffers are empty (in-memory only). Sessions with
+-   * non-zero conversation_count had messages that were either:
+-   * 1. Already processed by L1 (l2_pending_l1_count > 0) → arm L2 timer
+-   * 2. Never reached L1 (conversation_count > 0, messages lost) → arm L2
+-   *    as best-effort recovery
+-   *
+-   * We arm L2 timers (with delay) rather than enqueuing immediately,
+-   * because the pipeline may be starting during management commands.
++   * In-memory buffers are empty after restart, but the L1 runner reloads
++   * committed L0. Extract pending conversations first; sessions whose L1
++   * already finished only need their delayed L2 timer restored.
+    */
+   private recoverPendingSessions(): void {
+     for (const [sessionKey, state] of this.sessionStates) {
+@@ -1120,12 +1115,15 @@ export class MemoryPipelineManager {
+ 
+       this.logger?.debug?.(
+         `${TAG} [${sessionKey}] Recovery: conversation_count=${state.conversation_count}, ` +
+-        `l2_pending_l1_count=${state.l2_pending_l1_count}, arming L2 timer`,
++        `l2_pending_l1_count=${state.l2_pending_l1_count}, restoring pending work`,
+       );
+ 
+-      // Reset conversation_count since we can't recover the messages
+-      state.l2_pending_l1_count = Math.max(state.l2_pending_l1_count, state.conversation_count);
+-      state.conversation_count = 0;
++      // MetaWork's L1 runner reloads committed L0 from the store. Pending
++      // conversations must be extracted before advancing to L2 after restart.
++      if (state.conversation_count > 0) {
++        this.enqueueL1(sessionKey, 'flush');
++        continue;
++      }
+ 
+       // Arm L2 timer with delay (gives the system time to fully start)
+       this.advanceL2Timer(sessionKey);

@@ -413,7 +413,7 @@ private async handleServiceVerificationFailure(input: {
 
 - `tasks`：Task 和 Graph 生命周期；
 - `subtasks`：Graph 节点和 acceptance；
-- `kernel_dispatch_items`：Kernel 授权后的执行单元；
+- `dispatch_items`：Kernel 授权后的执行单元；
 - `executor_attempt_receipts`：Harness Attempt 结果和诊断；
 - `task_events` / `execution traces`：进度和收尾事实；
 - `managed_local_services`：当前服务规格、进程和状态；

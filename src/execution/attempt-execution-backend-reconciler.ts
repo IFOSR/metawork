@@ -7,7 +7,8 @@ export interface AttemptExecutionReconciliation {
   exitedAttempts: AttemptExecutionPersistenceRecord[];
 }
 
-/** Reconciles trusted Docker labels with durable attempt records at control-plane startup. */
+/** Reconciles owned native processes with durable attempt records at startup.
+ * containerId is the retained persistence identifier for a native process. */
 export class AttemptExecutionBackendReconciler {
   constructor(
     private readonly backend: AttemptExecutionBackend,

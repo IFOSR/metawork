@@ -1,3 +1,4 @@
+import { isUsageTimestamp } from '../metering/token-usage-filter.js';
 import type { PendingResultIdentity } from '../task/safe-result-identity.js';
 import type { AccountId, Principal } from '../account/types.js';
 import type { ConversationSelection } from '../session/conversation-types.js';
@@ -18,13 +19,11 @@ export const MAX_GATEWAY_COMPLETION_SUGGESTIONS = 50;
 export const GATEWAY_CAPABILITY_COMMAND_COMPLETION = 'command_completion_v1';
 /** Gateway v2 显式能力声明：受限只读 Task 视图查询。 */
 export const GATEWAY_CAPABILITY_TASK_VIEW = 'task_view_v2';
-/** Gateway v2 显式能力声明：只读用量与账单投影。 */
-export const GATEWAY_CAPABILITY_USAGE_BILLING = 'usage_billing_v1';
 /** Server 在 hello 安全元数据中公布的能力清单。 */
 export const GATEWAY_SERVER_CAPABILITIES: readonly string[] = [
   GATEWAY_CAPABILITY_COMMAND_COMPLETION,
   GATEWAY_CAPABILITY_TASK_VIEW,
-  GATEWAY_CAPABILITY_USAGE_BILLING,
+  'token_usage_v1',
   'history_page_fragments_v1',
   'bounded_replay_v1',
   'conversation_observation_v1',
@@ -87,16 +86,14 @@ export type GatewayCommand =
       readonly turnId: string;
       readonly taskId: string;
     }
-  | { readonly kind: 'get_query_bill'; readonly queryId: string }
-  | { readonly kind: 'get_query_bill_for_turn'; readonly turnId: string }
-  | { readonly kind: 'get_task_usage_summary'; readonly taskId: string }
   | {
-      readonly kind: 'list_query_bills';
-      readonly accountId: string;
-      readonly cursor?: string;
-      readonly limit?: number;
+      readonly kind: 'get_token_usage';
+      readonly queryId?: string;
+      readonly taskId?: string;
+      readonly from?: string;
+      readonly to?: string;
     }
-  | { readonly kind: 'get_usage_summary'; readonly accountId: string };
+  | { readonly kind: 'get_quota_guidance' };
 
 export interface GatewayCommandEnvelope {
   readonly protocolVersion: typeof GATEWAY_PROTOCOL_VERSION;
@@ -358,38 +355,27 @@ function parseCommand(value: unknown): GatewayCommand | null {
       taskId: value.taskId,
     };
   }
-  if (value.kind === 'get_query_bill') {
-    return hasOnlyKeys(value, ['kind', 'queryId']) && isGatewayIdentifier(value.queryId)
-      ? { kind: value.kind, queryId: value.queryId } : null;
-  }
-  if (value.kind === 'get_query_bill_for_turn') {
-    return hasOnlyKeys(value, ['kind', 'turnId']) && isGatewayIdentifier(value.turnId)
-      ? { kind: value.kind, turnId: value.turnId } : null;
-  }
-  if (value.kind === 'get_task_usage_summary') {
-    return hasOnlyKeys(value, ['kind', 'taskId']) && isGatewayIdentifier(value.taskId)
-      ? { kind: value.kind, taskId: value.taskId } : null;
-  }
-  if (value.kind === 'list_query_bills') {
-    if (!hasOnlyKeys(value, ['kind', 'accountId', 'cursor', 'limit'])
-      || !isGatewayIdentifier(value.accountId)
-      || (value.cursor !== undefined && !isGatewayIdentifier(value.cursor))
-      || (value.limit !== undefined && (
-        typeof value.limit !== 'number'
-        || !Number.isSafeInteger(value.limit)
-        || value.limit < 1
-        || value.limit > 50
-      ))) return null;
+  if (value.kind === 'get_token_usage') {
+    if (!hasOnlyKeys(value, ['kind', 'queryId', 'taskId', 'from', 'to'])) return null;
+    for (const key of ['queryId', 'taskId'] as const) {
+      if (value[key] !== undefined && !isGatewayIdentifier(value[key])) return null;
+    }
+    if ((value.from !== undefined && !isUsageTimestamp(value.from))
+      || (value.to !== undefined && !isUsageTimestamp(value.to))
+      || (typeof value.from === 'string' && typeof value.to === 'string' && value.from >= value.to)) return null;
+    if (value.queryId === undefined && value.taskId === undefined && value.from === undefined && value.to === undefined) {
+      return { kind: value.kind };
+    }
     return {
       kind: value.kind,
-      accountId: value.accountId,
-      ...(value.cursor !== undefined ? { cursor: value.cursor as string } : {}),
-      ...(value.limit !== undefined ? { limit: value.limit as number } : {}),
+      ...(value.queryId !== undefined ? { queryId: String(value.queryId) } : {}),
+      ...(value.taskId !== undefined ? { taskId: String(value.taskId) } : {}),
+      ...(value.from !== undefined ? { from: String(value.from) } : {}),
+      ...(value.to !== undefined ? { to: String(value.to) } : {}),
     };
   }
-  if (value.kind === 'get_usage_summary') {
-    return hasOnlyKeys(value, ['kind', 'accountId']) && isGatewayIdentifier(value.accountId)
-      ? { kind: value.kind, accountId: value.accountId } : null;
+  if (value.kind === 'get_quota_guidance') {
+    return hasOnlyKeys(value, ['kind']) ? { kind: value.kind } : null;
   }
   return null;
 }
@@ -404,11 +390,8 @@ function matchesScope(scope: GatewayScope, command: GatewayCommand): boolean {
   if (command.kind === 'complete_command') {
     return scope.kind === 'workspace' || scope.selection.mode === 'attach';
   }
-  if (command.kind === 'get_query_bill'
-    || command.kind === 'get_query_bill_for_turn'
-    || command.kind === 'get_task_usage_summary'
-    || command.kind === 'list_query_bills'
-    || command.kind === 'get_usage_summary') {
+  if (command.kind === 'get_token_usage'
+    || command.kind === 'get_quota_guidance') {
     return scope.kind === 'workspace' || scope.kind === 'conversation';
   }
   if (scope.kind !== 'conversation') return false;

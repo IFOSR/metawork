@@ -62,7 +62,7 @@ ready -> running -> awaiting_integration -> done
 
 ### Storage v26
 
-- `kernel_dispatch_items`：保存 child item 的 `pending_launch`、`launching`、`running`、`terminal`、`cancelled` 和 `uncertain` 生命周期；部分唯一索引保证同一 Subtask 最多一个 pending/active attempt。
+- `dispatch_items`：保存 child item 的 `pending_launch`、`launching`、`running`、`terminal`、`cancelled` 和 `uncertain` 生命周期；部分唯一索引保证同一 Subtask 最多一个 pending/active attempt。
 - `workspace_publications`：保存 candidate commit、原 completion payload、稳定顺序、repair/replan 预算和最终 integration commit。
 - `workspace_merge_attempts`：不可变保存 base/ours/theirs、冲突路径、文件策略、Kernel Decision 和结果。
 

@@ -347,8 +347,10 @@ export function collectExecutionCards(
  */
 function settleTerminalStep(card: ExecutionCard): ExecutionCard {
   if (card.state !== 'completed' && card.state !== 'failed') return card;
+  card = { ...card, healthText: null, activityState: null,
+    activityStatus: card.state === 'completed' ? 'completed' : 'failed', progress: null };
   const label = card.stepLabel.trim();
-  const inFlight = /^(正在|等待|尚未|已启动|执行器已启动)/u.test(label);
+  const inFlight = /^(正在|等待|尚未|已启动|执行器已启动|Executor progress:|Executing Subtask:)/u.test(label);
   if (card.state === 'failed') {
     return inFlight ? { ...card, stepKey: 'executor_settled', stepLabel: '执行失败，详情见执行详情' } : card;
   }

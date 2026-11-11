@@ -1,5 +1,5 @@
 import type { AccountPermissionService } from './account-permission-service.js';
-import type { AccountKernelServices } from './account-kernel-services.js';
+import type { AccountControlServices } from './account-control-services.js';
 import type { AccountRuntimeExecutionServices } from './account-runtime-execution-services.js';
 import type { AccountTaskServices } from './account-task-services.js';
 import type { AccountWorkspaceServices } from './account-workspace-services.js';
@@ -7,6 +7,7 @@ import type { AccountRepositories } from './account-repositories.js';
 import {
   isPermissionRequestActive,
   permissionRequestExpiresAt,
+  type ManagerPermissionJudge,
   PermissionWorkflowService,
 } from '../execution/permission-workflow-service.js';
 import { RegisteredCapabilityResourceResolver } from '../execution/capability-resource-resolver.js';
@@ -14,12 +15,15 @@ import { buildPermissionRules, type PermissionRequestRecord } from '../resource/
 import { isTerminalTaskStatus } from '../task/task-state.js';
 
 export function createSqliteAccountPermissionService(deps: {
-  readonly kernelServices: AccountKernelServices;
+  readonly kernelServices: AccountControlServices;
   readonly runtimeExecutionServices: AccountRuntimeExecutionServices;
   readonly taskServices: AccountTaskServices;
   readonly workspaceServices: AccountWorkspaceServices;
   readonly repositories: AccountRepositories;
   readonly onContinuationReady?: () => void;
+  /** Applies the post-grant continuation on the Task's own control loop. */
+  readonly deliverContinuation?: (event: import('../control/control-contracts.js').ControlEvent) => Promise<void>;
+  readonly managerPermissionJudge?: ManagerPermissionJudge;
 }): AccountPermissionService & { recoverPending(startup?: boolean): Promise<number> } {
   const resolving = new Set<string>();
   function workflowFor(sessionId: string, record: PermissionRequestRecord): PermissionWorkflowService {
@@ -54,11 +58,12 @@ export function createSqliteAccountPermissionService(deps: {
       repository: deps.workspaceServices.permissionRepository,
       resolver: new RegisteredCapabilityResourceResolver(resourceRegistrations),
       executionBackend: deps.taskServices.attemptExecutionBackend,
-      workflowStore: deps.kernelServices.kernelWorkflowRepo,
+      ...(deps.deliverContinuation ? { deliverContinuation: deps.deliverContinuation } : {}),
       rules: buildPermissionRules({
         permissionProfileId: record.request.permissionProfileId,
         additionalReadPartitions: resourceRegistrations.values(),
       }),
+      ...(deps.managerPermissionJudge ? { manager: deps.managerPermissionJudge } : {}),
       hooks: {
         checkpoint: async () => null,
         onEscalation: async () => undefined,
@@ -93,29 +98,69 @@ export function createSqliteAccountPermissionService(deps: {
   }
   return {
     async recoverPending(startup = false) {
-      const store = deps.kernelServices.kernelWorkflowRepo;
-      if (startup) store.reconcileProcessing();
-      const work = store.listPermissionWork();
+      // Owner queue only: the event is reconstructed from durable permission facts.
+      const repository = deps.workspaceServices.permissionRepository;
+      const now = new Date().toISOString();
+      if (startup) repository.reconcilePermissionWork?.(now);
+      const work = repository.listPermissionWork?.() ?? [];
       for (const item of work) {
         if (resolving.has(item.requestId)) continue;
-        const record = deps.workspaceServices.permissionRepository.findRequest(item.requestId);
+        const record = repository.findRequest(item.requestId);
         if (!record) continue;
-        // Permission effects are idempotent: authorization/grant use unique identities,
-        // backend resume first inspects state, and the continuation is committed with markApplied.
-        if (item.decisionId && item.status === 'uncertain') {
-          store.resolveUncertainApplication(item.decisionId, 'retry', new Date().toISOString());
-        }
-        const event = store.findEvent(item.eventId);
-        if (!event) continue;
+        const dispatch = deps.runtimeExecutionServices.dispatchItemRepo.find(record.request.attemptId);
+        const task = deps.taskServices.taskRuntimeService.findTask(record.request.taskId);
+        const resolution = item.eventType === 'permission_resolution_received'
+          ? repository.findResolution?.(item.requestId) ?? null
+          : null;
+        const sessionId = resolution?.sessionId
+          ?? task?.ownerPlannerSessionId
+          ?? task?.conversationId
+          ?? null;
+        if (!dispatch || !sessionId) continue;
+        if (item.eventType === 'permission_resolution_received' && !resolution) continue;
+        const event = item.eventType === 'permission_requested'
+          ? {
+              schemaVersion: 5 as const,
+              configurationRevision: dispatch.configurationRevision,
+              type: 'permission_requested' as const,
+              id: item.eventId,
+              correlationId: record.request.id,
+              causationId: null,
+              occurredAt: record.createdAt,
+              sessionId,
+              taskId: record.request.taskId,
+              subtaskId: record.request.subtaskId,
+              attemptId: record.request.attemptId,
+              request: record.request,
+            }
+          : {
+              schemaVersion: 5 as const,
+              configurationRevision: dispatch.configurationRevision,
+              type: 'permission_resolution_received' as const,
+              id: item.eventId,
+              correlationId: record.request.id,
+              causationId: null,
+              occurredAt: resolution!.createdAt,
+              sessionId,
+              taskId: record.request.taskId,
+              subtaskId: record.request.subtaskId,
+              attemptId: record.request.attemptId,
+              requestId: record.request.id,
+              resolution: resolution!.resolution,
+              source: resolution!.source,
+              plannerPlanId: resolution!.plannerPlanId,
+            };
+        const claimed = repository.claimPermissionWork
+          ? repository.claimPermissionWork(item.eventId, now)
+          : true;
+        if (!claimed) continue;
         resolving.add(item.requestId);
         try {
-          await workflowFor(item.sessionId, record).recover(event);
+          await workflowFor(sessionId, record).recover(event);
         } catch {
-          // A direct Executor capability continuation may be interrupted while
-          // its durable inbox event is being inserted. Leave the resolution
-          // pending so the next startup drain retries the same fact.
-        }
-        finally { resolving.delete(item.requestId); }
+          // An interrupted continuation leaves the item pending for the next pass.
+          repository.releasePermissionWork?.(item.eventId, new Date().toISOString());
+        } finally { resolving.delete(item.requestId); }
       }
       return work.length;
     },
@@ -159,11 +204,7 @@ export function createSqliteAccountPermissionService(deps: {
           new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString(),
         )
         .some(record => record.request.id === input.requestId);
-      const legacyEscalation = deps.kernelServices.kernelDecisionRepo.listByCorrelation(input.requestId)
-        .some(record => record.sessionId === input.sessionId
-          && record.action === 'escalate_capability'
-          && deps.kernelServices.kernelWorkflowRepo.isDecisionApplied(record.id));
-      if (!visibleRequest && !legacyEscalation) {
+      if (!visibleRequest) {
         return conflict('Permission request does not belong to this Conversation.');
       }
       const currentRequest = deps.workspaceServices.permissionRepository.findRequest(input.requestId);
@@ -171,7 +212,7 @@ export function createSqliteAccountPermissionService(deps: {
         || (input.expectedGenerationId !== undefined && input.expectedGenerationId !== currentRequest.request.generationId)) {
         return conflict('permission_request_revision_conflict');
       }
-      const accepted = deps.kernelServices.kernelWorkflowRepo.findPermissionResolution(input.requestId);
+      const accepted = deps.workspaceServices.permissionRepository.findResolution?.(input.requestId) ?? null;
       if (accepted) {
         return {
           status: accepted.resolution === input.resolution ? 'replayed' : 'conflict',

@@ -1,6 +1,9 @@
+import { PlanProposalRepo } from './plan-proposal-repo.js';
+import type { PlanProposalStore } from '../execution/plan-proposal-store.js';
+import { deferredPlanProposal, type DeferredPlanProposal } from '../execution/deferred-plan-activation-policy.js';
+import type { PlanAdmissionRequest } from '../execution/plan-admission-policy.js';
 import type Database from 'better-sqlite3';
 import type { AuthorizedExecutorBinding } from '../core/authorized-executor-binding.js';
-import type { KernelEvent } from '../kernel/control-kernel.js';
 
 export type GenerationReplanRequestStatus =
   | 'pending_quiescence'
@@ -21,8 +24,8 @@ export interface GenerationReplanRequestRecord {
   triggerDecisionId: string;
   quiescenceToken: string | null;
   errorSummary: string | null;
-  deferredPlan: Extract<KernelEvent, { type: 'plan_proposed' }> | null;
-  deferredBindings: AuthorizedExecutorBinding[];
+  deferredPlan: DeferredPlanProposal | null;
+  deferredBindings: Record<string, AuthorizedExecutorBinding[]>;
   availabilityExplanation: string | null;
   /** Fencing token of the Planner claim currently held, if any. */
   plannerClaimToken: string | null;
@@ -49,7 +52,11 @@ interface ReplanRow {
 }
 
 export class GenerationReplanRequestRepo {
-  constructor(private readonly db: Database.Database) {}
+  readonly proposals: PlanProposalStore;
+
+  constructor(private readonly db: Database.Database) {
+    this.proposals = new PlanProposalRepo(db);
+  }
 
   enqueue(input: {
     id: string;
@@ -65,7 +72,7 @@ export class GenerationReplanRequestRepo {
         id, task_id, generation_id, source_revision, status,
         trigger_decision_id, configuration_revision, deferred_bindings_json,
         created_at, updated_at
-      ) VALUES (?, ?, ?, ?, 'pending_quiescence', ?, ?, '[]', ?, ?)
+      ) VALUES (?, ?, ?, ?, 'pending_quiescence', ?, ?, '{}', ?, ?)
     `).run(
       input.id,
       input.taskId,
@@ -179,32 +186,36 @@ export class GenerationReplanRequestRepo {
   submitPlannerProposal(input: {
     id: string;
     claimToken: string;
-    event: Extract<KernelEvent, { type: 'plan_proposed' }>;
+    proposal: PlanAdmissionRequest;
     now: string;
   }): boolean {
     return this.db.transaction(() => {
-      if (!this.holdsPlannerClaim(input.id, input.claimToken)) return false;
-      this.insertProposalEvent(input.event, this.find(input.id)?.configurationRevision ?? null);
+      const job = this.find(input.id);
+      if (!job || !this.holdsPlannerClaim(input.id, input.claimToken)) return false;
+      this.assertProposalMatchesJob(input.proposal, job);
+      this.proposals.save({
+        request: input.proposal, replanRequestId: job.id, triggerOperationId: job.triggerDecisionId,
+      });
       return this.db.prepare(`
         UPDATE generation_replan_requests
-        SET status = 'submitted', submitted_at = ?, updated_at = ?,
-            error_summary = NULL
+        SET status = 'submitted', submitted_at = ?, updated_at = ?, error_summary = NULL
         WHERE id = ? AND status = 'planning' AND planner_claim_token = ?
       `).run(input.now, input.now, input.id, input.claimToken).changes === 1;
     }).immediate();
   }
 
-  /**
-   * Fenced `submitted` transition for a Job whose proposal was already persisted
-   * by an earlier pass of this same claim.
-   */
+  /** Restore only the missing Job transition for this exact durable proposal. */
   completePlannerTurn(input: { id: string; claimToken: string; now: string }): boolean {
     return this.db.transaction(() => {
-      if (!this.holdsPlannerClaim(input.id, input.claimToken)) return false;
+      const job = this.find(input.id);
+      if (!job || !this.holdsPlannerClaim(input.id, input.claimToken)) return false;
+      const saved = this.proposals.findForReplan(input.id);
+      if (!saved || saved.delivery === 'invalidated') return false;
+      this.assertProposalMatchesJob(saved.request, job);
       return this.db.prepare(`
         UPDATE generation_replan_requests
         SET status = 'submitted', submitted_at = ?, updated_at = ?, error_summary = NULL
-        WHERE id = ? AND status IN ('planning', 'submitted') AND planner_claim_token = ?
+        WHERE id = ? AND status = 'planning' AND planner_claim_token = ?
       `).run(input.now, input.now, input.id, input.claimToken).changes === 1;
     }).immediate();
   }
@@ -214,33 +225,12 @@ export class GenerationReplanRequestRepo {
     return record?.status === 'planning' && record.plannerClaimToken === token;
   }
 
-  insertProposalEvent(
-    event: Extract<KernelEvent, { type: 'plan_proposed' }>,
-    configurationRevision: string | null,
-  ): void {
-    this.db.prepare(`
-      INSERT OR IGNORE INTO kernel_events (
-        id, schema_version, event_type, correlation_id, causation_id,
-        session_id, task_id, subtask_id, attempt_id, event_json,
-        available_at, status, processing_started_at, processed_at,
-        last_error, configuration_revision, created_at, updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', NULL, NULL, NULL, ?, ?, ?)
-    `).run(
-      event.id,
-      event.schemaVersion,
-      event.type,
-      event.correlationId,
-      event.causationId,
-      event.sessionId,
-      event.taskId ?? null,
-      event.subtaskId ?? null,
-      event.attemptId ?? null,
-      JSON.stringify(event),
-      event.occurredAt,
-      configurationRevision ?? event.configurationRevision,
-      event.occurredAt,
-      event.occurredAt,
-    );
+  private assertProposalMatchesJob(proposal: PlanAdmissionRequest, job: GenerationReplanRequestRecord): void {
+    if (proposal.taskId !== job.taskId || proposal.generationId !== job.generationId
+      || proposal.configurationRevision !== job.configurationRevision
+      || proposal.targetGraphRevision !== job.sourceRevision + 1 || proposal.proposalSource !== 'replan') {
+      throw new Error(`replan proposal identity mismatch: ${job.id}`);
+    }
   }
 
   listPlannerClaimable(
@@ -318,16 +308,27 @@ export class GenerationReplanRequestRepo {
 
   deferForAvailability(
     id: string,
-    event: Extract<KernelEvent, { type: 'plan_proposed' }>,
+    proposal: PlanAdmissionRequest,
     explanation: string,
-    deferredBindings: AuthorizedExecutorBinding[],
+    deferredBindings: Record<string, AuthorizedExecutorBinding[]>,
     now: string,
   ): boolean {
     const request = this.find(id);
     if (!request) {
       throw new Error(`generation replan request does not exist: ${id}`);
     }
-    if (deferredBindings.some(
+    const deferred = deferredPlanProposal(proposal);
+    if (deferred.taskId !== request.taskId || deferred.generationId !== request.generationId
+      || deferred.targetGraphRevision !== request.sourceRevision + 1
+      || deferred.configurationRevision !== request.configurationRevision) {
+      throw new Error(`deferred proposal identity mismatch for replan ${id}`);
+    }
+    const ids = deferred.proposal.workGraph!.subtasks.map(subtask => subtask.id);
+    if (Object.keys(deferredBindings).length !== ids.length
+      || ids.some(id => !deferredBindings[id]?.length)) {
+      throw new Error(`deferred binding scope mismatch for replan ${id}`);
+    }
+    if (Object.values(deferredBindings).flat().some(
       binding => binding.configurationRevision !== request.configurationRevision,
     )) {
       throw new Error(`deferred binding revision mismatch for replan ${id}`);
@@ -341,7 +342,7 @@ export class GenerationReplanRequestRepo {
           updated_at = ?
       WHERE id = ? AND status IN ('planning', 'submitted')
     `).run(
-      JSON.stringify(event),
+      JSON.stringify(deferred),
       JSON.stringify(deferredBindings),
       explanation,
       now,
@@ -357,56 +358,40 @@ export class GenerationReplanRequestRepo {
     `).all() as ReplanRow[]).map(rowToRecord);
   }
 
-  submitPlan(
+  /** Retire only the exact deferred output observed by the activation loop. */
+  rejectDeferredProposal(
     id: string,
-    quiescenceToken: string,
-    event: KernelEvent,
+    proposalId: string,
+    outcome: 'cancelled' | 'failed',
+    reason: string,
     now: string,
   ): boolean {
     return this.db.transaction(() => {
-      const current = this.find(id);
-      if (
-        current?.status === 'submitted'
-        && current.quiescenceToken === quiescenceToken
-      ) {
-        return Boolean(this.db.prepare(
-          'SELECT 1 FROM kernel_events WHERE id = ?',
-        ).get(event.id));
-      }
-      if (
-        current?.status !== 'planning'
-        || current.quiescenceToken !== quiescenceToken
-      ) {
-        return false;
-      }
-      this.db.prepare(`
-        INSERT OR IGNORE INTO kernel_events (
-          id, schema_version, event_type, correlation_id, causation_id,
-          session_id, task_id, subtask_id, attempt_id, event_json,
-          available_at, status, processing_started_at, processed_at,
-          last_error, configuration_revision, created_at, updated_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', NULL, NULL, NULL, ?, ?, ?)
-      `).run(
-        event.id,
-        event.schemaVersion,
-        event.type,
-        event.correlationId,
-        event.causationId,
-        event.sessionId,
-        event.taskId ?? null,
-        event.subtaskId ?? null,
-        event.attemptId ?? null,
-        JSON.stringify(event),
-        event.occurredAt,
-        current.configurationRevision,
-        event.occurredAt,
-        event.occurredAt,
-      );
+      const request = this.find(id);
+      if (request?.status !== 'waiting_for_availability'
+        || request.deferredPlan?.id !== proposalId) return false;
       return this.db.prepare(`
         UPDATE generation_replan_requests
-        SET status = 'submitted', submitted_at = ?, updated_at = ?
-        WHERE id = ? AND status = 'planning' AND quiescence_token = ?
-      `).run(now, now, id, quiescenceToken).changes === 1;
+        SET status = ?, error_summary = ?, updated_at = ?, cancelled_at = ?
+        WHERE id = ? AND status = 'waiting_for_availability'
+      `).run(outcome, reason, now, outcome === 'cancelled' ? now : null, id).changes === 1;
+    }).immediate();
+  }
+
+  /** Invalidating saved input and the submitted Job is one fenced transaction. */
+  invalidateSubmittedProposal(proposalId: string, reason: string, now: string): boolean {
+    return this.db.transaction(() => {
+      const saved = this.proposals.find(proposalId);
+      if (!saved || saved.delivery !== 'pending' || !saved.replanRequestId) return false;
+      const job = this.find(saved.replanRequestId);
+      if (job?.status === 'planning') return false;
+      this.proposals.invalidate(proposalId, reason, now);
+      this.db.prepare(`
+        UPDATE generation_replan_requests
+        SET status = 'failed', error_summary = ?, updated_at = ?
+        WHERE id = ? AND status = 'submitted'
+      `).run(reason, now, saved.replanRequestId);
+      return true;
     }).immediate();
   }
 
@@ -505,9 +490,9 @@ function rowToRecord(row: ReplanRow): GenerationReplanRequestRecord {
     quiescenceToken: row.quiescence_token,
     errorSummary: row.error_summary,
     deferredPlan: row.deferred_plan_json
-      ? JSON.parse(row.deferred_plan_json) as Extract<KernelEvent, { type: 'plan_proposed' }>
+      ? JSON.parse(row.deferred_plan_json) as DeferredPlanProposal
       : null,
-    deferredBindings: JSON.parse(row.deferred_bindings_json) as AuthorizedExecutorBinding[],
+    deferredBindings: JSON.parse(row.deferred_bindings_json) as Record<string, AuthorizedExecutorBinding[]>,
     availabilityExplanation: row.availability_explanation,
     plannerClaimToken: row.planner_claim_token,
     createdAt: row.created_at,

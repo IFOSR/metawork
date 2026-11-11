@@ -1,5 +1,5 @@
 // Normalizes executor errors and progress lines by filtering internal noise and classifying recoverable failures.
-import { kernelFailure, type KernelFailure, type KernelFailureActor, type KernelFailureOrigin } from '../core/kernel-failure.js';
+import { kernelFailure, type ControlFailure, type ControlFailureActor, type ControlFailureOrigin } from '../core/kernel-failure.js';
 import { redactSensitiveText } from '../utils/redact-sensitive-text.js';
 import { truncateText } from '../utils/truncate-text.js';
 const EXECUTOR_NOISE_PATTERNS = [
@@ -100,15 +100,15 @@ export function isRecoverableExecutorFailure(raw?: string): boolean {
 export interface ExecutorFailureContext {
   /** Raw harness tail (e.g. stderr) preserved alongside the summary. */
   detail?: string;
-  origin?: KernelFailureOrigin;
+  origin?: ControlFailureOrigin;
   stage?: string;
-  actor?: KernelFailureActor;
+  actor?: ControlFailureActor;
   step?: string;
 }
 
 /** Optional passthrough facts layered onto the classified failure. */
 type FailurePassthrough = Pick<
-  KernelFailure,
+  ControlFailure,
   'label' | 'detail' | 'origin' | 'stage' | 'actor' | 'step' | 'provider'
 >;
 
@@ -117,7 +117,7 @@ export function normalizeExecutorFailure(
   raw?: string,
   interrupted = false,
   context: ExecutorFailureContext = {},
-): KernelFailure {
+): ControlFailure {
   const rawText = raw?.trim() ?? '';
   // Passthrough: `summary` stays the upstream text. A localized headline is
   // attached as `label` instead of replacing what actually happened.
@@ -231,7 +231,7 @@ function firstMeaningfulRawLine(raw: string): string | undefined {
 }
 
 /** Provider facts parsed from the passthrough text, for operator diagnosis. */
-function providerFacts(raw: string): Pick<KernelFailure, 'provider'> {
+function providerFacts(raw: string): Pick<ControlFailure, 'provider'> {
   if (!raw) return {};
   const status = /\b(?:status\s+)?(4\d{2}|5\d{2})\b[^\n]*?(?:forbidden|unauthorized|too\s+many|payment|quota|balance|额度|余额)/iu.exec(raw)
     ?? /\bstatus\s+(4\d{2}|5\d{2})\b/iu.exec(raw);

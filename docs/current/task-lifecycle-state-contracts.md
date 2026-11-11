@@ -41,7 +41,7 @@ only:
 | `tasks.status` | already canonical (six values, database `CHECK`) |
 | `tasks.state_detail_json` | normalized and bounded by `normalizeTaskStateDetail()` |
 | `subtasks.status` / `KernelSubtaskStatus` | `toSubtaskLifecycleState()` |
-| `kernel_dispatch_items.status` | `toAttemptLifecycleState()` |
+| `dispatch_items.status` | `toAttemptLifecycleState()` |
 | `executor_attempt_receipts.terminal_state` + `failure` | `toAttemptOutcome()` |
 | `task_operation_results.outcome` | `success` / `definite_failure` / `unknown` evidence for required work |
 | `kernel_decision_applications.status` | not projected to users; only read by recovery |

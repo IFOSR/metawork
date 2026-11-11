@@ -147,31 +147,28 @@ export function installObservationSchema(db: Database.Database): void {
   const taskColumns = new Set((db.prepare('PRAGMA table_info(tasks)').all() as Array<{ name: string }>).map(row => row.name));
   if (!['account_id', 'conversation_id', 'status'].every(column => taskColumns.has(column))) return;
   for (const [table, columns] of [
-    ['kernel_dispatch_items', 'task_id, status'],
+    ['dispatch_items', 'task_id, status'],
     ['generation_replan_requests', 'task_id, status'],
     ['workspace_publications', 'task_id, status'],
     ['retry_wakes', 'task_id, status, resume_at DESC'],
-    ['kernel_decisions', 'task_id, id'],
   ]) if (tables.has(table!)) db.exec(`CREATE INDEX IF NOT EXISTS observation_witness_${table} ON ${table}(${columns})`);
   db.exec(`CREATE INDEX IF NOT EXISTS conversation_activity_tasks ON tasks(account_id, conversation_id, id)
     WHERE status IN ('queued', 'running', 'needs_action')`);
-  for (const table of ['tasks', 'subtasks', 'kernel_dispatch_items', 'executor_attempt_receipts', 'executor_attempt_runtime',
+  for (const table of ['tasks', 'subtasks', 'dispatch_items', 'executor_attempt_receipts', 'executor_attempt_runtime',
     'work_graph_revisions', 'resource_leases', 'resource_waits', 'conversation_task_slots', 'task_schedule_entries',
-    'generation_replan_requests', 'workspace_publications', 'retry_wakes', 'permission_requests', 'kernel_events', 'kernel_decision_applications']) {
+    'generation_replan_requests', 'workspace_publications', 'retry_wakes', 'permission_requests', 'task_recovery_items']) {
     if (!tables.has(table)) continue;
     // Older pre-release schemas contained a few witness tables without the
     // task foreign-key column yet. Do not install a trigger that references
     // NEW.task_id before that table's owning migration has added it.
     const tableColumns = new Set((db.prepare(`PRAGMA table_info(${table})`).all() as Array<{ name: string }>).map(row => row.name));
     if (table !== 'tasks' && table !== 'conversation_task_slots'
-      && table !== 'executor_attempt_runtime' && table !== 'kernel_decision_applications'
-      && !tableColumns.has('task_id')) continue;
+      && table !== 'executor_attempt_runtime' && !tableColumns.has('task_id')) continue;
     for (const operation of ['INSERT', 'UPDATE', 'DELETE']) {
       const ref = operation === 'DELETE' ? 'OLD' : 'NEW';
-      const taskId = table === 'executor_attempt_runtime' ? `(SELECT task_id FROM kernel_dispatch_items WHERE attempt_id = ${ref}.attempt_id)`
+      const taskId = table === 'executor_attempt_runtime' ? `(SELECT task_id FROM dispatch_items WHERE attempt_id = ${ref}.attempt_id)`
         : table === 'tasks' ? `${ref}.id` : table === 'conversation_task_slots'
-        ? `${ref}.active_task_id` : table === 'kernel_decision_applications'
-        ? `(SELECT task_id FROM kernel_decisions WHERE id = ${ref}.decision_id)` : `${ref}.task_id`;
+        ? `${ref}.active_task_id` : `${ref}.task_id`;
       db.exec(`CREATE TRIGGER IF NOT EXISTS observation_dirty_${table}_${operation.toLowerCase()}
         AFTER ${operation} ON ${table} BEGIN
           INSERT INTO conversation_activity_dirty(task_id, version) SELECT ${taskId}, 1 WHERE ${taskId} IS NOT NULL

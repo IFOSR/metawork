@@ -11,7 +11,7 @@ export function readPendingTaskResults(db: Database.Database, taskId: string): P
     WHERE r.task_id = ? AND r.terminal_state = 'uncertified_result'
       AND t.status NOT IN ('succeeded', 'failed', 'cancelled') AND s.status = 'awaiting_decision'
       AND s.generation_id = r.generation_id AND s.graph_revision = r.graph_revision
-      AND NOT EXISTS (SELECT 1 FROM kernel_dispatch_items d WHERE d.subtask_id = r.subtask_id
+      AND NOT EXISTS (SELECT 1 FROM dispatch_items d WHERE d.subtask_id = r.subtask_id
         AND d.generation_id = r.generation_id AND (d.created_at > r.started_at AND d.attempt_id != r.attempt_id)
         AND d.status IN ('pending_launch','launching','running','cancelling'))
       AND NOT EXISTS (SELECT 1 FROM task_state_changes AS change
@@ -21,14 +21,6 @@ export function readPendingTaskResults(db: Database.Database, taskId: string): P
           'retry_result:' || r.attempt_id || ':' || COALESCE(
             json_extract(r.parsing_json, '$.resultObjects.safeProjectionId'), '')
         ))
-      AND NOT EXISTS (SELECT 1 FROM kernel_decisions AS decision
-        INNER JOIN kernel_decision_applications AS application
-          ON application.decision_id = decision.id
-        WHERE decision.task_id = r.task_id
-          AND decision.action IN ('accept_uncertified_result', 'retry_uncertified_result')
-          AND application.status = 'applied'
-          AND json_extract(decision.decision_json, '$.action.attemptId') = r.attempt_id
-          AND json_extract(decision.decision_json, '$.action.resultId') = json_extract(r.parsing_json, '$.resultObjects.safeProjectionId'))
       -- A newer attempt supersedes this safe result, except a *failed* metadata
       -- correction: it repaired nothing, so the safe body is still the user's
       -- result and keeps its accept action (2026-10-28 execution-fact contract).

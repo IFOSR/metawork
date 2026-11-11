@@ -16,12 +16,8 @@ export function RoutingDecisionCard({ routing }: { routing: Routing }) {
           : '等待 Kernel 最终选择'}
         {routing.harnessDisplayName ? ` · ${routing.harnessDisplayName}` : ''}
       </div>
-      {(routing.estimatedCost !== undefined || routing.estimatedLatencyMs !== undefined) && (
-        <small>
-          {routing.estimatedCost !== undefined ? `成本 ${routing.estimatedCost.toFixed(4)}` : ''}
-          {routing.estimatedCost !== undefined && routing.estimatedLatencyMs !== undefined ? ' · ' : ''}
-          {routing.estimatedLatencyMs !== undefined ? `延迟 ${routing.estimatedLatencyMs}ms` : ''}
-        </small>
+      {routing.estimatedLatencyMs !== undefined && (
+        <div className="routing-decision-metrics">预计延迟 {routing.estimatedLatencyMs} ms</div>
       )}
       {routing.spanRouting && (
         <div className="routing-span-evidence">
@@ -101,7 +97,6 @@ function candidateReason(reasonCode: string, reasonDetail?: string): string {
     return `该模型未声明任务所需的 ${reasonDetail ?? '能力'} 能力`;
   }
   if (reasonCode === 'latency_limit_exceeded') return '预计延迟超过当前任务限制';
-  if (reasonCode === 'cost_limit_exceeded') return '预计成本超过当前任务限制';
   if (reasonCode === 'unavailable') return '该模型当前不可用';
   return '该模型未满足本次任务的路由条件';
 }

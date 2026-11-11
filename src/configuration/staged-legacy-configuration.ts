@@ -1,10 +1,10 @@
 import {
   AnyFusionConfigurationV2Schema,
-  buildKernelConfigurationView,
+  buildControlConfigurationView,
   buildPlannerConfigurationView,
   compileConfigurationRevision,
   type ConfigurationSnapshot,
-  type KernelConfigurationView,
+  type ControlConfigurationView,
   type PlannerConfigurationView,
 } from './index.js';
 import { configurationContentHash } from './configuration-service.js';
@@ -17,7 +17,7 @@ import { projectConfigurationCandidates } from '../routing/configuration-candida
 export interface StagedLegacyConfiguration {
   snapshot: ConfigurationSnapshot;
   planner: PlannerConfigurationView;
-  kernel: KernelConfigurationView;
+  kernel: ControlConfigurationView;
   plannerBinding: RevisionedAgentBinding | null;
   plannerBindingFingerprint: string;
 }
@@ -36,7 +36,7 @@ export function buildStagedLegacyConfiguration(input: {
   if (planner?.kind === 'planner' && !planner.enabled) {
     return {
       snapshot, planner: buildPlannerConfigurationView(snapshot),
-      kernel: buildKernelConfigurationView(snapshot),
+      kernel: buildControlConfigurationView(snapshot),
       plannerBinding: null, plannerBindingFingerprint: '',
     };
   }
@@ -81,7 +81,7 @@ export function buildStagedLegacyConfiguration(input: {
   return {
     snapshot,
     planner: buildPlannerConfigurationView(snapshot),
-    kernel: buildKernelConfigurationView(snapshot),
+    kernel: buildControlConfigurationView(snapshot),
     plannerBinding,
     plannerBindingFingerprint: authorizedExecutorBindingFingerprint(
       plannerFingerprintBinding,
@@ -124,12 +124,27 @@ function buildTestSnapshot(): ConfigurationSnapshot {
         supportsContinuation: true,
         enabled: true,
       },
-      'codex-cli': {
+      'pi-engineering-fixture': {
         kind: 'executor',
         transport: 'local-cli',
-        command: 'codex',
+        // Test fixtures keep the historical AgentClass identity so persisted
+        // graph assertions remain readable, but execute through the only
+        // supported runtime. Production configuration never creates this
+        // compatibility-shaped entry.
+        command: 'pi',
         args: [],
-        driverId: 'codex-cli',
+        driverId: 'pi-cli',
+        supportsProbe: true,
+        supportsAbort: true,
+        supportsContinuation: true,
+        enabled: true,
+      },
+      'pi-engineering-cli': {
+        kind: 'executor',
+        transport: 'local-cli',
+        command: 'pi',
+        args: [],
+        driverId: 'pi-cli',
         supportsProbe: true,
         supportsAbort: true,
         supportsContinuation: true,
@@ -162,10 +177,10 @@ function buildTestSnapshot(): ConfigurationSnapshot {
         generatedRuntimeRef: 'planner',
         enabled: true,
       },
-      'codex-cli': {
+      'pi-engineering-fixture': {
         displayName: '智能体 2',
         kind: 'executor',
-        harnessRef: 'codex-cli',
+        harnessRef: 'pi-engineering-fixture',
         modelPolicy: { mode: 'fixed', modelRef },
         permissionProfileRef: 'workspace-engineering',
         routingCapabilities: ['workspace-engineering', 'document-processing'],
@@ -175,7 +190,30 @@ function buildTestSnapshot(): ConfigurationSnapshot {
         skills: [],
         mcpServers: [],
         plugins: [],
-        generatedRuntimeRef: 'codex-cli',
+        generatedRuntimeRef: 'pi-engineering-fixture',
+        enabled: true,
+      },
+      // Engineering Executor on the packaged Pi (ADR-0055 D6). Its own harness so
+      // enabling or disabling it never changes another Executor's tool.
+      'pi-engineering': {
+        // Same user-facing name as the engineering Executor it replaces, so a
+        // migrated suite reads the same 「智能体 2」 projection.
+        displayName: '智能体 2',
+        kind: 'executor',
+        harnessRef: 'pi-engineering-cli',
+        modelPolicy: { mode: 'fixed', modelRef },
+        permissionProfileRef: 'workspace-engineering',
+        routingCapabilities: ['workspace-engineering', 'document-processing'],
+        primaryUseCases: ['repository implementation', 'tests', 'engineering documentation'],
+        avoidUseCases: [],
+        plannerAffordances: [
+          'workspace-read-write', 'workspace-command-validation',
+          'public-web-search', 'public-web-fetch', 'source-citation',
+        ],
+        skills: [],
+        mcpServers: [],
+        plugins: [],
+        generatedRuntimeRef: 'pi-engineering',
         enabled: true,
       },
       'pi-agent': {

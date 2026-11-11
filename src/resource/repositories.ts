@@ -104,11 +104,44 @@ export interface UserAuthorizationRecord {
   createdAt: string;
 }
 
+/** Durable user/Planner permission answer, independent of the execution queue. */
+export interface PermissionResolutionRecord {
+  requestId: string;
+  eventId: string;
+  sessionId: string;
+  taskId: string;
+  subtaskId: string;
+  attemptId: string;
+  resolution: 'approve' | 'deny';
+  source: UserAuthorizationRecord['source'];
+  plannerPlanId: string | null;
+  createdAt: string;
+}
+
 export interface PermissionRepositoryPort {
+  /** Transitional permission-owner work state, independent of Kernel event status. */
+  enqueuePermissionWork?(input: {
+    eventId: string;
+    requestId: string;
+    eventType: 'permission_requested' | 'permission_resolution_received';
+    createdAt: string;
+  }): void;
+  claimPermissionWork?(eventId: string, now: string): boolean;
+  releasePermissionWork?(eventId: string, now: string): void;
+  markPermissionWorkApplied?(eventId: string, now: string): void;
+  reconcilePermissionWork?(now: string): number;
+  listPermissionWork?(limit?: number): Array<{
+    eventId: string;
+    requestId: string;
+    eventType: 'permission_requested' | 'permission_resolution_received';
+    status: 'pending' | 'processing';
+  }>;
+  findResolution?(requestId: string): PermissionResolutionRecord | null;
+  recordResolution?(record: PermissionResolutionRecord): 'inserted' | 'replayed' | 'conflict';
   /**
    * Persist a capability-decision fact anchor when the selected storage schema
-   * still requires permission grants to reference kernel_decisions. This is a
-   * storage compatibility hook; it never invokes ControlKernel.
+   * kept requiring permission grants to reference a decision row. This is a
+   * storage compatibility hook; it never invokes any control policy.
    */
   ensureDecisionAnchor?(decisionId: string, configurationRevision: string, request: NormalizedCapabilityRequest): void;
   createRequest(request: NormalizedCapabilityRequest, createdAt: string): PermissionRequestRecord;
@@ -126,6 +159,8 @@ export interface PermissionRepositoryPort {
     decisionId: string;
     request: NormalizedCapabilityRequest;
     limits: CapabilityGrant['limits'];
+    scope?: CapabilityGrant['scope'];
+    reason?: string;
     grantedAt: string;
     authorization?: Omit<UserAuthorizationRecord, 'id' | 'requestId' | 'fingerprint' | 'taskId' | 'createdAt'>;
   }): CapabilityGrant;

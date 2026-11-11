@@ -12,37 +12,11 @@ import type {
 import type { GatewayEventEnvelope } from './client-events.js';
 import type { FeishuGatewayAdapter } from './feishu-gateway-adapter.js';
 import type { GatewaySubscriptions } from './gateway-subscriptions.js';
-import type { BillQueryService } from '../billing/bill-query-service.js';
 import { formatFeishuWorkspaceRequired } from './feishu-events.js';
-import type { QueryBillProjection } from '../billing/bill-query-service.js';
 import type { NotificationJob } from '../delivery/notification-routing.js';
 import type { ConversationObservationService } from './conversation-observation.js';
 import type { ConversationContentReference } from '../session/conversation-read-types.js';
 import type { ClientActionReferences } from './client-action-reference.js';
-
-function formatFeishuBillingSummary(bill: QueryBillProjection): string {
-  const external = bill.confirmedDeductedMicroCoin !== null
-    ? `已确认扣款 ${bill.confirmedDeductedMicroCoin} microCoin`
-    : bill.externalState === 'received'
-      ? '外部已接收，扣款待确认'
-      : bill.externalState === 'rejected'
-        ? '外部消费已拒绝'
-        : bill.externalState === 'unknown'
-          ? '外部消费状态待核对'
-          : `外部消费 ${bill.externalState}`;
-  const coverage = bill.coverage === 'complete'
-    ? '计量完整'
-    : `计量${bill.coverageNote ? `不完整：${bill.coverageNote}` : '不完整'}`;
-  const payerLabels = (bill.payerSummary ?? []).map(item => {
-    const payer = item.payer === 'user_direct' ? '用户直付' : item.payer === 'unknown' ? '付款方未知' : item.payer;
-    const disposition = item.disposition === 'eligible' ? '计入应计' : item.disposition === 'pending' ? '待核对' : '不计入平台收费';
-    return `${payer}${disposition}`;
-  });
-  const payer = bill.platformAbsorption ? '平台承担部分缺失成本' : null;
-  return [`费用摘要：应计 ${bill.assessedMicroCoin} microCoin${bill.assessedIsFinal ? '' : '（暂计）'}`, external, coverage, ...payerLabels, payer]
-    .filter((line): line is string => Boolean(line))
-    .join('；');
-}
 
 export interface FeishuGatewaySessionPortDeps {
   readonly publicTaskDelivery?: (taskId: string) => Promise<import('../delivery/public-delivery-view.js').PublicDeliveryView | null>;
@@ -59,8 +33,6 @@ export interface FeishuGatewaySessionPortDeps {
     previewKind: string;
   }>;
   readonly runtimePaths?: FeishuSessionPort['runtimePaths'];
-  /** Shared server-side billing projection; Feishu only renders its result. */
-  readonly billing?: BillQueryService;
   readonly observation: Pick<ConversationObservationService, 'content'>;
   readonly actions?: ClientActionReferences;
 }
@@ -329,8 +301,6 @@ export class FeishuGatewaySessionPort implements FeishuSessionPort {
       `/approve ${String(payload.requestId)} ${String(payload.requestRevision)} ${String(payload.generationId)} ${job.route.conversationId}`,
       `/deny ${String(payload.requestId)} ${String(payload.requestRevision)} ${String(payload.generationId)} ${job.route.conversationId}`,
     ] : [];
-    const bill = job.fact.category === 'result' && typeof payload.turnId === 'string'
-      ? this.deps.billing?.getQueryBillForTurn(job.route.accountId, payload.turnId) : null;
     const actions: NonNullable<FeishuGatewayReply['actions']> = [];
     const issue = (label: string, command: import('./client-protocol.js').GatewayCommand) => {
       if (!this.deps.actions) return;
@@ -373,7 +343,7 @@ export class FeishuGatewaySessionPort implements FeishuSessionPort {
         ...(stringValue(payload.progressSummary) ? [String(payload.progressSummary)] : []),
         ...(reference && reference.byteLength > 16 * 1024 * 1024
           ? [`结果较长，可分段读取完整正文：/read ${job.route.conversationId} ${reference.hash} 0`] : []),
-        ...(bill ? [formatFeishuBillingSummary(bill)] : [])],
+        ],
         ...(actions.length ? { actions } : {}),
         ...(job.fact.category === 'progress' ? { cardUpdateKey: `notification:${job.route.accountId}:${job.route.id}:${job.fact.subjectId}`,
           terminal: payload.userState === 'finished' } : {}),

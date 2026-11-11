@@ -17,6 +17,7 @@ import {
   type GatewayEventEnvelope,
 } from './client-events.js';
 import { clientConnectionEventStreamId } from './client-connection-event-stream.js';
+import { boundTaskViewPayload } from './task-view-payload.js';
 import type { EventJournal } from './event-journal.js';
 import type { GatewaySubscriptions } from './gateway-subscriptions.js';
 import type { GatewayScope } from './client-protocol.js';
@@ -31,8 +32,9 @@ import {
   type GatewayTaskViewError,
   type GatewayTaskViewSnapshot,
 } from './task-view.js';
-import type { BillQueryService } from '../billing/bill-query-service.js';
 import type { AccountPermissionService } from '../account/account-permission-service.js';
+import type { TokenUsageService } from '../metering/token-usage-service.js';
+import type { QuotaGuidance } from '../metering/quota-guidance.js';
 
 /**
  * Workspace scope 下合法的导航/只读候选（统一 TUI 设计 §9.3）。
@@ -100,7 +102,8 @@ export interface GatewayReadOnlyQueryHandlerDeps {
     readonly requestId: string;
   }) => Promise<GatewayTaskViewSnapshot | { readonly error: GatewayTaskViewError }>;
   readonly authorizeTask?: (accountId: string, taskId: string) => Promise<boolean> | boolean;
-  readonly billing?: BillQueryService;
+  readonly tokenUsage?: TokenUsageService;
+  readonly quotaGuidance?: (accountId: string) => QuotaGuidance;
   readonly pendingInteractions?: (accountId: string, conversationId: string, cursor?: string, limit?: number) =>
     Promise<ReturnType<AccountPermissionService['listForSession']>>;
   readonly conversationResource?: (accountId: string, command: Extract<GatewayReadOnlyQuery, { kind: 'get_conversation_resource' }>) => Promise<unknown>;
@@ -119,7 +122,7 @@ export function createGatewayReadOnlyQueryHandler(
 
   const publishToConnection = async (
     context: GatewayReadOnlyQueryContext,
-    kind: 'command_completion' | 'task_view_snapshot' | 'usage_billing_projection' | 'pending_interactions' | 'conversation_resource',
+    kind: 'command_completion' | 'task_view_snapshot' | 'token_usage_projection' | 'quota_guidance_projection' | 'pending_interactions' | 'conversation_resource',
     payload: unknown,
   ): Promise<void> => {
     if (!deps.journal.reserveSequence) {
@@ -206,68 +209,24 @@ export function createGatewayReadOnlyQueryHandler(
       };
     }
 
-    const billingCommand = command.kind === 'get_query_bill'
-      || command.kind === 'get_query_bill_for_turn'
-      || command.kind === 'get_task_usage_summary'
-      || command.kind === 'list_query_bills'
-      || command.kind === 'get_usage_summary';
-    if (billingCommand) {
-      if (!deps.billing) return { status: 'rejected', reason: 'usage_billing_unavailable' };
-    }
-    const billing = deps.billing;
-    if (command.kind === 'get_query_bill' || command.kind === 'get_query_bill_for_turn') {
-      if (!billing) return { status: 'rejected', reason: 'usage_billing_unavailable' };
-      if (command.kind === 'get_query_bill') {
-        const bill = billing.getQueryBillForAccount(context.accountId, command.queryId);
-        if (!bill) return { status: 'rejected', reason: 'query_bill_not_found' };
-        await publishToConnection(context, 'usage_billing_projection', bill);
-        return { status: 'accepted' };
-      }
-      // Turn 查询必须返回三态用户视图：账单记录在 finalize 前不存在，
-      // 按记录查询会让流式客户端在计量收束前永远拿不到投影。
-      const view = billing.getTurnBillUserView(
-        context.accountId,
-        command.turnId,
-        { liveFallback: true },
-      );
-      if (!view) return { status: 'rejected', reason: 'query_bill_not_found' };
-      await publishToConnection(
-        context,
-        'usage_billing_projection',
-        { turnId: command.turnId, turnBill: view },
-      );
+    if (command.kind === 'get_token_usage') {
+      if (!deps.tokenUsage) return { status: 'rejected', reason: 'token_usage_unavailable' };
+      const payload = {
+        queryId: command.queryId ?? null,
+        taskId: command.taskId ?? null,
+        from: command.from ?? null,
+        to: command.to ?? null,
+        // Only an aggregate crosses this bounded response. Account identity
+        // always comes from authentication, never from a client filter.
+        totals: deps.tokenUsage.aggregate({ ...command, accountId: context.accountId }),
+      };
+      await publishToConnection(context, 'token_usage_projection', payload);
       return { status: 'accepted' };
     }
-    if (billingCommand) {
-      if (!billing) return { status: 'rejected', reason: 'usage_billing_unavailable' };
-      if ('accountId' in command && command.accountId !== context.accountId) {
-        return { status: 'rejected', reason: 'account_denied' };
-      }
-      if (
-        command.kind === 'get_task_usage_summary'
-        && (!deps.authorizeTask || !(await deps.authorizeTask(context.accountId, command.taskId)))
-      ) {
-        return { status: 'rejected', reason: 'task_usage_not_found' };
-      }
-      const payload = command.kind === 'get_task_usage_summary'
-        ? billing.getTaskUsageSummaryForAccount(context.accountId, command.taskId)
-          ?? billing.getTaskUsageSummary(command.taskId)
-        : command.kind === 'get_usage_summary'
-          ? billing.getUsageSummary(context.accountId)
-          : billing.listQueryBillsPage
-            ? billing.listQueryBillsPage({
-              accountId: context.accountId,
-              limit: command.limit ?? 20,
-              ...(command.cursor ? { cursor: command.cursor } : {}),
-            })
-            : billing.listQueryBills({
-              accountId: context.accountId,
-              limit: command.limit ?? 20,
-            });
-      if (payload === null) {
-        return { status: 'rejected', reason: 'task_usage_not_found' };
-      }
-      await publishToConnection(context, 'usage_billing_projection', payload);
+
+    if (command.kind === 'get_quota_guidance') {
+      if (!deps.quotaGuidance) return { status: 'rejected', reason: 'quota_guidance_unavailable' };
+      await publishToConnection(context, 'quota_guidance_projection', deps.quotaGuidance(context.accountId));
       return { status: 'accepted' };
     }
 
@@ -295,7 +254,7 @@ export function createGatewayReadOnlyQueryHandler(
         reason: view.error,
       };
     }
-    await publishToConnection(context, 'task_view_snapshot', view);
+    await publishToConnection(context, 'task_view_snapshot', boundTaskViewPayload(view));
     return { status: 'accepted', conversationId: command.conversationId };
   };
 }

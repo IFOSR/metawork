@@ -7,7 +7,8 @@ export const BUILD_SOURCE_METADATA_VERSION = 1 as const;
 export interface BuildSourceMetadata {
   readonly version: typeof BUILD_SOURCE_METADATA_VERSION;
   readonly sourceRoot: string;
-  readonly plannerRoot: string;
+  /** Absent when the install ships no vendored Planner tree (ADR-0055 D6). */
+  readonly plannerRoot?: string;
 }
 
 export function buildSourceMetadataPath(installationRoot: string): string {
@@ -59,8 +60,8 @@ function assertBuildSourceMetadata(value: unknown): asserts value is BuildSource
     || candidate.version !== BUILD_SOURCE_METADATA_VERSION
     || typeof candidate.sourceRoot !== 'string'
     || candidate.sourceRoot.length === 0
-    || typeof candidate.plannerRoot !== 'string'
-    || candidate.plannerRoot.length === 0
+    || (candidate.plannerRoot !== undefined
+      && (typeof candidate.plannerRoot !== 'string' || candidate.plannerRoot.length === 0))
   ) {
     throw new Error('MetaWork build source metadata is invalid');
   }

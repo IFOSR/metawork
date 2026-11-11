@@ -2,7 +2,6 @@ import { randomUUID } from 'node:crypto';
 import { existsSync, readFileSync } from 'node:fs';
 import { chmod, lstat, mkdir, readFile, readdir, rename, rm, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
-import { parse as parseToml } from 'smol-toml';
 import type { AnyFusionConfigurationV2, ConfigurationSnapshot, ExecutorRuntimeConfiguration } from './types.js';
 import { buildExecutorCapabilityManual } from '../routing/executor-capability-manual.js';
 
@@ -29,7 +28,6 @@ export class AgentRuntimeRenderer {
     await mkdir(tmp, { recursive: true });
     try {
       await this.renderPlanner(snapshot.config, tmp);
-      await this.renderCodex(snapshot.config, tmp);
       await this.renderPi(snapshot.config, tmp);
       await this.renderExecutorCapabilityManuals(snapshot, tmp);
       // Per-revision trees are deliberately immutable (ConfigurationCompiler
@@ -90,11 +88,7 @@ export class AgentRuntimeRenderer {
     await writeFile(join(agent, 'settings.json'), `${JSON.stringify(sharedSettings, null, 2)}\n`, 'utf8');
   }
 
-  private async renderCodex(config: RuntimeRenderConfiguration, root: string): Promise<void> {
-    const codex = join(root, 'codex');
-    await mkdir(codex, { recursive: true });
-    await writeFile(join(codex, 'config.toml'), buildCodexConfigToml(config), 'utf8');
-  }
+
 
   private async renderExecutorCapabilityManuals(
     snapshot: ConfigurationSnapshot,
@@ -213,31 +207,7 @@ export function buildSettingsJson(config: RuntimeRenderConfiguration, agentClass
   };
 }
 
-function buildCodexConfigToml(config: RuntimeRenderConfiguration): string {
-  const providers = enabledProviders(config).filter(([, provider]) => provider.protocol !== 'anthropic');
-  const lines = [
-    'model_reasoning_effort = "high"',
-    'preferred_auth_method = "apikey"',
-    'web_search = "disabled"',
-    '',
-    '[features]',
-    'apps = false',
-    'multi_agent = false',
-    'unified_exec = false',
-    'tool_suggest = false',
-    'goals = false',
-    'guardian_approval = false',
-  ];
-  for (const [ref, provider] of providers) {
-    lines.push('', `[model_providers.${ref}]`);
-    lines.push(`name = "${ref}"`);
-    lines.push(`base_url = "${provider.baseUrl}"`);
-    lines.push(providers.length === 1 ? 'env_key = "OPENAI_API_KEY"' : `env_key = "OPENAI_API_KEY__${ref.toUpperCase().replace(/[^A-Z0-9_]/g, '_')}"`);
-    lines.push('wire_api = "responses"');
-    lines.push('requires_openai_auth = false');
-  }
-  return `${lines.join('\n')}\n`;
-}
+
 
 /**
  * 同步解析当前 generated runtime home 的子目录。
@@ -292,11 +262,6 @@ export function executorRuntimeConfiguration(
     const { defaultProvider, defaultModel, enabledModels, ...settings } = buildSettingsJson(config, '');
     return { provider, model, settings };
   }
-  if (driverId === 'codex-cli') {
-    const { model_providers, ...settings } = parseToml(buildCodexConfigToml(config));
-    const provider = (model_providers as Record<string, Record<string, unknown>>)[providerRef];
-    if (!provider) throw new Error('Authorized Codex Provider is missing from runtime configuration');
-    return { provider, settings };
-  }
+
   return undefined;
 }

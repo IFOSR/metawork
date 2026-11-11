@@ -7,7 +7,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { GatewayEventEnvelope } from '../../src/gateway/client-events.js';
 import { resolveTaskViewTurnAssociation } from '../../src/gateway/task-view-association.js';
 import { createAccountEventJournal } from '../../src/server/account-event-journal.js';
-import { runMigrations } from '../../src/storage/migrations.js';
+import { initializeDatabaseSchema } from '../../src/storage/schema.js';
 import { projectPublicDelivery } from '../../src/delivery/public-delivery-view.js';
 import { WorkGraphRevisionRepo } from '../../src/storage/work-graph-revision-repo.js';
 import { RetryWakeRepo } from '../../src/storage/retry-wake-repo.js';
@@ -40,7 +40,7 @@ function event(id: string, turnId: string, kind: GatewayEventEnvelope['kind'], p
 async function fixture(publicCode = false) {
   const root = await mkdtemp(join(tmpdir(), 'task-view-history-'));
   const db = new Database(':memory:');
-  runMigrations(db);
+  initializeDatabaseSchema(db);
   const runtime = createAccountEventJournal({ db, root, accountId: input.accountId, onError: error => { throw error; } });
   cleanups.push(async () => { await runtime.stop(); db.close(); await rm(root, { recursive: true, force: true }); });
   const journal = runtime.journal;
@@ -56,7 +56,11 @@ async function fixture(publicCode = false) {
   const noReplay = vi.spyOn(journal, 'replay').mockRejectedValue(new Error('navigation must not replay'));
   const readTurn = vi.fn(async () => null);
   const task = { id: input.taskId, accountId: input.accountId, conversationId: input.conversationId, title: 'Old task',
-    workspaceId: publicCode ? 'workspace' : undefined, publicTaskDirectory: publicCode ? 'project' : undefined };
+    workspaceId: publicCode ? 'workspace' : undefined, publicTaskDirectory: publicCode ? 'project' : undefined,
+    executionMode: publicCode ? 'worktree' : undefined,
+    workspaceExecutionSource: publicCode ? 'planner' : undefined,
+    workspaceDeliveryPolicy: publicCode ? 'auto_publish' : undefined,
+    publicProject: publicCode ? 'project' : undefined };
   class EmptyRepo { listByTask() { return []; } }
   const scope = {
     LOCAL_DEFAULT_ACCOUNT_ID: input.accountId, GATEWAY_TASK_VIEW_QUERY_VERSION: 1,
@@ -64,10 +68,10 @@ async function fixture(publicCode = false) {
     webSessionCatalog: { readTurn }, eventJournal: journal, resolveTaskViewTurnAssociation,
     conversationReadModel: runtime.readModel,
     conversationRegistry: { getIfOpen: () => null },
-    billingServices: { contexts: { findByTurnId: () => null } },
+    meteringServices: { contexts: { findByTurnId: () => null } },
     taskRepo: { findById: vi.fn(() => task) },
     accountRegistry: { getIfLoaded: () => null },
-    db, SubtaskRepo: EmptyRepo, KernelDispatchItemRepo: EmptyRepo,
+    db, SubtaskRepo: EmptyRepo, ControlDispatchItemRepo: EmptyRepo,
     ExecutorAttemptReceiptRepo: EmptyRepo, GenerationReplanRequestRepo: EmptyRepo, WorkspacePublicationRepo: EmptyRepo,
     projectTaskViewFacts: async () => ({ result: null, routing: [], subtasks: [] }),
     projectTaskView: () => ({
@@ -119,7 +123,8 @@ describe('production historical Task view lookup', () => {
     const f = await fixture(true);
     expect((await f.getTaskView(input)).publicDelivery).toEqual({
       workspace: '/user/workspace', taskDirectory: '/user/workspace/project',
-      mode: 'worktree', state: 'published', stateLabel: '已发布到任务目录',
+      mode: 'worktree', state: 'published', stateLabel: '已发布到工作区',
+      modeSource: 'planner', deliveryPolicy: 'auto_publish', candidate: 'none',
       files: ['server.mjs'], conflicts: [],
     });
   });

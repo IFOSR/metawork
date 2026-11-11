@@ -2266,6 +2266,7 @@ describe('ManagementServer WebSocket authentication', () => {
         { headers: authHeaders },
       );
       expect(metadata.status).toBe(200);
+      expect(metadata.headers.get('cache-control')).toBe('no-store');
       await expect(metadata.json()).resolves.toEqual({ artifact });
 
       const preview = await fetch(
@@ -2283,6 +2284,7 @@ describe('ManagementServer WebSocket authentication', () => {
         { headers: authHeaders },
       );
       expect(missing.status).toBe(404);
+      expect(missing.headers.get('cache-control')).toBe('no-store');
     } finally {
       await server.stop();
     }
@@ -2298,7 +2300,8 @@ describe('ManagementServer WebSocket authentication', () => {
     const server = createManagementServer(port, { artifactQuery: {
       resolveDownload: async (id: string) => id === 'denied' ? { ok: false, reason: 'unauthorized' }
         : id === 'missing' ? { ok: false, reason: 'not_found' }
-        : { ok: true, artifact: id === 'binary' ? { ...artifact, previewKind: 'unsupported' } : artifact, absolutePath: id === 'unavailable' ? join(root, 'missing.md') : path },
+        : id === 'unavailable' ? { ok: false, reason: 'unavailable' }
+        : { ok: true, artifact: id === 'binary' ? { ...artifact, previewKind: 'unsupported' } : artifact, content: Buffer.from(source), absolutePath: null },
       readReportImage: async () => undefined,
     } as never });
     await server.start();
@@ -2313,7 +2316,7 @@ describe('ManagementServer WebSocket authentication', () => {
       expect(pdf.headers.get('content-type')).toBe('application/pdf');
       expect(decodeURIComponent(pdf.headers.get('content-disposition')!)).toContain('中文报告.pdf');
       expect(Buffer.from(await pdf.arrayBuffer()).subarray(0, 5).toString()).toBe('%PDF-');
-      for (const [id, status] of [['denied', 403], ['missing', 404], ['binary', 415], ['unavailable', 500]] as const) {
+      for (const [id, status] of [['denied', 403], ['missing', 404], ['binary', 415], ['unavailable', 410]] as const) {
         expect((await fetch(url.replace('/report/', `/${id}/`) + '?format=pdf', { headers })).status).toBe(status);
       }
       expect((await fetch(`${url}?format=docx`, { headers })).status).toBe(400);

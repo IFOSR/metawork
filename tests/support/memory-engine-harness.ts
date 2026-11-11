@@ -17,7 +17,7 @@ export interface MemoryEngineHandle {
   port: number;
   dataDir: string;
   kernelAuthToken: string;
-  stop(): Promise<void>;
+  stop(options?: { preserveData?: boolean; crash?: boolean }): Promise<void>;
 }
 
 export function resolveMemoryEngineRoot(): string | null {
@@ -62,8 +62,11 @@ export async function startMemoryEngine(input: {
   llmBaseUrl: string;
   /** Fixed port keeps the config deterministic; a free port is found otherwise. */
   port?: number;
+  dataDir?: string;
+  everyNConversations?: number;
+  l1IdleTimeoutSeconds?: number;
 }): Promise<MemoryEngineHandle> {
-  const dataDir = mkdtempSync(join(tmpdir(), 'metawork-memory-e2e-'));
+  const dataDir = input.dataDir ?? mkdtempSync(join(tmpdir(), 'metawork-memory-e2e-'));
   const port = input.port ?? 18_700 + Math.floor(Math.random() * 400);
   const kernelAuthToken = `e2e-kernel-${Math.random().toString(36).slice(2)}`;
   const configPath = join(dataDir, 'tdai-gateway.standalone.yaml');
@@ -79,7 +82,8 @@ export async function startMemoryEngine(input: {
     '  extraction: { enabled: true, enableDedup: true, maxMemoriesPerSession: 20 }',
     '  persona: { triggerEveryN: 50, maxScenes: 15, triggerMode: current }',
     '  pipeline:',
-    '    everyNConversations: 1', '    enableWarmup: false', '    l1IdleTimeoutSeconds: 1',
+    `    everyNConversations: ${input.everyNConversations ?? 1}`, '    enableWarmup: false',
+    `    l1IdleTimeoutSeconds: ${input.l1IdleTimeoutSeconds ?? 1}`,
     '    l2DelayAfterL1Seconds: 90', '    l2MinIntervalSeconds: 900', '    l2MaxIntervalSeconds: 3600',
     '  recall: { enabled: true, maxResults: 5, scoreThreshold: 0.3, strategy: "hybrid", timeoutMs: 5000 }',
     '  storeBackend: "sqlite"', '  embedding: { provider: "none" }',
@@ -113,12 +117,12 @@ export async function startMemoryEngine(input: {
     port,
     dataDir,
     kernelAuthToken,
-    async stop() {
-      try { child.kill('SIGTERM'); } catch { /* already gone */ }
+    async stop(options = {}) {
+      try { child.kill(options.crash ? 'SIGKILL' : 'SIGTERM'); } catch { /* already gone */ }
       await waitForExit(child);
       // The engine closes its SQLite store during shutdown; removing the
       // directory afterwards keeps WAL/checkpoint files from racing us.
-      rmSync(dataDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+      if (!options.preserveData) rmSync(dataDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
     },
   };
 }

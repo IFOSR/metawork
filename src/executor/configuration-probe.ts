@@ -6,7 +6,6 @@ import type {
   ConfigurationSnapshot,
   HarnessDriverId,
 } from '../configuration/types.js';
-import { CodexCliDriver } from './codex-cli-driver.js';
 import type { HarnessDriver, HarnessProbeResult } from './harness-driver.js';
 import { PiCliDriver } from './pi-cli-driver.js';
 
@@ -57,7 +56,6 @@ export function createLocalExecutorConfigurationProbe(): NonNullable<
   ConfigurationServiceDependencies['probe']
 > {
   const drivers = new Map<string, ProbeDriver>([
-    ['codex-cli', new CodexCliDriver()],
     ['pi-cli', new PiCliDriver()],
   ]);
   return snapshot => probeLocalExecutorHarnesses(snapshot, drivers);

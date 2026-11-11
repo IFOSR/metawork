@@ -1,3 +1,5 @@
+import type { UsageTimelineRequest } from '../../../src/metering/token-usage-timeline';
+import type { TokenUsageView } from '../../../src/management/token-usage-management';
 import type {
   ActivateResult,
   ConfigSnapshot,
@@ -18,10 +20,6 @@ import type {
 import type {
   ArtifactProjection,
   AttachmentMetadata,
-  BillingRecordPageView,
-  BillingTaskView,
-  QueryBillUserStatus,
-  TaskBillingDetailView,
   WebSessionActivationResult,
   WebSessionCreationResult,
   WebSessionMetadata,
@@ -41,8 +39,10 @@ class HttpError extends Error {
 export class HttpClient {
   constructor(private readonly onUnauthorized?: () => void) {}
 
-  private async request<T>(path: string, init?: RequestInit): Promise<T> {    const response = await fetch(path, {
+  private async request<T>(path: string, init?: RequestInit): Promise<T> {
+    const response = await fetch(path, {
       ...init,
+      cache: 'no-store',
       credentials: 'same-origin',
       headers: {
         'Content-Type': 'application/json',
@@ -61,6 +61,12 @@ export class HttpClient {
   /** Raw request passthrough for the memory management view. */
   requestMemory(path: string, init?: RequestInit): Promise<unknown> {
     return this.request<unknown>(path, init);
+  }
+
+  getTokenUsageTimeline(input: UsageTimelineRequest, signal?: AbortSignal): Promise<TokenUsageView> {
+    const params = new URLSearchParams();
+    for (const [key, value] of Object.entries(input)) if (value !== undefined) params.set(key, value);
+    return this.request<TokenUsageView>(`/api/usage/timeline?${params}`, { signal });
   }
 
   getConfig(signal?: AbortSignal): Promise<ConfigSnapshot> {
@@ -174,8 +180,7 @@ export class HttpClient {
         avoidTaskTypes?: string[];
       };
       contextLimit?: number;
-      costInputPerMillion?: number;
-      costOutputPerMillion?: number;
+
       publicFacts?: ModelPublicFacts;
     }>;
     config?: Record<string, unknown>;
@@ -222,13 +227,17 @@ export class HttpClient {
     return this.request('/api/workspaces');
   }
 
-  browseWorkspaceDirectory(path?: string): Promise<{
+  browseWorkspaceDirectory(path?: string, after?: string): Promise<{
     path: string;
     parent: string | null;
     crumbs: Array<{ name: string; path: string }>;
     entries: Array<{ name: string; path: string }>;
+    nextCursor: string | null;
   }> {
-    const suffix = path?.trim() ? `?path=${encodeURIComponent(path.trim())}` : '';
+    const query = new URLSearchParams();
+    if (path?.trim()) query.set('path', path.trim());
+    if (after !== undefined) query.set('after', after);
+    const suffix = query.size ? `?${query}` : '';
     return this.request(`/api/workspaces/browse${suffix}`);
   }
 
@@ -314,29 +323,6 @@ export class HttpClient {
   getBrowsableConversation(sessionId: string, cursor?: string): Promise<WebSessionRecord> {
     const suffix = cursor ? `?cursor=${encodeURIComponent(cursor)}` : '';
     return this.request(`/api/conversations/${encodeURIComponent(sessionId)}/history${suffix}`);
-  }
-
-  /** 只读账单页：分页历史账单；金额与状态全部来自 Server 投影。 */
-  getBillingRecords(input: {
-    cursor?: string;
-    filter?: 'all' | QueryBillUserStatus;
-    limit?: number;
-  } = {}): Promise<BillingRecordPageView> {
-    const params = new URLSearchParams();
-    if (input.cursor) params.set('cursor', input.cursor);
-    if (input.filter && input.filter !== 'all') params.set('filter', input.filter);
-    if (input.limit) params.set('limit', String(input.limit));
-    const suffix = params.toString() ? `?${params.toString()}` : '';
-    return this.request(`/api/billing/records${suffix}`);
-  }
-
-  /** Task 详情的关联请求；无事实时 items 为空（页面显示未建立计量记录）。 */
-  getTaskBillingDetail(taskId: string): Promise<TaskBillingDetailView> {
-    return this.request(`/api/billing/tasks/${encodeURIComponent(taskId)}`);
-  }
-
-  getBillingTasks(): Promise<readonly BillingTaskView[]> {
-    return this.request('/api/billing/tasks');
   }
 
   createConversation(workspaceId: string): Promise<WebSessionCreationResult> {

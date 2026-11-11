@@ -6,7 +6,8 @@ export type ServerAction = 'start' | 'stop' | 'restart' | 'status' | 'doctor' | 
 export type CliCommand =
   | { kind: 'server'; action: ServerAction; force?: boolean }
   | { kind: 'build' }
-  | { kind: 'tui'; conversationId?: string }
+  /** Retired terminal surface kept only for the explicit `metawork tui` command. */
+  | { kind: 'tui-retired' }
   | { kind: 'web'; conversationId?: string; noOpen?: boolean }
   | { kind: 'admin'; command: AdminCommand }
   | { kind: 'gateway-pairing'; command: 'list' | 'approve' | 'revoke'; userId?: string }
@@ -25,7 +26,9 @@ const SERVER_ACTIONS: readonly ServerAction[] = [
 ];
 
 export function parseCliArgs(argv: readonly string[]): CliCommand {
-  if (argv.length === 0) return { kind: 'tui' };
+  // The product entry point is Web. The explicit `tui` command remains a
+  // retired-surface diagnostic so old scripts fail safely and visibly.
+  if (argv.length === 0) return { kind: 'web' };
   if (argv.length === 1 && (argv[0] === '--help' || argv[0] === '-h' || argv[0] === 'help')) {
     return { kind: 'help' };
   }
@@ -38,7 +41,8 @@ export function parseCliArgs(argv: readonly string[]): CliCommand {
     if (rest.length > 0) throw new Error(`未知 build 参数: ${rest[0]}`);
     return { kind: 'build' };
   }
-  if (namespace === 'tui') return parseClientArgs('tui', rest);
+  // `metawork tui` is retired: never silently open a second surface.
+  if (namespace === 'tui') return { kind: 'tui-retired' };
   if (namespace === 'web') return parseClientArgs('web', rest);
   if (namespace === 'gateway') {
     if (rest[0] !== 'pairing') {
@@ -90,9 +94,9 @@ export function formatCliHelp(): string {
     '  metawork build',
     '',
     'Clients（连接已有 Server）:',
-    '  metawork',
-    '  metawork tui [--conversation <id>]',
     '  metawork web [--conversation <id>] [--no-open]',
+    '',
+    '终端界面（TUI）已移除；裸 `metawork` 直接打开 Web 客户端。',
     '',
     'Conversation Workspace:',
     '  /workspace /absolute/path',
@@ -129,9 +133,9 @@ function parseServerArgs(argv: readonly string[]): CliCommand {
 }
 
 function parseClientArgs(
-  kind: 'tui' | 'web',
+  kind: 'web',
   argv: readonly string[],
-): Extract<CliCommand, { kind: 'tui' | 'web' }> {
+): Extract<CliCommand, { kind: 'web' }> {
   let conversationId: string | undefined;
   let noOpen = false;
   for (let index = 0; index < argv.length; index += 1) {
@@ -165,10 +169,10 @@ function parseClientArgs(
 
 function rejectRemovedCommand(argv: readonly string[]): void {
   if (argv.includes('--script')) {
-    throw new Error('Script Client 已移除；请使用 `metawork tui` 或 `metawork web`');
+    throw new Error('Script Client 已移除；请使用 `metawork server start` 与 `metawork web`');
   }
   if (argv.includes('--connect')) {
-    throw new Error('`--connect` 已移除；请使用 `metawork tui`');
+    throw new Error('`--connect` 已移除；请使用 `metawork server start` 与 `metawork web`');
   }
   if (argv.includes('--gateway') || (argv[0] === 'gateway' && argv[1] !== 'pairing')) {
     throw new Error('Gateway 生命周期命令已移除；请使用 `metawork server start`；配对管理用 `metawork gateway pairing`');

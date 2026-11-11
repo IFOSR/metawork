@@ -42,6 +42,13 @@
 不自动上传 Key。维护人员可在不需要旧版本后仅移走这两个文件，不能误删
 用户 Planner/Executor 的 Provider 凭据。Desktop `prepare-development.ts` 仍是显式研发工具。
 
+Desktop 的本地开发安装（`node scripts/dev-desktop.mjs`）仍会调用
+`prepare-development.ts`，它要求安装根能拿到一份完整的内部 LLM 配置：先看目标安装根，
+再看源根（默认 `~/.metawork`，可用 `METAWORK_INTERNAL_LLM_SOURCE_ROOT` 指向隔离 fixture）。
+两者都缺失时安装直接失败并提示“release installation must provide DeepSeek Flash
+credentials”；`enabled:false`、`modelId` 不是 `deepseek-flash` 或 `internal.llm` 为空同样被拒。
+正式发行安装不经过这条路径。
+
 如果研发环境需要从现有账户 Provider 显式准备内部配置，仍可运行：
 
 ```sh

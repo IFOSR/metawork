@@ -1,0 +1,12 @@
+{
+  "name": "metawork-pi-build-host",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Isolated upstream Pi build input for clean CI hosts; never a global runtime.",
+  "dependencies": {
+    "@earendil-works/pi-coding-agent": "1.5.0"
+  },
+  "engines": {
+    "node": ">=22.19.0"
+  }
+}

@@ -6,6 +6,7 @@ import { randomUUID } from 'node:crypto';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { boundedPathSegment } from '../utils/bounded-path-segment.js';
+import { safeHostEnvironment } from '../executor/harness-driver.js';
 import { withWorkspaceGitLock } from './workspace-git-lock.js';
 import type {
   AttemptExecutionBackend,
@@ -19,8 +20,7 @@ import {
   type ResidualProcessFact,
 } from './process-group-reaper.js';
 
-// Retained for compatibility with schema-v30 recovery and existing Docker labels.
-const MANAGED_LABEL = 'io.metaclaw.attempt-sandbox';
+const MANAGED_LABEL = 'io.metawork.attempt';
 const MAX_LOG_BYTES = 16 * 1024 * 1024;
 
 interface NativeAttempt {
@@ -103,6 +103,7 @@ export class NativeAttemptExecutionBackend implements AttemptExecutionBackend {
   readonly kind = 'native' as const;
   readonly pathMode = 'native' as const;
   private readonly attempts = new Map<string, NativeAttempt>();
+  private readonly outputListeners = new Map<string, Set<(chunk: Buffer | string, stream: 'stdout' | 'stderr') => void>>();
   constructor(private readonly stateRoot?: string) {}
 
   private receiptPath(containerId: string): string {
@@ -151,14 +152,14 @@ export class NativeAttemptExecutionBackend implements AttemptExecutionBackend {
     const containerId = `native:${input.attemptId}`;
     const labels = {
       [MANAGED_LABEL]: 'true',
-      'io.metaclaw.execution-backend': 'native',
-      'io.metaclaw.task-id': input.taskId,
-      'io.metaclaw.generation-id': input.generationId,
-      'io.metaclaw.subtask-id': input.subtaskId,
-      'io.metaclaw.attempt-id': input.attemptId,
-      'io.metaclaw.work-unit-id': input.workUnitId,
-      'io.metaclaw.lease-token': input.leaseToken,
-      'io.metaclaw.idempotency-key': input.idempotencyKey,
+      'io.metawork.execution-backend': 'native',
+      'io.metawork.task-id': input.taskId,
+      'io.metawork.generation-id': input.generationId,
+      'io.metawork.subtask-id': input.subtaskId,
+      'io.metawork.attempt-id': input.attemptId,
+      'io.metawork.work-unit-id': input.workUnitId,
+      'io.metawork.lease-token': input.leaseToken,
+      'io.metawork.idempotency-key': input.idempotencyKey,
     };
     const record: AttemptExecutionRecord = {
       containerId,
@@ -170,7 +171,7 @@ export class NativeAttemptExecutionBackend implements AttemptExecutionBackend {
     this.attempts.set(containerId, {
       input,
       record,
-      workspacePath: workspace.source,
+      workspacePath: input.cwd ?? workspace.source,
       child: null,
       groupCreatedAtMs: null,
       logs: '',
@@ -192,15 +193,15 @@ export class NativeAttemptExecutionBackend implements AttemptExecutionBackend {
     const child = receipt
       ? spawn(process.execPath, ['--input-type=module', '-e', NATIVE_HOST, this.receiptPath(containerId),
         join(this.stateRoot!, `metawork-${this.gate(containerId)}.lock`), receipt.token, attempt.input.command, JSON.stringify(attempt.input.args)], {
-        cwd: attempt.workspacePath, env: {...process.env, ...attempt.input.environment, METACLAW_EXECUTION_BACKEND: 'native'},
+        cwd: attempt.workspacePath, env: {...safeHostEnvironment(process.env), ...attempt.input.environment, METAWORK_EXECUTION_BACKEND: 'native'},
         stdio: ['ignore', 'pipe', 'pipe'], detached: true, windowsHide: true,
       })
       : spawn(attempt.input.command, attempt.input.args, {
       cwd: attempt.workspacePath,
       env: {
-        ...process.env,
+        ...safeHostEnvironment(process.env),
         ...attempt.input.environment,
-        METACLAW_EXECUTION_BACKEND: 'native',
+        METAWORK_EXECUTION_BACKEND: 'native',
       },
       stdio: ['ignore', 'pipe', 'pipe'],
       detached: process.platform !== 'win32',
@@ -211,13 +212,14 @@ export class NativeAttemptExecutionBackend implements AttemptExecutionBackend {
     attempt.waitPromise = new Promise(resolve => {
       attempt.resolveWait = resolve;
     });
-    const append = (chunk: Buffer | string) => {
+    const append = (chunk: Buffer | string, stream: 'stdout' | 'stderr' = 'stderr') => {
+      for (const listener of this.outputListeners.get(containerId) ?? []) listener(chunk, stream);
       if (attempt.logs.length >= MAX_LOG_BYTES) return;
       const remaining = MAX_LOG_BYTES - Buffer.byteLength(attempt.logs, 'utf8');
       attempt.logs += Buffer.from(chunk).toString('utf8').slice(0, remaining);
     };
-    child.stdout?.on('data', append);
-    child.stderr?.on('data', append);
+    child.stdout?.on('data', chunk => append(chunk, 'stdout'));
+    child.stderr?.on('data', chunk => append(chunk, 'stderr'));
     child.once('error', error => {
       append(`\n${error instanceof Error ? error.message : String(error)}\n`);
       this.finish(attempt, 127);
@@ -244,6 +246,16 @@ export class NativeAttemptExecutionBackend implements AttemptExecutionBackend {
 
   async logs(containerId: string): Promise<string> {
     return this.requireAttempt(containerId).logs;
+  }
+
+  onOutput(executionId: string, listener: (chunk: Buffer | string, stream: 'stdout' | 'stderr') => void): () => void {
+    const listeners = this.outputListeners.get(executionId) ?? new Set();
+    listeners.add(listener);
+    this.outputListeners.set(executionId, listeners);
+    return () => {
+      listeners.delete(listener);
+      if (listeners.size === 0) this.outputListeners.delete(executionId);
+    };
   }
 
   async pause(containerId: string): Promise<void> {

@@ -12,12 +12,10 @@ import { join } from 'node:path';
  */
 export function desktopPayloadRoots(resources: string): {
   sourceRoot: string;
-  plannerRoot: string;
   memoryRoot: string;
 } {
   return {
     sourceRoot: join(resources, 'payload', 'metawork'),
-    plannerRoot: join(resources, 'payload', 'planner'),
     memoryRoot: join(resources, 'payload', 'memory', 'tdai'),
   };
 }

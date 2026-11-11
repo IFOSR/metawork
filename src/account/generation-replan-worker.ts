@@ -1,30 +1,15 @@
-import { allowsProduction } from '../kernel/production-authorization.js';
+import { allowsProduction } from '../control/production-authorization.js';
 /**
- * Account-scoped Planner Worker for durable Replan Jobs
- * (2026-09-25 Task lifecycle state convergence plan §5).
- *
- * The Kernel only authorizes a durable Replan Job (`schedule_replan`). This
- * worker is the sole consumer of a scheduled Job: it claims the Job with a
- * bounded Planner lease, performs one Planner turn, and submits the resulting
- * `plan_proposed` through the normal Kernel ingress. It runs on the account
- * periodic review, so no foreground TUI, Web connection or ConversationSession
- * callback is required for a replan to converge.
- *
- * Idempotency: the Job id is deterministic, the claim is a single conditional
- * UPDATE, and the proposal event is inserted together with the `submitted`
- * transition. A duplicate recovery pass therefore cannot create a second
- * Planner turn, and a proposed graph is accepted only through the existing
- * proposal identity and Kernel validation path.
- *
- * Planner unavailability is bounded: a transport or process failure releases the
- * claim with backoff, and once the retry budget is exhausted the Job fails
- * closed as `planner_unavailable` so the Kernel can authorize an explicit
- * `block_work` instead of leaving the Task permanently `running`.
+ * Account worker for durable replan proposals. A fenced Manager claim saves its
+ * exact output and the Job's submitted transition in one transaction. Pending
+ * proposal delivery is retried independently of the model-turn retry budget.
  */
 
 import { randomUUID } from 'node:crypto';
 import type { Task } from '../core/types.js';
-import type { KernelEvent } from '../kernel/control-kernel.js';
+import type { PlanAdmissionRequest } from '../execution/plan-admission-policy.js';
+import { PlanProposalUnavailableError, type PlanProposalRecord } from '../execution/plan-proposal-store.js';
+import { isTerminalTaskStatus } from '../task/task-state.js';
 import type { ExecutorAttemptReceipt } from '../storage/executor-attempt-receipt-repo.js';
 import type { TaskEvidenceRecord } from '../execution/execution-evidence-port.js';
 import type { PlanningContext, PlanningAgentPlan } from '../planning/planning-types.js';
@@ -46,23 +31,16 @@ export interface GenerationReplanPlannerPort {
   listAttemptReceipts(taskId: string): readonly ExecutorAttemptReceipt[];
   /** Attachment ids the originating admission was admitted with. */
   resolveTurnAttachmentIds(taskId: string): readonly string[];
-  /**
-   * Reads a proposal this Job already produced. The proposal event id is
-   * derived from the Job's trigger Decision, so a crash between the Planner
-   * turn and the `submitted` transition is recoverable without a second Planner
-   * turn (2026-09-25 review fix 5).
-   */
-  findPersistedProposal(eventId: string): Extract<KernelEvent, { type: 'plan_proposed' }> | null;
-  /**
-   * Drains the Kernel inbox for the originating Conversation inside the system
-   * binding. The proposal event is already durable before this is called, so a
-   * crash or a rejected drain is recovered by the normal Kernel recovery sweep.
-   */
-  drainKernel(input: {
+  /** Current durable graph, read before and after model IO and before delivery. */
+  findActiveGraph(taskId: string): { generationId: string; revision: number; configurationRevision: string } | null;
+  /** Acknowledges only after the receiving admission queue is durable. */
+  submitProposal(input: {
     sessionId: string;
     conversationId: string | null;
     userInput: string;
-    event: Extract<KernelEvent, { type: 'plan_proposed' }>;
+    proposal: PlanAdmissionRequest;
+    replanRequestId: string;
+    triggerOperationId: string;
   }): Promise<void>;
 }
 
@@ -71,6 +49,12 @@ export interface GenerationReplanWorkerDeps {
   readonly replanRepo: GenerationReplanRequestRepo;
   readonly planner: GenerationReplanPlannerPort;
   findTask(taskId: string): Task | null;
+  /**
+   * Admission facts for the Task's own Workspace. A replan continues an already
+   * admitted Task, so admission must receive that Task's Workspace identity;
+   * without it every automatic replan ends in "select a workspace".
+   */
+  resolveTaskWorkspace?(task: Task): { workspaceId: string; canonicalPath: string } | null;
   now(): string;
   /** A Planner claim older than this is treated as abandoned and re-claimable. */
   plannerLeaseMs?: number;
@@ -105,6 +89,13 @@ export class GenerationReplanWorker {
    */
   async run(): Promise<GenerationReplanWorkerReport> {
     if (!allowsProduction(this.deps.productionAuthorization?.())) return { claimed: 0, submitted: 0, retried: 0, failed: 0 };
+    const maxJobs = this.deps.maxJobsPerPass ?? DEFAULT_MAX_JOBS_PER_PASS;
+    for (const saved of this.deps.replanRepo.proposals.listPendingReplans(maxJobs)) {
+      if (!allowsProduction(this.deps.productionAuthorization?.())) break;
+      const job = this.deps.replanRepo.find(saved.replanRequestId!);
+      if (job?.status === 'planning') continue; // Planner claim owns the missing submitted transition.
+      await this.deliverProposal(saved);
+    }
     const nowMs = Date.parse(this.deps.now());
     const leaseCutoff = new Date(
       nowMs - (this.deps.plannerLeaseMs ?? DEFAULT_PLANNER_LEASE_MS),
@@ -144,16 +135,6 @@ export class GenerationReplanWorker {
     nowMs: number,
     claimToken: string,
   ): Promise<'submitted' | 'retry' | 'failed'> {
-    const budgetMs = this.deps.plannerRetryBudgetMs ?? DEFAULT_PLANNER_RETRY_BUDGET_MS;
-    if (nowMs - Date.parse(job.createdAt) > budgetMs) {
-      this.deps.replanRepo.failPlannerClaim(
-        job.id,
-        claimToken,
-        `planner_unavailable: the authorized Replan Job exceeded its ${budgetMs}ms retry budget`,
-        this.deps.now(),
-      );
-      return 'failed';
-    }
     const task = this.deps.findTask(job.taskId);
     if (!task) {
       this.deps.replanRepo.failPlannerClaim(
@@ -180,8 +161,18 @@ export class GenerationReplanWorker {
       // A proposal this Job already produced is the recoverable Planner turn.
       // Re-planning it would be a second turn with a different result
       // (2026-09-25 review fix 5).
-      const recovered = this.deps.planner.findPersistedProposal(eventId);
+      const invalid = this.staleReason(job, task);
+      if (invalid) {
+        this.deps.replanRepo.failPlannerClaim(job.id, claimToken, invalid, this.deps.now());
+        return 'failed';
+      }
+      const recovered = this.deps.replanRepo.proposals.findForReplan(job.id);
       if (recovered) {
+        if (recovered.delivery === 'invalidated') {
+          this.deps.replanRepo.failPlannerClaim(job.id, claimToken,
+            recovered.deliveryReason ?? 'saved proposal invalidated', this.deps.now());
+          return 'failed';
+        }
         // The Planner turn is already durable for this Job; only the fenced
         // `submitted` transition is missing.
         if (!this.deps.replanRepo.completePlannerTurn({
@@ -192,13 +183,18 @@ export class GenerationReplanWorker {
           // Another worker owns or already finished this Job.
           return 'submitted';
         }
-        await this.safeDrain({
-          sessionId,
-          conversationId,
-          userInput: recovered.requestText,
-          event: recovered,
-        });
+        await this.deliverProposal(recovered);
         return 'submitted';
+      }
+      const budgetMs = this.deps.plannerRetryBudgetMs ?? DEFAULT_PLANNER_RETRY_BUDGET_MS;
+      if (nowMs - Date.parse(job.createdAt) > budgetMs) {
+        this.deps.replanRepo.failPlannerClaim(
+          job.id,
+          claimToken,
+          `planner_unavailable: the authorized Replan Job exceeded its ${budgetMs}ms retry budget`,
+          this.deps.now(),
+        );
+        return 'failed';
       }
       const userInput = this.buildRequestText(job, task);
       const context = this.deps.planner.buildPlanningContext({
@@ -225,15 +221,15 @@ export class GenerationReplanWorker {
         return 'failed';
       }
       const plan = await this.deps.planner.plan(context);
-      const event = buildGenerationReplanProposedEvent({
+      const taskWorkspace = this.deps.resolveTaskWorkspace?.(task) ?? null;
+      const proposal = buildGenerationReplanProposal({
         configurationRevision: context.configuration.revisionId,
+        ...(taskWorkspace ? { workspaceAdmission: { targetWorkspace: taskWorkspace } } : {}),
         sessionId,
         conversationId,
         attachmentIds: this.deps.planner.resolveTurnAttachmentIds(task.id),
         plan,
-        eventId,
-        correlationId: job.id,
-        causationId: job.triggerDecisionId,
+        proposalId: eventId,
         taskId: task.id,
         requestText: userInput,
         generationId: job.generationId,
@@ -242,17 +238,28 @@ export class GenerationReplanWorker {
       // Persist the proposal and mark the turn submitted in one fenced
       // transaction: a crash in between leaves a recoverable proposal, and a
       // lost claim cannot land anything.
+      const latestTask = this.deps.findTask(job.taskId);
+      const stale = latestTask ? this.staleReason(job, latestTask) : 'replan Task no longer exists';
+      const currentConfiguration = this.deps.planner.buildPlanningContext({ sessionId, conversationId, userInput }).configuration.revisionId;
+      const ownerChanged = latestTask && (latestTask.conversationId !== task.conversationId
+        || latestTask.ownerPlannerSessionId !== task.ownerPlannerSessionId || latestTask.workspaceId !== task.workspaceId);
+      if (stale || ownerChanged || currentConfiguration !== job.configurationRevision) {
+        this.deps.replanRepo.failPlannerClaim(job.id, claimToken,
+          stale ?? (ownerChanged ? 'replan owner changed during Manager turn' : 'configuration_revision_changed during Manager turn'), this.deps.now());
+        return 'failed';
+      }
       const submitted = this.deps.replanRepo.submitPlannerProposal({
         id: job.id,
         claimToken,
-        event,
+        proposal,
         now: this.deps.now(),
       });
       if (!submitted) {
         // The claim was fenced out; the owning worker lands the proposal.
         return 'submitted';
       }
-      await this.safeDrain({ sessionId, conversationId, userInput, event });
+      const saved = this.deps.replanRepo.proposals.findForReplan(job.id);
+      if (saved) await this.deliverProposal(saved);
       return 'submitted';
     } catch (error) {
       this.deps.replanRepo.releasePlannerClaim(
@@ -265,17 +272,55 @@ export class GenerationReplanWorker {
     }
   }
 
-  private async safeDrain(input: {
-    sessionId: string;
-    conversationId: string | null;
-    userInput: string;
-    event: Extract<KernelEvent, { type: 'plan_proposed' }>;
-  }): Promise<void> {
+  private staleReason(job: GenerationReplanRequestRecord, task: Task): string | null {
+    if (isTerminalTaskStatus(task.status)) return `replan Task is terminal: ${task.status}`;
+    const graph = this.deps.planner.findActiveGraph(job.taskId);
+    if (!graph || graph.generationId !== job.generationId || graph.revision !== job.sourceRevision) return 'replan graph identity changed';
+    if (graph.configurationRevision !== job.configurationRevision) return 'configuration_revision_changed in active graph';
+    return null;
+  }
+
+  private async deliverProposal(saved: PlanProposalRecord): Promise<void> {
+    if (saved.delivery !== 'pending' || !allowsProduction(this.deps.productionAuthorization?.())) return;
+    const job = this.deps.replanRepo.find(saved.replanRequestId!);
+    const task = job ? this.deps.findTask(job.taskId) : null;
+    const request = saved.request;
+    let invalid = !job || !task ? 'replan Job or Task no longer exists'
+      : job.status !== 'submitted' ? `replan Job is ${job.status}`
+      : this.staleReason(job, task);
+    if (!invalid && task) {
+      const owner = task.ownerPlannerSessionId ?? task.conversationId;
+      if (owner !== request.sessionId || (task.conversationId ?? null) !== (request.conversationId ?? null)) {
+        invalid = 'replan Conversation owner changed';
+      }
+      const workspaceId = request.workspaceAdmission?.targetWorkspace?.workspaceId;
+      if (workspaceId && task.workspaceId !== workspaceId) invalid = 'replan Workspace owner changed';
+    }
+    if (invalid) {
+      this.deps.replanRepo.invalidateSubmittedProposal(request.id, invalid, this.deps.now());
+      return;
+    }
     try {
-      await this.deps.planner.drainKernel(input);
-    } catch {
-      // The proposal event is already durable; the Kernel recovery sweep owns
-      // the remaining drain. This is not a Planner failure.
+      const configuration = this.deps.planner.buildPlanningContext({
+        sessionId: request.sessionId, conversationId: request.conversationId ?? null, userInput: request.requestText,
+      }).configuration.revisionId;
+      if (configuration !== request.configurationRevision) {
+        this.deps.replanRepo.invalidateSubmittedProposal(request.id, 'configuration_revision_changed before admission', this.deps.now());
+        return;
+      }
+      await this.deps.planner.submitProposal({
+        sessionId: request.sessionId, conversationId: request.conversationId ?? null,
+        userInput: request.requestText, proposal: request,
+        replanRequestId: saved.replanRequestId!, triggerOperationId: saved.triggerOperationId!,
+      });
+      this.deps.replanRepo.proposals.markForwarded(request.id, this.deps.now());
+    } catch (error) {
+      if (error instanceof PlanProposalUnavailableError) {
+        this.deps.replanRepo.invalidateSubmittedProposal(request.id, error.code, this.deps.now());
+        return;
+      }
+      // Durable input is pending. Retry delivery, never the Manager turn.
+      this.deps.replanRepo.proposals.recordDeliveryFailure(request.id, this.deps.now());
     }
   }
 
@@ -356,27 +401,22 @@ export function buildGenerationReplanRequestText(input: {
   ].join('\n\n').slice(0, 24_000);
 }
 
-export function buildGenerationReplanProposedEvent(input: {
+export function buildGenerationReplanProposal(input: {
   configurationRevision: string;
   sessionId: string;
   conversationId: string | null;
   attachmentIds: readonly string[];
   plan: PlanningAgentPlan;
-  eventId: string;
-  correlationId: string;
-  causationId: string | null;
+  proposalId: string;
   taskId: string;
   requestText: string;
   generationId: string;
   targetGraphRevision: number;
-}): Extract<KernelEvent, { type: 'plan_proposed' }> {
+  workspaceAdmission?: { targetWorkspace: { workspaceId: string; canonicalPath: string } | null };
+}): PlanAdmissionRequest {
   return {
-    schemaVersion: 5,
     configurationRevision: input.configurationRevision,
-    type: 'plan_proposed',
-    id: input.eventId,
-    correlationId: input.correlationId,
-    causationId: input.causationId,
+    id: input.proposalId,
     occurredAt: new Date().toISOString(),
     sessionId: input.sessionId,
     ...(input.conversationId ? { conversationId: input.conversationId } : {}),
@@ -388,6 +428,7 @@ export function buildGenerationReplanProposedEvent(input: {
     targetGraphRevision: input.targetGraphRevision,
     attachmentIds: [...input.attachmentIds],
     availabilityExplanation: null,
+    ...(input.workspaceAdmission ? { workspaceAdmission: input.workspaceAdmission } : {}),
   };
 }
 

@@ -5,7 +5,6 @@ import type { WorkGraphProposal, WorkGraphSubtask } from '../work-graph/index.js
 export type { WorkspaceIntent };
 
 export type PlanningAction =
-  | 'direct_reply'
   | 'clarification'
   | 'task_control'
   | 'plan_work_graph'
@@ -35,17 +34,14 @@ export type { WorkGraphProposal };
 export interface PlanningAgentPlan {
   id: string;
   /**
-   * 8 = historical plan persisted before the Workspace intent contract.
-   * 9 = current contract with a validated single-Workspace `workspaceIntent`.
+   * 9 = the single supported contract, with a validated single-Workspace
+   * `workspaceIntent`. Host-owned, so the Runtime overwrites it before parsing.
    */
-  schemaVersion: 8 | 9;
+  schemaVersion: 9;
   action: PlanningAction;
   confidence: number;
   reason: string;
   clarificationQuestion: string | null;
-  response: {
-    directReply: string | null;
-  };
   task: {
     publicProjectDirectory?: string | null;
     startServiceAfterPublish?: boolean | null;
@@ -96,6 +92,9 @@ export interface PlannerImageAttachment {
 }
 
 export interface PlanningContext {
+  signal?: AbortSignal;
+  /** Internal model turns have no proposal submitter but still report usage. */
+  onUsage?: (event: import('../executor/harness-driver.js').HarnessUsageEvent) => void;
   /** Trusted replan input; never supplied by the model. */
   replan?: { taskId: string; taskEvidenceIds: readonly string[] };
   userInput: string;
@@ -118,4 +117,11 @@ export interface PlanningContext {
   } | null;
   configuration: PlannerConfigurationView;
   timeoutMs: number;
+  /** A soft hosted-quota notice; it never prevents the Manager from planning. */
+  quotaNotice?: {
+    reason: 'hosted_quota_exhausted' | 'usage_missing' | 'unknown_plan';
+    usedTokens: string;
+    limit: number;
+    message: string;
+  };
 }

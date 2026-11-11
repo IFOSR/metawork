@@ -1,12 +1,9 @@
 import type { PlannerConfigurationView } from '../configuration/index.js';
-import {
-  requiredModelCapabilitiesForRoutingCapabilities,
-  type ConfigurationCatalogAgentClass,
-} from '../routing/types.js';
 import { PlanningAgentPlanSchema } from './planning-agent-plan-schema.js';
 import type { PlanningAgentPlan, PlanningContext, SubtaskProposal } from './planning-types.js';
 import { validateWorkGraph } from '../work-graph/index.js';
 import { isSharedReadCandidate } from '../work-graph/workspace-effect.js';
+import { isValidFileOutput } from '../work-graph/file-outputs.js';
 
 export interface PlanningAgentPlanValidationResult {
   valid: boolean;
@@ -25,9 +22,11 @@ export function validatePlanningAgentPlan(
   if (!parsed.success) {
     return {
       valid: false,
+      // The canonical strict schema names unknown keys at their actual path.
+      // A second field whitelist drifted and falsely told the Manager to remove
+      // required workspaceIntent when an unrelated nested graph key was invalid.
       errors: parsed.error.issues
-        .map(issue => `${issue.path.join('.') || 'plan'}: ${issue.message}`)
-        .sort(),
+        .map(issue => `${issue.path.join('.') || 'plan'}: ${issue.message}`).sort(),
     };
   }
 
@@ -164,9 +163,6 @@ function validateActionSemantics(plan: PlanningAgentPlan, errors: string[]): voi
   if (plan.action === 'clarification' && !plan.clarificationQuestion?.trim()) {
     errors.push('clarification requires clarificationQuestion');
   }
-  if (plan.action === 'direct_reply' && !plan.response.directReply?.trim()) {
-    errors.push('direct_reply requires a non-empty response.directReply');
-  }
   if (plan.action === 'task_control' && plan.task.control === 'none') {
     errors.push('task_control requires a control kind');
   }
@@ -179,9 +175,6 @@ function validateActionSemantics(plan: PlanningAgentPlan, errors: string[]): voi
  */
 function validateWorkspaceIntent(plan: PlanningAgentPlan, errors: string[]): void {
   const intent = plan.workspaceIntent ?? null;
-  // Legacy schema 8 plans carry no intent; Kernel keeps the isolated safe
-  // default for them instead of rejecting historical events on replay.
-  if (plan.schemaVersion === 8) return;
   if (plan.action === 'plan_work_graph') {
     if (!intent) {
       errors.push('plan_work_graph requires workspaceIntent in PlanningAgentPlan schema 9');
@@ -202,19 +195,25 @@ function validateWorkspaceIntent(plan: PlanningAgentPlan, errors: string[]): voi
       errors.push('a writing Workspace intent must declare at least one target path');
     }
     for (const path of intent.targetPaths) {
-      if (path.startsWith('/') || path.includes('\\')
-        || path.split('/').some(part => !part || part === '.' || part === '..')) {
+      // A dedicated directory target keeps its trailing `/` so a fileOutput such
+      // as `site/` is covered by exactly one contract in both places.
+      if (!isValidFileOutput(path)) {
         errors.push(`workspaceIntent.targetPaths must stay Workspace-relative: ${path}`);
       }
     }
     const targetPaths = intent.targetPaths;
+    const trimmed = (path: string): string => path.replace(/\/+$/u, '');
+    const coveredBy = (output: string, target: string): boolean => {
+      const base = trimmed(target);
+      const declared = trimmed(output);
+      return declared === base || declared.startsWith(`${base}/`);
+    };
     for (const output of plan.workGraph?.subtasks.flatMap(subtask => subtask.fileOutputs ?? []) ?? []) {
-      if (output.startsWith('/') || output.includes('\\')
-        || output.split('/').some(part => !part || part === '.' || part === '..')) {
+      if (!isValidFileOutput(output)) {
         errors.push(`subtask.fileOutputs must stay Workspace-relative: ${output}`);
         continue;
       }
-      if (!targetPaths.some(target => output === target || output.startsWith(`${target}/`))) {
+      if (!targetPaths.some(target => coveredBy(output, target))) {
         errors.push(`subtask.fileOutputs must be covered by workspaceIntent.targetPaths: ${output}`);
       }
     }
@@ -293,8 +292,6 @@ function validateRouting(
 ): void {
   const catalog = configuration.routingCatalog;
   const capabilityIds = new Set(catalog.capabilities.map(capability => capability.id));
-  const agentClassesByRef = new Map(catalog.agentClasses.map(agentClass => [agentClass.id, agentClass]));
-  const modelRefs = new Set(configuration.models.map(model => model.id));
 
   for (const subtask of subtasks) {
     collectDuplicateErrors(
@@ -303,13 +300,6 @@ function validateRouting(
       subtask.requiredCapabilities,
       errors,
     );
-    collectDuplicateErrors(
-      subtask.id,
-      'executor binding',
-      subtask.executorBindings.map(executorBindingKey),
-      errors,
-    );
-
     if (subtask.requiredCapabilities.length === 0) {
       errors.push(`subtask ${subtask.id} requires at least one Routing Capability`);
     }
@@ -328,140 +318,7 @@ function validateRouting(
       errors.push(`no_capable_agent_class: subtask ${subtask.id} must be split at a Routing Capability handoff`);
     }
 
-    for (const binding of subtask.executorBindings) {
-      const agentClass = agentClassesByRef.get(binding.agentClassRef);
-      if (!agentClass) {
-        errors.push(
-          `subtask ${subtask.id} references unavailable AgentClass in revision ${configuration.revisionId}: ${binding.agentClassRef}`,
-        );
-        continue;
-      }
-      const uncovered = [...required]
-        .filter(capability => !agentClass.routingCapabilities.includes(capability))
-        .sort();
-      if (uncovered.length > 0) {
-        errors.push(
-          `subtask ${subtask.id} AgentClass ${binding.agentClassRef} does not cover required capabilities: ${uncovered.join(', ')}`,
-        );
-      }
-      validateModelSelection(
-        subtask.id,
-        binding,
-        agentClass,
-        modelRefs,
-        subtask.requiredCapabilities,
-        configuration,
-        errors,
-      );
-    }
   }
-}
-
-function validateModelSelection(
-  subtaskId: string,
-  binding: SubtaskProposal['executorBindings'][number],
-  agentClass: ConfigurationCatalogAgentClass,
-  modelRefs: ReadonlySet<string>,
-  requiredRoutingCapabilities: SubtaskProposal['requiredCapabilities'],
-  configuration: PlannerConfigurationView,
-  errors: string[],
-): void {
-  const selection = binding.modelSelection;
-  const policy = agentClass.modelPolicy;
-  let selectedModelRef: string | null = null;
-
-  if (policy.mode === 'fixed') {
-    if (selection.mode !== 'fixed-by-agent-class') {
-      errors.push(
-        `subtask ${subtaskId} AgentClass ${binding.agentClassRef} uses fixed ModelPolicy and requires fixed-by-agent-class selection`,
-      );
-    } else {
-      validateModelAvailability(
-        subtaskId,
-        policy.modelRef,
-        modelRefs,
-        configuration.revisionId,
-        errors,
-      );
-      selectedModelRef = policy.modelRef;
-    }
-  } else if (selection.mode === 'fixed-by-agent-class') {
-    errors.push(
-      `subtask ${subtaskId} AgentClass ${binding.agentClassRef} uses auto ModelPolicy and cannot use fixed-by-agent-class selection`,
-    );
-  } else if (selection.mode === 'proposed') {
-    validateModelAvailability(
-      subtaskId,
-      selection.modelRef,
-      modelRefs,
-      configuration.revisionId,
-      errors,
-    );
-    if (!policy.allowedModelRefs.includes(selection.modelRef)) {
-      errors.push(
-        `subtask ${subtaskId} Model ${selection.modelRef} is not allowed by AgentClass ${binding.agentClassRef}`,
-      );
-    } else {
-      selectedModelRef = selection.modelRef;
-    }
-  } else if (!policy.defaultModelRef) {
-    errors.push(
-      `subtask ${subtaskId} AgentClass ${binding.agentClassRef} has no default Model`,
-    );
-  } else {
-    validateModelAvailability(
-      subtaskId,
-      policy.defaultModelRef,
-      modelRefs,
-      configuration.revisionId,
-      errors,
-    );
-    // The Auto default is a resolver preference, not the final binding. Kernel
-    // may select another allowed model to satisfy mandatory capabilities.
-  }
-
-  if (!selectedModelRef) return;
-  const selectedModel = configuration.models.find(model => model.id === selectedModelRef);
-  if (!selectedModel) return;
-  const effectiveCapabilities = agentClass.modelCapabilities?.[selectedModelRef]
-    ?? selectedModel.capabilities;
-  const requiredModelCapabilities = requiredModelCapabilitiesForRoutingCapabilities(
-    requiredRoutingCapabilities,
-  );
-  const unsupported = requiredModelCapabilities
-    .filter(capability => !effectiveCapabilities.includes(capability as never));
-  if (unsupported.length > 0) {
-    errors.push(
-      `subtask ${subtaskId} Model ${selectedModelRef} does not support required Routing Capabilities: `
-      + requiredRoutingCapabilities.filter(capability => (
-        requiredModelCapabilitiesForRoutingCapabilities([capability])
-          .some(required => unsupported.includes(required))
-      )).join(', '),
-    );
-  }
-}
-
-function validateModelAvailability(
-  subtaskId: string,
-  modelRef: string,
-  modelRefs: ReadonlySet<string>,
-  configurationRevision: string,
-  errors: string[],
-): void {
-  if (!modelRefs.has(modelRef)) {
-    errors.push(
-      `subtask ${subtaskId} references unavailable Model in revision ${configurationRevision}: ${modelRef}`,
-    );
-  }
-}
-
-function executorBindingKey(
-  binding: SubtaskProposal['executorBindings'][number],
-): string {
-  if (binding.modelSelection.mode === 'proposed') {
-    return `${binding.agentClassRef}:${binding.modelSelection.mode}:${binding.modelSelection.modelRef}`;
-  }
-  return `${binding.agentClassRef}:${binding.modelSelection.mode}`;
 }
 
 function collectDuplicateErrors(

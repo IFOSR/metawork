@@ -1,15 +1,15 @@
-import type { KernelFailure } from '../core/kernel-failure.js';
+import type { ControlFailure } from '../core/kernel-failure.js';
 import type {
   ExecutorRecoveryRefreshTrigger,
-} from '../kernel/executor-status-projection.js';
+} from '../control/executor-status-projection.js';
 import type {
-  KernelExecutorStatusRepo,
-  RevisionedKernelExecutorStatusProjection,
-} from '../storage/kernel-executor-status-repo.js';
+  ControlExecutorStatusRepo,
+  RevisionedControlExecutorStatusProjection,
+} from '../storage/executor-status-repo.js';
 import { generateInteractionId } from '../utils/id.js';
 import { redactSensitiveText } from '../utils/redact-sensitive-text.js';
 import type { ExecutorProbeResult } from '../executor/adapter.js';
-import type { KernelExecutorStatusProjector } from './kernel-executor-status-projector.js';
+import type { ControlExecutorStatusProjector } from './control-executor-status-projector.js';
 
 export interface ExecutorRecoveryRefreshReport {
   configurationRevision: string;
@@ -21,13 +21,13 @@ export interface ExecutorRecoveryRefreshReport {
 }
 
 export interface ExecutorRecoveryRefreshServiceDeps {
-  statusRepo: KernelExecutorStatusRepo;
-  statusProjector: KernelExecutorStatusProjector;
+  statusRepo: ControlExecutorStatusRepo;
+  statusProjector: ControlExecutorStatusProjector;
   getConfigurationRevision(): Promise<string> | string;
   probe(
     agentClassName: string,
     configurationRevision: string,
-    previousFailure: KernelFailure | null,
+    previousFailure: ControlFailure | null,
   ): Promise<ExecutorProbeResult>;
   onRecovered?(
     agentClassName: string,
@@ -85,7 +85,7 @@ export class ExecutorRecoveryRefreshService {
   }
 
   private refreshOne(
-    projection: RevisionedKernelExecutorStatusProjection,
+    projection: RevisionedControlExecutorStatusProjection,
     trigger: ExecutorRecoveryRefreshTrigger,
   ): Promise<CheckResult> {
     const inFlightKey = `${projection.configurationRevision}\0${projection.agentClassName}`;
@@ -98,7 +98,7 @@ export class ExecutorRecoveryRefreshService {
   }
 
   private async performCheck(
-    projection: RevisionedKernelExecutorStatusProjection,
+    projection: RevisionedControlExecutorStatusProjection,
     trigger: ExecutorRecoveryRefreshTrigger,
   ): Promise<CheckResult> {
     const startedAt = (this.deps.now?.() ?? new Date()).toISOString();
@@ -106,7 +106,7 @@ export class ExecutorRecoveryRefreshService {
     const timeoutMs = this.deps.timeoutMs ?? 30_000;
     let timer: ReturnType<typeof setTimeout> | null = null;
     let outcome: CheckResult['outcome'] = 'still_error';
-    let failure: KernelFailure | null = null;
+    let failure: ControlFailure | null = null;
     try {
       const probe = await Promise.race([
         this.deps.probe(
@@ -163,7 +163,7 @@ class ExecutorProbeTimeoutError extends Error {
   }
 }
 
-function redactFailure(failure: KernelFailure): KernelFailure {
+function redactFailure(failure: ControlFailure): ControlFailure {
   return {
     ...failure,
     summary: redactSensitiveText(failure.summary),

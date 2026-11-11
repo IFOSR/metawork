@@ -1,4 +1,18 @@
 import type Database from 'better-sqlite3';
+/** Shared lifecycle fence, also required by durable proposal storage. */
+export const CONVERSATION_DELETION_SCHEMA_SQL = `
+CREATE TABLE IF NOT EXISTS conversation_deletions (
+  account_id TEXT NOT NULL, conversation_id TEXT NOT NULL,
+  state TEXT NOT NULL CHECK(state IN ('pending','completed')), created_at TEXT NOT NULL,
+  PRIMARY KEY(account_id, conversation_id)
+);
+`;
+export const CONVERSATION_TURN_CANCELLATION_SCHEMA_SQL = `
+CREATE TABLE IF NOT EXISTS conversation_turn_cancellations (
+  account_id TEXT NOT NULL, conversation_id TEXT NOT NULL, turn_id TEXT NOT NULL,
+  requested_at TEXT NOT NULL, PRIMARY KEY(account_id, conversation_id, turn_id)
+);
+`;
 /** Authoritative bodies are independent of every projection epoch and its GC. */
 export const CONVERSATION_TURN_SCHEMA_SQL = `
 CREATE TABLE IF NOT EXISTS conversation_turn_bodies (
@@ -28,11 +42,8 @@ CREATE TABLE IF NOT EXISTS conversation_turn_outbox (
   event_json TEXT NOT NULL, created_at TEXT NOT NULL,
   PRIMARY KEY(account_id, event_id)
 );
-CREATE TABLE IF NOT EXISTS conversation_deletions (
-  account_id TEXT NOT NULL, conversation_id TEXT NOT NULL,
-  state TEXT NOT NULL CHECK(state IN ('pending','completed')), created_at TEXT NOT NULL,
-  PRIMARY KEY(account_id, conversation_id)
-);
+${CONVERSATION_DELETION_SCHEMA_SQL}
+${CONVERSATION_TURN_CANCELLATION_SCHEMA_SQL}
 CREATE TABLE IF NOT EXISTS conversation_turn_migration (
   account_id TEXT NOT NULL, conversation_id TEXT NOT NULL, turn_id TEXT NOT NULL,
   classification TEXT NOT NULL, evidence_json TEXT NOT NULL,

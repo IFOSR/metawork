@@ -64,20 +64,12 @@ if [ "$INSTALL_COMMAND" = "install" ] \
   echo "For unattended installs, export METAWORK_PROVIDER_KEY and METAWORK_PROVIDER_URL first."
 fi
 
-PLANNER_ROOT="${ANYFUSION_PI_SOURCE_ROOT:-$SCRIPT_DIR/planner/AnyFusion-Pi}"
-test -f "$PLANNER_ROOT/package.json" || {
-  echo "nested AnyFusion-Pi source is missing: $PLANNER_ROOT" >&2
-  exit 1
-}
-
 npm ci
 npm run build
-npm ci --ignore-scripts --prefix "$PLANNER_ROOT"
-npm run build:offline --prefix "$PLANNER_ROOT"
+node --input-type=module -e 'import { prepareSourcePi } from "./scripts/lib/packaged-pi.mjs"; await prepareSourcePi(process.cwd());'
 
 PACKAGE_VERSION="$(node -p 'require("./package.json").version')"
 REVISION="$(git rev-parse --short HEAD 2>/dev/null || printf source)"
 RELEASE_ID="${PACKAGE_VERSION}-build-${REVISION}-$(date +%s)"
 exec node "$SCRIPT_DIR/dist/install-cli.js" "$INSTALL_COMMAND" "$RELEASE_ID" \
-  --source-root "$SCRIPT_DIR" \
-  --planner-root "$PLANNER_ROOT"
+  --source-root "$SCRIPT_DIR"

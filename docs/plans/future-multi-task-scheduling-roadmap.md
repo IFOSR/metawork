@@ -9,7 +9,7 @@
 
 本路线图的延期状态已于 2026-08-29 结束。新的执行权威是
 [ADR-0037](../adr/0037-multi-conversation-task-parallelism.md) 和
-[实施计划](2026-08-29-multi-conversation-parallel-task-implementation-plan.md)。
+[实施计划](../archive/plans/2026-08-29-multi-conversation-parallel-task-implementation-plan.md)。
 本文保留为历史路线图索引，不再作为实现依据。
 
 ## 边界

@@ -5,7 +5,7 @@
  * （重复 idempotencyKey 返回首张 receipt）、取消命中单个排队/活跃 turn、
  * 失败释放下一个 turn、队列有界（满则返回结构化 busy 错误）。
  *
- * 邮箱只拥有 turn 准入；账户 Kernel 策略仍归 AccountKernelCoordinator。
+ * 邮箱只拥有 turn 准入；账户 Kernel 策略仍归 AccountControlCoordinator。
  */
 
 import { createDefaultCommandCatalog } from '../commands/command-tree.js';

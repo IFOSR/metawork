@@ -10,8 +10,7 @@ export interface SafeModelFact {
   description?: string;
   routingNotes?: ModelRoutingNotes;
   contextLimit?: number;
-  costInputPerMillion?: number;
-  costOutputPerMillion?: number;
+
   /** Safe, public model facts used to tailor the task scope. */
   publicFacts?: OpenRouterPublicFacts;
 }

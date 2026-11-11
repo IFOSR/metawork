@@ -41,7 +41,7 @@ export function Composer({
   uploading?: Array<{ name: string; size: number }>;
   onDraftChange: (value: string) => void;
   onSend: (value: string, attachments: Array<{ attachmentId: string }>) => void;
-  /** Stops the current Planner/Executor turn instead of queueing a command. */
+  /** Stops the current Manager/Executor turn instead of queueing a command. */
   onCancel: () => void;
   onFilesSelected: (files: File[]) => void;
   onRemoveAttachment: (attachmentId: string) => void;
@@ -232,7 +232,7 @@ export function Composer({
           </div>
         )}
         <div className="composer-footer">
-          <span>Planner → Kernel → Executor</span>
+          <span>Manager 拆解 → Router 派发 → Executor 执行</span>
           <input
             ref={fileInputRef}
             type="file"
@@ -260,7 +260,7 @@ export function Composer({
                 type="button"
                 className="stop-button"
                 disabled={disabled}
-                title="停止当前轮：终止运行中的 Planner 与执行器，不会创建新任务（结果与历史会保留）"
+                title="停止当前轮：终止运行中的 Manager 与执行器，不会创建新任务（结果与历史会保留）"
                 // No blocking `window.confirm`: browsers suppress repeated
                 // dialogs, which turned this button into a silent no-op. The
                 // stop is reversible-by-history and reports its outcome in the

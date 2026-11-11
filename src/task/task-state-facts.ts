@@ -10,7 +10,7 @@
  */
 
 import type { SubtaskStatus, Task } from '../core/types.js';
-import type { KernelDispatchItemStatus } from '../kernel/control-kernel.js';
+import type { ControlDispatchItemStatus } from '../control/control-contracts.js';
 import type { PendingResultIdentity } from './safe-result-identity.js';
 import { isServiceReadyState } from './local-service.js';
 import {
@@ -42,7 +42,7 @@ export interface TaskRawSubtaskFact {
 export interface TaskRawDispatchFact {
   readonly attemptId: string;
   readonly subtaskId: string;
-  readonly status: KernelDispatchItemStatus;
+  readonly status: ControlDispatchItemStatus;
   readonly generationId: string;
 }
 
@@ -127,6 +127,8 @@ export interface TaskStateRawFacts {
   readonly capacityWaiting: boolean;
   /** An operation's external outcome is unknown and must be verified. */
   readonly externalOutcomeUnknown: boolean;
+  /** Final result assembly failed; no unknown external operation is implied. */
+  readonly completionRecovery?: { readonly id: string; readonly error: string | null } | null;
   /** Normalized operation results (service start, delivery, integration). */
   readonly operationResults: readonly {
     readonly operationKey: string;
@@ -161,7 +163,7 @@ export interface TaskEvaluationInput {
   readonly anomaly: TaskReason | null;
 }
 
-const ACTIVE_DISPATCH: readonly KernelDispatchItemStatus[] = [
+const ACTIVE_DISPATCH: readonly ControlDispatchItemStatus[] = [
   'pending_launch', 'launching', 'running', 'cancelling',
 ];
 
@@ -275,6 +277,17 @@ export function readTaskEvaluationInput(raw: TaskStateRawFacts): TaskEvaluationI
             '存在结果不明的外部操作，需要核实。',
             [`task:${raw.task.id}`],
           ),
+      result: null,
+    });
+  }
+  if (raw.completionRecovery) {
+    pendingActions.push({
+      actionId: `recovery:${raw.completionRecovery.id}`,
+      kind: 'resolve_recovery',
+      label: '查看最终结果收尾恢复项',
+      reason: createTaskReason('system_anomaly',
+        '子任务已完成，但最终结果汇总或交付尚未完成，需要恢复系统收尾流程。',
+        [`recovery:${raw.completionRecovery.id}`]),
       result: null,
     });
   }

@@ -61,6 +61,28 @@ function blockedTurn(): ConversationTurnProjection {
 }
 
 describe('Conversation turn failure passthrough', () => {
+  it('keeps a rejected planning turn visible with its cause and trace action before any task exists', () => {
+    const turn = { ...blockedTurn(), status: 'failed' as const, taskId: null,
+      traceEvents: [{ ...blockedTurn().traceEvents[1]!, phase: 'planning' as const,
+        kind: 'proposal_rejected', summary: 'risk.reasons: Required', details: {} }] };
+    const html = renderToStaticMarkup(createElement(ConversationTurnView, {
+      turn, onOpenTrajectory: () => undefined,
+    }));
+    expect(html).toContain('规划未完成');
+    expect(html).toContain('risk.reasons: Required');
+    expect(html).toContain('查看完整轨迹');
+    expect(html).toContain('本轮未创建执行任务');
+    expect(html).not.toContain('代码已经保留');
+    expect(html).not.toContain('重试未完成部分');
+  });
+
+  it('shows a persistent taskless failure notice even before trace hydration', () => {
+    const turn = { ...blockedTurn(), status: 'failed' as const, taskId: null, traceEvents: [] };
+    const html = renderToStaticMarkup(createElement(ConversationTurnView, { turn }));
+    expect(html).toContain('规划未完成');
+    expect(html).toContain('重新发送消息');
+  });
+
   it('separates repeated runtime receipts from business results without consuming fenced examples', () => {
     const receipt = 'Execution needs attention: no runnable Subtask while work remains';
     const output = conversationOutput([

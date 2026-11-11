@@ -7,12 +7,12 @@ import { createHash, randomUUID } from 'node:crypto';
 import { isAbsolute, join, relative, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import type Database from 'better-sqlite3';
-import type { KernelEvent } from '../kernel/control-kernel.js';
+import type { ControlEvent } from '../control/control-contracts.js';
 import type { SubtaskRepo } from '../storage/subtask-repo.js';
 import { SubtaskHandoffRepo } from '../storage/subtask-handoff-repo.js';
 import { materializeOutgoingHandoffs } from './subtask-handoff-materializer.js';
 import type { ExecutorAttemptReceiptRepo } from '../storage/executor-attempt-receipt-repo.js';
-import type { KernelDispatchItemRepo } from '../storage/kernel-dispatch-item-repo.js';
+import type { ControlDispatchItemRepo } from '../storage/dispatch-item-repo.js';
 import { workspacePathClaim, workspaceRootClaim } from '../resource/workspace-claim.js';
 import type { ResourceClaim } from '../resource/types.js';
 import {
@@ -55,7 +55,7 @@ export interface IntegratedWorkspacePublication {
 
 export interface ConflictedWorkspacePublication {
   type: 'conflicted';
-  event: Extract<KernelEvent, { type: 'merge_conflict_observed' }>;
+  event: Extract<ControlEvent, { type: 'merge_conflict_observed' }>;
 }
 
 export interface CancelledWorkspacePublication {
@@ -94,7 +94,7 @@ export interface WorkspacePublicationWorkerDeps {
   subtaskRepo: SubtaskRepo;
   attemptReceiptRepo: ExecutorAttemptReceiptRepo;
   resourceLeaseService: ResourceLeaseService;
-  dispatchItemRepo: KernelDispatchItemRepo;
+  dispatchItemRepo: ControlDispatchItemRepo;
   taskRuntimeService: TaskRuntimeService;
   /** 用户产物发布服务；提供后集成成功的 artifact 会复制到用户 Workspace。 */
   userArtifactPublication?: UserArtifactPublicationService;
@@ -1055,7 +1055,6 @@ export class WorkspacePublicationWorker {
     return pair?.object ?? null;
   }
 }
-
 
 function deriveTopologyLayers(
   subtasks: ReturnType<SubtaskRepo['listByTask']>,

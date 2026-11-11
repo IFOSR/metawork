@@ -23,7 +23,7 @@ interface KernelWorkflow {
 
 `submit` durably enqueues before synchronously draining. `recover` reconciles applications, orphan attempts and due events before external input opens. The pure `ControlKernel.decide(event, snapshot)` Interface remains the only strategic authority.
 
-SQLite v24 separates immutable authorization (`kernel_decisions`) from inbox lifecycle (`kernel_events`), application lifecycle (`kernel_decision_applications`), external effects (`kernel_effect_outbox`), attempt continuation metadata (`executor_attempt_runtime`) and work graph generations (`work_graph_revisions`). Issuance, application creation and source-event advancement are atomic. Runtime apply is idempotent by Decision ID and checks durable postconditions before mutating state.
+SQLite v24 separates immutable authorization (`kernel_decisions`) from inbox lifecycle (`kernel_events`), application lifecycle (`kernel_decision_applications`), external effects (`effect_outbox`), attempt continuation metadata (`executor_attempt_runtime`) and work graph generations (`work_graph_revisions`). Issuance, application creation and source-event advancement are atomic. Runtime apply is idempotent by Decision ID and checks durable postconditions before mutating state.
 
 Kernel contracts hard-upgrade to v2 and carry structured, bounded `KernelFailure` facts. Completion Protocol hard-upgrades to v2 and Work Graph/Planning to v5. Capacity remains separate from execution failure and never affects health history. Runtime and workflow engines may not perform hidden semantic retry.
 

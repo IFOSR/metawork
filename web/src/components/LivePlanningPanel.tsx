@@ -5,8 +5,8 @@ import type { InteractionTraceEvent } from '../api/types';
 /**
  * 规划阶段的活动卡片。
  *
- * Planner 解析需求期间对话 tab 原本没有任何变化，用户无法判断是"在思考"还是
- * "卡住了"。这里把 InteractionTrace 中已公开的 Planner 里程碑投影成与 Executor
+ * Manager 解析需求期间对话 tab 原本没有任何变化，用户无法判断是"在思考"还是
+ * "卡住了"。这里把 InteractionTrace 中已公开的 Manager 里程碑投影成与 Executor
  * 执行卡片同形的卡片：阶段、当前步骤、工具调用与耗时都随事件实时更新。
  */
 
@@ -104,21 +104,21 @@ function stepLabelFor(event: InteractionTraceEvent): string {
     case 'planner_started':
       return '正在理解请求并生成计划…';
     case 'planner_process_started':
-      return '正在启动 Planner 进程…';
+      return '正在启动 Manager 进程…';
     case 'planner_prompt_accepted':
-      return 'Planner 已接收请求，正在分析…';
+      return 'Manager 已接收请求，正在分析…';
     case 'planner_agent_started':
-      return 'Planner 已开始推理…';
+      return 'Manager 已开始推理…';
     case 'planner_turn_started':
-      return 'Planner 正在生成计划…';
+      return 'Manager 正在生成计划…';
     case 'planner_model_stream_started':
-      return 'Planner 模型正在输出…';
+      return 'Manager 模型正在输出…';
     case 'planner_model_waiting':
-      return 'Planner 模型仍在处理，等待输出…';
+      return 'Manager 模型仍在处理，等待输出…';
     case 'planner_tool_started':
-      return toolName ? `调用工具 ${toolName}…` : 'Planner 正在调用工具…';
+      return toolName ? `调用工具 ${toolName}…` : 'Manager 正在调用工具…';
     case 'planner_tool_completed':
-      return toolName ? `工具 ${toolName} 已返回` : 'Planner 工具调用已返回';
+      return toolName ? `工具 ${toolName} 已返回` : 'Manager 工具调用已返回';
     case 'planner_agent_completed':
       return '计划已生成，正在准备执行…';
     case 'planner_completed':
@@ -130,7 +130,7 @@ function stepLabelFor(event: InteractionTraceEvent): string {
     case 'resume_not_executed':
       return event.summary || '任务未重新执行。';
     case 'planner_failed':
-      return 'Planner 执行失败。';
+      return 'Manager 执行失败。';
     default:
       return event.summary || event.title;
   }

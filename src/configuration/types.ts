@@ -43,16 +43,6 @@ export interface ModelRoutingNotes {
 
 export type ModelMetadataSource = 'openrouter' | 'catalog' | 'user';
 
-export interface ModelPricingMetadata {
-  source: ModelMetadataSource;
-  usdInputPerToken?: number;
-  usdOutputPerToken?: number;
-  exchangeRate: 7;
-  fetchedAt?: string;
-  catalogModelId?: string;
-  overrideReason?: string;
-}
-
 export interface ModelProfile {
   providerRef: string;
   modelId: string;
@@ -66,20 +56,16 @@ export interface ModelProfile {
   reasoning: ModelReasoningLevel;
   routingNotes?: ModelRoutingNotes;
   contextLimit?: number;
-  costTier?: 'low' | 'medium' | 'high';
+
   latencyTier?: 'low' | 'medium' | 'high';
   qualityTier?: 'low' | 'medium' | 'high';
-  costInputPerMillion?: number;
-  costOutputPerMillion?: number;
-  pricing?: ModelPricingMetadata;
+
   enabled: boolean;
 }
 
 export const HARNESS_DRIVER_IDS = [
   'a2a-v1',
   'anyfusion-planner-host-v2',
-  'codex-cli',
-  'container-cli',
   'pi-cli',
 ] as const;
 
@@ -114,12 +100,6 @@ export interface LocalCliHarnessDefinition extends HarnessDefinitionBase {
   args: string[];
 }
 
-export interface ContainerHarnessDefinition extends HarnessDefinitionBase {
-  transport: 'container';
-  imageRef: string;
-  entrypoint: string[];
-}
-
 export interface A2aHarnessDefinition extends HarnessDefinitionBase {
   transport: 'a2a';
   endpoint: string;
@@ -129,7 +109,6 @@ export interface A2aHarnessDefinition extends HarnessDefinitionBase {
 export type HarnessDefinition =
   | LocalProcessHarnessDefinition
   | LocalCliHarnessDefinition
-  | ContainerHarnessDefinition
   | A2aHarnessDefinition;
 
 export type ModelPolicy =
@@ -146,8 +125,8 @@ export type ModelPolicy =
     };
 
 export type AutoModelObjective = Readonly<{
-  priority: 'balanced' | 'quality' | 'cost' | 'latency';
-  maxCostPerTurn?: number;
+  priority: 'balanced' | 'quality' | 'latency';
+
   maxLatencyMs?: number;
   minimumQualityTier?: 'low' | 'medium' | 'high';
 }>;
@@ -279,8 +258,12 @@ export interface GatewayConfig {
  */
 export interface SpanRoutingConfiguration {
   enabled: boolean;
-  /** Provider model ID used by the routing decision adapter. */
-  model: string;
+  /**
+   * Read-only identity left by revisions written before the decision model was
+   * a Provider/Model choice. The adapter always sends the configured
+   * `models[modelRef].modelId`.
+   */
+  model?: string;
   /** User-selected Provider/Model references. Legacy revisions may omit both. */
   providerRef?: string;
   modelRef?: string;
@@ -356,6 +339,8 @@ export type ConfigurationSnapshot = Readonly<{
 export interface PlannerModelProfile {
   id: string;
   providerRef: string;
+  /** Provider model id (what the API expects), never the internal ref. */
+  modelId: string;
   description?: string;
   publicFacts?: OpenRouterPublicFacts;
   capabilities: ModelCapability[];
@@ -363,12 +348,10 @@ export interface PlannerModelProfile {
   routingNotes?: ModelRoutingNotes;
   region: string;
   contextLimit?: number;
-  costTier?: 'low' | 'medium' | 'high';
+
   latencyTier?: 'low' | 'medium' | 'high';
   qualityTier?: 'low' | 'medium' | 'high';
-  costInputPerMillion?: number;
-  costOutputPerMillion?: number;
-  pricing?: ModelPricingMetadata;
+
 }
 
 export type PlannerConfigurationView = Readonly<{
@@ -412,7 +395,7 @@ export interface PlannerExecutorCapabilityManual {
   };
 }
 
-export interface KernelAgentClassConfiguration {
+export interface ControlAgentClassConfiguration {
   /** Revision-pinned tool conditions used to interpret natural-language evidence. */
   plannerAffordances?: ExecutorAffordanceId[];
   displayName?: string;
@@ -432,10 +415,10 @@ export interface KernelAgentClassConfiguration {
   supportsContinuation: boolean;
 }
 
-export type KernelConfigurationView = Readonly<{
+export type ControlConfigurationView = Readonly<{
   revisionId: ConfigurationRevisionId;
   contentHash: string;
-  agentClasses: Record<string, KernelAgentClassConfiguration>;
+  agentClasses: Record<string, ControlAgentClassConfiguration>;
   models: Record<string, {
     providerRef: string;
     modelId: string;
@@ -445,12 +428,10 @@ export type KernelConfigurationView = Readonly<{
     capabilities: ModelCapability[];
     reasoning: ModelReasoningLevel;
     contextLimit?: number;
-    costTier?: 'low' | 'medium' | 'high';
+
     latencyTier?: 'low' | 'medium' | 'high';
     qualityTier?: 'low' | 'medium' | 'high';
-    costInputPerMillion?: number;
-    costOutputPerMillion?: number;
-    pricing?: ModelPricingMetadata;
+
     enabled: boolean;
   }>;
   providers: Record<string, {
@@ -465,7 +446,8 @@ export type KernelConfigurationView = Readonly<{
    */
   spanRouting?: Readonly<{
     enabled: boolean;
-    model: string;
+    /** Legacy revision identity; the configured model id is authoritative. */
+    model?: string;
     providerRef?: string;
     modelRef?: string;
     fallbackModelRefs?: readonly string[];
@@ -515,7 +497,7 @@ export type ConfigurationServicePort = Readonly<{
   getActiveSnapshot(): Promise<ConfigurationSnapshot>;
   getSnapshot(revisionId: ConfigurationRevisionId): Promise<ConfigurationSnapshot>;
   getPlannerView(revisionId: ConfigurationRevisionId): Promise<PlannerConfigurationView>;
-  getKernelView(revisionId: ConfigurationRevisionId): Promise<KernelConfigurationView>;
+  getControlView(revisionId: ConfigurationRevisionId): Promise<ControlConfigurationView>;
   getRuntimeBinding(
     revisionId: ConfigurationRevisionId,
     agentClassId: string,

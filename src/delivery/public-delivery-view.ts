@@ -23,7 +23,7 @@ export interface PublicDeliveryView {
 }
 
 export const PUBLIC_DELIVERY_LABELS: Record<PublicDeliveryView['state'], string> = {
-  not_published: '已生成内部候选，尚未发布', awaiting_acceptance: '等待用户接受',
+  not_published: '尚无已发布的文件', awaiting_acceptance: '等待用户接受',
   publishing: '正在发布到工作区', published: '已发布到工作区', failed: '发布失败',
 };
 

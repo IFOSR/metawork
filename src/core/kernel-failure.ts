@@ -16,12 +16,12 @@ export const KERNEL_FAILURE_KINDS = [
   'unknown',
 ] as const;
 
-export type KernelFailureKind = typeof KERNEL_FAILURE_KINDS[number];
-export type KernelFailureScope = 'attempt' | 'task' | 'agent_class';
-export type KernelFailureOrigin = 'planner' | 'executor' | 'harness' | 'provider' | 'kernel';
+export type ControlFailureKind = typeof KERNEL_FAILURE_KINDS[number];
+export type ControlFailureScope = 'attempt' | 'task' | 'agent_class';
+export type ControlFailureOrigin = 'planner' | 'executor' | 'harness' | 'provider' | 'kernel';
 
 /** Which Executor/Attempt produced the failure, so the Client can name the step. */
-export interface KernelFailureActor {
+export interface ControlFailureActor {
   agentClassRef?: string;
   harnessRef?: string;
   providerRef?: string;
@@ -30,32 +30,32 @@ export interface KernelFailureActor {
   subtaskId?: string;
 }
 
-export interface KernelFailureProvider {
+export interface ControlFailureProvider {
   /** HTTP status returned by the model provider, when the failure came from one. */
   httpStatus?: number;
   requestId?: string;
 }
 
 /**
- * Bounded, sanitized failure fact shared by Adapter normalization and ControlKernel.
+ * Bounded, sanitized failure fact shared by Adapter normalization and the old Kernel.
  *
  * `summary` is the passthrough of the upstream error text: Planner and Executor
  * failures must reach the Client as they happened, together with where they
  * happened. `label` is only an optional user-facing headline layered on top of
  * that text, never a replacement for it.
  */
-export interface KernelFailure {
-  kind: KernelFailureKind;
-  scope: KernelFailureScope;
+export interface ControlFailure {
+  kind: ControlFailureKind;
+  scope: ControlFailureScope;
   code: string;
   summary: string;
   label?: string;
   /** Bounded upstream tail (multi-line) for the full-trajectory view. */
   detail?: string;
-  origin?: KernelFailureOrigin;
+  origin?: ControlFailureOrigin;
   stage?: string;
-  actor?: KernelFailureActor;
-  provider?: KernelFailureProvider;
+  actor?: ControlFailureActor;
+  provider?: ControlFailureProvider;
   /** Last step the Executor reached before failing, when the harness reports it. */
   step?: string;
   /** Stable execution facts shared by Web, TUI and remote gateways. */
@@ -65,7 +65,7 @@ export interface KernelFailure {
   userAction?: string;
 }
 
-export function kernelFailure(input: KernelFailure): KernelFailure {
+export function kernelFailure(input: ControlFailure): ControlFailure {
   return {
     ...input,
     code: input.code.replace(/[^a-zA-Z0-9_.:-]/g, '_').slice(0, 96) || 'unknown',
@@ -87,14 +87,14 @@ function boundedDetail(value: string): string {
   return value.replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f]/g, '').slice(-4_000);
 }
 
-function sanitizedActor(actor: KernelFailureActor): KernelFailureActor {
+function sanitizedActor(actor: ControlFailureActor): ControlFailureActor {
   const entries = Object.entries(actor)
     .filter(([, value]) => typeof value === 'string' && value.trim())
     .map(([key, value]) => [key, singleLine(String(value), 200)] as const);
-  return entries.length > 0 ? Object.fromEntries(entries) as KernelFailureActor : {};
+  return entries.length > 0 ? Object.fromEntries(entries) as ControlFailureActor : {};
 }
 
-function sanitizedProvider(provider: KernelFailureProvider): KernelFailureProvider {
+function sanitizedProvider(provider: ControlFailureProvider): ControlFailureProvider {
   const httpStatus = Number.isInteger(provider.httpStatus)
     && provider.httpStatus! >= 100
     && provider.httpStatus! <= 599

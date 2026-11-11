@@ -3,6 +3,7 @@ import { readFile } from 'node:fs/promises';
 import { createElement } from 'react';
 import { describe, expect, it } from 'vitest';
 import { TrajectorySummary } from '../../web/src/components/TrajectorySummary';
+import { TrajectoryView } from '../../web/src/components/TrajectoryView';
 import type { ConversationTurnProjection } from '../../web/src/api/session-types';
 
 const requireFromWeb = createRequire(new URL('../../web/package.json', import.meta.url));
@@ -13,6 +14,22 @@ const { renderToStaticMarkup } = requireFromWeb('react-dom/server') as {
 const root = new URL('../../web/src/components/', import.meta.url);
 
 describe('Trajectory view', () => {
+  it('keeps live cards independent of the browsed first page of history', () => {
+    const event = { id: 'old', sequence: 1, occurredAt: '2026-11-11T00:00:00Z',
+      phase: 'execution', actor: 'executor', kind: 'executor_progress', status: 'running',
+      title: 'Executor progress: skill', summary: '', subtaskId: 'sub', details: {} };
+    const turn = { id: 'turn', sessionId: 'conv', status: 'completed', taskId: 'task', artifacts: [],
+      traceEvents: [event], executionTimeline: { taskId: 'task', status: 'succeeded', stages: [
+        { phase: 'execution', status: 'completed', subtasks: [{ id: 'sub', title: 'Analysis', status: 'done', attempts: [] }] },
+      ] } } as unknown as ConversationTurnProjection;
+    const html = renderToStaticMarkup(createElement(TrajectoryView, { turn,
+      executionTraceEvents: [{ ...event, id: 'new', sequence: 99, status: 'completed', title: '最新执行结果已校验' }] as never }));
+    const cards = html.slice(html.indexOf('live-execution-panel'), html.indexOf('trajectory-summary'));
+    expect(cards).toContain('已完成');
+    expect(cards).toContain('最新执行结果已校验');
+    expect(cards).not.toContain('Executor progress: skill');
+    expect(html).toContain('Executor progress: skill');
+  });
   it('projects shared turn data into summary, phase timeline, filters, and event rows', async () => {
     const [view, summary, timeline, table, styles] = await Promise.all([
       readFile(new URL('TrajectoryView.tsx', root), 'utf8'),

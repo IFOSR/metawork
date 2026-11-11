@@ -1,7 +1,0 @@
-node_modules
-packages/*/node_modules
-packages/*/dist
-.git
-.tmp
-coverage
-*.log

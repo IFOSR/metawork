@@ -1,3 +1,4 @@
+import type { UsagePayerResolver } from '../metering/usage-payer.js';
 import type { ManagedLocalServices } from '../execution/managed-local-service.js';
 /**
  * AccountRuntime 组合辅助（ADR-0031 第 2、12 节）。
@@ -17,11 +18,11 @@ import type { RuntimePrivateConfigurationBinding } from '../configuration/index.
 import type { AuthorizedExecutorBinding } from '../core/authorized-executor-binding.js';
 import type { RevisionedAgentBinding } from '../core/authorized-executor-binding.js';
 import type { PlanningAgent } from '../planning/planning-agent.js';
-import type { PlannerProcessController } from '../planning/planner-process-supervisor.js';
+import { buildPlannerConfigurationView } from '../configuration/index.js';
 import type { AttemptExecutionBackend } from '../execution/attempt-execution-backend.js';
 import type { ProbeCommandRunner } from '../executor/harness-driver.js';
 import { ArtifactVersionRepo } from '../storage/artifact-version-repo.js';
-import { buildAccountKernelServices } from './account-kernel-services.js';
+import { buildAccountControlServices } from './account-control-services.js';
 import { buildAccountRepositories } from './account-repositories.js';
 import { buildAccountWorkspaceServices } from './account-workspace-services.js';
 import { buildAccountTaskServices } from './account-task-services.js';
@@ -29,34 +30,39 @@ import { createTaskLifecyclePort, createTaskStateAuthority } from './task-state-
 import { buildAccountExecutionServices } from './account-execution-services.js';
 import { buildAccountCoordinatorServices } from './account-coordinator-services.js';
 import { buildAccountRuntimeExecutionServices } from './account-runtime-execution-services.js';
-import { buildAccountPlannerServices } from './account-planner-services.js';
-import { AccountKernelCoordinator } from './account-kernel-coordinator.js';
+import { buildAccountPlannerServices, type AccountPlannerServices } from './account-planner-services.js';
+import { AccountControlCoordinator } from './account-control-coordinator.js';
 import { AccountRuntimeFactory } from './account-runtime-factory.js';
 import { AccountRuntime } from './account-runtime.js';
 import type { ConversationRuntimePort } from './account-runtime-ports.js';
 import type { AccountConversationExecutionBinder } from './account-conversation-execution-binder.js';
 import type { ExecutionRuntime } from '../execution/execution-runtime.js';
-import { buildAccountKernelExecutionServices } from './account-kernel-execution-services.js';
+import {
+  buildAccountControlExecutionServices,
+  type AccountControlExecutionServices,
+} from './account-control-execution-services.js';
 import {
   createAccountConversationExecutionBinder,
 } from './account-conversation-execution-binder.js';
 import { SessionPersistenceService } from '../session/session-persistence-service.js';
 import { SessionPresentationService } from '../session/session-presentation-service.js';
-import { KernelExecutorStatusProjector } from '../execution/kernel-executor-status-projector.js';
+import { ControlExecutorStatusProjector } from '../execution/control-executor-status-projector.js';
 import { VerificationAndDeliveryService } from '../delivery/verification-and-delivery-service.js';
 import { UserArtifactPublicationService } from '../delivery/user-artifact-publication-service.js';
 import { TaskArtifactRepo } from '../storage/task-artifact-repo.js';
+import { readTaskOriginInput } from '../storage/task-origin-input.js';
 import { createSqliteAccountPermissionService } from './sqlite-account-permission-service.js';
 import { AccountStartupRecoveryService } from './account-startup-recovery-service.js';
 import type { ConfigurationActivationGate } from '../configuration/configuration-activation-gate.js';
 import type { ConversationActivityProjection } from '../workspace/conversation-activity-projector.js';
 import type { GatewayAttachmentStore } from '../gateway/attachment-store-port.js';
 import type { RawUsageEvent } from '../metering/usage-normalizer.js';
-import type { Payer } from '../billing/cost-policy.js';
+import type { Payer } from '../metering/usage-payer.js';
 import type { QueryUsageLifecycle } from '../metering/query-lifecycle.js';
 import type { ConversationResultDelivery } from '../session/conversation-session.js';
 import type { ExecutionTraceAppendInput } from '../execution/execution-trace.js';
-import type { KernelDecisionAction } from '../kernel/control-kernel.js';
+import type { ManagerPermissionJudge } from '../execution/permission-workflow-service.js';
+import type { ControlDecisionAction } from '../control/control-contracts.js';
 import { ATTEMPTS_PER_TASK_BUDGET } from '../core/runtime-limits.js';
 
 /**
@@ -64,10 +70,9 @@ import { ATTEMPTS_PER_TASK_BUDGET } from '../core/runtime-limits.js';
  * returning the authoritative result to a Conversation. Permission
  * resolutions use the same `plan_proposed` event as ordinary task plans.
  */
-export const ACCOUNT_KERNEL_ACCEPTED_ACTIONS: KernelDecisionAction['type'][] = [
+export const ACCOUNT_KERNEL_ACCEPTED_ACTIONS: ControlDecisionAction['type'][] = [
   'reject_request',
   'request_clarification',
-  'deliver_direct_reply',
   'no_op',
   'authorize_task_plan',
   'authorize_task_control',
@@ -79,8 +84,12 @@ export const ACCOUNT_KERNEL_ACCEPTED_ACTIONS: KernelDecisionAction['type'][] = [
 
 export interface AccountRuntimeComposition {
   readonly accountRuntime: AccountRuntime;
+  /** Account-level Planner services (Manager transport by default). */
+  readonly plannerServices: AccountPlannerServices;
   readonly runtimePort: ConversationRuntimePort;
   readonly conversationExecutionBinder: AccountConversationExecutionBinder;
+  /** Shared per-account control services; scoping happens via `runWith`. */
+  readonly controlExecutionServices: AccountControlExecutionServices;
   readonly executionRuntime: ExecutionRuntime;
 }
 
@@ -103,6 +112,8 @@ export function buildAccountRuntimeComposition(deps: {
   preflightWorkspacePath?: (path: string) => Promise<string>;
   managedLocalServices?: ManagedLocalServices;
   productionAuthorization?: () => { allowed: boolean; reason?: string };
+  /** Optional Manager semantic judge for unclassified Executor capabilities. */
+  managerPermissionJudge?: ManagerPermissionJudge;
   /** 用户可见 Workspace 根（进程启动目录），与内部 workspaceStore 是不同依赖。 */
   userWorkspaceRoot?: string;
   resolveUserWorkspaceRoot?: (
@@ -118,7 +129,14 @@ export function buildAccountRuntimeComposition(deps: {
   stagedConfiguration: StagedLegacyConfiguration;
   plannerBinding: RevisionedAgentBinding | null;
   plannerBindingFingerprint: string;
-  getPlannerBinding?: Parameters<typeof buildAccountPlannerServices>[0]['getPlannerBinding'];
+  getPlannerBinding?: () => {
+    plannerBinding: import('../core/authorized-executor-binding.js').RevisionedAgentBinding | null;
+    plannerBindingFingerprint: string;
+  };
+  /** Upstream-Pi Manager transport (ADR-0055 D6); required when the switch selects it. */
+  managerTransport?: Parameters<typeof buildAccountPlannerServices>[0]['managerTransport'];
+  /** Legacy vendored Planner agent, only for an explicit opt-out run. */
+  legacyPlanningAgent?: Parameters<typeof buildAccountPlannerServices>[0]['legacyPlanningAgent'];
   getRuntimeBinding(
     binding: AuthorizedExecutorBinding,
   ): Promise<RuntimePrivateConfigurationBinding> | RuntimePrivateConfigurationBinding;
@@ -126,12 +144,11 @@ export function buildAccountRuntimeComposition(deps: {
   getActiveRuntimeConfiguration?: Parameters<typeof buildAccountExecutionServices>[0]['getActiveRuntimeConfiguration'];
   probeCommand?: ProbeCommandRunner;
   attemptExecutionBackend?: AttemptExecutionBackend;
-  plannerSupervisor?: PlannerProcessController;
   planningAgent?: PlanningAgent;
   getConfigurationRevision(): string;
   blockedRecheckEnabled?: boolean;
   blockedRecheckIntervalMs?: number;
-  buildKernelCoordinator?(accountId: string): AccountKernelCoordinator;
+  buildControlCoordinator?(accountId: string): AccountControlCoordinator;
   recoverDurableStartup?(accountId: string): Promise<void>;
   onConversationActivityChanged?(
     conversationId: string,
@@ -144,12 +161,14 @@ export function buildAccountRuntimeComposition(deps: {
     : never;
   usageSpanCloser?: (spanId: string, state: 'closed' | 'uncertain', closedAt: string) => void;
   usagePayer?: Payer;
+  resolveUsagePayer?: UsagePayerResolver;
+  spanRoutingEvaluator?: import('../routing/span-routing-types.js').SpanRoutingEvaluator | null;
   queryUsageLifecycle?: QueryUsageLifecycle;
   onSystemResultDelivery?: (sessionId: string, delivery: ConversationResultDelivery) => Promise<void>;
   appendExecutionTrace?: (sessionId: string, input: ExecutionTraceAppendInput) => void;
 }): AccountRuntimeComposition {
-  const kernelServices = buildAccountKernelServices(deps.db);
-  const repositories = buildAccountRepositories(deps.db);
+  const kernelServices = buildAccountControlServices(deps.db);
+  const repositories = buildAccountRepositories(deps.db, deps.accountId);
   const workspaceServices = buildAccountWorkspaceServices(deps.db, deps.workspaceRoot);
   const conversationExecutionBinder = createAccountConversationExecutionBinder();
   let startupRecovery!: AccountStartupRecoveryService;
@@ -206,6 +225,17 @@ export function buildAccountRuntimeComposition(deps: {
     })
     : null;
 
+  const plannerModel = deps.plannerBinding
+    ? deps.stagedConfiguration.snapshot.config.models[deps.plannerBinding.modelRef] : undefined;
+  if (deps.plannerBinding && !plannerModel) {
+    throw new Error(`Planner Model is unavailable: ${deps.plannerBinding.modelRef}`);
+  }
+  const plannerServices = buildAccountPlannerServices({
+    ...(deps.planningAgent ? { planningAgent: deps.planningAgent } : {}),
+    ...(deps.managerTransport ? { managerTransport: deps.managerTransport } : {}),
+    ...(deps.legacyPlanningAgent ? { legacyPlanningAgent: deps.legacyPlanningAgent } : {}),
+  });
+  const managerPermissionJudge = deps.managerPermissionJudge ?? plannerServices.managerPermissionJudge;
   const runtimeExecutionServices = buildAccountRuntimeExecutionServices({
     conversationWorktrees: workspaceServices.conversationWorktrees,
     serviceWorktrees: workspaceServices.serviceWorktrees,
@@ -229,7 +259,7 @@ export function buildAccountRuntimeComposition(deps: {
     workspaceStore: workspaceServices.workspaceStore,
     attemptExecutionBackend: taskServices.attemptExecutionBackend,
     permissionRepository: workspaceServices.permissionRepository,
-    kernelWorkflowRepo: kernelServices.kernelWorkflowRepo,
+    managerPermissionJudge,
     workspaceRepository: workspaceServices.workspaceRepository,
     attemptExecutionRepository: workspaceServices.attemptExecutionRepository,
     conversationTaskSchedulerRepo: repositories.conversationTaskSchedulerRepo,
@@ -240,27 +270,15 @@ export function buildAccountRuntimeComposition(deps: {
     usageSpanOpener: deps.usageSpanOpener,
     usageSpanCloser: deps.usageSpanCloser,
     usagePayer: deps.usagePayer,
+    resolveUsagePayer: deps.resolveUsagePayer,
     ...(deps.memoryEvidence ? { memoryEvidence: deps.memoryEvidence } : {}),
-  });
-  const plannerModel = deps.plannerBinding
-    ? deps.stagedConfiguration.snapshot.config.models[deps.plannerBinding.modelRef] : undefined;
-  if (deps.plannerBinding && !plannerModel) {
-    throw new Error(`Planner Model is unavailable: ${deps.plannerBinding.modelRef}`);
-  }
-  const plannerServices = buildAccountPlannerServices({
-    db: deps.db,
-    plannerBinding: deps.plannerBinding,
-    plannerBindingFingerprint: deps.plannerBindingFingerprint,
-    plannerModelId: plannerModel?.modelId,
-    getPlannerBinding: deps.getPlannerBinding,
-    plannerSupervisor: deps.plannerSupervisor,
-    planningAgent: deps.planningAgent,
   });
   const sharedPresentation = new SessionPresentationService();
   const verificationAndDeliveryService = new VerificationAndDeliveryService();
   // 用户可见 Workspace（进程启动目录）与内部 workspaceStore 是不同依赖；
   // 未提供时（如测试组合）不启用用户产物发布。
-  const kernelExecutionServices = buildAccountKernelExecutionServices({
+  const kernelExecutionServices = buildAccountControlExecutionServices({
+    recoveryItems: kernelServices.recoveryItems,
     conversationWorktrees: workspaceServices.conversationWorktrees,
     serviceWorktrees: workspaceServices.serviceWorktrees,
     workspaceMergeWorker: workspaceServices.workspaceMergeWorker,
@@ -279,6 +297,38 @@ export function buildAccountRuntimeComposition(deps: {
     onTaskQueued: taskId => startupRecovery?.onTaskQueued(taskId),
     getConfigurationRevision: deps.getConfigurationRevision,
     getRuntimeConfiguration: deps.getRuntimeConfiguration,
+    ...(plannerServices.planningAgent.summarizeTask ? { summarizeCompletedTask: async input => {
+      const snapshot = input.configurationRevision === deps.stagedConfiguration.snapshot.revisionId
+        ? deps.stagedConfiguration.snapshot
+        : await deps.resolveConfigurationSnapshot?.(input.configurationRevision);
+      if (!snapshot || snapshot.revisionId !== input.configurationRevision) {
+        throw new Error('manager_summary_configuration_unavailable');
+      }
+      const linked = deps.db.prepare('SELECT query_id FROM query_task_links WHERE task_id = ? ORDER BY linked_at LIMIT 1')
+        .get(input.taskId) as { query_id: string } | undefined;
+      const origin = readTaskOriginInput(deps.db, {
+        accountId: deps.accountId, conversationId: input.conversationId, taskId: input.taskId,
+      });
+      return plannerServices.planningAgent.summarizeTask!({
+        ...input, configuration: buildPlannerConfigurationView(snapshot),
+        ...(origin ? { userInput: origin.userInput } : {}),
+        ...(deps.usageObserver && linked ? { onUsage: usage => {
+          const providerRef = usage.providerRef ?? null;
+          deps.usageObserver!({
+            sourceId: 'manager', sourceEventKey: `summary:${input.taskId}:${usage.sourceEventKey}`,
+            sourceScope: 'model_request', callId: `summary:${input.taskId}:${usage.callId}`,
+            queryId: linked.query_id, taskId: input.taskId, stage: 'planning', reason: 'primary',
+            payer: providerRef ? deps.resolveUsagePayer?.(providerRef, input.configurationRevision)
+              ?? deps.usagePayer ?? 'unknown' : 'unknown',
+            agentClassRef: 'manager', providerRef, modelId: usage.modelId ?? null,
+            capturedAt: usage.occurredAtUtc ?? new Date().toISOString(),
+            providerResponseId: usage.providerResponseId ?? null,
+            evidenceRef: `task:${input.taskId}:summary`,
+            counters: usage.counters, missing: usage.missing,
+          });
+        } } : {}),
+      });
+    } } : {}),
     taskRuntimeService: taskServices.taskRuntimeService,
     taskStateAuthority,
     ...(deps.resolveWorkspacePath ? { resolveWorkspacePath: deps.resolveWorkspacePath } : {}),
@@ -293,9 +343,7 @@ export function buildAccountRuntimeComposition(deps: {
     taskEventRepo: repositories.taskEventRepo,
     workUnitClaimService: coordinatorServices.workUnitClaimService,
     attemptRunner: runtimeExecutionServices.attemptRunner,
-    controlKernel: kernelServices.controlKernel,
-    kernelWorkflowRepo: kernelServices.kernelWorkflowRepo,
-    kernelDecisionRepo: kernelServices.kernelDecisionRepo,
+    controlLoop: kernelServices.controlLoop,
     dispatchItemRepo: runtimeExecutionServices.dispatchItemRepo,
     publicationRepo: runtimeExecutionServices.publicationRepo,
     generationReplanRepo: runtimeExecutionServices.generationReplanRepo,
@@ -307,8 +355,10 @@ export function buildAccountRuntimeComposition(deps: {
     ...(deps.resolveUserWorkspaceRoot ? {
       resolveUserWorkspaceRoot: deps.resolveUserWorkspaceRoot,
     } : {}),
+    ...(deps.spanRoutingEvaluator ? { spanRoutingEvaluator: deps.spanRoutingEvaluator } : {}),
+    ...(deps.usageObserver ? { usageObserver: deps.usageObserver } : {}),
     persistenceService: conversationExecutionBinder.routedPersistenceService(),
-    kernelExecutorStatusProjector: new KernelExecutorStatusProjector(
+    kernelExecutorStatusProjector: new ControlExecutorStatusProjector(
       repositories.kernelExecutorStatusRepo,
     ),
     presentation: sharedPresentation,
@@ -316,14 +366,14 @@ export function buildAccountRuntimeComposition(deps: {
     workspaceRepository: workspaceServices.workspaceRepository,
     resourceLeaseService: runtimeExecutionServices.resourceLeaseService,
     executionRuntime: executionServices.executionRuntime,
-    kernelExecutionCallbacks: conversationExecutionBinder.routedKernelCallbacks(),
+    kernelExecutionCallbacks: conversationExecutionBinder.routedControlCallbacks(),
     taskExecutionCallbacks: conversationExecutionBinder.routedTaskCallbacks(),
-    sessionKernelCallbacks: conversationExecutionBinder.routedSessionKernelCallbacks(),
+    sessionControlCallbacks: conversationExecutionBinder.routedSessionControlCallbacks(),
     conversationTaskSchedulerRepo: repositories.conversationTaskSchedulerRepo,
     ...(userArtifactPublication ? { userArtifactPublication } : {}),
   });
   conversationExecutionBinder.bindSharedServices(kernelExecutionServices);
-  coordinatorServices.bindKernelExecutionRuntime(kernelExecutionServices.kernelExecutionRuntime);
+  coordinatorServices.bindControlExecutionRuntime(kernelExecutionServices.kernelExecutionRuntime);
   const permissionService = createSqliteAccountPermissionService({
     onContinuationReady: () => {
       void accountRuntime.reviewTaskPoolOnTimer().catch(error => {
@@ -335,14 +385,18 @@ export function buildAccountRuntimeComposition(deps: {
     taskServices,
     workspaceServices,
     repositories,
+    managerPermissionJudge,
+    // The permission owner applies its continuation itself; nothing is queued
+    // for another component to drain.
+    deliverContinuation: event => kernelExecutionServices.kernelExecutionRuntime
+      .submitControlEvent(event, 'permission continuation'),
   });
 
-  const kernelCoordinator = deps.buildKernelCoordinator
-    ? deps.buildKernelCoordinator(deps.accountId)
-    : new AccountKernelCoordinator({
+  const kernelCoordinator = deps.buildControlCoordinator
+    ? deps.buildControlCoordinator(deps.accountId)
+    : new AccountControlCoordinator({
         productionAuthorization: deps.productionAuthorization,
-        kernel: kernelServices.controlKernel,
-        store: kernelServices.kernelWorkflowRepo,
+        kernel: kernelServices.controlLoop,
         clock: { now: () => new Date().toISOString() },
         acceptedEventTypes: ['plan_proposed', 'recovery_resolution_requested'],
         acceptedActions: ACCOUNT_KERNEL_ACCEPTED_ACTIONS,
@@ -379,8 +433,8 @@ export function buildAccountRuntimeComposition(deps: {
   workspaceServices.workspaceMergeWorker.setObserver(job => startupRecovery.observeWorkspaceMerge(job));
 
   const factory = new AccountRuntimeFactory({
-    buildKernelCoordinator: () => kernelCoordinator,
-    buildKernelServices: () => kernelServices,
+    buildControlCoordinator: () => kernelCoordinator,
+    buildControlServices: () => kernelServices,
     buildRepositories: () => repositories,
     buildWorkspaceServices: () => workspaceServices,
     buildExecutionServices: () => executionServices,
@@ -412,8 +466,12 @@ export function buildAccountRuntimeComposition(deps: {
 
   return {
     accountRuntime,
+    plannerServices,
     runtimePort: accountRuntime.getConversationPort(),
     conversationExecutionBinder,
+    // One shared instance per account: the Conversation layer scopes calls with
+    // `runWith`, so it never needs per-method proxies.
+    controlExecutionServices: kernelExecutionServices,
     executionRuntime: executionServices.executionRuntime,
   };
 }

@@ -23,7 +23,7 @@ import { ConfigurationService } from '../configuration/configuration-service.js'
 import { FileConfigurationRepository } from '../configuration/file-configuration-repository.js';
 import { assertSecretReference, type SecretStore } from '../configuration/secret-store.js';
 import type { AnyFusionConfigurationV2 } from '../configuration/types.js';
-import { runMigrations } from '../storage/migrations.js';
+import { initializeDatabaseSchema } from '../storage/schema.js';
 import type { AnyFusionPaths } from './paths.js';
 import { resolveReleasePaths } from './paths.js';
 import {
@@ -40,7 +40,8 @@ const RELEASE_ID = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/u;
 export interface SourceNativeInstallInput {
   releaseId: string;
   sourceRoot: string;
-  plannerRoot: string;
+  /** Vendored Planner tree; absent since ADR-0055 D6. */
+  plannerRoot?: string;
   /**
    * Memory engine tree (TDAI MemoryCore). Releases ship it with the runtime, so
    * the settings switch works without a separate download. Omitted only for
@@ -108,11 +109,7 @@ export class SourceNativeInstaller {
       configurationRevision,
     );
     await Promise.all(launcherPaths.map(path => assertLauncherAvailable(path)));
-    const [codexDetected, piDetected] = await Promise.all([
-      this.dependencies.detectCommand('codex'),
-      this.dependencies.detectCommand('pi'),
-    ]);
-    const config = buildConfiguration(input, codexDetected, piDetected);
+    const config = buildConfiguration(input);
 
     const switched: string[] = [];
     const installedLaunchers: string[] = [];
@@ -183,7 +180,7 @@ export class SourceNativeInstaller {
       }
       await writeBuildSourceMetadata(buildSourceMetadataPath(paths.root), {
         sourceRoot: input.sourceRoot,
-        plannerRoot: input.plannerRoot,
+        ...(input.plannerRoot ? { plannerRoot: input.plannerRoot } : {}),
       });
     } catch (error) {
       const cleanupErrors: unknown[] = [];
@@ -266,8 +263,6 @@ async function assertReleaseRootReplaceable(
 
 function buildConfiguration(
   input: SourceNativeInstallInput,
-  codexEnabled: boolean,
-  piEnabled: boolean,
 ): AnyFusionConfigurationV2 {
   const modelRef = 'default-model';
   const configuration: AnyFusionConfigurationV2 = {
@@ -291,16 +286,13 @@ function buildConfiguration(
         capabilities: ['coding', 'long-context', 'planning', 'structured-output', 'tools'],
         reasoning: 'high',
         enabled: true,
-        ...(input.provider.modelId === 'deepseek-flash'
-          ? { costInputPerMillion: 0.021, costOutputPerMillion: 16.8 }
-          : {}),
       },
     } : {},
     harnesses: {
       'anyfusion-planner': {
         kind: 'planner',
         transport: 'local-process',
-        commandRef: 'release:planner',
+        commandRef: 'release:pi',
         args: [],
         driverId: 'anyfusion-planner-host-v2',
         supportsProbe: true,
@@ -308,16 +300,16 @@ function buildConfiguration(
         supportsContinuation: true,
         enabled: true,
       },
-      'codex-cli': {
+      'pi-engineering-cli': {
         kind: 'executor',
         transport: 'local-cli',
-        command: 'codex',
+        command: 'pi',
         args: [],
-        driverId: 'codex-cli',
+        driverId: 'pi-cli',
         supportsProbe: true,
         supportsAbort: true,
         supportsContinuation: true,
-        enabled: codexEnabled,
+        enabled: true,
       },
       'pi-cli': {
         kind: 'executor',
@@ -328,7 +320,7 @@ function buildConfiguration(
         supportsProbe: true,
         supportsAbort: true,
         supportsContinuation: true,
-        enabled: piEnabled,
+        enabled: true,
       },
     },
     agentClasses: {
@@ -346,9 +338,9 @@ function buildConfiguration(
         generatedRuntimeRef: 'planner',
         enabled: true,
       },
-      'codex-engineering': {
+      'pi-engineering': {
         kind: 'executor',
-        harnessRef: 'codex-cli',
+        harnessRef: 'pi-engineering-cli',
         modelPolicy: { mode: 'fixed', modelRef },
         permissionProfileRef: 'workspace-engineering',
         routingCapabilities: ['workspace-engineering', 'document-processing'],
@@ -358,8 +350,8 @@ function buildConfiguration(
         skills: [],
         mcpServers: [],
         plugins: [],
-        generatedRuntimeRef: 'codex-engineering',
-        enabled: codexEnabled,
+        generatedRuntimeRef: 'pi-engineering',
+        enabled: true,
       },
       'pi-research': {
         kind: 'executor',
@@ -374,7 +366,7 @@ function buildConfiguration(
         mcpServers: [],
         plugins: [],
         generatedRuntimeRef: 'pi-research',
-        enabled: piEnabled,
+        enabled: true,
       },
     },
     permissionProfiles: {
@@ -392,13 +384,6 @@ function buildConfiguration(
     runtimePolicy: {},
     gateway: {},
   };
-  if (input.executorPreset === 'desktop-pi') {
-    if (!piEnabled) throw new Error('Desktop Pi Executor is unavailable');
-    configuration.agentClasses['pi-engineering'] = {
-      ...configuration.agentClasses['codex-engineering']!, harnessRef: 'pi-cli',
-      generatedRuntimeRef: 'pi-engineering', enabled: true,
-    };
-  }
   if (!input.provider) {
     // Editable presets are inert until the user selects real models in Settings.
     for (const agent of Object.values(configuration.agentClasses)) agent.enabled = false;
@@ -408,7 +393,7 @@ function buildConfiguration(
 
 export async function stageSourceRelease(
   sourceRoot: string,
-  plannerRoot: string,
+  plannerRoot: string | undefined,
   releaseRoot: string,
   releaseId: string,
   appCurrentPointer: string,
@@ -424,10 +409,14 @@ export async function stageSourceRelease(
       cp(join(sourceRoot, 'web', 'dist'), join(stageRoot, 'web', 'dist'), { recursive: true }),
       cp(join(sourceRoot, 'node_modules'), join(stageRoot, 'node_modules'), { recursive: true }),
       copyFile(join(sourceRoot, 'package.json'), join(stageRoot, 'package.json')),
-      cp(plannerRoot, join(stageRoot, 'planner'), {
-        recursive: true,
-        filter: source => basename(source) !== '.git',
-      }),
+      // The vendored Planner tree is gone (ADR-0055 D6); only stage it when a
+      // caller still supplies one, so a bisect install can carry it.
+      ...(plannerRoot
+        ? [cp(plannerRoot, join(stageRoot, 'planner'), {
+          recursive: true,
+          filter: source => basename(source) !== '.git',
+        })]
+        : []),
       writeReleaseIdentity(stageRoot, releaseId),
       ...(memoryRoot
         ? [cp(memoryRoot, join(stageRoot, 'memory', 'tdai'), {
@@ -471,7 +460,7 @@ async function createFreshDatabase(path: string): Promise<void> {
   const db = new Database(path);
   try {
     db.pragma('foreign_keys = ON');
-    runMigrations(db);
+    initializeDatabaseSchema(db);
     const integrity = db.pragma('integrity_check') as Array<{ integrity_check: string }>;
     if (integrity.length !== 1 || integrity[0]?.integrity_check !== 'ok') {
       throw new Error('fresh database integrity check failed');

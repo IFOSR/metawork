@@ -17,6 +17,8 @@ export type RetryWakeStatus =
 export interface RetryWakeRecord {
   wakeId: string;
   taskId: string;
+  /** Session that armed the wake; delivery needs no ledger lookup. */
+  sessionId: string;
   subtaskId: string;
   generationId: string;
   sourceDecisionId: string;
@@ -36,6 +38,7 @@ export interface RetryWakeRecord {
 interface RetryWakeRow {
   wake_id: string;
   task_id: string;
+  session_id: string | null;
   subtask_id: string;
   generation_id: string;
   source_decision_id: string;
@@ -53,19 +56,21 @@ interface RetryWakeRow {
 }
 
 export class RetryWakeRepo {
-  constructor(private readonly db: Database.Database) {}
+  constructor(private readonly db: Database.Database) {
+  }
 
   arm(record: RetryWakeRecord): boolean {
     const result = this.db.prepare(`
       INSERT OR IGNORE INTO retry_wakes (
-        wake_id, task_id, subtask_id, generation_id, source_decision_id,
+        wake_id, task_id, session_id, subtask_id, generation_id, source_decision_id,
         source_attempt_id, configuration_revision, binding_fingerprint,
         authorized_binding_json, resume_at, wake_kind, status, timer_event_id,
         consumed_decision_id, created_at, updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'armed', NULL, NULL, ?, ?)
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'armed', NULL, NULL, ?, ?)
     `).run(
       record.wakeId,
       record.taskId,
+      record.sessionId,
       record.subtaskId,
       record.generationId,
       record.sourceDecisionId,
@@ -221,6 +226,7 @@ function rowToRecord(row: RetryWakeRow): RetryWakeRecord {
   return {
     wakeId: row.wake_id,
     taskId: row.task_id,
+    sessionId: row.session_id ?? '',
     subtaskId: row.subtask_id,
     generationId: row.generation_id,
     sourceDecisionId: row.source_decision_id,

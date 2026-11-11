@@ -72,9 +72,9 @@ describe('Web workspace shell', () => {
     expect(styles).toContain('.workspace-selector');
     expect(styles).toContain('.workspace-home');
     expect(styles).toContain('.agent-readiness-banner');
-    expect(banner).toContain('Codex');
-    expect(banner).toContain('GPT/Codex');
-    expect(banner).toContain('用于 GPT/Codex 模型的代码任务');
+    expect(banner).toContain('requiredAgentBlock');
+    expect(banner).toContain('内置执行组件暂不可用');
+    expect(banner).not.toContain('Codex');
   });
 
   it('creates a Workspace by browsing local directories', async () => {

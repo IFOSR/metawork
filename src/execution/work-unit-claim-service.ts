@@ -1,4 +1,4 @@
-import type { KernelFailure } from '../core/kernel-failure.js';
+import type { ControlFailure } from '../core/kernel-failure.js';
 import type { AuthorizedExecutorBinding } from '../core/authorized-executor-binding.js';
 import type { Subtask, WorkUnit } from '../core/types.js';
 import { WorkUnitRepo } from '../storage/work-unit-repo.js';
@@ -8,7 +8,7 @@ import { truncateText } from '../utils/truncate-text.js';
 
 /** A failed environment check is not a capacity shortage. */
 export class ExecutorProbeError extends Error {
-  constructor(readonly failure: KernelFailure) {
+  constructor(readonly failure: ControlFailure) {
     super(failure.summary);
     this.name = 'ExecutorProbeError';
   }
@@ -196,7 +196,7 @@ export class WorkUnitClaimService {
     });
     this.recordEvent(id, null, null, null, 'probe_started', 'starting');
     let available = false;
-    let probeFailure: KernelFailure | null = null;
+    let probeFailure: ControlFailure | null = null;
     let failureReason = `executor probe returned unavailable: ${agentClassName}`;
     try {
       available = await this.probeExecutor(authorizedBinding, mode);

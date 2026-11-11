@@ -1,4 +1,3 @@
-import { access } from 'node:fs/promises';
 import { delimiter, isAbsolute, join } from 'node:path';
 import { executableFile, resolveExecutorTool } from '../utils/executor-tool-path.js';
 import type {
@@ -36,30 +35,11 @@ export function createProductionConfigurationProbe(input: {
     const enabledPlanner = Object.values(snapshot.config.harnesses)
       .some(harness => harness.kind === 'planner' && harness.enabled);
     if (enabledPlanner) {
-      const plannerCliCandidates = [
-        join(
-          input.releaseRoot,
-          'planner',
-          'packages',
-          'coding-agent',
-          'dist',
-          'cli.js',
-        ),
-        join(
-          input.releaseRoot,
-          'planner',
-          'AnyFusion-Pi',
-          'packages',
-          'coding-agent',
-          'dist',
-          'cli.js',
-        ),
-      ];
-      const plannerAvailable = await Promise.all(
-        plannerCliCandidates.map(path => access(path).then(() => true, () => false)),
-      ).then(results => results.some(Boolean));
+      // Readiness must prove the executable Manager actually starts. Legacy
+      // fork artifacts and a global Pi cannot stand in for the packaged runtime.
+      const plannerAvailable = executableFile(resolveExecutorTool('pi', { releaseRoot: input.releaseRoot }));
       if (!plannerAvailable) {
-        issues.push('Planner artifact is missing');
+        issues.push('Packaged Manager Pi is missing');
       }
     }
 
@@ -74,7 +54,9 @@ export function createProductionConfigurationProbe(input: {
       // Unchanged unavailable tools must not block repairing unrelated settings.
       const old = previous?.config.harnesses[ref];
       if (old?.transport === 'local-cli' && old.command === harness.command) continue;
-      const commandAvailable = await detectCommand(harness.command);
+      const commandAvailable = harness.command === 'pi'
+        ? executableFile(resolveExecutorTool('pi', { releaseRoot: input.releaseRoot }))
+        : await detectCommand(harness.command);
       if (!commandAvailable) {
         issues.push(`Executor command is unavailable: ${harness.command}`);
       }

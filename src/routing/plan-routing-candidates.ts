@@ -1,10 +1,9 @@
 import { createHash } from 'node:crypto';
 import type {
-  KernelConfigurationView,
+  ControlConfigurationView,
   ModelCapability,
 } from '../configuration/types.js';
 import type {
-  ProposedModelSelection,
   WorkGraphProposal,
   WorkGraphSubtask,
 } from '../work-graph/types.js';
@@ -20,7 +19,7 @@ import { requiredModelCapabilitiesForRoutingCapabilities } from './types.js';
 /**
  * Pure, shared plan-routing candidate resolution.
  *
- * Both the Server-side Span advisor and `ControlKernel` use this one module so
+ * The Router candidate builder and admission use this one module so
  * a candidate can never be scored under a looser rule than the one that
  * authorizes it. It returns candidate facts only; it never authorizes work,
  * creates a binding decision, or performs I/O.
@@ -28,11 +27,10 @@ import { requiredModelCapabilitiesForRoutingCapabilities } from './types.js';
 
 export interface PlanSubtaskCandidateGroup {
   agentClassRef: string;
-  /** Planner proposal order, used as the deterministic tie-break. */
+  /** Stable configuration order; carries no semantic preference. */
   bindingIndex: number;
   harnessRef: string;
   permissionProfileRef: string;
-  preferredModelRef?: string;
   eligible: readonly AutoModelCandidate[];
   rejected: readonly RejectedModelCandidate[];
   /** Present when the AgentClass itself is not a valid executor binding. */
@@ -50,18 +48,6 @@ export interface PlanRoutingCandidateIdentity {
   modelRef: string;
 }
 
-/** Resolves the Planner's model selection against the AgentClass policy. */
-export function resolvePreferredModelRef(
-  modelSelection: ProposedModelSelection,
-  policy: KernelConfigurationView['agentClasses'][string]['modelPolicy'],
-): string | undefined {
-  if (modelSelection.mode === 'proposed') return modelSelection.modelRef;
-  if (modelSelection.mode === 'agent-class-default' && policy.mode === 'auto') {
-    return policy.defaultModelRef;
-  }
-  return undefined;
-}
-
 /**
  * Computes the hard-eligible candidate groups for one Subtask.
  *
@@ -71,7 +57,7 @@ export function resolvePreferredModelRef(
  * the same set when it re-derives the candidate fingerprint.
  */
 export function planSubtaskCandidateGroups(input: {
-  configuration: KernelConfigurationView;
+  configuration: ControlConfigurationView;
   subtask: WorkGraphSubtask;
   unavailableAgentClasses?: ReadonlySet<string>;
 }): PlanSubtaskCandidateGroup[] {
@@ -90,35 +76,16 @@ export function planSubtaskCandidateGroups(input: {
     ].join('\n'),
   };
   const groups: PlanSubtaskCandidateGroup[] = [];
-  const proposedBindings = subtask.executorBindings.length > 0
-    ? subtask.executorBindings
-    : Object.entries(configuration.agentClasses)
-      .filter(([, agentClass]) => agentClass.enabled && agentClass.kind === 'executor')
-      .sort(([left], [right]) => left.localeCompare(right))
-      .map(([agentClassRef, agentClass]) => ({
-        agentClassRef,
-        modelSelection: agentClass.modelPolicy.mode === 'fixed'
-          ? { mode: 'fixed-by-agent-class' as const }
-          : { mode: 'agent-class-default' as const },
-      }));
-  proposedBindings.forEach((proposed, bindingIndex) => {
-    const agentClass = configuration.agentClasses[proposed.agentClassRef];
-    if (!agentClass || !agentClass.enabled || agentClass.kind !== 'executor') {
-      groups.push({
-        agentClassRef: proposed.agentClassRef,
-        bindingIndex,
-        harnessRef: '',
-        permissionProfileRef: '',
-        eligible: [],
-        rejected: [],
-        error: 'agent_class_unavailable',
-      });
-      return;
-    }
+  const classes = Object.entries(configuration.agentClasses)
+    .filter(([, agentClass]) => agentClass.enabled && agentClass.kind === 'executor'
+      && agentClass.transport === 'local-cli' && agentClass.driverId === 'pi-cli'
+      && subtask.requiredCapabilities.every(capability => agentClass.routingCapabilities.includes(capability)))
+    .sort(([left], [right]) => left.localeCompare(right));
+  classes.forEach(([agentClassRef, agentClass], bindingIndex) => {
     const permissionProfileRef = agentClass.permissionProfileRef ?? '';
     if (!permissionProfileRef || !configuration.permissionProfiles[permissionProfileRef]) {
       groups.push({
-        agentClassRef: proposed.agentClassRef,
+        agentClassRef: agentClassRef,
         bindingIndex,
         harnessRef: agentClass.harnessRef,
         permissionProfileRef,
@@ -128,9 +95,9 @@ export function planSubtaskCandidateGroups(input: {
       });
       return;
     }
-    if (unavailable.has(proposed.agentClassRef)) {
+    if (unavailable.has(agentClassRef)) {
       groups.push({
-        agentClassRef: proposed.agentClassRef,
+        agentClassRef: agentClassRef,
         bindingIndex,
         harnessRef: agentClass.harnessRef,
         permissionProfileRef,
@@ -142,7 +109,7 @@ export function planSubtaskCandidateGroups(input: {
     }
     const candidates = projectConfigurationCandidates(
       configuration,
-      proposed.agentClassRef,
+      agentClassRef,
       { mode: agentClass.modelPolicy.mode },
     );
     const { eligible, rejected } = filterEligibleModelCandidates({
@@ -151,13 +118,10 @@ export function planSubtaskCandidateGroups(input: {
       requirements,
     });
     groups.push({
-      agentClassRef: proposed.agentClassRef,
+      agentClassRef: agentClassRef,
       bindingIndex,
       harnessRef: agentClass.harnessRef,
       permissionProfileRef,
-      ...(resolvePreferredModelRef(proposed.modelSelection, agentClass.modelPolicy)
-        ? { preferredModelRef: resolvePreferredModelRef(proposed.modelSelection, agentClass.modelPolicy)! }
-        : {}),
       eligible,
       rejected,
     });

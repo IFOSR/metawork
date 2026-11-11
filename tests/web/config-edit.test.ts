@@ -62,10 +62,10 @@ describe('Web configuration editing', () => {
 });
 
 describe('Span routing advanced settings draft', () => {
-  it('defaults to disabled with the fixed model when the revision predates Span', () => {
+  it('defaults to disabled without inventing a Router model for an older revision', () => {
     expect(loadSpanRoutingDraft({})).toEqual({
       enabled: false,
-      model: 'inception/mercury-decide:free',
+      model: '',
       providerRef: '',
       modelRef: '',
       fallbackModelRefs: [],

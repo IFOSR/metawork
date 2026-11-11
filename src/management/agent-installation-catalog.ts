@@ -1,4 +1,4 @@
-export type SupportedAgentId = 'pi-agent' | 'codex-cli';
+export type SupportedAgentId = 'pi-agent';
 
 export interface AgentInstallationDefinition {
   agentId: SupportedAgentId;
@@ -15,13 +15,6 @@ export const AGENT_INSTALLATION_CATALOG: readonly AgentInstallationDefinition[] 
     args: ['--version'],
     required: true,
     installUrl: 'https://github.com/badlogic/pi-mono/tree/main/packages/coding-agent',
-  },
-  {
-    agentId: 'codex-cli',
-    command: 'codex',
-    args: ['--version'],
-    required: false,
-    installUrl: 'https://developers.openai.com/codex/cli/',
   },
 ];
 

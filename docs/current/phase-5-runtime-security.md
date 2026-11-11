@@ -1,151 +1,100 @@
-> 当前 Workspace 执行契约（ADR-0050）：新任务只有 In-place Workspace 写入。Executor 使用 Conversation 绑定 Workspace 的授权 `cwd`；只读任务通过只读源挂载和 Runtime scratch 运行，不申请 Workspace write lease，也不创建 publication。Worktree backend、候选发布和自动复制仅作为历史迁移事实，不能被新任务选择或恢复。
+# Runtime Security And Native Execution
 
-# Phase 5 Runtime Security And AgentClass Operations
+Current boundary (2026-11-10, ADR-0055 D6/D12/D14): Manager and Executor use
+packaged upstream Pi in isolated native processes. MetaWork is a trusted user
+process with Host checks; it provides no OS sandbox, filesystem jail or network
+egress isolation. The current acceptance scope is macOS arm64 + Web. Linux,
+Desktop and Feishu acceptance are deferred.
 
-## Runtime topology
+## Execution and persistence
 
-The default backend runs the canonical Codex/Pi CLI as a trusted child process
-inside the unified Runtime container. A write attempt uses the Conversation-bound
-Workspace (or an authorized child path) as its `cwd`; a read-only attempt uses a
-Runtime-owned scratch directory and a read-only Workspace boundary. Capability,
-evidence and model-gateway services use loopback addresses. This is the minimal
-demo boundary and does not claim a second OS-level sandbox for the child process.
+New Workspace Tasks use the Conversation Git Worktree authorized by admission,
+not the retired `in_place` admission mode. The Task Runtime owns leases,
+Attempt identity, change sealing, Workspace FIFO publication and cancellation.
+A sealed result is not permission to publish: cancellation and delivery
+eligibility are checked again before enqueue and during writeback. Read-only
+source/context exposure and authorized `cwd` checks are application boundaries;
+they do not prevent a native tool from accessing everything the host user can.
 
-The compatibility backend runs every attempt in a new Docker container. In that mode, the control plane,
-`metaclaw-egress` proxy and attempt containers share the Docker-internal
-`metaclaw-control` network. Only the proxy also joins a non-internal outbound
-network. Attempt containers never receive the Docker socket, host networking,
-host namespaces, devices or privileged mode.
+Manager/Executor processes receive MetaWork-owned homes, sessions and explicit
+configuration instead of personal Pi/Codex homes. The shared Pi payload is
+relocatable and pinned at packaging time; runtime resolution does not fall back
+to a global Pi. Static configuration lives in account-scoped immutable revisions
+selected by the account active pointer. Credentials resolve through the account
+SecretStore (macOS Keychain by default, explicit file store where configured),
+not through credentials copied from a personal agent installation.
 
-The control plane may run on the host or in a container. Docker attempts must
-reach it from `metaclaw-control` as the DNS name configured by
-`METACLAW_CONTROL_HOST` (default `metaclaw-control`). In-place attempts do not
-need the Docker Engine endpoint.
-Containerized Docker compatibility deployments should use a restricted Docker
-socket proxy or a remote Engine endpoint through `DOCKER_HOST`; do not mount
-the Engine socket into attempt containers or native Executor processes.
+Native process supervision and startup reconciliation remain production code.
+The retained `containerId` field is a persistence identifier for native
+processes, not evidence that a Docker backend is running. Cleanup must preserve
+process ownership checks, Attempt receipts, checkpoint and uncertain-result
+facts. An uncertain operation becomes a recovery item; it is never blindly
+replayed or treated as successfully applied.
 
-When the control plane sees container-local paths but the Docker Engine resolves host paths, configure `METACLAW_DOCKER_HOST_PATH_MAP` as JSON from container prefix to Engine-host prefix. Runtime rejects unmapped bind sources instead of guessing. Provider API keys stay in the trusted control plane: every attempt receives only a random scoped bearer token and the internal URL of its short-lived model gateway.
+The local Docker backend, attempt/runtime images, egress proxy, Docker-only
+tests and image publishing workflow have been retired. Selecting the Docker or
+container backend fails explicitly. Container harness schema/catalog entries
+remain a cleanup gap and do not enable a production backend. The independent
+`official-server` deployment Dockerfile is retained.
 
-Native installation stores static configuration only in immutable
-`~/.metawork/accounts/local-default/config/revisions/<revision-id>`
-directories selected by the account `config/active` pointer. Provider
-credentials are referenced through the account SecretStore:
-macOS defaults to Keychain and non-macOS native use requires the explicit
-`METAWORK_SECRET_STORE=file` fallback. The managed launcher points only at
-`~/.metawork/app/current`, captures the user's current directory for Planner
-read-only inspection, and never reads personal Codex or Pi homes. Native
-update/rollback refuses to mutate pointers while the daemon is running; online
-admission closure and drain are not inferred from a PID file.
+## Permission ownership and limits
 
-Docker compatibility topology:
+The Permission Service binds a normalized request to Account, Task, generation,
+Subtask, Attempt, scope, profile and configuration revision. Host policy runs
+before Manager judgement; hard-denied requests cannot be granted by a model or
+user decision. Deny tokens such as `docker_socket`, cross-Task secrets and
+permission-policy modification remain deliberate safety rules after Docker
+retirement. Their presence does not expose those capabilities.
 
-```bash
-docker network create --internal metaclaw-control
-docker network create metaclaw-egress-public
-docker build -f docker/Dockerfile.egress-proxy -t metaclaw-egress:phase5 .
-docker run -d --name metaclaw-egress --network metaclaw-control --restart unless-stopped metaclaw-egress:phase5
-docker network connect metaclaw-egress-public metaclaw-egress
-```
+The production Manager permission seam reads intent from the authoritative Turn
+Store and revalidates identity after asynchronous work. Missing/stale intent or
+an invalid Manager answer cannot approve a request. Credential/external-effect
+capabilities require exact user authorization. Concurrent resolutions use durable
+request identity; cancellation and stale Attempt checks fence late replies.
+Manager integration does not establish that every surviving static permission
+policy already matches the final semantic-owner target; that remains a review
+acceptance item.
 
-The Squid policy permits only public HTTP/HTTPS destinations and rejects loopback, link-local, RFC1918, carrier-grade NAT and IPv6 unique-local ranges after DNS resolution. No proxy port is published to the host. `workspace-engineering` and `restricted-custom` attempts do not receive proxy variables and remain on the internal network only.
+Grants record expiry, call and byte budgets. Read/network grants normally allow
+100 calls and 100 MiB; `once` narrows the call count to one. Other grant types
+allow one control payload up to 1 MiB. `use_capability` measures UTF-8 payload
+bytes and atomically checks/consumes the budget. Grant consumption proves a
+recorded authorization; it does not prove that every arbitrary native tool call
+was intercepted. MetaWork has no universal native file/network operation broker.
 
-## Canonical Docker compatibility images
-
-Build both immutable attempt images after building the application bundles:
-
-```bash
-./scripts/build-attempt-images.sh
-```
-
-On PowerShell:
-
-```powershell
-.\scripts\build-attempt-images.ps1
-```
-
-In Docker compatibility mode, MetaWork resolves each canonical image tag to a
-Docker image ID. Custom AgentClasses are configured through Settings activation with an image reference,
-its current immutable `sha256:` image ID, a valid permission profile, and the
-command/arguments inside the image. The native mode is restricted to the two canonical built-ins and does not
-add a custom registration path. A changed
-Docker tag fails closed until the class is explicitly updated.
-
-The command surface exposes inspection and health diagnostics only; see the [current slash-command reference](commands.md).
-
-Historical custom classes without the Docker image/profile triplet remain visible
-for audit but cannot execute. In-place execution is an explicit trusted backend,
-not a host-process fallback for arbitrary custom classes.
-
-Executor availability uses a structured `probe()` rather than a boolean command
-check. For Docker classes, the recovery probe verifies the local Engine,
-immutable image, `metaclaw-control` network, runtime command, and configuration
-in layers. For native classes, it verifies the trusted runtime/profile and provider
-configuration without an Engine or Docker-network probe.
-Authentication/provider-network failures may add the Adapter's minimal remote
-validation. A successful recovery check may only move that checked class from
-`error` to `healthy`. Healthy/unverified classes are not periodically polled,
-disabled classes never auto-recover, and a shared infrastructure result is not
-projected onto classes that were not checked.
-
-## Mount and persistence contract
-
-- Native write attempts start with `cwd` set to the Kernel-authorized Conversation Workspace path. Read-only attempts start in Runtime scratch and receive only a read-only source boundary. The adapter validates containment before launch; no task-owned Git worktree or candidate directory is created.
-- Native execution does not jail the Executor to a copied `/workspace`: ordinary user-space files outside the authorized Workspace may be read or written only according to the active permission profile. Docker compatibility mode exposes `/workspace` as the only writable bind-mounted tree; `/source`, `/inputs` and `/handoffs` are read-only mounts, with a read-only root filesystem, UID/GID 1000, dropped Linux capabilities and `no-new-privileges`.
-- Canonical Codex Docker attempts also run their own `workspace-write` sandbox with fail-closed non-interactive approval. Only the pinned canonical Codex image receives `seccomp=unconfined` so that nested user namespaces work; every other Docker restriction remains active, and custom images cannot request this exception.
-- The user Workspace remains the durable source of merged changes. Runtime scratch, attempt homes and evidence services are disposable; change records and receipts remain durable in SQLite/CAS.
-- Checkpoints are immutable manifests. File bodies live in the SHA-256 CAS; SQLite stores URI, hash, size and reference metadata.
-- Cancelled or archived Task workspaces receive a seven-day cleanup deadline. CAS objects are removed only after the last checkpoint reference disappears. Files explicitly exported outside the managed workspace/CAS roots are not removed.
-
-## Runtime permission and audit flow
-
-Default profile operations do not request permission. In native mode,
-ordinary Workspace and user-space file operations are part of normal Executor
-work rather than capability escalation. An Executor calls `request_capability`
-only for a concrete controlled operation such as system-control access,
-credential use, privilege changes, device or Docker control-plane access, or a
-high-impact external effect. Runtime canonicalizes and persists the request,
-pauses the attempt, checkpoints the now-quiescent workspace, and submits
-`permission_requested` to the durable Kernel workflow. The Kernel returns
-grant, deny-to-Executor, or deny-and-escalate-to-Planner. Grants are
-attempt-bound and budgeted; user authorization is a durable fact from
-`/permission approve|deny <requestId>`, a gateway action, or a precise Planner
-interpretation.
-
-The Runtime supplies `permission-profile-v1` rules to both the live attempt and authorization-recovery workflows. Exact Task-registered partitions may receive `additional_read_resource` grants when a controlled resource claim is required. Only `public-web-research` may receive a `network_target` grant after the target is normalized as credential-free public HTTP(S). Docker compatibility attempts use the egress proxy; native attempts use the Runtime's normal network namespace. No profile rule permits secrets, privilege changes, system-control resources, Docker/host control sockets, devices, host namespaces, external mutation or repository promotion.
-
-A granted response includes a `grantId`, but neither the request nor grant changes sandbox authority. `use_capability` accepts the operation payload, measures its UTF-8 bytes and atomically consumes attempt identity, expiry, call count and byte count. Read/network grants retain the 100-call/100-MiB audit budget; one-shot sensitive and logical requests allow one control payload up to 1 MiB. Budget rejection fails closed.
-
-This initial model is a sandbox profile plus an authorization/audit budget. It does not provide a universal operation broker and does not claim fine-grained enforcement over every native file, network or external operation. A consumed grant proves budgeted authorization was recorded, not that an arbitrary native tool call was mediated. Native user-space file authority is intentionally broad and follows the MetaWork process identity. Requests for privileged mode, Docker/host sockets, devices, host namespaces, policy mutation, credential probing, cross-Task data or proxy bypass are always denied by the profile boundary. Future external-mutation or repository-promotion support requires a separately implemented and tested provider adapter/outbox; a grant never exposes raw host credentials or host write access to the attempt container.
+A native process retains the host user's network access and OS permissions.
+Deployments requiring stronger filesystem, credential or egress isolation must
+provide that boundary externally. Linux sandbox design is outside this round;
+there is no in-product egress-proxy guarantee.
 
 ## Verification
 
 ```bash
 npm run lint
 npm run build
-docker build -f Dockerfile.test -t metaclaw-test .
-docker run --rm metaclaw-test
-# Run the Docker integration test from a control container with the Engine
-# socket and an explicit host-path map.
-# The default live smoke verifies two turns in one persisted AnyFusion-Pi Planner session.
-npm run smoke:metawork
-# The explicit artifact gate exercises Planner -> Kernel -> attempt -> publication.
-npm run smoke:metawork -- --scenario artifact
-# Provider-independent Gateway/replay/composition gate.
-npm run smoke:gateway
+npm test
+npx vitest run tests/resource/permission-policy.test.ts tests/execution/manager-permission-workflow.test.ts tests/execution/permission-workflow-service.test.ts tests/execution/attempt-execution-backend-reconciler.test.ts tests/executor/durable-native-process-runner.test.ts tests/e2e/read-only-workspace-boundary.test.ts
 ```
 
-Both live smokes run as native host processes by default, using the MetaWork
-configuration installed under `METAWORK_CONFIG_HOME` (default
-`~/.config/metawork`) and the native Executor backend; Docker is not
-required. `--mode docker` instead builds the unified runtime image and runs
-the same scenarios inside a control container against a trusted local Docker
-Engine, requiring the `docker/*.env` provider files. The artifact
-smoke verifies Planner → Kernel → disposable Executor attempt → direct Workspace
-change/artifact delivery. The default smoke instead verifies native
-Planner-thread continuity and does not prove the Executor artifact path.
+The opt-in actual-Pi test (`RUN_PACKAGED_PI_E2E=1`,
+`tests/e2e/packaged-pi-native.test.ts`) uses a separately prepared packaging host,
+isolated HOME and a local model fixture. It exercises actual Manager RPC,
+permission and Executor processes without provider credentials. A complete
+Manager → Router → Executor → publication → Manager summary task and signed
+clean-machine installation remain separate acceptance gates.
 
-In-place validation requires the trusted Codex/Pi CLIs and verifies child-process
-start, authorized Workspace containment, loopback capability/evidence services,
-cancellation, checkpoint/delta capture and live Workspace delivery. Docker
-integration remains compatibility coverage.
+The native credentialed smoke (`npm run smoke:metawork`, or
+`-- --scenario artifact`) requires an explicit packaged Pi and a dedicated
+`METAWORK_CONFIG_HOME` containing:
+
+- `provider.env` with the key variables referenced by the fixture model files;
+- `planner/models.json` and `planner/settings.json` for the Manager;
+- `pi-home/.pi/agent/models.json` and `pi-home/.pi/agent/settings.json` for Executor.
+
+These are explicit smoke inputs. `setup:native`'s active account revision is not
+automatically imported by this script. The smoke uses an isolated installation
+and child HOME; it must not target the user's live installation. Default smoke
+checks Manager session continuity; artifact smoke additionally checks execution
+and file delivery. Neither is reported as passed without actually running it.
+Docker/container mode is rejected. See the [review report](../plans/2026-11-10-metawork-full-code-review-report.md)
+for exact executed checks and remaining gaps.

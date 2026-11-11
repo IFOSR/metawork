@@ -2,7 +2,7 @@ import { WorkspaceGitRepo } from './workspace-git-repo.js';
 import { readPendingTaskResults } from './pending-task-result.js';
 import type Database from 'better-sqlite3';
 import type { SubtaskStatus } from '../core/types.js';
-import type { KernelDispatchItemStatus } from '../kernel/control-kernel.js';
+import type { ControlDispatchItemStatus } from '../control/control-contracts.js';
 import type { ExecutorAttemptTerminalState } from './executor-attempt-receipt-repo.js';
 import type { TaskRepo } from './task-repo.js';
 import type { WorkGraphRevisionRepo } from './work-graph-revision-repo.js';
@@ -99,7 +99,7 @@ export class SqliteTaskStateFactsReader implements TaskStateFactsPort {
         : null,
       operationResults,
       cancelFence: this.readCancelFence(taskId),
-      authorizedContinuation: !!this.deps.db.prepare(`SELECT 1 FROM kernel_effect_outbox
+      authorizedContinuation: !!this.deps.db.prepare(`SELECT 1 FROM effect_outbox
         WHERE task_id = ? AND effect_type IN ('task_result_continuation', 'task_remaining_work')
           AND status IN ('pending', 'sending') LIMIT 1`).get(taskId),
       partialAcceptancePending: revision !== null
@@ -131,15 +131,19 @@ export class SqliteTaskStateFactsReader implements TaskStateFactsPort {
       capacityWaiting,
       externalOutcomeUnknown: this.readExternalOutcomeUnknown(taskId)
         || operationResults.some(result => result.outcome === 'unknown'),
+      completionRecovery: this.deps.db.prepare(`SELECT id, error_summary AS error FROM task_recovery_items
+        WHERE task_id = ? AND status IN ('pending', 'retry_authorized')
+          AND json_extract(decision_json, '$.action.type') = 'complete_task'
+        ORDER BY created_at LIMIT 1`).get(taskId) as { id: string; error: string | null } | undefined ?? null,
     };
   }
 
   private readDispatches(taskId: string, generationId: string | null, revision: number | null): TaskRawDispatchFact[] {
     return (this.deps.db.prepare(`SELECT attempt_id, subtask_id, status, generation_id
-      FROM kernel_dispatch_items WHERE task_id = ? AND generation_id = ?
+      FROM dispatch_items WHERE task_id = ? AND generation_id = ?
       AND subtask_id IN (SELECT id FROM subtasks WHERE task_id = ? AND graph_revision = ?)
       ORDER BY created_at`).all(taskId, generationId, taskId, revision) as Array<{
-      attempt_id: string; subtask_id: string; status: KernelDispatchItemStatus; generation_id: string;
+      attempt_id: string; subtask_id: string; status: ControlDispatchItemStatus; generation_id: string;
     }>).map(row => ({
       attemptId: row.attempt_id,
       subtaskId: row.subtask_id,
@@ -256,21 +260,18 @@ export class SqliteTaskStateFactsReader implements TaskStateFactsPort {
   }
 
   private readExternalOutcomeUnknown(taskId: string): boolean {
-    return !!this.deps.db.prepare(`SELECT 1 FROM kernel_dispatch_items
+    return !!this.deps.db.prepare(`SELECT 1 FROM dispatch_items
       WHERE task_id = ? AND status = 'uncertain' LIMIT 1`).get(taskId)
       || !!this.deps.db.prepare(`SELECT 1 FROM workspace_publications
         WHERE task_id = ? AND status = 'uncertain' LIMIT 1`).get(taskId)
-      || !!this.deps.db.prepare(`SELECT 1 FROM kernel_decision_applications AS application
-        INNER JOIN kernel_events AS event ON event.id = application.event_id
-        WHERE event.task_id = ? AND application.status = 'uncertain' LIMIT 1`).get(taskId);
+      || !!this.deps.db.prepare(`SELECT 1 FROM task_recovery_items
+        WHERE task_id = ? AND status IN ('pending', 'retry_authorized')
+          AND COALESCE(json_extract(decision_json, '$.action.type'), '') <> 'complete_task' LIMIT 1`).get(taskId);
   }
 
   private readCancelFence(taskId: string): boolean {
-    return !!this.deps.db.prepare(`SELECT 1 FROM kernel_decisions AS decision
-      INNER JOIN kernel_decision_applications AS application
-        ON application.decision_id = decision.id
-      WHERE decision.task_id = ? AND decision.action = 'cancel_task'
-        AND application.status = 'applied' LIMIT 1`).get(taskId);
+    return !!this.deps.db.prepare(`SELECT 1 FROM tasks
+      WHERE id = ? AND status = 'cancelled'`).get(taskId);
   }
 
   /**

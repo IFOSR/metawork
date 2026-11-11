@@ -5,7 +5,7 @@
 - 本地实现与 Native/Electron 验收日期：2026-10-06；Docker 实跑未完成，不标记全部验收关闭。
 - Closing commit：随已验收 Desktop 实现提交，具体提交见本文件末尾。用户于 2026-10-06 授权合并主干并推送 GitHub。
 - Authority：[ADR-0046](../adr/0046-agent-baseline-operations-and-responsibility-separation.md)，遵守 ADR-0020 的所有权边界。
-- 关联：[Desktop 主方案](2026-10-05-metawork-desktop-design-review.md)、[实施记录](2026-10-05-metawork-desktop-implementation.md)。
+- 关联：[Desktop 主方案](2026-10-05-metawork-desktop-design-review.md)、[实施记录](../archive/plans/2026-10-05-metawork-desktop-implementation.md)。
 
 ## 1. 产品决定
 

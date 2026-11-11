@@ -7,13 +7,14 @@ import type Database from 'better-sqlite3';
 import type { ActiveExecutionControl } from './active-execution-control.js';
 import type { AttemptExecutionBackend } from './attempt-execution-backend.js';
 import type { AttemptExecutionRepositoryPort } from './repositories.js';
-import type { KernelDecision, KernelSnapshot } from '../kernel/control-kernel.js';
+import type { AuthorizedExecutorBinding } from '../core/authorized-executor-binding.js';
+import type { TaskControlAction, TaskControlSnapshot } from './task-control-policy.js';
 import type { TaskRuntimeService } from '../task/task-runtime-service.js';
 import type { SubtaskRepo } from '../storage/subtask-repo.js';
 import type { TaskEventRepo } from '../storage/task-event-repo.js';
 import { TaskEventRecorder } from '../storage/task-event-recorder.js';
 import type { WorkGraphRevisionRepo } from '../storage/work-graph-revision-repo.js';
-import type { KernelDispatchItemRepo } from '../storage/kernel-dispatch-item-repo.js';
+import type { ControlDispatchItemRepo } from '../storage/dispatch-item-repo.js';
 import type { ConversationTaskSchedulerRepo } from '../storage/conversation-task-scheduler-repo.js';
 import type { WorkspacePublicationRepo } from '../storage/workspace-publication-repo.js';
 import type { GenerationReplanRequestRepo } from '../storage/generation-replan-request-repo.js';
@@ -32,16 +33,23 @@ export interface CancellationReceipt {
   cleanupAttemptIds: string[];
 }
 
-type CancellationDecision = KernelDecision & {
-  action: Extract<KernelDecision['action'], {
+/**
+ * The Task Runtime authorizes one control operation and hands the durable
+ * identity to this coordinator. `id` is the deterministic operation identity
+ * that every fence row, Task state change and Task event records.
+ */
+export interface TaskControlApplication {
+  id: string;
+  reason: string;
+  action: Extract<TaskControlAction, {
     type: 'cancel_task' | 'cancel_subtasks' | 'accept_partial_result';
   }>;
-};
+}
 
 /**
  * Owns the durable cancellation fence and the asynchronous resource drain.
- * Callers submit one Kernel-authorized action; this module hides every storage
- * and execution-backend ordering rule needed to make that action durable.
+ * Callers submit one Task-Runtime-authorized action; this module hides every
+ * storage and execution-backend ordering rule needed to make it durable.
  */
 export class TaskCancellationCoordinator {
   private readonly taskEvents: TaskEventRecorder;
@@ -57,7 +65,7 @@ export class TaskCancellationCoordinator {
     subtaskRepo: SubtaskRepo;
     taskEventRepo: TaskEventRepo;
     workGraphRevisionRepo: WorkGraphRevisionRepo;
-    dispatchItemRepo: KernelDispatchItemRepo;
+    dispatchItemRepo: ControlDispatchItemRepo;
     schedulerRepo: ConversationTaskSchedulerRepo;
     publicationRepo: WorkspacePublicationRepo;
     generationReplanRepo: GenerationReplanRequestRepo;
@@ -78,7 +86,7 @@ export class TaskCancellationCoordinator {
     });
   }
 
-  buildSnapshot(taskId: string, expectedResult?: PendingResultIdentity): Extract<KernelSnapshot, { type: 'task_control' }> {
+  buildSnapshot(taskId: string, expectedResult?: PendingResultIdentity): TaskControlSnapshot {
     const task = this.deps.taskRuntimeService.findTask(taskId);
     const revision = this.deps.workGraphRevisionRepo.findActive(taskId);
     const subtasks = revision
@@ -87,8 +95,6 @@ export class TaskCancellationCoordinator {
     const pending = readPendingTaskResult(this.deps.db, taskId);
     const pendingSubtask = subtasks.find(item => item.id === pending?.subtaskId);
     return {
-      schemaVersion: 5,
-      type: 'task_control',
       task: task ? { id: task.id, status: task.status } : null,
       generationId: revision?.generationId ?? null,
       graphRevision: revision?.revision ?? null,
@@ -120,11 +126,11 @@ export class TaskCancellationCoordinator {
     };
   }
 
-  apply(decision: CancellationDecision): CancellationReceipt {
+  apply(decision: TaskControlApplication): CancellationReceipt {
     const now = new Date().toISOString();
     const action = decision.action;
     if (action.type === 'accept_partial_result') {
-      throw new Error('partial acceptance completion is applied by KernelExecutionRuntime');
+      throw new Error('partial acceptance completion is applied by ControlExecutionRuntime');
     }
     const applyFence = this.deps.db.transaction((): CancellationReceipt => {
       const task = this.deps.taskRuntimeService.findTask(action.taskId);
@@ -433,7 +439,7 @@ export class TaskCancellationCoordinator {
     const row = this.deps.db.prepare(`
       SELECT task_id
       FROM (
-        SELECT task_id, created_at FROM kernel_dispatch_items WHERE status = 'cancelling'
+        SELECT task_id, created_at FROM dispatch_items WHERE status = 'cancelling'
         UNION ALL
         SELECT task_id, created_at FROM workspace_publications WHERE status = 'cancelling'
         UNION ALL

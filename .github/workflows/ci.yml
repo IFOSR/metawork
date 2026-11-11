@@ -18,6 +18,8 @@ jobs:
     name: Lint, test, and build
     runs-on: ubuntu-latest
     timeout-minutes: 20
+    env:
+      METAWORK_PI_COMMAND: ${{ github.workspace }}/.tmp/pi-build-host/bin/pi
 
     steps:
       - name: Check out repository
@@ -43,17 +45,19 @@ jobs:
         run: npm ci
         working-directory: web
 
-      - name: Build vendored AnyFusion-Pi planner
-        run: |
-          npm ci --ignore-scripts
-          npm run build:offline
-        working-directory: planner/AnyFusion-Pi
+      - name: Prepare isolated upstream Pi build host
+        run: node scripts/prepare-pi-build-host.mjs
 
       - name: Type-check
         run: npm run lint
 
       - name: Run test suite
         run: npm test
+
+      - name: Verify packaged upstream Pi Manager and Executor
+        run: npx vitest run tests/e2e/packaged-pi-native.test.ts
+        env:
+          RUN_PACKAGED_PI_E2E: '1'
 
       - name: Build distribution
         run: npm run build

@@ -1,3 +1,5 @@
+import type { TokenUsageManagementQuery } from './token-usage-management.js';
+import { UsageRangeError } from '../metering/token-usage-timeline.js';
 import type { ProviderProtocol } from '../configuration/types.js';
 import { OfficialAuthorizationError } from '../authorization/types.js';
 import type { DesktopSessionService } from './desktop-session.js';
@@ -14,6 +16,12 @@ import { clientConnectionEventStreamId } from '../gateway/client-connection-even
 import type { WebGatewayAdapter } from './web-gateway-adapter.js';
 import { extname, join, normalize, resolve } from 'node:path';
 import { bearerTokenFromHeader, tokenMatches } from './token';
+import {
+  describeBindingAddress,
+  isOriginAllowed,
+  resolveServerBinding,
+  type ServerBinding,
+} from '../server/server-binding.js';
 import { WebSocketConnection } from './websocket';
 import type { ExecutionTimeline } from './execution-projector';
 import type { WorkGraphPresentationProjection } from './work-graph-presentation-projector.js';
@@ -141,29 +149,10 @@ export interface ProviderModelDiscoveryResponse {
     description?: string;
     publicFacts?: OpenRouterPublicFacts;
     contextLimit?: number;
-    costInputPerMillion?: number;
-    costOutputPerMillion?: number;
-    pricing?: {
-      source: 'openrouter' | 'catalog' | 'user';
-      usdInputPerToken?: number;
-      usdOutputPerToken?: number;
-      exchangeRate: 7;
-      fetchedAt?: string;
-      catalogModelId?: string;
-      overrideReason?: string;
-    };
+
   }>;
   prices?: Record<string, {
-    inputCnyPerMillion?: number;
-    outputCnyPerMillion?: number;
-    pricing?: {
-      source: 'openrouter' | 'catalog' | 'user';
-      usdInputPerToken?: number;
-      usdOutputPerToken?: number;
-      exchangeRate: 7;
-      fetchedAt?: string;
-      catalogModelId?: string;
-    };
+
   }>;
 }
 
@@ -248,8 +237,7 @@ export interface ConfigQuery {
         avoidTaskTypes?: string[];
       };
       contextLimit?: number;
-      costInputPerMillion?: number;
-      costOutputPerMillion?: number;
+
       publicFacts?: OpenRouterPublicFacts;
     }>;
     config?: unknown;
@@ -265,6 +253,11 @@ export type { ManagementWebSessionRuntime } from './web-session-runtime-types.js
 
 export interface ManagementServerDeps {
   port: number;
+  /** Bind host; defaults to loopback. Non-loopback requires allowedOrigins. */
+  host?: string;
+  /** Origins allowed to call this server from a browser. */
+  allowedOrigins?: readonly string[];
+  trustProxy?: boolean;
   webDistDir: string;
   token: string;
   webAuth: WebAuthService;
@@ -296,6 +289,7 @@ export interface ManagementServerDeps {
   officialAuthorization?: LocalAuthorizationService;
   /** Long-term memory management view (optional capability). */
   memoryQuery?: MemoryManagementQuery;
+  tokenUsageQuery?: TokenUsageManagementQuery;
 }
 
 const MIME: Record<string, string> = {
@@ -311,6 +305,8 @@ const MIME: Record<string, string> = {
 
 export class ManagementServer {
   private server: Server | null = null;
+  private binding: ServerBinding;
+  private bindingError: Error | null = null;
   private readonly wsConnections = new Set<WebSocketConnection>();
   private readonly authenticatedWsConnections = new Set<WebSocketConnection>();
   private readonly wsConnectionsByClient = new Map<string, Set<WebSocketConnection>>();
@@ -319,11 +315,27 @@ export class ManagementServer {
   private stopping = false;
   private stopPromise: Promise<void> | null = null;
 
-  constructor(private readonly deps: ManagementServerDeps) {}
+  constructor(private readonly deps: ManagementServerDeps) {
+    try {
+      this.binding = resolveServerBinding({
+        host: this.deps.host,
+        allowedOrigins: this.deps.allowedOrigins,
+        trustProxy: this.deps.trustProxy,
+      });
+    } catch (error) {
+      // Keep request handling safe (deny browser origins) while surfacing the
+      // misconfiguration at start(), the only place that can open a port.
+      this.bindingError = error instanceof Error ? error : new Error(String(error));
+      this.binding = { host: this.deps.host ?? '127.0.0.1', loopback: false, allowedOrigins: [], trustProxy: false };
+    }
+  }
 
   async start(): Promise<void> {
     if (this.server) return;
     if (this.stopping) throw new Error('ManagementServer is stopping');
+    // Fail before any port is opened: a non-loopback bind without an explicit
+    // origin allow-list is a misconfiguration, not a runtime error.
+    if (this.bindingError) throw this.bindingError;
     await this.deps.sessionRuntime.initialize();
     this.configurationRuntimeUnsubscribe = this.deps.configurationRuntime?.subscribe?.(
       event => this.broadcast(event),
@@ -354,7 +366,7 @@ export class ManagementServer {
 
     await new Promise<void>((resolvePromise, reject) => {
       server.once('error', reject);
-      server.listen(this.deps.port, '127.0.0.1', () => {
+      server.listen(this.deps.port, this.binding.host, () => {
         server.off('error', reject);
         resolvePromise();
       });
@@ -391,9 +403,9 @@ export class ManagementServer {
   get address(): string {
     const address = this.server?.address();
     if (address && typeof address !== 'string') {
-      return `http://127.0.0.1:${address.port}`;
+      return describeBindingAddress(this.binding, address.port);
     }
-    return `http://127.0.0.1:${this.deps.port}`;
+    return describeBindingAddress(this.binding, this.deps.port);
   }
 
   private handleUpgrade(request: IncomingMessage, socket: Socket): void {
@@ -406,7 +418,7 @@ export class ManagementServer {
       socket.destroy();
       return;
     }
-    if (!this.isAllowedWebSocketOrigin(request.headers.origin)) {
+    if (!this.isAllowedWebSocketOrigin(request.headers.origin, request.headers.host)) {
       this.logWebSocketRejection(request, 'forbidden_origin');
       this.rejectUpgrade(socket, 403, 'Forbidden');
       return;
@@ -679,20 +691,8 @@ export class ManagementServer {
     }
   }
 
-  private isAllowedWebSocketOrigin(origin: string | undefined): boolean {
-    if (!origin) return true;
-    try {
-      const parsed = new URL(origin);
-      const hostname = parsed.hostname.toLowerCase();
-      const port = parsed.port || (parsed.protocol === 'http:' ? '80' : '443');
-      const listening = this.server?.address();
-      const listeningPort = listening && typeof listening !== 'string' ? listening.port : this.deps.port;
-      return parsed.protocol === 'http:'
-        && (hostname === '127.0.0.1' || hostname === 'localhost')
-        && port === String(listeningPort);
-    } catch {
-      return false;
-    }
+  private isAllowedWebSocketOrigin(origin: string | undefined, requestHost?: string): boolean {
+    return isOriginAllowed(origin, this.binding, requestHost);
   }
 
   private async handleRequest(request: IncomingMessage, response: ServerResponse): Promise<void> {
@@ -702,13 +702,36 @@ export class ManagementServer {
       return;
     }
     const url = new URL(request.url ?? '/', 'http://127.0.0.1');
+    // Compiled Web assets are public, including modules requested from the
+    // opaque-origin document sandbox. Keep this exception outside /api/ so
+    // account data still requires both an allowed origin and authentication.
+    if (!url.pathname.startsWith('/api/')
+      && (request.method === 'GET' || request.method === 'HEAD')) {
+      await this.handleStatic(response, url.pathname, request.method === 'HEAD');
+      return;
+    }
+    if (url.pathname === '/api/ws/diagnostics') {
+      // This endpoint exists to explain an origin rejection to the operator, so
+      // it must be reachable from the mismatched origin. It is authenticated
+      // and read-only.
+      await this.handleApi(request, response, url);
+      return;
+    }
+    // Browser requests must come from an allowed origin; CLI/Desktop/tests send
+    // no Origin header and are authorized by their own credentials instead.
+    if (!isOriginAllowed(request.headers.origin, this.binding, request.headers.host)) {
+      response.writeHead(403, { 'content-type': 'application/json; charset=utf-8' });
+      response.end(JSON.stringify({ error: 'origin_not_allowed' }));
+      return;
+    }
 
     if (url.pathname.startsWith('/api/')) {
       await this.handleApi(request, response, url);
       return;
     }
 
-    await this.handleStatic(response, url.pathname);
+    response.writeHead(405, { Allow: 'GET, HEAD' });
+    response.end();
   }
 
   private handleRequestError(
@@ -787,7 +810,7 @@ export class ManagementServer {
       return;
     }
     if (request.method === 'POST' && url.pathname === '/api/auth/bootstrap') {
-      if (!this.isAllowedWebSocketOrigin(request.headers.origin)) {
+      if (!this.isAllowedWebSocketOrigin(request.headers.origin, request.headers.host)) {
         this.sendJson(response, 403, { error: 'forbidden_origin' });
         return;
       }
@@ -806,7 +829,7 @@ export class ManagementServer {
     }
 
     if (request.method === 'POST' && url.pathname === '/api/auth/launch-context') {
-      if (!this.isAllowedWebSocketOrigin(request.headers.origin)) {
+      if (!this.isAllowedWebSocketOrigin(request.headers.origin, request.headers.host)) {
         this.sendJson(response, 403, { error: 'forbidden_origin' });
         return;
       }
@@ -863,7 +886,7 @@ export class ManagementServer {
     }
 
     if (request.method === 'POST' && url.pathname === '/api/auth/logout') {
-      if (!this.isAllowedWebSocketOrigin(request.headers.origin)) {
+      if (!this.isAllowedWebSocketOrigin(request.headers.origin, request.headers.host)) {
         this.sendJson(response, 403, { error: 'forbidden_origin' });
         return;
       }
@@ -892,7 +915,6 @@ export class ManagementServer {
       await this.handleOfficialAuth(request, response, url);
       return;
     }
-
 
     if (request.method === 'GET' && url.pathname === '/api/client/notifications') {
       const cursor = url.searchParams.get('cursor');
@@ -1067,6 +1089,7 @@ export class ManagementServer {
       try {
         const result = await this.deps.workspaceDirectoryBrowser.browse(
           url.searchParams.get('path') ?? undefined,
+          url.searchParams.get('after') ?? undefined,
         );
         this.sendJson(response, 200, result);
       } catch (error) {
@@ -1149,41 +1172,6 @@ export class ManagementServer {
 
     if (request.method === 'POST' && url.pathname === '/api/conversations/clear-all') {
       this.sendJson(response, 200, await this.deps.sessionRuntime.clearAllSessions(clientId));
-      return;
-    }
-
-    // 只读账单页（账单简化设计 §3.2/§3.3）：金额与状态全部来自 Server 投影，
-    // 不创建 Turn，不进入 Planner mailbox，不改变账单状态。
-    if (request.method === 'GET' && url.pathname === '/api/billing/records') {
-      const filterParam = url.searchParams.get('filter') ?? 'all';
-      const filter = ['all', 'billed', 'unconfirmed', 'no_charge'].includes(filterParam)
-        ? filterParam as 'all' | 'billed' | 'unconfirmed' | 'no_charge'
-        : 'all';
-      const limitParam = Number.parseInt(url.searchParams.get('limit') ?? '', 10);
-      this.sendJson(response, 200, await this.deps.sessionRuntime.listBillingRecords(clientId, {
-        ...(url.searchParams.get('cursor') ? { cursor: url.searchParams.get('cursor')! } : {}),
-        filter,
-        ...(Number.isSafeInteger(limitParam) && limitParam > 0 ? { limit: Math.min(limitParam, 100) } : {}),
-      }));
-      return;
-    }
-
-    if (request.method === 'GET' && url.pathname === '/api/billing/tasks') {
-      this.sendJson(response, 200, await this.deps.sessionRuntime.listBillingTasks?.(clientId) ?? []);
-      return;
-    }
-
-    const billingTaskMatch = /^\/api\/billing\/tasks\/([^/]+)$/u.exec(url.pathname);
-    if (request.method === 'GET' && billingTaskMatch) {
-      const detail = await this.deps.sessionRuntime.getTaskBillingDetail(
-        clientId,
-        decodeURIComponent(billingTaskMatch[1]!),
-      );
-      if (!detail) {
-        this.sendJson(response, 404, { error: 'billing unavailable' });
-        return;
-      }
-      this.sendJson(response, 200, detail);
       return;
     }
 
@@ -1285,12 +1273,58 @@ export class ManagementServer {
       return;
     }
 
+    if (request.method === 'GET' && url.pathname === '/api/usage/timeline') {
+      response.setHeader('Cache-Control', 'no-store');
+      if (!this.deps.tokenUsageQuery) {
+        this.sendJson(response, 503, { error: 'usage_unavailable' });
+        return;
+      }
+      try {
+        const allowed = new Set(['period', 'groupBy', 'start', 'end']);
+        for (const key of url.searchParams.keys()) {
+          if (!allowed.has(key) || url.searchParams.getAll(key).length !== 1) throw new UsageRangeError('usage_invalid_query');
+        }
+        this.sendJson(response, 200, this.deps.tokenUsageQuery.read(Object.fromEntries(url.searchParams)));
+      } catch (error) {
+        this.sendJson(response, error instanceof UsageRangeError ? 400 : 503, {
+          error: error instanceof UsageRangeError ? error.message : 'usage_unavailable',
+        });
+      }
+      return;
+    }
+
     if (request.method === 'GET' && url.pathname === '/api/memory/status') {
       if (!this.deps.memoryQuery) {
         this.sendJson(response, 503, { error: 'memory management unavailable' });
         return;
       }
       this.sendJson(response, 200, await this.deps.memoryQuery.status());
+      return;
+    }
+
+    if (request.method === 'GET' && url.pathname === '/api/memory/export') {
+      if (!this.deps.memoryQuery) {
+        this.sendJson(response, 503, { error: 'memory management unavailable' });
+        return;
+      }
+      const controller = new AbortController();
+      const cancel = () => controller.abort();
+      response.once('close', cancel);
+      response.setHeader('Cache-Control', 'no-store');
+      try {
+        const result = await this.deps.memoryQuery.exportAssets(controller.signal);
+        if (response.destroyed) return;
+        response.setHeader('Content-Disposition', 'attachment; filename="metawork-memory.json"');
+        this.sendJson(response, 200, result);
+      } catch (error) {
+        if (response.destroyed) return;
+        const code = error instanceof Error ? error.message : 'memory_export_failed';
+        const status = code === 'memory_export_too_large' ? 413 : code === 'memory_export_busy' ? 429
+          : code === 'memory_export_changed' || code === 'memory_asset_listing_incomplete' ? 409 : 503;
+        this.sendJson(response, status, { error: code });
+      } finally {
+        response.off('close', cancel);
+      }
       return;
     }
 
@@ -1494,8 +1528,7 @@ export class ManagementServer {
             ...(typeof fact.description === 'string' ? { description: fact.description } : {}),
             ...(routingNotes ? { routingNotes } : {}),
             ...(typeof fact.contextLimit === 'number' ? { contextLimit: fact.contextLimit } : {}),
-            ...(typeof fact.costInputPerMillion === 'number' ? { costInputPerMillion: fact.costInputPerMillion } : {}),
-            ...(typeof fact.costOutputPerMillion === 'number' ? { costOutputPerMillion: fact.costOutputPerMillion } : {}),
+
             ...(publicFacts ? { publicFacts } : {}),
           }] : [];
         })
@@ -1747,7 +1780,7 @@ export class ManagementServer {
       this.sendJson(response, 200, authorization.getStatus());
       return;
     }
-    if (!this.isAllowedWebSocketOrigin(request.headers.origin)) {
+    if (!this.isAllowedWebSocketOrigin(request.headers.origin, request.headers.host)) {
       this.sendJson(response, 403, { error: 'forbidden_origin' });
       return;
     }
@@ -1896,7 +1929,7 @@ export class ManagementServer {
       }
       try {
         const { createReportPdf, reportPdfName } = await import('./report-pdf.js');
-        const source = await readFile(result.absolutePath, 'utf8');
+        const source = result.content.toString('utf8');
         const pdf = await createReportPdf(source, result.artifact.displayName,
           reference => service.readReportImage(artifactId, reference));
         const name = reportPdfName(result.artifact.displayName).replace(/[^\w.\-\u4e00-\u9fff]+/gu, '_');
@@ -1914,18 +1947,16 @@ export class ManagementServer {
       }
       return;
     }
-    let filePath: string;
     try {
-      filePath = result.absolutePath;
       const dispositionName = result.artifact.displayName.replace(/[^\w.\-\u4e00-\u9fff]+/gu, '_');
       response.writeHead(200, {
         'Content-Type': result.artifact.mediaType,
-        'Content-Length': result.artifact.byteLength,
+        'Content-Length': result.content.byteLength,
         'Cache-Control': 'no-cache',
         'Content-Disposition': `attachment; filename*=UTF-8''${encodeURIComponent(dispositionName)}`,
         'X-Content-Type-Options': 'nosniff',
       });
-      createReadStream(filePath).pipe(response);
+      response.end(result.content);
       return;
     } catch (error) {
       if (!response.headersSent) {
@@ -1936,7 +1967,7 @@ export class ManagementServer {
     }
   }
 
-  private async handleStatic(response: ServerResponse, pathname: string): Promise<void> {
+  private async handleStatic(response: ServerResponse, pathname: string, headOnly = false): Promise<void> {
     const relative = pathname === '/' ? 'index.html' : pathname.replace(/^\/+/u, '');
     const filePath = normalize(join(this.deps.webDistDir, relative));
     const root = resolve(this.deps.webDistDir);
@@ -1946,13 +1977,13 @@ export class ManagementServer {
         this.sendText(response, 404, 'web dist not found; run `cd web && npm run build` first');
         return;
       }
-      this.sendFile(response, index);
+      this.sendFile(response, index, headOnly);
       return;
     }
-    this.sendFile(response, filePath);
+    this.sendFile(response, filePath, headOnly);
   }
 
-  private sendFile(response: ServerResponse, filePath: string): void {
+  private sendFile(response: ServerResponse, filePath: string, headOnly = false): void {
     const type = MIME[extname(filePath)] ?? 'application/octet-stream';
     response.writeHead(200, {
       'Content-Type': type,
@@ -1961,6 +1992,10 @@ export class ManagementServer {
       // sandbox. API/file responses never receive this CORS grant.
       'Access-Control-Allow-Origin': '*',
     });
+    if (headOnly) {
+      response.end();
+      return;
+    }
     createReadStream(filePath).pipe(response);
   }
 
@@ -1974,12 +2009,12 @@ export class ManagementServer {
   }
 
   private getWebSocketDiagnostic(request: IncomingMessage): WebSocketDiagnostic {
-    if (!this.isAllowedWebSocketOrigin(request.headers.origin)) {
+    if (!this.isAllowedWebSocketOrigin(request.headers.origin, request.headers.host)) {
       return {
         ok: false,
         status: 403,
         reason: 'forbidden_origin',
-        message: 'WebSocket Origin 与服务端端口不匹配。',
+        message: 'WebSocket Origin 不在服务端允许范围内。',
       };
     }
     if (!this.deps.webAuth.hasSession(request.headers.cookie)) {
@@ -2022,6 +2057,9 @@ export class ManagementServer {
   }
 
   private sendJson(response: ServerResponse, status: number, body: unknown): void {
+    // API state and transient errors must not survive an account/session change
+    // or a repaired publication through the browser's heuristic HTTP cache.
+    response.setHeader('Cache-Control', 'no-store');
     this.sendText(response, status, `${JSON.stringify(body)}\n`, 'application/json; charset=utf-8');
   }
 

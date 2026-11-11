@@ -16,6 +16,7 @@ import type { MemoryPort } from './memory-port.js';
 import {
   MemoryPortError,
   type MemoryAsset,
+  type MemoryEngineUsage,
   type MemoryEngineHealth,
   type MemoryFlushBatch,
   type MemoryLayer,
@@ -34,6 +35,10 @@ const DEFAULT_SEARCH_TIMEOUT_MS = 2_000;
 const MAX_MESSAGES_PER_DEPOSIT = 100;
 /** TDAI `messages[].content` accepts 1–8192 characters. */
 const MAX_MESSAGE_CHARS = 8_192;
+
+function tokenCount(value: unknown): number | null {
+  return typeof value === 'number' && Number.isFinite(value) && value >= 0 ? value : null;
+}
 
 const DEFAULT_RETRIES = 1;
 const RETRY_BASE_DELAY_MS = 200;
@@ -309,12 +314,13 @@ export class TdaiMemoryAdapter implements MemoryPort {
     limit: number;
     offset: number;
     includeDisabled: boolean;
+    signal?: AbortSignal;
   }, scope: MemoryScope): Promise<{ items: readonly MemoryAsset[]; total: number }> {
     const data = await this.call<AtomicQueryData>('/v3/atomic/query', {
       limit: Math.max(1, Math.min(100, input.limit)),
       offset: Math.min(input.offset, 100_000),
       ...memoryScopeFields(scope),
-    });
+    }, this.timeoutMs, this.retries, input.signal);
     const atomicTotal = data?.total ?? data?.items?.length ?? 0;
     const profileOffset = Math.max(0, input.offset - atomicTotal);
     const profileLimit = Math.max(1, Math.min(100, input.limit));
@@ -322,7 +328,7 @@ export class TdaiMemoryAdapter implements MemoryPort {
       limit: profileLimit,
       offset: profileOffset,
       ...memoryScopeFields(scope),
-    });
+    }, this.timeoutMs, this.retries, input.signal);
     const profileItems = profiles?.items ?? [];
     const merged = input.offset < atomicTotal
       ? [...(data?.items ?? []).map(item => toAsset(item, scope)), ...(input.offset + input.limit > atomicTotal
@@ -360,6 +366,42 @@ export class TdaiMemoryAdapter implements MemoryPort {
     };
   }
 
+  /**
+   * Drain the engine's own model-call ledger (release-owned usage route).
+   *
+   * A failure is normalized like any other engine call: the caller reports a
+   * degraded drain and retries on the next tick, so a transient sidecar restart
+   * never loses the metering seam silently.
+   */
+  async drainUsage(): Promise<readonly MemoryEngineUsage[]> {
+    const data = await this.call<{ items?: unknown }>(
+      '/v3/metawork/usage/drain', {}, Math.min(this.timeoutMs, 5_000), 0,
+    );
+    const items = Array.isArray(data?.items) ? data!.items : [];
+    const drained: MemoryEngineUsage[] = [];
+    for (const item of items) {
+      if (!item || typeof item !== 'object') continue;
+      const entry = item as Record<string, unknown>;
+      const instanceId = typeof entry.instanceId === 'string' ? entry.instanceId : '';
+      const seq = typeof entry.seq === 'number' && Number.isSafeInteger(entry.seq) ? entry.seq : null;
+      const occurredAt = typeof entry.occurredAt === 'string' && Number.isFinite(Date.parse(entry.occurredAt))
+        ? new Date(entry.occurredAt).toISOString()
+        : null;
+      if (!instanceId || seq === null || seq < 1 || !occurredAt) continue;
+      drained.push({
+        instanceId,
+        seq,
+        occurredAt,
+        model: typeof entry.model === 'string' ? entry.model : '',
+        inputTokens: tokenCount(entry.inputTokens),
+        outputTokens: tokenCount(entry.outputTokens),
+        success: entry.success === true,
+        error: typeof entry.error === 'string' ? entry.error.slice(0, 500) : null,
+      });
+    }
+    return drained;
+  }
+
   async deleteProfile(memoryId: string, layer: Exclude<MemoryLayer, 'l1'>, scope: MemoryScope): Promise<boolean> {
     const data = await this.call<ProfileDeleteData>('/v3/metawork/profile/delete', {
       id: memoryId, layer, ...memoryScopeFields(scope),
@@ -371,10 +413,11 @@ export class TdaiMemoryAdapter implements MemoryPort {
    * One v3 RPC call: envelope parsing, timeout, error normalization and a
    * bounded retry for transport-level failures only.
    */
-  private async call<T>(path: string, body: unknown, timeoutMs = this.timeoutMs, retries = this.retries): Promise<T | undefined> {
+  private async call<T>(path: string, body: unknown, timeoutMs = this.timeoutMs, retries = this.retries, signal?: AbortSignal): Promise<T | undefined> {
     const payload = JSON.stringify(body ?? {});
     let lastError: unknown;
     for (let attempt = 0; attempt <= retries; attempt++) {
+      signal?.throwIfAborted();
       if (attempt > 0) await this.sleep(RETRY_BASE_DELAY_MS * attempt);
       const controller = new AbortController();
       const timer = setTimeout(() => controller.abort(), timeoutMs);
@@ -383,7 +426,7 @@ export class TdaiMemoryAdapter implements MemoryPort {
           method: 'POST',
           headers: this.headers(),
           body: payload,
-          signal: controller.signal,
+          signal: signal ? AbortSignal.any([signal, controller.signal]) : controller.signal,
         });
         const text = await response.text();
         let envelope: TdaiEnvelope<T> | null = null;
@@ -415,6 +458,7 @@ export class TdaiMemoryAdapter implements MemoryPort {
         }
         return envelope.data;
       } catch (error) {
+        signal?.throwIfAborted();
         if (error instanceof MemoryPortError) {
           if (error.code === 'memory_request_failed') {
             lastError = error;

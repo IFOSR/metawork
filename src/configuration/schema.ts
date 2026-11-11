@@ -20,8 +20,11 @@ const REFERENCE_ID = /^[a-z][a-z0-9-]{0,63}$/;
 const SECRET_REFERENCE =
   /^(?:file-secret|keychain):[A-Za-z0-9][A-Za-z0-9._/-]{0,255}$/;
 
-/** Fixed Span advisor model; the UI never offers a model/provider picker. */
-export const SPAN_ROUTING_MODEL = 'inception/mercury-decide:free' as const;
+/**
+ * Retired fixed-menu decision models. The decision model is a normal
+ * Provider/Model choice now (ADR-0055 D4), so no model id is a product default;
+ * these only let an old revision keep verifying its stored content hash.
+ */
 export const RETIRED_SPAN_ROUTING_MODELS: readonly string[] = ['respan/span-01-lite'];
 /**
  * Fixed, Server-owned SecretStore reference for the OpenRouter credential.
@@ -210,20 +213,10 @@ const ModelProfileSchema = z.object({
     avoidTaskTypes: uniqueArray(NonEmptyTextSchema, 'avoided model task type', 32).default([]),
   }).strict().optional(),
   contextLimit: z.number().int().min(1_024).max(10_000_000).optional(),
-  costTier: z.enum(['low', 'medium', 'high']).optional(),
+
   latencyTier: z.enum(['low', 'medium', 'high']).optional(),
   qualityTier: z.enum(['low', 'medium', 'high']).optional(),
-  costInputPerMillion: z.number().finite().min(0).max(1_000_000).optional(),
-  costOutputPerMillion: z.number().finite().min(0).max(1_000_000).optional(),
-  pricing: z.object({
-    source: z.enum(['openrouter', 'catalog', 'user']),
-    usdInputPerToken: z.number().finite().min(0).optional(),
-    usdOutputPerToken: z.number().finite().min(0).optional(),
-    exchangeRate: z.literal(7),
-    fetchedAt: z.string().datetime().optional(),
-    catalogModelId: z.string().trim().min(1).max(256).optional(),
-    overrideReason: z.string().trim().max(500).optional(),
-  }).strict().optional(),
+
   enabled: z.boolean(),
 }).strict();
 
@@ -251,12 +244,6 @@ const HarnessDefinitionSchema = z.discriminatedUnion('transport', [
   }).strict(),
   z.object({
     ...HarnessBaseShape,
-    transport: z.literal('container'),
-    imageRef: z.string().trim().min(1).max(300),
-    entrypoint: uniqueArray(CommandArgumentSchema, 'container entrypoint', 64).default([]),
-  }).strict(),
-  z.object({
-    ...HarnessBaseShape,
     transport: z.literal('a2a'),
     endpoint: credentialFreeHttpUrlSchema('A2A endpoint'),
     authTokenRef: z.string().regex(SECRET_REFERENCE),
@@ -277,8 +264,8 @@ const AutoModelPolicySchema = z.object({
     order: uniqueArray(ReferenceIdSchema, 'fallback Model', 32),
   }).strict().optional(),
   objective: z.object({
-    priority: z.enum(['balanced', 'quality', 'cost', 'latency']),
-    maxCostPerTurn: z.number().finite().min(0).max(1_000_000).optional(),
+    priority: z.enum(['balanced', 'quality', 'latency']),
+
     maxLatencyMs: z.number().int().min(1).max(86_400_000).optional(),
     minimumQualityTier: z.enum(['low', 'medium', 'high']).optional(),
   }).strict().optional(),
@@ -303,8 +290,8 @@ const AgentClassAutoModelPolicySchema = z.object({
     order: z.array(ReferenceIdSchema),
   }).strict().optional(),
   objective: z.object({
-    priority: z.enum(['balanced', 'quality', 'cost', 'latency']),
-    maxCostPerTurn: z.number().finite().min(0).max(1_000_000).optional(),
+    priority: z.enum(['balanced', 'quality', 'latency']),
+
     maxLatencyMs: z.number().int().min(1).max(86_400_000).optional(),
     minimumQualityTier: z.enum(['low', 'medium', 'high']).optional(),
   }).strict().optional(),
@@ -538,7 +525,9 @@ const GatewayConfigSchema = z.object({
 const RoutingConfigurationSchema = z.object({
   span: z.object({
     enabled: z.boolean(),
-    model: z.string().trim().min(1).max(200),
+    // Read-only identity for revisions written before the decision model became
+    // a Provider/Model choice. The advisor always uses the configured model id.
+    model: z.string().trim().min(1).max(200).optional(),
     providerRef: ReferenceIdSchema.optional(),
     modelRef: ReferenceIdSchema.optional(),
     fallbackModelRefs: uniqueArray(ReferenceIdSchema, 'fallback model', 8).optional(),
@@ -644,8 +633,7 @@ export const AnyFusionConfigurationV2Schema = z.object({
       && (
         driver.transport !== 'local-cli'
         || !('command' in driver)
-        || (driver.command !== harness.command
-          && !(harness.driverId === 'codex-cli' && ABSOLUTE_EXECUTABLE.test(harness.command)))
+        || driver.command !== harness.command
       )
     ) {
       context.addIssue({
@@ -696,13 +684,7 @@ export const AnyFusionConfigurationV2Schema = z.object({
       const path = agentClass.modelPolicy.mode === 'fixed'
         ? ['agentClasses', agentClassRef, 'modelPolicy', 'modelRef']
         : ['agentClasses', agentClassRef, 'modelPolicy', 'allowedModelRefs', index];
-      if (model && harness?.driverId === 'codex-cli'
-        && configuration.providers[model.providerRef]?.protocol === 'anthropic') {
-        context.addIssue({
-          code: z.ZodIssueCode.custom, path,
-          message: 'Codex does not support Anthropic Messages; select an OpenAI endpoint or Pi',
-        });
-      }
+
       if (!model) {
         context.addIssue({
           code: z.ZodIssueCode.custom,
@@ -880,14 +862,14 @@ function normalizeRetiredSpanRoutingModel(value: unknown): unknown {
   if (typeof spanRecord.model !== 'string' || !RETIRED_SPAN_ROUTING_MODELS.includes(spanRecord.model)) {
     return value;
   }
+  // There is no replacement default: drop the retired id so the configured
+  // Provider/Model (when present) is the only source of the decision model.
+  const { model: _retired, ...rest } = spanRecord;
   return {
     ...configuration,
     routing: {
       ...routingRecord,
-      span: {
-        ...spanRecord,
-        model: SPAN_ROUTING_MODEL,
-      },
+      span: rest,
     },
   };
 }

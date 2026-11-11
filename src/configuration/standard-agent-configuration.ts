@@ -52,7 +52,7 @@ export function prepareStandardAgentConfiguration(input: AnyFusionConfigurationV
   for (const [ref, agent] of Object.entries(config.agentClasses)) {
     if (refs && !refs.includes(ref)) continue;
     const driver = config.harnesses[agent.harnessRef]?.driverId;
-    if (agent.kind !== 'executor' || !['pi-cli', 'codex-cli'].includes(driver ?? '')) continue;
+    if (agent.kind !== 'executor' || driver !== 'pi-cli') continue;
     const profile = config.permissionProfiles[agent.permissionProfileRef ?? ''];
     const target = standardProfileRef(profile);
     if (!target || profile?.profileId === 'standard-agent') continue;

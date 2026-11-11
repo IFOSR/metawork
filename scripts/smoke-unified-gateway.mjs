@@ -1,4 +1,5 @@
 import { spawn, spawnSync } from 'node:child_process';
+import { createConnection } from 'node:net';
 import {
   existsSync,
   mkdirSync,
@@ -7,8 +8,7 @@ import {
   rmSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { basename, join, resolve } from 'node:path';
-import { pathToFileURL } from 'node:url';
+import { join, resolve } from 'node:path';
 
 const repoRoot = resolve(import.meta.dirname, '..');
 const smokeRoot = mkdtempSync(join(
@@ -20,15 +20,6 @@ const smokeHome = join(smokeRoot, 'home');
 const workspaceA = join(smokeRoot, 'workspace-a');
 const workspaceB = join(smokeRoot, 'workspace-b');
 const vitest = join(repoRoot, 'node_modules', 'vitest', 'vitest.mjs');
-const plannerRoot = resolve(repoRoot, 'planner/AnyFusion-Pi');
-const plannerVitest = join(
-  plannerRoot,
-  'packages',
-  'coding-agent',
-  'node_modules',
-  'vitest',
-  'vitest.mjs',
-);
 const rootAcceptanceFiles = [
   'tests/architecture/no-direct-client-session-paths.test.ts',
   'tests/architecture/unified-server-composition.test.ts',
@@ -51,16 +42,6 @@ const rootAcceptanceFiles = [
   'tests/server/server-lifecycle.test.ts',
   'tests/web/gateway-contract-parity.test.ts',
   'tests/web/workspace-shell.test.ts',
-];
-const plannerAcceptanceFiles = [
-  'test/anyfusion-gateway-client.test.ts',
-  'test/metawork-conversation-selector.test.ts',
-  // 唯一新 TUI（ADR-0041）：模型、组件、控制器与应用装配。
-  'test/metawork-tui-reducer.test.ts',
-  'test/metawork-tui-render.test.ts',
-  'test/metawork-tui-controller.test.ts',
-  'test/metawork-tui-completion-and-preferences.test.ts',
-  'test/metawork-tui-app.test.ts',
 ];
 const releaseId = JSON.parse(
   readFileSync(join(repoRoot, 'package.json'), 'utf8'),
@@ -87,12 +68,6 @@ mkdirSync(workspaceB, { recursive: true });
 let activeServer = null;
 try {
   runAcceptance('Unified Gateway acceptance', vitest, rootAcceptanceFiles, repoRoot);
-  runAcceptance(
-    'Planner TUI acceptance',
-    plannerVitest,
-    plannerAcceptanceFiles,
-    join(plannerRoot, 'packages', 'coding-agent'),
-  );
   installNativeRelease();
   activeServer = await runNativeMultiClientAcceptance();
   process.stdout.write(`Unified Gateway smoke passed with isolated root ${smokeRoot}\n`);
@@ -123,9 +98,11 @@ function runAcceptance(label, runner, files, cwd) {
 
 function installNativeRelease() {
   assertBuilt(join(repoRoot, 'dist', 'install-cli.js'), 'run `npm run build` first');
+  // ADR-0055 D6: the release carries the packaged upstream Pi. Stage it first
+  // (or point the Server at an explicit runtime) so readiness can resolve it.
   assertBuilt(
-    join(plannerRoot, 'packages', 'coding-agent', 'dist', 'cli.js'),
-    'run the vendored Planner build first',
+    process.env.METAWORK_MANAGED_PI ?? join(repoRoot, 'desktop-tools', 'executor', 'bin', 'pi'),
+    'stage the packaged Pi (npm run build-release --package-only) or set METAWORK_MANAGED_PI',
   );
   runSync('Native release installation', process.execPath, [
     join(repoRoot, 'dist/install-cli.js'),
@@ -133,8 +110,6 @@ function installNativeRelease() {
     releaseId,
     '--source-root',
     repoRoot,
-    '--planner-root',
-    plannerRoot,
   ], {
     cwd: repoRoot,
     env: nativeEnvironment,
@@ -144,23 +119,16 @@ function installNativeRelease() {
 async function runNativeMultiClientAcceptance() {
   let server = await startServer('start');
   try {
-    assertNoPlannerChild(server.child.pid);
-    await runInstalledTui(workspaceA);
+    assertNoRetiredTuiChild(server.child.pid);
 
     const manifest = readManifest();
-    const {
-      GatewayClient,
-      GatewaySocketTransport,
-    } = await loadInstalledGatewayClient();
-    const clientA = await createClient(GatewayClient, GatewaySocketTransport, manifest.unixSocketPath);
-    const clientB = await createClient(GatewayClient, GatewaySocketTransport, manifest.unixSocketPath);
-    const clientC = await createClient(GatewayClient, GatewaySocketTransport, manifest.unixSocketPath);
+    const clientA = await connectClient(manifest.unixSocketPath, 'smoke_a');
+    const clientB = await connectClient(manifest.unixSocketPath, 'smoke_b');
+    const clientC = await connectClient(manifest.unixSocketPath, 'smoke_c');
 
     try {
-      const selectedA = await clientA.client.initializeWorkspace(`/workspace ${workspaceA}`);
-      const selectedB = await clientB.client.initializeWorkspace(`/workspace ${workspaceA}`);
-      assertAccepted(selectedA, 'TUI Client A Workspace selection');
-      assertAccepted(selectedB, 'Web Client B Workspace selection');
+      const selectedA = await clientA.selectWorkspace(workspaceA);
+      const selectedB = await clientB.selectWorkspace(workspaceA);
       if (!selectedA.workspaceId || selectedA.workspaceId !== selectedB.workspaceId) {
         throw new Error('Clients in Workspace A resolved different workspaceId values');
       }
@@ -168,56 +136,33 @@ async function runNativeMultiClientAcceptance() {
       let created;
       const workspaceReadyDeadline = Date.now() + 30_000;
       do {
-        created = await clientA.client.createConversation(selectedA.workspaceId);
+        created = await clientA.createConversation(selectedA.workspaceId);
         if (created.status !== 'rejected' || created.reason !== 'workspace_initializing') break;
         if (Date.now() >= workspaceReadyDeadline) throw new Error('Workspace initialization timed out');
         await new Promise(resolve => setTimeout(resolve, 100));
       } while (true);
       assertAccepted(created, 'Workspace A Conversation creation');
       if (!created.conversationId) throw new Error('Conversation creation returned no ID');
-      await waitForEvent(clientB.events, event => (
+      await clientB.waitForEvent(event => (
         event.kind === 'workspace_conversation_upserted'
         && event.payload?.conversation?.conversationId === created.conversationId
       ));
 
-      const viewsA = [];
-      const stopA = await clientA.client.followConversation(created.conversationId, view => viewsA.push(view));
-      const helpReceipt = await clientA.client.submitSlashCommand('/help', {
-        mode: 'attach',
-        conversationId: created.conversationId,
-      });
-      assertAccepted(helpReceipt, 'attached Client command');
-      await waitFor(() => viewsA.some(view => view.turns.some(turn => turn.requestId === helpReceipt.requestId
-        && turn.status === 'completed' && turn.answerRef)), 15_000);
-      if (clientB.events.some(event => event.requestId === helpReceipt.requestId)) {
-        throw new Error('Unattached Client B received Conversation detail');
-      }
-
-      const viewsB = [];
-      const stopB = await clientB.client.followConversation(created.conversationId, view => viewsB.push(view));
-      await waitFor(() => viewsB.some(view => view.turns.some(turn => turn.requestId === helpReceipt.requestId
-        && turn.status === 'completed' && turn.answerRef)), 15_000);
-      const answerA = viewsA.at(-1).turns.find(turn => turn.requestId === helpReceipt.requestId).answerRef;
-      const answerB = viewsB.at(-1).turns.find(turn => turn.requestId === helpReceipt.requestId).answerRef;
-      if (answerA.hash !== answerB.hash) throw new Error('Cross-client answer authority mismatch');
-      stopA(); stopB();
-
-      const selectedC = await clientC.client.initializeWorkspace(`/workspace ${workspaceB}`);
-      assertAccepted(selectedC, 'TUI Client C Workspace selection');
+      const selectedC = await clientC.selectWorkspace(workspaceB);
       if (!selectedC.workspaceId || selectedC.workspaceId === selectedA.workspaceId) {
         throw new Error('Workspace B did not receive an isolated workspaceId');
       }
-      const listC = await clientC.client.listWorkspaceConversations(selectedC.workspaceId);
-      assertAccepted(listC, 'Workspace B directory query');
-      const workspaceBPage = await waitForEvent(clientC.events, event => (
+      const listedC = await clientC.listWorkspaceConversations(selectedC.workspaceId);
+      const workspaceBPage = await clientC.waitForEvent(event => (
         event.kind === 'workspace_directory_snapshot'
-        && event.requestId === listC.requestId
+        && event.requestId === listedC.requestId
       ));
       if (workspaceBPage.payload?.page?.items?.length !== 0) {
-        throw new Error('Workspace B unexpectedly contains Workspace A Conversations');
+        throw new Error(`Workspace B unexpectedly contains Workspace A Conversations: ${
+          JSON.stringify(workspaceBPage)} (workspaceB=${selectedC.workspaceId} workspaceA=${selectedA.workspaceId})`);
       }
 
-      await runWebClient(workspaceA);
+      await assertInstalledWebClient(manifest.webOrigin);
       runStatusCommand('正在运行');
 
       clientA.close();
@@ -231,21 +176,14 @@ async function runNativeMultiClientAcceptance() {
       const restartedManifest = readManifest();
       if (restartedManifest.pid === oldPid) throw new Error('Server restart did not replace the PID');
 
-      const restored = await createClient(
-        GatewayClient,
-        GatewaySocketTransport,
-        restartedManifest.unixSocketPath,
-      );
+      const restored = await connectClient(restartedManifest.unixSocketPath, 'smoke_restored');
       try {
-        const restoredWorkspace = await restored.client.initializeWorkspace(`/workspace ${workspaceA}`);
-        assertAccepted(restoredWorkspace, 'Workspace A restore after restart');
+        const restoredWorkspace = await restored.selectWorkspace(workspaceA);
         if (restoredWorkspace.workspaceId !== selectedA.workspaceId) {
           throw new Error('Workspace A identity changed after Server restart');
         }
-        const restoredList = await restored.client.listWorkspaceConversations(
-          restoredWorkspace.workspaceId,
-        );
-        const restoredPage = await waitForEvent(restored.events, event => (
+        const restoredList = await restored.listWorkspaceConversations(restoredWorkspace.workspaceId);
+        const restoredPage = await restored.waitForEvent(event => (
           event.kind === 'workspace_directory_snapshot'
           && event.requestId === restoredList.requestId
         ));
@@ -315,103 +253,100 @@ async function runServerCommand(label, action, allowFailure = false) {
   return output;
 }
 
-async function runInstalledTui(cwd) {
-  if (process.platform !== 'darwin') return;
-  const launcher = join(smokeHome, '.local', 'bin', 'metawork');
-  // 唯一 MetaWork TUI 直接启动：stdin 保持打开（客户端把终端 EOF/Ctrl+D
-  // 视为“退出客户端”），输出为管道由本验收断言顶部栏内容。
-  const tui = spawn(launcher, ['tui'], {
-    cwd,
-    env: nativeEnvironment,
-    stdio: ['pipe', 'pipe', 'pipe'],
-    // 独立进程组：launcher -> Server 入口 -> 唯一 TUI 客户端三层进程，
-    // 结束时必须整组清理，避免遗留客户端让验收进程无法退出。
-    detached: true,
-  });
-  let output = '';
-  tui.stdout.on('data', chunk => { output += chunk.toString(); });
-  tui.stderr.on('data', chunk => { output += chunk.toString(); });
-  try {
-    await waitFor(() => (
-      // 顶部栏渲染 MetaWork 标题、中文连接状态与 Workspace basename。
-      output.includes('MetaWork')
-      && output.includes('已连接')
-      && output.includes(basename(cwd))
-    ), 30_000, () => {
-      if (tui.exitCode !== null) {
-        throw new Error(`Installed TUI exited early (${tui.exitCode}): ${output}`);
-      }
-    });
-  } finally {
-    killProcessGroup(tui);
-    await waitForExit(tui).catch(() => killProcessGroup(tui, 'SIGKILL'));
-  }
-}
-
-function killProcessGroup(child, signal = 'SIGTERM') {
-  if (child.exitCode !== null) return;
-  try {
-    process.kill(-child.pid, signal);
-  } catch {
-    try {
-      child.kill(signal);
-    } catch {
-      // best-effort cleanup only
+/**
+ * Installed Server gateway client: the released Server speaks the v2 JSONL
+ * socket protocol (ADR-0031). No vendored client library is involved, so this
+ * exercises exactly what a third-party client sees.
+ */
+async function connectClient(socketPath, connectionId) {
+  const socket = createConnection(socketPath);
+  const messages = [];
+  let buffer = '';
+  socket.setEncoding('utf8');
+  socket.on('data', chunk => {
+    buffer += chunk;
+    let newline;
+    while ((newline = buffer.indexOf('\n')) >= 0) {
+      const line = buffer.slice(0, newline);
+      buffer = buffer.slice(newline + 1);
+      if (line.trim()) messages.push(JSON.parse(line));
     }
+  });
+  await new Promise((resolvePromise, reject) => {
+    socket.once('connect', resolvePromise);
+    socket.once('error', reject);
+  });
+  await nextMessage(message => message.type === 'hello');
+
+  let requestSequence = 0;
+  function nextMessage(predicate, timeoutMs = 30_000) {
+    return new Promise((resolvePromise, reject) => {
+      const deadline = Date.now() + timeoutMs;
+      const poll = () => {
+        const index = messages.findIndex(predicate);
+        if (index >= 0) {
+          resolvePromise(messages.splice(index, 1)[0]);
+          return;
+        }
+        if (Date.now() >= deadline) {
+          reject(new Error(`gateway message not received after ${timeoutMs}ms`));
+          return;
+        }
+        setTimeout(poll, 25);
+      };
+      poll();
+    });
   }
-}
 
-async function loadInstalledGatewayClient() {
-  const root = join(installRoot, 'app', 'current', 'planner', 'packages', 'coding-agent', 'dist');
-  const clientModule = await import(pathToFileURL(join(root, 'anyfusion/gateway-client.js')).href);
-  const transportModule = await import(
-    pathToFileURL(join(root, 'anyfusion/gateway-socket-transport.js')).href
-  );
-  return {
-    GatewayClient: clientModule.GatewayClient,
-    GatewaySocketTransport: transportModule.GatewaySocketTransport,
-  };
-}
+  async function request(scope, command) {
+    requestSequence += 1;
+    const requestId = `smoke_${connectionId}_${requestSequence}`;
+    socket.write(`${JSON.stringify({
+      type: 'command',
+      envelope: {
+        protocolVersion: 2,
+        requestId,
+        idempotencyKey: `idem_${requestId}`,
+        connectionId,
+        scope,
+        command,
+        clientCapabilities: ['trace_v1'],
+      },
+    })}\n`);
+    const receipt = await nextMessage(message => (
+      message.type === 'receipt' && message.receipt.requestId === requestId
+    ));
+    return { requestId, ...receipt.receipt };
+  }
 
-async function createClient(GatewayClient, GatewaySocketTransport, socketPath) {
-  const transport = new GatewaySocketTransport(socketPath);
-  const client = new GatewayClient(transport);
-  const events = [];
-  const unsubscribe = client.onEvent(event => events.push(event));
-  await client.connect();
   return {
-    client,
-    events,
+    selectWorkspace(path) {
+      return request({ kind: 'workspace' }, { kind: 'select_workspace', path });
+    },
+    createConversation(workspaceId) {
+      return request({ kind: 'workspace' }, { kind: 'create_conversation', workspaceId });
+    },
+    listWorkspaceConversations(workspaceId) {
+      return request({ kind: 'workspace' }, { kind: 'list_workspace_conversations', workspaceId });
+    },
+    async waitForEvent(predicate) {
+      const message = await nextMessage(m => m.type === 'event' && predicate(m.event));
+      return message.event;
+    },
     close() {
-      unsubscribe();
-      client.dispose();
-      transport.close();
+      socket.destroy();
     },
   };
 }
 
-async function runWebClient(cwd) {
-  const result = runSync('Web Client launch', process.execPath, [
-    runtimeEntry,
-    'web',
-    '--no-open',
-  ], {
-    cwd,
-    env: nativeEnvironment,
-    capture: true,
-  });
-  const output = `${result.stdout ?? ''}${result.stderr ?? ''}`;
-  if (!output.includes('MetaWork Web Client:')) {
-    throw new Error(`Web Client did not report its URL: ${output}`);
+async function assertInstalledWebClient(webOrigin) {
+  const index = await fetch(`${webOrigin}/`).then(response => response.text());
+  if (!index.includes('<div id="root">')) {
+    throw new Error('Installed Server did not serve the released Web bundle');
   }
-  if (output.includes(workspaceA) || output.includes('workspace=')) {
-    throw new Error('Web Client URL exposed the Workspace path');
-  }
-  const url = /MetaWork Web Client:\s*(\S+)/u.exec(output)?.[1];
-  if (!url) throw new Error(`Web Client URL could not be parsed: ${output}`);
-  const response = await fetch(url);
-  if (!response.ok) {
-    throw new Error(`Web Client URL returned HTTP ${response.status}: ${url}`);
+  const session = await fetch(`${webOrigin}/api/auth/session`);
+  if (!session.ok) {
+    throw new Error(`Installed Web session endpoint returned HTTP ${session.status}`);
   }
 }
 
@@ -435,30 +370,22 @@ function readManifest() {
   return JSON.parse(readFileSync(endpointManifest, 'utf8'));
 }
 
-function assertNoPlannerChild(serverPid) {
+/** ADR-0055 D6/D11: the Server must not spawn the removed fork or a TUI client. */
+function assertNoRetiredTuiChild(serverPid) {
   const result = spawnSync('ps', ['-axo', 'ppid=,command='], { encoding: 'utf8' });
   if (result.status !== 0) return;
-  const plannerChild = result.stdout.split(/\r?\n/u).some(line => {
+  const retired = result.stdout.split(/\r?\n/u).some(line => {
     const match = /^\s*(\d+)\s+(.*)$/u.exec(line);
     return Number(match?.[1]) === serverPid
-      && /coding-agent\/dist\/cli\.js|anyfusion-planner/iu.test(match?.[2] ?? '');
+      && /coding-agent\/dist\/cli\.js|anyfusion-planner|meta(w|claw)-tui/iu.test(match?.[2] ?? '');
   });
-  if (plannerChild) throw new Error('Server start unexpectedly launched a TUI/Planner Client');
+  if (retired) throw new Error('Server start unexpectedly launched a retired TUI/Planner process');
 }
 
 function assertAccepted(receipt, label) {
   if (receipt.status === 'rejected') {
     throw new Error(`${label} rejected: ${receipt.reason ?? 'unknown reason'}`);
   }
-}
-
-async function waitForEvent(events, predicate, timeoutMs = 15_000) {
-  let found;
-  await waitFor(() => {
-    found = events.find(predicate);
-    return Boolean(found);
-  }, timeoutMs);
-  return found;
 }
 
 async function waitFor(predicate, timeoutMs, inspect = () => undefined) {

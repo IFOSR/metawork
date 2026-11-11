@@ -91,11 +91,29 @@ export async function verifyDesktopRelease(resources: string, options: {
     'metawork/dist/desktop-update-cli.js', 'metawork/web/dist/index.html',
     'metawork/dist/planning-agent-plan-v9.schema.json',
     'metawork/desktop-tools/node/bin/node', 'metawork/desktop-tools/git/bin/git',
-    'metawork/desktop-tools/executor/bin/pi', 'planner/packages/coding-agent/dist/cli.js',
+    'metawork/desktop-tools/executor/bin/pi',
+    'metawork/desktop-tools/executor/pi-runtime-pin.json',
+    'metawork/desktop-tools/executor/runtime/package-lock.json',
+    'metawork/desktop-tools/executor/runtime/node_modules/@earendil-works/pi-coding-agent/package.json',
     // Long-term memory ships with the product; a Desktop payload without the
     // engine would present a switch that can never work.
     'memory/tdai/dist/gateway/server.js']) {
     if (!inventory[required]) throw new Error('Required Desktop runtime dependency is missing');
+  }
+  const piRoot = join(payload, 'metawork/desktop-tools/executor');
+  const pin = JSON.parse(await readFile(join(piRoot, 'pi-runtime-pin.json'), 'utf8'));
+  const pkgRoot = 'runtime/node_modules/@earendil-works/pi-coding-agent';
+  const pkg = JSON.parse(await readFile(join(piRoot, pkgRoot, 'package.json'), 'utf8'));
+  const rawEntry = typeof pkg.bin === 'string' ? pkg.bin : pkg.bin?.pi;
+  const entry = typeof rawEntry === 'string' ? rawEntry.replace(/^\.\//u, '') : rawEntry;
+  const lock = await hashReleaseFile(join(piRoot, 'runtime/package-lock.json'));
+  if (!runtime.pi || pin.version !== runtime.pi.version || pkg.version !== pin.version
+    || pkg.name !== '@earendil-works/pi-coding-agent' || pin.packageName !== pkg.name
+    || typeof entry !== 'string' || pin.entry !== entry || !/^[A-Za-z0-9_./-]+$/u.test(entry)
+    || entry.split('/').includes('..') || entry.startsWith('/')
+    || !inventory[`metawork/desktop-tools/executor/${pkgRoot}/${entry}`]
+    || lock.sha256 !== pin.lockSha256 || lock.sha256 !== runtime.pi.lockSha256) {
+    throw new Error('Desktop Pi runtime pin mismatch');
   }
   for (const executable of ['metawork/desktop-tools/node/bin/node', 'metawork/desktop-tools/git/bin/git',
     'metawork/desktop-tools/executor/bin/pi']) {

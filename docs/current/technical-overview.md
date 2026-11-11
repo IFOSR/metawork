@@ -1,3 +1,13 @@
+# MetaWork 技术概览
+
+> 2026-11-11 状态一致性续修：黄金、英伟达和天气任务的最终收尾已通过正常恢复流程完成，Executor 未重跑。最终汇总按已认证 contract correction 与 source 身份读取不可变正文；complete_task 恢复不再误报未知外部操作。对话/轨迹共用当前 TaskView，超 64 KiB 的研究进度在查询边界压缩，保留所有子任务状态；历史分页不改变实时卡片。内部上下文引用错误交还 Manager 有界修正。详见[修复与真实验收](../plans/2026-11-11-task-completion-status-consistency-fix.md)。
+
+> 当前状态（2026-11-10，ADR-0055 / Review R-01～R-32）：Kernel inbox、decision/application ledger 与重放已删除；直接准入由提案/结果 owner 承载。Task Runtime facade 保持进程内生命周期职责。Manager strict proposal 已删除 executorBindings/modelSelection，准入保留固定配置中的全部硬资格池；Runtime 的绑定池不等于 Manager 选择。dispatch Router 使用实际 modelId、失败 receipt 与事务内 owner 重读；评估失败或缺失不默认选路。动态资格、失败/恢复链与旧 Span 轨迹仍待收敛。
+>
+> 本地金额表/服务/API/配置/UI、Codex driver/catalog/发现/Web、容器执行适配器及 TUI facade 已分批删除；配置/backend 为 host-only。官方账号订阅/支付金额和 docker_socket 安全拒绝规则保留。存储为唯一 fresh schema 67，历史 SQLite 升级链已删除，旧库/异常 schema 写前拒绝；快照以 staging 与排他复制保护已有目标，不自动修改已安装库。Token 新增调用来源及发生/落库时间，Executor 按调用 ID 分账，时间线/额度按 occurredAtUtc；Router 决策模型调用以 `system` 付款方逐调用计量（记录可见、不计入用户 Included）；Memory 引擎的提取/场景/画像调用经 release-owned compat patch 的有界账本与认证 drain 路由逐调用计量（`agentClassRef=memory`，挂在账户级 system Query 上，payer 由抽取 Provider 在固定版本下的所有权决定）。
+>
+> 最新验证（2026-11-11，继续真实 Admin Web 验收）：根 lint/build 通过；专项 76 文件、518 项通过，包含整个 Web 测试、真实打包 Pi、Memory 进程重启和汇总恢复。此前 10 项 Web 失败已按当前 Token/Pi 契约迁移。网页已跑通三子任务最终 Manager 汇总；旧汇总失败任务重启后成功，Executor 记录仍为 3 条；恢复汇总从原始 Turn 读取用户约束。Memory 已隔离到 8421，真实网页偏好经模型提取为 L1，可搜索/详情/导出，并在新 Conversation 中通过 Manager 引用 L1/L2 版本、物化为 Executor 证据后完成任务。Manager 扩展新增显式只读 MCP 连接，修复仅写 mcp.json 而未暴露上下文工具的断点；身份及配置 pin 由服务端提供。Memory 重启补做待提取 L1，失败不推进游标；确定未启动 Executor 的资料失效走一次有上限的重新规划，不误判 Executor 不可用（自动恢复矩阵仍待扩大）。外部 Router 仍不可达，多候选未验收；完整 maintained-host suite 仍有退休模块测试和未关闭失败，不能宣布整体 PRD 完成。详见 [Planning/Web E2E 报告](../plans/2026-11-11-planning-web-e2e-fix.md)。代码仅本地修改，未提交或推送。用户明确要求后，原 8791 修复版实例已携原有账号、配置、数据库与 Memory 8421 接管 8788；旧 trial16 服务已停止，数据独立备份保留，详见报告末尾迁移记录。
+
 > 当前 Workspace 执行模型（Workspace 内部 Git / Session Worktree 方案）：所有新任务统一在 Conversation 的 Git Worktree 中执行。Worktree 变更封存后进入 Workspace FIFO 合并队列，未产生变更的问答或报告不创建合并项。历史 `in_place` 记录仅用于迁移和恢复读取，新任务不会再选择该模式。
 
 Conversation content authority (2026-11-01, ADR-0054): account SQLite Turn Store
@@ -15,8 +25,6 @@ Projector version 2 uses authoritative Turn sequence. Verified legacy copies
 retain a seven-day rollback window, then undergo hash verification and cleanup;
 unresolved conversations retain their migration evidence.
 
-
-# MetaWork
 
 Result recovery (2026-11-04): an uncertified safe result waits for explicit
 acceptance or retry after completion correction is exhausted or unavailable.
@@ -142,7 +150,7 @@ contracts, not this repository's product identity.
 
 MetaWork is a local AI Task OS for agentic work. It turns natural-language requests into durable, searchable, schedulable, and verifiable tasks that can survive interruptions, recall prior context, plan subtasks, claim executor work units, and deliver artifacts back to the places where people review them.
 
-It is built for teams who need agents to do more than answer the current turn. MetaWork gives long-running AI work a task state machine, memory boundary, unified ControlKernel decision plane, work-unit dispatch runtime, verification loop, local Gateway, Feishu delivery path, and real end-to-end smoke gate.
+It is built for teams who need agents to do more than answer the current turn. MetaWork gives long-running AI work a task state machine, memory boundary, Task Runtime control loop, work-unit dispatch runtime, verification loop, local Gateway, Feishu delivery path, and real end-to-end smoke gate.
 
 > Current implementation baseline (2026-10-25): PlanningAgentPlan v9, Work
 > Graph v7, Kernel event/snapshot/decision contract v5, Completion Protocol v4,
@@ -335,7 +343,7 @@ metadata correction. A system-caused `needs_action` block (`no_authorized_driver
 the authority only proposes it for a system reason and the lifecycle port rejects
 it while any pending action remains, so a user-facing block is never overridden.
 
-Dispatch facts follow the same rule. `kernel_dispatch_items.terminal` now means
+Dispatch facts follow the same rule. `dispatch_items.terminal` now means
 only "this dispatch item no longer owns scheduler capacity"; schema 61 adds
 `terminal_disposition` (`executed` | `not_started`). A partition/capacity yield
 records `not_started` through `AttemptSupervisor` → `markNotStarted()`, leaving
@@ -510,7 +518,7 @@ See [implementation and validation](../plans/2026-10-03-tui-workspace-task-dashb
 - Keeps one durable Task conclusion: queued, running, needs_action, succeeded, failed, or cancelled. Archiving is metadata.
 - Restores interrupted work with resume context instead of restarting from scratch.
 - Enforces one active or cleaning-up top-level Task per Conversation through durable Conversation slots, while one AccountRuntime schedules Tasks from different Conversations concurrently and Phase 6 authorizes deterministic batches of isolated child attempts.
-- Keeps Planning and Runtime authorization in one append-only `kernel_decisions` ledger while durable inbox/application/outbox state owns recoverable execution.
+- Keeps every control decision inside the Task Runtime control loop: the Planner only proposes, the Runtime applies each authorized operation immediately against owner facts, and an interrupted application leaves exactly one explicit `task_recovery_items` row instead of a decision ledger.
 - Exposes historical tasks through a local SQLite FTS index that the PlanningAgent queries explicitly.
 - Plans complex work as explicit subtasks with acceptance criteria and aggregation rules.
 - Plans work as a task-owned capability-handoff graph, authorizes a complete ordered canonical AgentClass list per subtask, and lets idle executor work units claim ready subtasks.
@@ -570,7 +578,7 @@ Workspace binding. Local TUI/Web cwd is an untrusted Workspace selection hint.
 `/workspace /absolute/path` selects the Client Workspace and never reparents an
 existing Conversation; metadata selection restores the Conversation binding without execution attachment.
 
-Runtime-wide KernelWorkflow, execution and startup recovery are constructed once
+Runtime-wide TaskControlWorkflow, execution and startup recovery are constructed once
 per AccountRuntime. One account Kernel coordinator owns durable
 decision/application draining. Each Conversation has one durable top-level Task
 execution slot; different Conversations may execute in parallel and later
@@ -607,7 +615,7 @@ flowchart LR
   Planning --> Plan[PlanningAgentPlan v9<br/>workspace intent, target, risk,<br/>v7 graph or authorization resolution]
   Plan --> Event[Plan / Work Graph proposal]
   Event --> Loop[Durable Task Coordinator<br/>admit graph, claims, facts, recovery]
-  Loop --> Kernel[Compatibility ControlKernel<br/>coordination only]
+  Loop --> Policy[ControlLoopPolicy<br/>Task Runtime owned]
   Kernel --> Decision{Coordination command}
   Decision --> Runtime[Runtime handlers]
   Runtime --> Observation[Normalized KernelEvent]
@@ -626,7 +634,7 @@ flowchart LR
   Delivery --> User
 
   Account <--> Store[(Account SQLite<br/>tasks, subtasks, agent classes,<br/>work units, events, memory)]
-  Loop --> Decisions[(kernel_decisions)]
+  Loop --> Recovery[(task_recovery_items)]
   Graph <--> Store
   Attempt <--> Store
 ```
@@ -641,7 +649,7 @@ Planner continuity follows one explicit Context Bridge contract:
 Pi session history + current user input
   -> Planner understands natural references and chooses contextRefs
   -> MetaWork Context Bridge supplies bounded facts
-  -> ControlKernel validates Artifact identity, ownership, status and hash
+  -> Task Runtime validates Artifact identity, ownership, status and hash
   -> Runtime materializes selected files into attempt-local inputs
   -> Executor consumes only the current Subtask and materialized inputs
 ```
@@ -676,9 +684,10 @@ materialized originals with its own base model and tools; MetaWork ships no
 document parser. Upload availability and document
 processing capability remain separate contracts.
 
-Semantic RPC does not expose Web reconnaissance tools. Historical `direct_reply`
-proposals remain replayable for compatibility, but production semantic
-proposal ingress rejects new `direct_reply`; work-like requests must be routed
+Semantic RPC does not expose Web reconnaissance tools. `direct_reply` was removed
+from the plan contract (2026-11-10) with no compatibility path: every semantic
+proposal is `clarification`, `task_control`, `plan_work_graph`,
+`authorization_resolution` or `no_action`, so work-like requests must be routed
 to an Executor through `plan_work_graph`. Real-time/source-dependent facts,
 supplied URLs and public research requests are routed to an AgentClass covering
 `current-web-research`; the Executor performs final Web retrieval and receives
@@ -747,12 +756,11 @@ cannot widen permissions, authorize an unconfigured Model, alter dynamic
 health, or bypass Kernel binding validation. Provider secrets, URLs and
 commands are excluded.
 
-Historical `direct_reply` records remain explicit audit/replay facts. Production
-semantic Planner ingress rejects new `direct_reply`; MetaWork routes work-like
-requests through an Executor Work Graph instead of delivering Planner text as
-task completion.
+MetaWork routes work-like requests through an Executor Work Graph instead of
+delivering Planner text as task completion; the `direct_reply` action and its
+`response.directReply` payload no longer exist in the contract.
 
-The local AnyFusion-Pi TUI and the non-interactive PlanningAgent runner use the same vendored application but have different trusted roles. The TUI is a client-only process connected to the versioned Unix Gateway protocol. It renders bounded Conversation baselines/changes, activity, pending permissions and explicitly loaded resources; raw input, slash commands, permission decisions and cancellation requests enter `ClientGateway`. The controlled RPC runner alone connects to `PlannerHostBridge` for proposal submission. `ConversationSession` reruns `PlanningAgentPlanSchema` and `validatePlanningAgentPlan()` before the existing `plan_proposed → DurableKernelWorkflow → ControlKernel` path. Persisted proposal submissions provide replay, rejected-revision, accepted-turn-lock and conflict semantics without duplicating Kernel events. Neither client mode nor the bridge can write the database or directly call Kernel, scheduling, Execution or Executor APIs.
+The local AnyFusion-Pi TUI and the non-interactive PlanningAgent runner use the same vendored application but have different trusted roles. The TUI is a client-only process connected to the versioned Unix Gateway protocol. It renders bounded Conversation baselines/changes, activity, pending permissions and explicitly loaded resources; raw input, slash commands, permission decisions and cancellation requests enter `ClientGateway`. The controlled RPC runner alone connects to `PlannerHostBridge` for proposal submission. `ConversationSession` reruns `PlanningAgentPlanSchema` and `validatePlanningAgentPlan()` before the `plan_proposed → TaskControlWorkflow → ControlLoopPolicy` path. Persisted proposal submissions provide replay, rejected-revision, accepted-turn-lock and conflict semantics without duplicating control events. Neither client mode nor the bridge can write the database or directly call Kernel, scheduling, Execution or Executor APIs.
 
 Executor health recovery is event-driven. `ExecutorRecoveryRefreshService`
 inspects only enabled AgentClasses whose persisted class health is already
@@ -792,9 +800,9 @@ the Durable Task path below.
 flowchart LR
   Input[User asks MetaWork to do work] --> Planning[PlanningAgent]
   Planning --> Proposal[PlanningAgentPlan<br/>WorkGraphProposal]
-  Proposal --> Kernel[ControlKernel<br/>authorize or reject]
+  Proposal --> Policy[ControlLoopPolicy<br/>authorize or reject]
   Kernel --> Decision[authorize_task_plan]
-  Decision --> Apply[KernelWorkflow idempotent Runtime apply]
+  Decision --> Apply[TaskControlWorkflow idempotent apply]
   Apply --> Task[TaskRuntimeService<br/>create or bind task]
   Task --> WorkGraphRuntime[WorkGraphRuntimeService<br/>apply authorized graph]
   WorkGraphRuntime --> WorkGraph[Work Graph<br/>persist Subtasks]
@@ -810,7 +818,7 @@ flowchart LR
 
 This is the Task OS path. It is where task state, resume context, policy authorization, subtask state, work-unit leases, artifact capture, verification and direct Workspace delivery matter. ADR-0037 permits independent top-level Tasks from different Conversations to run concurrently, while independent Subtasks inside each Task retain their existing concurrency.
 
-ADR-0037 replaces the account-wide single-active rule with one durable execution slot per Conversation. Same-Conversation Tasks are persistently queued; different Conversations are selected by the account-scoped Kernel scheduler using configured capacity, priority, aging and fairness. Clarifications and non-executing domain commands remain available; new semantic Planner turns do not complete through `direct_reply`. Both natural-language and deterministic execution entrypoints cross the persisted ControlKernel seam; there is no `TaskAdmissionGate` shortcut.
+ADR-0037 replaces the account-wide single-active rule with one durable execution slot per Conversation. Same-Conversation Tasks are persistently queued; different Conversations are selected by the account-scoped Kernel scheduler using configured capacity, priority, aging and fairness. Clarifications and non-executing domain commands remain available; new semantic Planner turns do not complete through `direct_reply`. Both natural-language and deterministic execution entrypoints cross the Task Runtime control seam; there is no `TaskAdmissionGate` shortcut.
 
 ### Feishu And Progress Path
 
@@ -837,10 +845,10 @@ The conversation/task boundary matters:
 
 New semantic turns reject `direct_reply` at proposal ingress. Work-like requests are routed through a focused Work Graph and completed by the Kernel-authorized Executor; slash-prefixed system commands remain on the Application-Shell path. Historical `direct_reply` facts can still be read for audit and replay without being re-executed or rewritten.
 
-The Task OS upgrade described in [MetaWork Task OS Architecture And Strategy Upgrade](../archive/plans/2026-06-14-metaclaw-task-os-architecture-strategy-upgrade.md) is reflected in the codebase: deterministic task search indexing, PlanningAgent work graph proposals, unified `ControlKernel` authorization, persisted subtasks, work-unit claiming, aggregation, and verification are implemented and covered by targeted tests. Broad Executor Discovery, remote registries and elastic work-unit spawn remain outside the current implementation. Multi-client Gateway convergence under ADR-0031 has been delivered: Web, Feishu and the native TUI route through the unified Gateway and share one AccountRuntime.
+The Task OS upgrade described in [MetaWork Task OS Architecture And Strategy Upgrade](../archive/plans/2026-06-14-metaclaw-task-os-architecture-strategy-upgrade.md) is reflected in the codebase: deterministic task search indexing, PlanningAgent work graph proposals, Task Runtime authorization, persisted subtasks, work-unit claiming, aggregation, and verification are implemented and covered by targeted tests. Broad Executor Discovery, remote registries and elastic work-unit spawn remain outside the current implementation. Multi-client Gateway convergence under ADR-0031 has been delivered: Web, Feishu and the native TUI route through the unified Gateway and share one AccountRuntime.
 
 Important runtime boundary: there is no second strategy/orchestration loop
-beside the active PlanningAgent → ControlKernel → Runtime chain. Work Graph
+beside the active PlanningAgent → Task Runtime control loop chain. Work Graph
 frontier derivation is pure structure; retry, fallback, replan, permission,
 availability, and recovery remain explicit Kernel policy.
 
@@ -1169,9 +1177,15 @@ metawork server start
 ```
 
 The build source is installation metadata, not the user's current Workspace.
-The command rebuilds Runtime, Planner, and Web, preserves account data, and
+Review R-17 (2026-11-10) makes `plannerRoot` optional in that metadata and lets
+configuration probes recognize the managed executable Pi used by Manager;
+global command detection does not substitute for the release artifact. This
+was the first metadata/readiness checkpoint. R-18/R-20 now stage a relocatable
+pinned upstream Pi, reject fork-only readiness and use Pi-only source defaults.
+Clean-machine signed installation and full task validation remain open gates.
+The command rebuilds Runtime, packages upstream Pi, and builds Web, preserves account data, and
 atomically switches `app/current`. It fails while Server is running. Server,
-TUI, and Web validate the same release identity before connecting, so old and
+Desktop, and Web validate the same release identity before connecting, so old and
 new releases cannot silently mix.
 
 The workspace `dist/` is a build artifact only and is never a Server runtime.
@@ -1394,7 +1408,7 @@ current normalization against the latest immutable receipt's bounded safe
 summary when an older release stored that failure as `unknown`. Only an
 unambiguous network result changes the submitted blocker category to `retry`;
 the receipt and ledger are not rewritten, permissions and external effects are
-not broadened, generic unknown failures remain fail-closed, and ControlKernel
+not broadened, generic unknown failures remain fail-closed, and the Task Runtime control loop
 still authorizes or rejects `resume_task`.
 
 The `/task resume` command result is a projection of the first authoritative
@@ -1410,7 +1424,7 @@ the system Conversation binding lacked the optional `onDecisionApplying`
 presentation callback. The repair is allowed only when the exact error,
 submitted replan request, generation and next graph revision match. It submits
 a durable `recovery_resolution_requested(retry)` and replays the original
-Decision through ControlKernel; all other uncertain applications and effects
+Decision through the Task Runtime control loop; all other uncertain applications and effects
 retain ordinary explicit recovery semantics.
 
 Only the persistent Server shares `runtime.lock` with native
@@ -1429,6 +1443,15 @@ to a compacted current/terminal snapshot. Planner Host startup probes live
 sockets before reclaiming a confirmed stale socket and records the created
 device/inode so shutdown cannot unlink a replacement. Planner RPC preserves
 structured transport uncertainty and partial tool audit.
+
+### Startup recovery configuration pins (2026-11-10, review R-12)
+
+Before recovery, the account resolves each distinct active Work Graph and
+unresolved operation configuration revision. `TaskRecoveryItemRepo` reads the
+operation pin from `decision_json.configurationRevision` for `pending` and
+`retry_authorized` items; settled rows do not load obsolete snapshots. There is
+no `configuration_revision` column on that table. Missing pins and mismatched
+snapshots stop recovery rather than substituting the current configuration.
 
 ### Server shutdown and exit recovery (2026-11-04)
 
@@ -1476,12 +1499,12 @@ durable facts into the conclusion and applies it through the single
 in `src/task/task-view.ts` only assembles operational detail next to the
 committed `TaskStateSnapshot`. Surfaces render that snapshot (`status`,
 `stateVersion`, `reason`, `phase`, `pendingActions`, `cleanup`, `nextWakeAt`) and
-never interpret `kernel_dispatch_items.status`, `work_units.state` or
+never interpret `dispatch_items.status`, `work_units.state` or
 `kernel_decision_applications.status`. The Gateway exposes the same snapshot as
 `GatewayTaskViewSnapshot.state` under `task_view_v2`.
 
 Automatic replan no longer invokes a foreground Conversation Planner callback.
-ControlKernel authorizes `schedule_replan`, whose only Runtime postcondition is
+The Task Runtime control loop authorizes `schedule_replan`, whose only Runtime postcondition is
 that the Replan Job is durably schedulable under the Decision-derived
 quiescence token. The Decision application is `applied` immediately. An
 account-scoped `GenerationReplanWorker`, driven by the AccountRuntime periodic
@@ -1498,7 +1521,7 @@ the proposal is persisted in the Kernel inbox before the `submitted` transition,
 so a worker pass reuses a persisted proposal instead of running a second Planner
 turn. A retryable Planner failure backs off and keeps the Job identity; past the
 absolute retry budget the Job fails closed as `planner_unavailable`, and recovery
-emits a deterministic `recovery_required_observed` event that ControlKernel turns
+emits a deterministic `recovery_required_observed` event that the control loop turns
 into an explicit `block_work` — the Task cannot stay `running`.
 
 One shared convergence entry runs at startup and on the account periodic review,
@@ -1647,7 +1670,7 @@ Planner/Kernel/Runtime views and broadcasts `configuration_runtime_state` and
 `configuration_activated`. Existing Work Graph generations and attempts remain
 pinned to their original revision. The next Planner turn resolves a concrete
 model from the new active revision before sending a prompt; a running child
-process is never rewritten. Executor Auto is resolved by ControlKernel into a
+process is never rewritten. Executor Auto is resolved by the Task Runtime control loop into a
 complete concrete binding and Runtime only transports that binding. The Auto
 default is a preference rather than an exact binding: mandatory model
 capabilities derived from Routing Capabilities filter candidates first.
@@ -1793,7 +1816,7 @@ shared hard filter and attaches a bounded `spanRouting` observation to the
 `plan_proposed` event before it is durably enqueued. If that event is already
 stored, the stored event is reused and no second request is made. The Server
 resolves the credential for the proposal's pinned configuration revision, and
-that read is bounded by the proposal deadline. `ControlKernel` re-validates the
+that read is bounded by the proposal deadline. The Task Runtime control loop re-validates the
 observation and uses the probabilities solely to order already-authorized
 AgentClass and Model candidates. Disabled, missing-key, timeout, HTTP error,
 invalid response, candidate mismatch, or over-budget input all fall back to the
@@ -1815,10 +1838,12 @@ and proposal count limits still apply; oversized inputs fall back without
 silently removing eligible candidates.
 
 `npm run smoke:span-routing -- --integration` exercises four representative
-workloads through the real advisor, Kernel and SQLite replay, reports ordering,
-latency and usage, and requires zero extra calls on replay. It requires a valid
-OpenRouter key and local development dependencies. The SDK boundary sends the
-structured state as a JSON string and includes escaping in the request budget.
+workloads through the real Router decision model (`SpanRouterModel` +
+`SpanRoutingAdvisor` in `tests/e2e/span-router-integration.test.ts`), persists
+one decision per Attempt and requires zero extra model calls on replay. It
+requires a valid OpenRouter key and local development dependencies. The SDK
+boundary sends the structured state as a JSON string and includes escaping in
+the request budget.
 Mercury, Jev, Drex and other recognized models use the same System One protocol. The default smoke
 mode only checks System One transport.
 
@@ -1905,7 +1930,7 @@ See the [current slash-command reference](commands.md) for the canonical task co
 
 The MetaWork TUI (`metawork`, `metawork tui`) is the only product terminal
 surface. The client owns only editor, layout and presentation state;
-`ClientGateway`, `ConversationSession`, AccountRuntime and ControlKernel retain
+`ClientGateway`, `ConversationSession`, AccountRuntime and the Task Runtime control loop retain
 command validation, semantic planning, durable mutation and execution
 authority. The unique component tree lives under
 `planner/AnyFusion-Pi/packages/coding-agent/src/modes/metawork-tui/` and is
@@ -1933,7 +1958,7 @@ always names its execution state.
 
 MetaWork admits one executing or cleaning-up top-level Task per Conversation. Promotion is Workspace-scoped: the scheduler selects Tasks from different Conversations while that Workspace has fewer than `maxConcurrentConversationsPerWorkspace` executing Conversations (default 2), using aging and fair-share ordering; there is no account-wide Task or Attempt ceiling and same-Conversation Tasks remain queued. Within each Task, Work Graph facts derive a stable runnable frontier, one Task may run up to 10 Attempts concurrently (internal budget), and Kernel v5 may authorize up to four independent attempt items in one batch. Scheduling is non-preemptive; clarifications, status/query commands and explicit task-control commands remain available, while new semantic Planner turns cannot complete through `direct_reply`. This parallel rollout is governed by ADR-0037 and is implemented incrementally under the active implementation plan.
 
-Every natural-language proposal and deterministic execution entrypoint enters the same persisted coordination chain: `event → bounded graph/task facts → durable coordination command → Runtime apply → normalized event`. The current `KernelWorkflow` remains serial during migration, but applying `dispatch_batch` only persists `kernel_dispatch_items`; an Execution-owned supervisor launches them asynchronously and submits each outcome independently. A sibling failure never cancels the rest of the batch. Within one Conversation, explicitly declared text-only read Subtasks may hold compatible durable read ownership concurrently; write and unknown effects retain the exclusive Workspace fence.
+Every natural-language proposal and deterministic execution entrypoint enters the same persisted coordination chain: `event → bounded graph/task facts → durable coordination command → Runtime apply → normalized event`. `TaskControlWorkflow` is serial in-process, and applying `dispatch_batch` only persists `dispatch_items`; an Execution-owned supervisor launches them asynchronously and submits each outcome independently. A sibling failure never cancels the rest of the batch. ADR-0055 D3–D5 moved the producer of that round into the Task Runtime (`src/execution/*-policy.ts`, reached through the single `ControlLoopPolicy` decider), so dispatch, capacity, failure/retry, resume, partition, sandbox, merge repair, completion and replan scheduling, permission gating, recovery items, managed services and remaining-work retry are Runtime-owned policy. No Kernel policy class remains; D6 deleted the operation ledger, so `src/control/` holds only the transport contracts and owner-fact guards. Within one Conversation, explicitly declared text-only read Subtasks may hold compatible durable read ownership concurrently; write and unknown effects retain the exclusive Workspace fence.
 
 Whole-Task and explicit Subtask cancellation use the same durable control chain. The cancellation fence commits before process termination; `cancelling` dispatch/publication rows continue to own capacity until the exact backend execution has exited or is confirmed missing and WorkUnit/resource leases are released. Late outcomes are `no_op`. Subtask cancellation atomically includes every downstream dependent while independent siblings continue. After the surviving graph drains, the Task blocks until the user either cancels it or explicitly accepts the published subset with `/task accept-partial <taskId>`.
 
@@ -1989,15 +2014,17 @@ Natural-language dispatch is split into Planner understanding, kernel authorizat
 - `direct_reply`, `clarification`, `task_control`, or `no_action`: no executor work unit should be claimed unless the kernel rewrites the plan into executable work.
 - `plan_work_graph`: the planner must propose a non-empty capability-minimal work graph whose nodes are future `Subtask` records. Each proposal carries dependencies, acceptance criteria, `deliveryKind: edit | report`, non-empty controlled `requiredCapabilities`, and the complete ordered set of statically eligible canonical AgentClasses in `preferredAgentClassList`.
 
-The current compatibility `ControlKernel` exposes `decide(event, snapshot)` while
-the Durable Task Coordinator extraction is in progress. It validates graph and
-identity facts, coordinates dispatch/cancellation/recovery and emits durable
-commands without reading repositories, clocks, adapters or raw logs. It does
+`ControlLoopPolicy` exposes `decide(event, snapshot)` and is owned by the Task
+Runtime; ADR-0055 D6 deleted the durable workflow, event inbox and decision
+ledger, so each decision is applied immediately with one explicit recovery item
+when an application is interrupted. It validates graph and identity facts,
+coordinates dispatch/cancellation/recovery and emits durable commands without
+reading repositories, clocks, adapters or raw logs. It does
 not select Harness tools or decide capability grants. Every coordination fact
 uses a versioned discriminated union, and decision and attempt identities are
 deterministic from the event and batch item.
 
-`DurableKernelWorkflow` first writes every event to `kernel_events`, atomically issues one immutable `kernel_decisions` authorization plus a pending application, then invokes an idempotent Runtime handler. Stable observations return to the inbox. Duplicate events resume the existing application instead of issuing a second Decision, and startup reconciles applications, child dispatch items, execution-backend records and publication state before accepting input. Planner runs and bounded redacted tool summaries remain audited separately. `WorkGraphRuntimeService` derives graph facts without selecting strategy. `KernelExecutionRuntime` builds snapshots and applies decisions; `AttemptSupervisor` owns child launch; `SubtaskAttemptRunner` produces receipts and candidate commits; `WorkspacePublicationWorker` owns ordered integration and atomic completion publication.
+`ControlLoopPolicy` decides inside `TaskControlWorkflow`, a serial in-process drain with no event inbox, decision ledger or replay. Each decision is applied immediately through an idempotent Runtime handler; deduplicated events are remembered in memory, and an interrupted application records one `task_recovery_items` row that startup reconciliation, `/task recovery` and resolver operations read instead of a ledger. Startup reconciles recovery items, child dispatch items, execution-backend records and publication state before accepting input. Planner runs and bounded redacted tool summaries remain audited separately. `WorkGraphRuntimeService` derives graph facts without selecting strategy. `ControlExecutionRuntime` builds snapshots and applies decisions; `AttemptSupervisor` owns child launch; `SubtaskAttemptRunner` produces receipts and candidate commits; `WorkspacePublicationWorker` owns ordered integration and atomic completion publication.
 
 The older `ExecutorRouter`, `ExecutorRoutingCoordinator`, `ExecutionPolicyPlanner`, and the `IntentOrchestrator` routing subsystem have been removed entirely — there is no separate executor-selection layer. Legacy route-intent names such as `repo_execution` and `research_workflow` survive only as affinity keys for ranking agent classes.
 
@@ -2012,7 +2039,17 @@ direct-dependency authorization and closes when the attempt ends.
 
 MetaWork can represent complex requests as a work graph instead of a single undifferentiated prompt. The graph has no explicit single/multi execution mode. `AnyFusionPlanningAgent` keeps work that one canonical AgentClass can deliver as one node and creates another node only at a controlled Routing Capability handoff. The shared pure rules reject malformed DAGs and mergeable same-AgentClass single chains, while reentrant adapters may now own multiple independent nodes in one frontier.
 
-In the active session path, proposed nodes become persisted Work Graph v7 `Subtask` records only after a durable `authorize_task_plan` application. The source uses SQLite schema v61 and supports transactional 31→32→33→34→35→36→37→38→39→40→41→42→43→44→45→46→47→48→49→50→51→52→53→54→55→56→57→58→59→60→61 upgrades; schema v61 adds the additive `kernel_dispatch_items.terminal_disposition` column; schema 52 is main-owned and must carry the six-state Task base, while schema 58 pins the single In-place Workspace binding and retires implicit legacy Worktree copying; unsupported older schemas are refused. Schema v38 keeps one Planner Turn's attachment facts in `planner_turn_inputs` so a host-bridge submission stays admissible across a Server restart. Schema v39/v40 stores the ADR-0042 Query usage and billing facts: `query_usage_contexts` with one request-scoped idempotency key, `query_task_links`, `execution_usage_contexts`, `metering_spans`, `usage_observations` with one `(source_id, source_event_key, metric)` row per measurement, `usage_normalization_issues`, `billing_price_versions`, `cost_entries`, `query_bills`/`query_bill_lines`, `consumption_outbox`/`consumption_receipts`, `bill_adjustments` and the stable `billing_source_instance` identity. Schema v41 adds resolved routing identity columns to usage observations. Schema v42 adds the fenced `generation_replan_requests.planner_claim_token`. Schema v43 adds the navigation projections, indexed history and Gateway segment/Turn-observation indexes; v44 adds indexed Gateway command admissions and atomic legacy import markers; v45 adds durable Retry Wake continuation facts for timeout recovery; v46 adds the indexed latest Task-creation timestamp used to order Conversation history; v47 adds body-separated Conversation entities, projection checkpoints/tail/staging rebuild, activity invalidation and witness indexes, trace/content-search indexes, client navigation, durable approval acceptance/application and notification routes/outbox. Amounts are constrained decimal text; aggregation happens in exact money code, not SQLite floats. The schema includes the durable planning, Kernel, resource, workspace, permission, execution-backend, dispatch, publication, cancellation and recovery facts plus immutable Result Objects, direct-edge ResultReferences, revision-pinned `artifact` ContextRefs and Planner proposal configuration-revision pins for safe replay. Schema v37 also permits image preview kinds in `task_artifacts`. The physical names `attempt_sandboxes`, `sandbox_container_id` and `sandbox_lost` remain durable compatibility names and are not the current abstraction names. `dependencies` is the only topology and typed handoff source. Downstream work becomes runnable only after direct dependencies are published, receives authorized references and full Git ancestry, and never absorbs sibling or integration-branch state implicitly.
+The active session path persists Work Graph v7 Subtasks through direct owner
+admission. SQLite schema is currently v66. Production `createDatabase` admits
+empty or current-version databases only, refusing old versions, unversioned
+nonempty data and malformed current Task shape before WAL changes. Historical
+migration functions remain internal utilities and are pending deletion; startup
+does not invoke them to accept an older database. Turn content, proposal/admission
+results, graph revisions, dispatch, permission and recovery facts have their own
+owners; no Kernel event/decision/application ledger remains. Monetary tables and
+APIs still coexist with Token facts pending the separate deletion batch. Only
+published direct dependencies make downstream work runnable; Executor input does
+not absorb unrelated sibling state.
 
 `SubtaskExecutionContext` is the only production Executor input. Task title/goal are background, the current Subtask goal is the sole operational instruction, siblings expose only titles as out of scope, and Planner-selected evidence has deterministic per-reference and total preview budgets. Historical Artifact refs are validated against Account/Conversation/Workspace ownership, publication status, regular-file safety and content hash, then copied to attempt-local `inputs/` with stable `input-XX-*` names. Runtime keeps Task/Subtask/attempt/WorkUnit identities and acceptance/handoff keys outside the model-facing prompt and report. Ordinary assistant/Executor history never enters the context. Codex and Pi may access eligible Task evidence through the same attempt-bound read-only authorization; image-capable adapters consume only the materialized input directory.
 
@@ -2070,7 +2107,69 @@ Skill tradeoffs:
 
 MetaWork uses executor registration when the missing capability is a different worker or runtime. It uses Skills when the worker exists but needs better procedure, domain knowledge, or formatting discipline.
 
+## Account Token Usage
+
+Account token usage (2026-11-10): the account-level Web “账单” tab now shows
+Token usage independently of Conversation selection. Authenticated
+`GET /api/usage/timeline` binds the account at Server composition and accepts
+only singleton `period`, `groupBy`, `start` and `end` filters. Dates use Beijing
+UTC+8, Monday-based weeks, inclusive custom dates and half-open UTC storage
+ranges; queries cover at most 366 days. Today/week/7-day/30-day/month/previous
+month/subscription/custom ranges share the Metering projection. The subscription
+range is the existing quota window, including activation-relative trial windows.
+
+Total/Included/On-demand cards, zero-filled daily stacks, model/provider grouping,
+legend toggles and a complete daily table use exact integer strings. Total is
+canonical input plus output; cache and reasoning are subsets. Pi raw input
+excludes cache reads/writes, so both Manager and Executor normalize them into
+canonical input at ingress. Malformed explicit cache counts make input missing.
+Historical facts are not automatically rewritten. System-payer facts are excluded;
+unknown payer and incomplete calls are explicitly visible, never assigned to
+Included/On-demand or estimated as complete usage.
+
+`readAccountTokenQuota` supplies both guidance and Manager preflight from all
+account platform-payer roles, not only Manager calls; user-owned Providers do
+not consume Included. Exhaustion remains guidance, not a Task hard stop. This
+projection reads existing `model_usage_facts` through account-bound query
+contexts; orphan facts cannot enter another account. It currently scans matching
+facts in process, without a fact-count limit or database aggregation. Supported
+provider/call-site usage coverage, production plan values and the placeholder
+provider directory remain pending. Old monetary repositories, APIs and price
+configuration still exist; their deletion is a separate batch. Conversation and
+trajectory views no longer render or poll per-Turn monetary bills.
+
+Provider ownership (review R-14/R-16, 2026-11-10): Manager planning, permission
+judgement and Executor observations/spans resolve payer using the call's pinned
+configuration revision. Activating a new configuration never reclassifies an
+in-flight call. Missing revisions/providers remain `unknown`, with no fallback
+to active settings or the deployment's default payer. Runtime snapshot loading
+validates the requested revision and caches historical snapshots without changing
+the active configuration. Manager preflight uses the same model selection as the
+actual call and only reads Included quota for official Providers; stale notices
+are cleared on each preflight. Quota exhaustion remains non-blocking guidance.
+
 ## Long-Term Memory
+
+Memory asset management (2026-11-10): Web has an independent Memory tab;
+settings retain only the switch and extraction-model configuration. Authenticated
+`GET /api/memory/export` uses the Server-bound account and exports every managed
+L1/L2/L3 asset, including disabled entries and complete bodies, independent of
+list filters. The user-confirmed JSON format is `metawork-memory`, version 1,
+with export time, account, count, content/background/revision and governance
+metadata; credentials and L0 conversation bodies are excluded. No import path,
+body cache, schema change or second engine is added. Engine identities include
+both layer and ID, so equal IDs across layers remain distinct.
+
+Export scans through Memory Port, allows one active engine scan per service and
+rejects more than 10,000 entries or 32 MiB of compact UTF-8 JSON. It also bounds
+serialized engine input before constructing the package, so excessive engine
+metadata may reject a smaller output. Total-count drift, duplicate/missing pages
+and engine failure return errors rather than partial packages. User cancellation,
+page unmount and client disconnect abort the scan/RPC. The engine offers no
+transactional export snapshot: concurrent edits preserving the count may remain
+undetected. Disabled or unavailable memory cannot export; export never starts an
+otherwise-disabled engine. These limits bound a management request, not an
+Executor evidence budget. See ADR-0049 and the local review report.
 
 Memory management (2026-10-31): the Web memory panel keeps its API identity stable
 across settings status polls. User-triggered reads retain the rendered page while
@@ -2190,7 +2289,8 @@ Inline resource parsing moved to
 Executor Skill usage summaries remain an independent diagnostic surface and do
 not depend on the retired learning tables.
 
-Memory settings and asset management are part of the Web settings surface; see
+Memory configuration is in Web settings; asset management and export use the
+independent Memory tab. See
 the [current slash-command reference](commands.md) for the remaining commands.
 
 ## Development
@@ -2204,11 +2304,25 @@ npm run smoke:metawork
 npm run smoke:gateway
 ```
 
-`npm run smoke:metawork` is the required live Planner smoke gate. Its default `planner-session` scenario sends two turns in one Conversation, verifies the second reply recalls a marker absent from that turn, and verifies exactly one persisted AnyFusion-Pi session file was created. Executor artifact gates remain available with `--scenario artifact` or `--scenario python-hello`. Smokes run natively against the installed MetaWork configuration (`METAWORK_CONFIG_HOME`, default `~/.config/metawork`); pass `--mode docker` to force the container path, which requires the `docker/*.env` provider files.
+`npm run smoke:metawork` is the required live Manager smoke gate. Its default `planner-session` scenario sends two turns in one Conversation, verifies the second reply recalls a marker absent from that turn, and verifies exactly one persisted Manager Pi session file was created. Executor artifact gates remain available with `--scenario artifact` or `--scenario python-hello`. Smokes run natively against a dedicated fixture configuration home (`METAWORK_CONFIG_HOME`) plus an explicitly prepared packaged Pi (`METAWORK_PI_COMMAND` or `desktop-tools/executor/bin/pi`); they never read the active account revision, and `--mode docker` is rejected (ADR-0055 D12).
+
+`npm run smoke:span-routing` is the credentialed decision-model gate. It resolves
+the decision model from the active revision's `routing.span` Provider/Model (or
+explicit `--base-url/--model`), calls the provider's `/systemone` endpoint once
+with a joint `choice` request, and applies the Server's validator. `--integration`
+sends four representative workloads through the Router adapter and SQLite replay.
+There is no hard-coded vendor model: any System One-compatible endpoint (the Jev
+server on the `way` host, for example) works once its Provider/Model is
+configured.
 
 `npm run smoke:gateway` is the provider-independent production-boundary gate
 for Gateway admission, replay, reconnect, account recovery, and independent
-Client/Server composition.
+Client/Server composition. After its acceptance files it installs a native
+release from the current tree (packaged Pi, no vendored Planner), starts it, and
+drives two independent clients over the v2 JSONL socket protocol: shared
+Workspace directory, cross-Workspace isolation, restart identity and directory
+recovery, the release's own Web bundle and session endpoint, and a guard that the
+Server never spawns the retired TUI/fork processes.
 
 Targeted tests:
 
@@ -2216,8 +2330,8 @@ Targeted tests:
 npm test -- tests/planner-process-runner.test.ts
 npm test -- tests/session/planning-agent-session-routing.test.ts
 npm test -- tests/session/planning-kernel-path.test.ts
-npm test -- tests/kernel/control-kernel.test.ts
-npm test -- tests/kernel/kernel-workflow.test.ts
+npm test -- tests/control/control-contracts-architecture.test.ts
+npm test -- tests/control/control-application-settlement.test.ts
 npm test -- tests/execution/executor-recovery-refresh-service.test.ts
 npm test -- tests/execution/work-unit-claim-service.test.ts
 npm test -- tests/storage/subtask-repo.test.ts
@@ -2230,7 +2344,7 @@ src/
 ├── cli/            # Canonical server, tui, web, and administration commands
 ├── client/         # Endpoint resolution and independent TUI/Web launchers
 ├── commands/       # Slash command router and handlers
-├── core/           # Narrow shared primitives and normalized KernelFailure facts
+├── core/           # Narrow shared primitives and normalized ControlFailure facts
 ├── delivery/       # Verification, artifact extraction, aggregation checks, and final delivery preparation
 ├── execution/      # Authorized side effects: workflow apply, probes, claims, execution backends, Git publication
 ├── executor/       # Executor adapters plus AgentClass admin/seeder services, prompt builders, skill packages
@@ -2238,7 +2352,7 @@ src/
 ├── guidance/       # Proactive guidance, task signals, guidance policy, dashboard orchestration
 ├── integrations/   # External integration helpers such as Markdown preview
 ├── intent/         # Inline resource normalization and non-routing intent/material helpers
-├── kernel/         # Pure ControlKernel v5 contracts/decisions and durable workflow seam
+├── control/        # Control event/decision/snapshot contracts, settlement and owner-fact guards
 ├── learning/       # Reflection, weekly review, skill governance, promotion gates, safety scanning
 ├── memory/         # Memory Port, TDAI anti-corruption layer, deposition/growth orchestration, evidence delivery, sidecar lifecycle
 ├── notifications/  # Notification adapters such as Feishu notifications
@@ -2253,7 +2367,7 @@ src/
 └── work-graph/     # Shared graph types, validation, cancellation closure, and runnable frontier
 ```
 
-Tests mirror these domains under `tests/<domain>/`. `src/core` is intentionally narrow and keeps shared primitives plus the shared `KernelFailure` fact. Keyword RuleHints, task-routing intent guesses, the generic memory/ranking LLM bridge, and the legacy routing subsystem have been removed. The active natural-language path lives in `src/planning/`, `src/kernel/control-kernel.ts`, `src/kernel/kernel-workflow.ts`, the Session Application Shell, `src/execution/`, and the storage repositories.
+Tests mirror these domains under `tests/<domain>/`. `src/core` is intentionally narrow and keeps shared primitives plus the shared `ControlFailure` fact. Keyword RuleHints, task-routing intent guesses, the generic memory/ranking LLM bridge, and the legacy routing subsystem have been removed. The active natural-language path lives in `src/planning/`, `src/control/control-contracts.ts`, `src/control/control-workflow.ts`, the Session Application Shell, `src/execution/`, and the storage repositories.
 
 ## License
 

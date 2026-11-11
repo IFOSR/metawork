@@ -1,3 +1,7 @@
+import { createUsagePayerResolver } from '../metering/usage-payer.js';
+import { createManagerQuotaPreflight } from './manager-quota-preflight.js';
+import { readAccountTokenQuota } from '../metering/account-token-quota.js';
+import { createTokenUsageManagementQuery, type TokenUsageManagementQuery } from '../management/token-usage-management.js';
 import { SqliteResourceLeaseRepository } from '../storage/resource-lease-repo.js';
 import { RuntimeHomeMaterializer } from '../executor/runtime-home-materializer.js';
 import { ConversationDeletionService } from '../session/conversation-deletion.js';
@@ -7,13 +11,11 @@ import { ManagedLocalServices } from '../execution/managed-local-service.js';
 import { ManagedLocalServiceRepo } from '../storage/managed-local-service-repo.js';
 import { resolveHostToolPath } from '../utils/host-tool-path.js';
 import { resolveExecutorTool } from '../utils/executor-tool-path.js';
-import { validateCodexCommand } from '../executor/tool-validation.js';
 import { defaultVersionProbe } from '../management/agent-installation-readiness-service.js';
 import { createHash, randomUUID } from 'node:crypto';
 import { realpath, rm } from 'node:fs/promises';
 import { DesktopSessionService } from '../management/desktop-session.js';
 import { ClientNotificationFeed, type ClientNotificationPage } from '../gateway/client-notification-feed.js';
-import { KernelWorkflowRepo } from '../storage/kernel-workflow-repo.js';
 import { redactSensitiveText } from '../utils/redact-sensitive-text.js';
 import { SqliteClientNavigationStore } from '../storage/client-navigation-repo.js';
 import { SqlitePermissionRepository } from '../storage/permission-repo.js';
@@ -48,7 +50,6 @@ import {
   createProductionRuntimeBindings,
   createProductionSecretStore,
   createLegacyProductionSecretStore,
-  resolvePlannerRuntimeEnvironment,
   importLocalAgentCredentials,
   importLegacyProviderCredentials,
   cleanupProviderCredentials,
@@ -57,7 +58,6 @@ import { prepareProductionSecretStore } from '../configuration/production-secret
 import {
   SPAN_ROUTING_DEFAULT_TIMEOUT_MS,
   SPAN_ROUTING_SECRET_REFERENCE,
-  SPAN_ROUTING_MODEL,
 } from '../configuration/schema.js';
 import {
   isSystemOneDecisionModel,
@@ -74,6 +74,7 @@ import { AccountLayoutMigrator } from '../installation/account-layout-migrator.j
 import { resolveAccountPaths } from '../account/account-paths.js';
 import { LOCAL_DEFAULT_ACCOUNT_ID } from '../account/account-id.js';
 import { buildAccountRuntimeComposition } from '../account/account-runtime-composition.js';
+import { createManagerPermissionContextResolver } from '../account/manager-permission-context.js';
 import { RuntimeRegistry } from '../account/runtime-registry.js';
 import { ConversationRegistry } from '../session/conversation-registry.js';
 import { createNotificationService } from '../notifications/feishu.js';
@@ -133,6 +134,7 @@ import { recordConversationInputTitle } from '../session/conversation-title.js';
 import { workspaceEventStreamId } from '../gateway/workspace-event-stream.js';
 import { clientConnectionEventStreamId } from '../gateway/client-connection-event-stream.js';
 import { resolveServerWebPort } from './server-web-port.js';
+import { serverBindingFromEnv } from './server-binding.js';
 import type { ConversationActivityProjection } from '../workspace/conversation-activity-projector.js';
 import { WorkspaceDirectoryProjector } from '../workspace/workspace-directory-projector.js';
 import { SqliteWorkspaceDirectoryProjectionRepo } from '../storage/workspace-directory-projection-repo.js';
@@ -145,12 +147,11 @@ import { PlanningContextBuilder } from '../planning/planning-context-builder.js'
 import { CommandReadServices } from '../commands/command-read-services.js';
 import { createDefaultCommandCatalog } from '../commands/command-tree.js';
 import { ConversationInputMailbox } from '../session/conversation-input-mailbox.js';
-import { PlannerHostBridge } from '../tui-bridge/planner-host-bridge.js';
-import { PlannerProcessSupervisor } from '../planning/planner-process-supervisor.js';
+import { resolvePlanningTransport } from '../planning/manager-host/transport-selection.js';
+import { managerProviderEnv, writeManagerProviderConfig } from '../planning/manager-host/provider-config.js';
 import { buildStagedLegacyConfiguration } from '../configuration/staged-legacy-configuration.js';
 import { buildPlannerInputProfile } from '../planning/planner-input-profile.js';
 import { buildPlannerConfigurationView, buildRuntimeConfigurationView, buildExecutorManualPreview } from '../configuration/projections.js';
-import { validateEnabledModelPrices } from '../configuration/enabled-model-price-validation.js';
 import { executorDraftSnapshot, projectExecutorManagement } from '../configuration/executor-configuration.js';
 import { AutoModelResolver } from '../routing/auto-model-resolver.js';
 import { authorizedExecutorBindingFingerprint } from '../core/authorized-executor-binding.js';
@@ -161,14 +162,14 @@ import { projectTaskView } from '../task/task-view.js';
 import { SqliteTaskActivityFacts } from '../storage/task-activity-facts-repo.js';
 import { GenerationReplanRequestRepo } from '../storage/generation-replan-request-repo.js';
 import { RetryWakeRepo } from '../storage/retry-wake-repo.js';
-import { KernelDecisionRepo } from '../storage/kernel-decision-repo.js';
 import { projectPublicDelivery } from '../delivery/public-delivery-view.js';
 import { WorkGraphRevisionRepo } from '../storage/work-graph-revision-repo.js';
+import type { WorkGraphProposal, WorkGraphSubtask } from '../work-graph/types.js';
 import { WorkspacePublicationRepo } from '../storage/workspace-publication-repo.js';
 import { WorkspaceChangeRecordRepo } from '../storage/workspace-change-record-repo.js';
 import { ArtifactVersionRepo } from '../storage/artifact-version-repo.js';
 import { ExecutorAttemptRuntimeRepo } from '../storage/executor-attempt-runtime-repo.js';
-import { KernelDispatchItemRepo } from '../storage/kernel-dispatch-item-repo.js';
+import { ControlDispatchItemRepo } from '../storage/dispatch-item-repo.js';
 import {
   acquireInstanceLock,
   isInstanceRunning,
@@ -238,12 +239,11 @@ import {
 } from './server-application.js';
 import { createServerComposition } from './server-composition-contract.js';
 import { stopServerRuntimes } from './server-runtime-shutdown.js';
-import {
-  billingModelPriceInputs,
-  createServerBillingServices,
-  resolveConfiguredUsagePayer,
-} from './billing-composition.js';
+import { createServerMeteringServices } from './metering-composition.js';
 import { createUsageRecorder } from '../metering/usage-service.js';
+import { createManagerPermissionUsageRecorder } from './manager-permission-usage.js';
+import { DEFAULT_PLAN_QUOTA_CATALOG, type PlanQuotaDefinition } from '../metering/plan-quota.js';
+import { decideHostedQuota } from '../metering/quota-enforcement.js';
 import { resolveTaskViewTurnAssociation } from '../gateway/task-view-association.js';
 import { ResultObjectRepo } from '../storage/result-object-repo.js';
 import { ConversationTaskSchedulerRepo } from '../storage/conversation-task-scheduler-repo.js';
@@ -265,7 +265,6 @@ function toMutationResult(result: ActivateDraftResult): ConfigurationMutationRes
 
 function localAgentCredentialSources() {
   return {
-    codexHomes: [join(homedir(), '.config', 'anyfusion', 'codex')],
     piHomes: [join(homedir(), '.config', 'anyfusion', 'pi-home', '.pi')],
     plannerHomes: [join(homedir(), '.config', 'anyfusion', 'planner')],
   };
@@ -372,12 +371,17 @@ async function startWebMode(options: {
   agentReadiness: AgentInstallationReadinessService;
   officialAuthorization?: LocalAuthorizationService;
   memoryQuery?: MemoryManagementQuery;
+  tokenUsageQuery?: TokenUsageManagementQuery;
 }): Promise<ManagementServer> {
   const webDistDir = process.env.ANYFUSION_WEB_DIST
     ? resolve(process.env.ANYFUSION_WEB_DIST)
     : resolve(dirname(fileURLToPath(import.meta.url)), '..', 'web', 'dist');
+  const binding = serverBindingFromEnv(process.env);
   const managementServer = new ManagementServer({
     port: options.port,
+    host: binding.host,
+    allowedOrigins: binding.allowedOrigins,
+    trustProxy: binding.trustProxy,
     webDistDir,
     token: options.webAuth.manualAccessToken,
     webAuth: options.webAuth,
@@ -396,6 +400,7 @@ async function startWebMode(options: {
     artifactQuery: options.artifactQuery,
     agentReadiness: options.agentReadiness,
     officialAuthorization: options.officialAuthorization,
+    ...(options.tokenUsageQuery ? { tokenUsageQuery: options.tokenUsageQuery } : {}),
     ...(options.memoryQuery ? { memoryQuery: options.memoryQuery } : {}),
   });
   await managementServer.start();
@@ -521,10 +526,10 @@ export async function main(cliCommand = parseCliArgs(process.argv.slice(2))) {
       const diagDb = createDatabase(accountPaths.database);
       try {
         const stuckDispatch = diagDb.prepare(
-          "SELECT status, COUNT(*) AS count FROM kernel_dispatch_items WHERE status IN ('pending_launch', 'launching', 'cancelling', 'uncertain') GROUP BY status",
+          "SELECT status, COUNT(*) AS count FROM dispatch_items WHERE status IN ('pending_launch', 'launching', 'cancelling', 'uncertain') GROUP BY status",
         ).all() as Array<{ status: string; count: number }>;
         const orphanDispatch = diagDb.prepare(
-          "SELECT COUNT(*) AS count FROM kernel_dispatch_items AS item WHERE item.status IN ('pending_launch', 'launching', 'cancelling', 'uncertain') AND EXISTS (SELECT 1 FROM tasks WHERE tasks.id = item.task_id AND tasks.status IN ('cancelled', 'done', 'failed', 'archived'))",
+          "SELECT COUNT(*) AS count FROM dispatch_items AS item WHERE item.status IN ('pending_launch', 'launching', 'cancelling', 'uncertain') AND EXISTS (SELECT 1 FROM tasks WHERE tasks.id = item.task_id AND tasks.status IN ('cancelled', 'done', 'failed', 'archived'))",
         ).get() as { count: number };
         const staleSlots = diagDb.prepare(
           "SELECT COUNT(*) AS count FROM conversation_task_slots WHERE active_task_id IS NOT NULL AND state IN ('occupied', 'releasing') AND EXISTS (SELECT 1 FROM tasks WHERE tasks.id = conversation_task_slots.active_task_id AND tasks.status IN ('cancelled', 'done', 'failed', 'archived'))",
@@ -738,7 +743,71 @@ export async function main(cliCommand = parseCliArgs(process.argv.slice(2))) {
   // Refresh revision-scoped runtime artifacts on startup so existing active
   // revisions also receive newly introduced per-Executor manuals.
   await renderer.render(migratedSnapshot);
+  /**
+   * Re-renders the Manager's Pi configuration after an activation so a model or
+   * provider change reaches the next planning turn without a restart. Secrets are
+   * resolved per activation; a missing key leaves that provider out instead of
+   * writing an empty credential.
+   */
+  const refreshManagerProviderConfiguration = async (
+    snapshot: { revisionId: string; config: AnyFusionConfigurationV2 },
+    agentClassRef: string | undefined,
+  ): Promise<void> => {
+    if (resolvePlanningTransport(process.env) !== 'upstream-pi') return;
+    const apiKeys: Record<string, string> = {};
+    for (const [providerRef, provider] of Object.entries(snapshot.config.providers)) {
+      if (!provider.enabled) continue;
+      const value = await readProviderSecret(secretStore, provider.apiKeyRef);
+      if (value) apiKeys[providerRef] = value;
+    }
+    writeManagerProviderConfig({
+      configDir: resolve(accountPaths.root, 'manager', 'config'),
+      configuration: snapshot.config,
+      agentClassId: agentClassRef ?? 'planner',
+      providerSecrets: managerProviderEnv(snapshot.config, apiKeys),
+    });
+    if (managerTransport) {
+      // Composition retains this object. Replace its values so each new child
+      // receives current keys, including removals, rather than startup secrets.
+      managerTransport.providerConfig.configuration = snapshot.config;
+      managerTransport.providerConfig.agentClassId = agentClassRef ?? 'planner';
+      managerTransport.providerConfig.apiKeys = apiKeys;
+    }
+  };
+
+  /** Reads one provider key, tolerating a missing or invalid reference. */
+  async function readProviderSecret(
+    store: SecretStore,
+    reference: string,
+  ): Promise<string | null> {
+    try {
+      assertSecretReference(reference);
+      const value = await store.get(reference);
+      return value.trim() ? value : null;
+    } catch {
+      return null;
+    }
+  }
+
   const stagedConfiguration = buildStagedLegacyConfiguration({ migratedSnapshot });
+  // The Manager renders its own models.json/settings.json from the active
+  // revision, so it needs provider keys resolved through the same names.
+  const activeProviderKeys: Record<string, string> = {};
+  for (const [providerRef, provider] of Object.entries(stagedConfiguration.snapshot.config.providers)) {
+    if (!provider.enabled) continue;
+    const value = await readProviderSecret(secretStore, provider.apiKeyRef);
+    if (value) activeProviderKeys[providerRef] = value;
+  }
+  // Keep the Manager's Pi configuration in step with the active revision before
+  // the first planning turn, not only after an activation.
+  if (resolvePlanningTransport(process.env) === 'upstream-pi') {
+    writeManagerProviderConfig({
+      configDir: resolve(accountPaths.root, 'manager', 'config'),
+      configuration: stagedConfiguration.snapshot.config,
+      agentClassId: stagedConfiguration.plannerBinding?.agentClassRef ?? 'planner',
+      providerSecrets: managerProviderEnv(stagedConfiguration.snapshot.config, activeProviderKeys),
+    });
+  }
   let accountRuntimeComposition: ReturnType<typeof buildAccountRuntimeComposition> | null = null;
   const configurationActivationGate = new ConfigurationActivationGate(() => (
     accountRuntimeComposition?.accountRuntime.getConfigurationActivationFacts() ?? {
@@ -767,42 +836,49 @@ export async function main(cliCommand = parseCliArgs(process.argv.slice(2))) {
     secretStore,
     getSnapshot: revisionId => configurationRepository.readSnapshot(revisionId),
   });
-  const plannerModel = stagedConfiguration.plannerBinding
-    ? migratedSnapshot.config.models[stagedConfiguration.plannerBinding.modelRef] : undefined;
-  const plannerRuntimeEnvironment = stagedConfiguration.plannerBinding
-    ? await resolvePlannerRuntimeEnvironment({
-      configuration: runtimeBindings.runtimeConfiguration,
-      plannerBinding: stagedConfiguration.plannerBinding, secretStore,
-    }) : undefined;
   const db = createDatabase(accountPaths.database);
-  const billingServices = createServerBillingServices(db, {
-    configurationRevision: migratedSnapshot.revisionId,
-    models: billingModelPriceInputs(Object.values(migratedSnapshot.config.models)),
+  const meteringServices = createServerMeteringServices(db);
+  const usageRecorder = createUsageRecorder({ metering: meteringServices.metering });
+  const resolveUsagePayer = createUsagePayerResolver(runtimeBindings.getRuntimeConfiguration);
+  const quotaCatalog: readonly PlanQuotaDefinition[] = DEFAULT_PLAN_QUOTA_CATALOG;
+  const hostedPlanId = (): string => {
+    const plan = officialAuthorization.getStatus().entitlement?.plan;
+    return plan === 'monthly'
+      ? 'included-monthly'
+      : plan === 'annual'
+        ? 'included-yearly'
+        : plan === 'trial'
+          ? 'trial'
+          : plan === 'internal_perpetual' ? 'included-yearly' : 'free-baseline';
+  };
+  const quotaContext = (now = new Date()) => {
+    const planId = hostedPlanId();
+    const entitlement = officialAuthorization.getStatus().entitlement;
+    const trialStartedAt = planId === 'trial' && entitlement?.effectiveAt
+      ? new Date(entitlement.effectiveAt) : undefined;
+    return readAccountTokenQuota({ accountId: LOCAL_DEFAULT_ACCOUNT_ID, usage: meteringServices.tokenUsage,
+      catalog: quotaCatalog, planId, now, ...(trialStartedAt ? { trialStartedAt } : {}) });
+  };
+  const quotaGuidance = () => quotaContext().quota;
+  const managerBeforeModelCall = createManagerQuotaPreflight({
+    loadConfiguration: runtimeBindings.loadConfigurationSnapshot,
+    resolveUsagePayer,
+    readDecision: () => {
+      const entitlement = officialAuthorization.getStatus().entitlement;
+      const planId = hostedPlanId();
+      const now = new Date();
+      const trialStartedAt = planId === 'trial' && entitlement?.effectiveAt
+        ? new Date(entitlement.effectiveAt) : undefined;
+      return decideHostedQuota({
+        catalog: quotaCatalog, planId, now,
+        ...(trialStartedAt ? { trialStartedAt } : {}),
+        usage: quotaContext(now).usage,
+      });
+    },
+    onNotice: (purpose, decision) => {
+      console.warn(`[quota] Manager ${purpose} continues after ${decision.reason}: ${decision.usedTokens}/${decision.limit}`);
+    },
   });
-  const reconciledBillingCount = billingServices.reconcilePendingBills(
-    LOCAL_DEFAULT_ACCOUNT_ID,
-    new Date().toISOString(),
-  );
-  if (reconciledBillingCount > 0) {
-    console.log(`[billing] reconciled ${reconciledBillingCount} pending bill(s) after startup`);
-  }
-  const usageRecorder = createUsageRecorder({ metering: billingServices.metering });
-  const configuredUsagePayer = resolveConfiguredUsagePayer(process.env);
-  if (billingServices.priceBookVersion === 'unconfigured') {
-    console.warn(
-      '[billing] no configured price book is active; new Query bills will remain 待确认 '
-      + 'until Model Profile input/output prices are activated.',
-    );
-  }
-  if (
-    configuredUsagePayer === 'unknown'
-    && process.env.METAWORK_BILLING_DEFAULT_PAYER?.trim() === 'unknown'
-  ) {
-    console.warn(
-      '[billing] METAWORK_BILLING_DEFAULT_PAYER=unknown; usage will be recorded '
-      + 'but formal fees will remain 待确认.',
-    );
-  }
   const configurationRevisionRepo = new ConfigurationRevisionRepo(db);
   ensureActiveConfigurationRevision(db, {
     revisionId: migratedSnapshot.revisionId,
@@ -833,6 +909,13 @@ export async function main(cliCommand = parseCliArgs(process.argv.slice(2))) {
       sidecarCommand: sidecarResolution.command,
       sidecarUnavailableReason: sidecarResolution.reason ?? 'memory_engine_unreachable',
       logger: message => console.error(`[memory] ${message}`),
+      // Memory extraction is a real model call owned by the engine; it is
+      // attributed to one account-level system Query and paid by the extraction
+      // Provider's ownership (official → Included, user key → on-demand).
+      getConfigurationRevision: () => stagedConfiguration.snapshot.revisionId,
+      usageObserver: event => usageRecorder.record(event),
+      resolveUsagePayer,
+      queryLifecycle: meteringServices.lifecycle,
     },
   });
   console.log(`[memory] ${describeMemoryStatus(memoryRuntimeController.status)}`);
@@ -963,124 +1046,86 @@ export async function main(cliCommand = parseCliArgs(process.argv.slice(2))) {
     ),
   });
   const notifier = createNotificationService(config);
-  const plannerHostSocketPath = (process.env.METACLAW_PLANNER_HOST_SOCKET
-    ?? process.env.METACLAW_PLANNER_TUI_SOCKET
-    ?? resolveLocalEndpointPath(metaclawDir, 'anyfusion-planner.sock')).trim();
-  process.env.METACLAW_PLANNER_HOST_SOCKET = plannerHostSocketPath;
-  process.env.METACLAW_PLANNER_TUI_SOCKET = plannerHostSocketPath;
-  const plannerHost = new PlannerHostBridge({ socketPath: plannerHostSocketPath, logger: console });
-  const plannerSupervisor = new PlannerProcessSupervisor({
-    productionAuthorization: () => ({ allowed: officialAuthorization.getStatus().state === 'active' }),
-    socketPath: plannerHostSocketPath,
-    gatewaySocketPath,
-    // Server startup is Workspace-neutral. Planner RPC still needs a cwd
-    // inside its Runtime-authorized root, so use the account-owned runtime
-    // workspace rather than the shell directory used to launch `metawork`.
-    cwd: accountPaths.workspaceStore,
-    authorizedWorkspace: accountPaths.workspaceStore,
-    beginWorkspaceObservation: async conversationId => {
-      const metadata = await conversationStore.readMetadata(conversationId);
-      const workspaceId = metadata?.workspaceBinding?.workspaceId;
-      if (!workspaceId) return {release: async () => undefined};
-      const workspace = await workspaceCatalogStore.findById(workspaceId);
-      if (!workspace || workspace.accountId !== LOCAL_DEFAULT_ACCOUNT_ID || metadata?.archived) throw new Error('conversation_workspace_unavailable');
-      const service = workspaceGitServices().conversationWorktrees;
-      const root = await service.initialize({accountId: LOCAL_DEFAULT_ACCOUNT_ID, workspaceId, userRoot: workspace.canonicalPath});
-      return service.observe(root, conversationId);
-    },
-    resolveAuthorizedWorkspace: async conversationId => {
-      const metadata = await conversationStore.readMetadata(conversationId);
-      const workspaceId = metadata?.workspaceBinding?.workspaceId;
-      if (!workspaceId) return accountPaths.workspaceStore;
-      const catalog = await workspaceCatalogStore.readCatalog();
-      const workspace = catalog.workspaces.find(item => item.id === workspaceId && item.accountId === LOCAL_DEFAULT_ACCOUNT_ID && !item.archived);
-      if (!workspace || metadata?.accountId !== LOCAL_DEFAULT_ACCOUNT_ID || metadata.archived) throw new Error('conversation_workspace_unavailable');
-      const service = workspaceGitServices().conversationWorktrees;
-      const root = await service.initialize({accountId: LOCAL_DEFAULT_ACCOUNT_ID, workspaceId, userRoot: workspace.canonicalPath});
-      return (await service.prepareTurn(root, conversationId)).rootPath;
-    },
-    configurationRevision: stagedConfiguration.snapshot.revisionId,
-    bindingFingerprint: stagedConfiguration.plannerBindingFingerprint,
-    generatedRuntimeRoot: resolve(accountPaths.generated, 'agent-runtime'),
-    plannerRuntimeRoot: accountPaths.plannerRuntime,
-    databasePath: accountPaths.database,
-    configurationRoot: accountPaths.config,
-    schemaPath: resolvePlannerSchemaPath(applicationRoot),
-    sessionDir: accountPaths.plannerSessions,
-    runtimeEnvironment: plannerRuntimeEnvironment,
-    expectedModel: stagedConfiguration.plannerBinding && plannerModel ? {
-      provider: stagedConfiguration.plannerBinding.providerRef,
-      modelId: plannerModel.modelId,
-    } : undefined,
-    resolvePlannerBinding: async context => {
-      const inputProfile = buildPlannerInputProfile(context);
-      const activeSnapshot = await configurationService.getSnapshot(context.configuration.revisionId);
-      const activePlanner = buildPlannerConfigurationView(activeSnapshot);
-      const plannerRouting = activePlanner.planner;
-      if (!plannerRouting) throw new Error('Planner routing policy is unavailable');
-      const resolution = AutoModelResolver.resolve({
-        configurationRevision: activeSnapshot.revisionId,
-        agentClassRef: 'planner',
-        harnessRef: plannerRouting.harnessRef,
-        permissionProfileRef: 'planner-none',
-        policy: plannerRouting.modelPolicy,
-        candidates: await Promise.all(activePlanner.models.map(async model => {
-          const provider = activeSnapshot.config.providers[model.providerRef];
-          let credentialAvailable = false;
-          if (provider) {
-            try {
-              assertSecretReference(provider.apiKeyRef);
-              credentialAvailable = (await secretStore.get(provider.apiKeyRef)).trim().length > 0;
-            } catch {
-              credentialAvailable = false;
-            }
-          }
-          return {
-            providerRef: model.providerRef,
-            modelRef: model.id,
-            modelId: activeSnapshot.config.models[model.id]?.modelId ?? model.id,
-            capabilities: model.capabilities,
-            contextLimit: model.contextLimit,
-            costInputPerMillion: model.costInputPerMillion,
-            costOutputPerMillion: model.costOutputPerMillion,
-            latencyTier: model.latencyTier,
-            qualityTier: model.qualityTier,
-            health: credentialAvailable ? 'healthy' as const : 'unavailable' as const,
-            available: credentialAvailable,
-            providerEnabled: provider?.enabled ?? false,
-            harnessCompatible: Boolean(
-              activeSnapshot.config.harnesses[plannerRouting.harnessRef]?.enabled,
-            ),
-          };
-        })),
-        requirements: {
-          requiredCapabilities: inputProfile.requiredCapabilities,
-          preferredCapabilities: [],
-          contextTokens: inputProfile.contextTokens,
-          requiresStructuredOutput: inputProfile.requiresStructuredOutput,
+  // ADR-0055 D6: when the Manager transport is selected, the Manager plans from
+  // the Conversation's user Workspace read-only; it never receives a writable
+  // scope, because planning must not mutate anything.
+  const resolveManagerScope = async (
+    conversationId: string,
+  ): Promise<{ workspaceRoot: string; writable: false; permissionProfileRef: string }> => {
+    const metadata = await conversationStore.readMetadata(conversationId);
+    const workspaceId = metadata?.workspaceBinding?.workspaceId;
+    const workspace = workspaceId ? await workspaceCatalogStore.findById(workspaceId) : null;
+    return {
+      workspaceRoot: workspace?.canonicalPath ?? accountPaths.workspaceStore,
+      writable: false,
+      permissionProfileRef: stagedConfiguration.plannerBinding?.permissionProfileRef ?? 'engineering',
+    };
+  };
+  const managerTransport = resolvePlanningTransport(process.env) === 'upstream-pi'
+    ? {
+      runtimeRoot: accountPaths.root,
+      moduleRoot: applicationRoot,
+      mcpEnv: {
+        METACLAW_DB_PATH: accountPaths.database,
+        ANYFUSION_ACCOUNT_CONFIG_ROOT: accountPaths.config,
+        METACLAW_ACCOUNT_ID: LOCAL_DEFAULT_ACCOUNT_ID,
+      },
+      resolveScope: (context: import('../planning/planning-types.js').PlanningContext) =>
+        resolveManagerScope(context.request.conversationId ?? context.request.sessionId),
+      beforeModelCall: async (context: import('../planning/planning-types.js').PlanningContext, stage: 'planning' | 'permission') => {
+        await managerBeforeModelCall(context, stage);
+        if (context.replan) await memoryRuntimeController.runtime.refreshRecall({
+          accountId: LOCAL_DEFAULT_ACCOUNT_ID,
+          conversationId: context.request.conversationId ?? context.request.sessionId,
+          query: context.userInput,
+        });
+      },
+      resolvePermissionContext: createManagerPermissionContextResolver({
+        accountId: LOCAL_DEFAULT_ACCOUNT_ID,
+        readFacts: request => {
+          const composition = accountRuntimeComposition;
+          if (!composition) return null;
+          const runtime = composition.accountRuntime;
+          const task = taskEngine.getTaskRepo().findById(request.taskId);
+          const subtask = runtime?.repositories.subtaskRepo.findById(request.subtaskId);
+          const graph = runtime?.repositories.workGraphRevisionRepo.findActive(request.taskId);
+          const attempt = runtime?.runtimeExecutionServices?.dispatchItemRepo.find(request.attemptId);
+          if (!task || !subtask || !graph || !attempt) return null;
+          return { task, subtask, graph, attempt: {
+            ...attempt,
+            agentClassRef: attempt.authorizedBinding.agentClassRef,
+            permissionProfileId: composition.executionRuntime.resolvePermissionProfile(attempt.authorizedBinding),
+          } };
         },
-      });
-      if (!resolution.binding) throw new Error('Planner Auto routing returned no binding');
-      const model = activeSnapshot.config.models[resolution.binding.modelRef];
-      if (!model) throw new Error(`Planner Model is unavailable: ${resolution.binding.modelRef}`);
-      const plannerBinding = {
-        ...resolution.binding,
-        permissionProfileRef: null,
-      };
-      return {
-        configurationRevision: resolution.binding.configurationRevision,
-        bindingFingerprint: authorizedExecutorBindingFingerprint(resolution.binding),
-        provider: resolution.binding.providerRef,
-        modelId: model.modelId,
-        runtimeEnvironment: await resolvePlannerRuntimeEnvironment({
-          configuration: buildRuntimeConfigurationView(activeSnapshot),
-          plannerBinding,
-          secretStore,
-        }),
-      };
-    },
-  });
-  await plannerHost.start();
+        readUserIntent: (taskId, conversationId) => {
+          const queries = meteringServices.contexts.listQueryIdsForTask(taskId)
+            .map(queryId => meteringServices.contexts.findById(queryId))
+            .filter(query => query?.accountId === LOCAL_DEFAULT_ACCOUNT_ID
+              && query.conversationId === conversationId && query.turnId);
+          const source = queries[0];
+          if (!source?.turnId) return null;
+          const turns = new SqliteConversationTurnStore(db);
+          if (turns.deletionState(LOCAL_DEFAULT_ACCOUNT_ID, conversationId)) return null;
+          const turn = turns.find({ accountId: LOCAL_DEFAULT_ACCOUNT_ID, conversationId, turnId: source.turnId });
+          if (!turn) return null;
+          return { queryId: source.queryId, text: turns.readBody(LOCAL_DEFAULT_ACCOUNT_ID, turn.input.hash).text };
+        },
+        readConfiguration: async revision => buildPlannerConfigurationView(await runtimeBindings.loadConfigurationSnapshot(revision)),
+        onUsage: createManagerPermissionUsageRecorder({ recorder: usageRecorder, resolveUsagePayer }),
+      }),
+      // The Manager must be told the canonical Plan contract; it is generated
+      // from the same schema that validates the proposal.
+      explicitEnv: {
+        METAWORK_MANAGER_PLAN_SCHEMA: resolvePlanSchemaPath(applicationRoot),
+      },
+      providerConfig: {
+        configuration: stagedConfiguration.snapshot.config,
+        agentClassId: stagedConfiguration.plannerBinding?.agentClassRef ?? 'planner',
+        apiKeys: activeProviderKeys,
+      },
+      ...(process.env.METAWORK_PI_COMMAND ? { piCommand: process.env.METAWORK_PI_COMMAND } : {}),
+    }
+    : undefined;
   const executorManualPreview = new ExecutorManualPreviewService(configurationService);
   const taskArtifactRepo = new TaskArtifactRepo(db);
 
@@ -1200,7 +1245,7 @@ export async function main(cliCommand = parseCliArgs(process.argv.slice(2))) {
         try {
           const apiKey = (await secretStore.get(SPAN_ROUTING_SECRET_REFERENCE as SecretReference)).trim();
           return apiKey ? [{
-            model: span.model || SPAN_ROUTING_MODEL,
+            model: span.model ?? '',
             apiKey,
             baseUrl: 'https://openrouter.ai/api/v1',
           }] : [];
@@ -1241,30 +1286,55 @@ export async function main(cliCommand = parseCliArgs(process.argv.slice(2))) {
     },
     lifetimeSignal: spanRoutingShutdown.signal,
   });
-  const recoveryPlan = (context: import('../planning/planning-types.js').PlanningContext) => planWithoutClient({
-    context, runner: plannerSupervisor, signal: spanRoutingShutdown.signal,
-    registerSession: (id, session) => plannerHost.registerSession(id, session),
-  });
+  const recoveryPlan = (context: import('../planning/planning-types.js').PlanningContext) => {
+    // The recovery path runs on the same planning transport as the foreground:
+    // Manager by default, no client attached either way.
+    const planningAgent = accountRuntimeComposition?.plannerServices?.planningAgent;
+    if (!planningAgent) throw new Error('recovery planning requires a planning agent');
+    return planWithoutClient({
+      context,
+      planningAgent,
+      signal: spanRoutingShutdown.signal,
+    });
+  };
   const recoveryReplan = createRecoveryReplanner({
     db,
     getPort: () => accountRuntimeComposition!.runtimePort,
     getSnapshot: revisionId => configurationService.getSnapshot(revisionId),
-    evaluator: spanRoutingAdvisor,
     signal: spanRoutingShutdown.signal,
     plan: recoveryPlan,
+    // A recovery replan is client-less: its Workspace admission comes from the
+    // Task's own durable binding, never from a connected client's selection.
+    resolveTaskWorkspace: async task => {
+      if (!task.workspaceId) return null;
+      const workspace = await workspaceCatalogStore.findById(task.workspaceId);
+      if (!workspace || workspace.archived || workspace.availability !== 'available') return null;
+      return { workspaceId: workspace.id, canonicalPath: workspace.canonicalPath };
+    },
+    getSessionControlRuntime: () => (
+      (accountRuntimeComposition as unknown as {
+        kernelExecutionServices?: { sessionControlRuntime: import('../session/session-control-runtime.js').SessionControlRuntime };
+      } | null)?.kernelExecutionServices?.sessionControlRuntime ?? null
+    ),
   });
   let conversationRegistry: ConversationRegistry | null = null;
   accountRuntimeComposition = buildAccountRuntimeComposition({
     managedLocalServices,
     recoveryReplan,
     recoveryPlan,
-    resolveConfigurationSnapshot: revisionId => configurationService.getSnapshot(revisionId),
+    resolveConfigurationSnapshot: runtimeBindings.loadConfigurationSnapshot,
     accountId: LOCAL_DEFAULT_ACCOUNT_ID,
     db,
     taskEngine,
     resolveWorkspacePath: resolveTaskWorkspacePath,
     preflightWorkspacePath: path => workspaceDirectory.preflightPath(path),
     productionAuthorization: () => {
+      // Local acceptance only: lets an operator drive a real Turn end to end
+      // without an official-account login. Refused in production builds.
+      if (process.env.METAWORK_ACCEPTANCE_AUTHORIZATION === '1'
+        && process.env.NODE_ENV !== 'production') {
+        return { allowed: true };
+      }
       const status = officialAuthorization.getStatus();
       return status.state === 'active'
         ? { allowed: true }
@@ -1294,11 +1364,12 @@ export async function main(cliCommand = parseCliArgs(process.argv.slice(2))) {
       plannerBinding: stagedConfiguration.plannerBinding,
       plannerBindingFingerprint: stagedConfiguration.plannerBindingFingerprint,
     }),
+    spanRoutingEvaluator: spanRoutingAdvisor,
     getRuntimeBinding: runtimeBindings.getRuntimeBinding,
     getRuntimeConfiguration: runtimeBindings.getRuntimeConfiguration,
     getActiveRuntimeConfiguration: runtimeBindings.getActiveRuntimeConfiguration,
     configurationActivationGate,
-    plannerSupervisor,
+    ...(managerTransport ? { managerTransport } : {}),
     getConfigurationRevision: () => stagedConfiguration.snapshot.revisionId,
     blockedRecheckEnabled: config.orchestration.blocked_recheck_enabled !== false,
     blockedRecheckIntervalMs: Math.max(
@@ -1313,9 +1384,10 @@ export async function main(cliCommand = parseCliArgs(process.argv.slice(2))) {
     },
     usageObserver: event => usageRecorder.record(event),
     usageSpanOpener: span => usageRecorder.openSpan(span),
-    usageSpanCloser: (spanId, state, closedAt) => billingServices.metering.closeSpan(spanId, state, closedAt),
-    usagePayer: configuredUsagePayer,
-    queryUsageLifecycle: billingServices.lifecycle,
+    usageSpanCloser: (spanId, state, closedAt) => meteringServices.metering.closeSpan(spanId, state, closedAt),
+    usagePayer: 'unknown',
+    resolveUsagePayer,
+    queryUsageLifecycle: meteringServices.lifecycle,
     onSystemResultDelivery: async (sessionId, delivery) => {
       if (deliverSystemResult) await deliverSystemResult(sessionId, delivery);
       else pendingSystemDeliveries.push({ sessionId, delivery });
@@ -1344,17 +1416,8 @@ export async function main(cliCommand = parseCliArgs(process.argv.slice(2))) {
     service: configurationService,
     gate: configurationActivationGate,
     initialSnapshot: migratedSnapshot,
-    validateActivationConfig: validateEnabledModelPrices,
     prepareConfig: async ({ config, secrets, spanApiKey }) => {
       const prepared = structuredClone(config) as AnyFusionConfigurationV2;
-      const previous = (await configurationRepository.getActiveSnapshot()).config;
-      for (const [ref, harness] of Object.entries(prepared.harnesses)) {
-        const old = previous.harnesses[ref];
-        if (harness.transport === 'local-cli' && harness.driverId === 'codex-cli'
-          && (old?.transport !== 'local-cli' || old.command !== harness.command)) {
-          await validateCodexCommand(harness.command);
-        }
-      }
       for (const [providerRef, apiKey] of Object.entries(secrets)) {
         const reference = `file-secret:anyfusion/providers/${providerRef}` as const;
         const provider = prepared.providers[providerRef];
@@ -1368,7 +1431,7 @@ export async function main(cliCommand = parseCliArgs(process.argv.slice(2))) {
           ...prepared.routing,
           span: {
             enabled: existingSpan?.enabled ?? false,
-            model: existingSpan?.model ?? SPAN_ROUTING_MODEL,
+            ...(existingSpan?.model ? { model: existingSpan.model } : {}),
             ...(existingSpan?.providerRef ? { providerRef: existingSpan.providerRef } : {}),
             ...(existingSpan?.modelRef ? { modelRef: existingSpan.modelRef } : {}),
             ...(existingSpan?.fallbackModelRefs ? { fallbackModelRefs: [...existingSpan.fallbackModelRefs] } : {}),
@@ -1412,29 +1475,13 @@ export async function main(cliCommand = parseCliArgs(process.argv.slice(2))) {
     },
     onActivated: async ({ snapshot, runtime }) => {
       const nextStaged = buildStagedLegacyConfiguration({ migratedSnapshot: snapshot });
-      if (nextStaged.plannerBinding) {
-        const model = snapshot.config.models[nextStaged.plannerBinding.modelRef]!;
-        await plannerSupervisor.refreshBinding({
-          configurationRevision: snapshot.revisionId,
-          bindingFingerprint: nextStaged.plannerBindingFingerprint,
-          provider: nextStaged.plannerBinding.providerRef, modelId: model.modelId,
-          runtimeEnvironment: await resolvePlannerRuntimeEnvironment({
-            configuration: runtime, plannerBinding: nextStaged.plannerBinding, secretStore,
-          }),
-        });
-      } else {
-        await plannerSupervisor.clearBinding();
-      }
+      await refreshManagerProviderConfiguration(snapshot, nextStaged.plannerBinding?.agentClassRef);
       runtimeBindings.updateSnapshot(snapshot);
       stagedConfiguration.snapshot = nextStaged.snapshot;
       stagedConfiguration.planner = nextStaged.planner;
       stagedConfiguration.kernel = nextStaged.kernel;
       stagedConfiguration.plannerBinding = nextStaged.plannerBinding;
       stagedConfiguration.plannerBindingFingerprint = nextStaged.plannerBindingFingerprint;
-      billingServices.refreshConfiguration({
-        configurationRevision: snapshot.revisionId,
-        models: billingModelPriceInputs(Object.values(snapshot.config.models)),
-      });
       await gatewayFeishuManager?.applyConfiguration(buildApplicationConfig(snapshot));
       // Long-term memory is a revisioned setting (design §7). Applying it here
       // is what makes the settings switch actually take effect: the controller
@@ -1458,29 +1505,13 @@ export async function main(cliCommand = parseCliArgs(process.argv.slice(2))) {
     },
     onActivationFailed: async ({ snapshot, runtime }) => {
       const restored = buildStagedLegacyConfiguration({ migratedSnapshot: snapshot });
-      if (restored.plannerBinding) {
-        const model = snapshot.config.models[restored.plannerBinding.modelRef]!;
-        await plannerSupervisor.refreshBinding({
-          configurationRevision: snapshot.revisionId,
-          bindingFingerprint: restored.plannerBindingFingerprint,
-          provider: restored.plannerBinding.providerRef, modelId: model.modelId,
-          runtimeEnvironment: await resolvePlannerRuntimeEnvironment({
-            configuration: runtime, plannerBinding: restored.plannerBinding, secretStore,
-          }),
-        });
-      } else {
-        await plannerSupervisor.clearBinding();
-      }
+      await refreshManagerProviderConfiguration(snapshot, restored.plannerBinding?.agentClassRef);
       runtimeBindings.updateSnapshot(snapshot);
       stagedConfiguration.snapshot = restored.snapshot;
       stagedConfiguration.planner = restored.planner;
       stagedConfiguration.kernel = restored.kernel;
       stagedConfiguration.plannerBinding = restored.plannerBinding;
       stagedConfiguration.plannerBindingFingerprint = restored.plannerBindingFingerprint;
-      billingServices.refreshConfiguration({
-        configurationRevision: snapshot.revisionId,
-        models: billingModelPriceInputs(Object.values(snapshot.config.models)),
-      });
       await gatewayFeishuManager?.applyConfiguration(buildApplicationConfig(snapshot));
       // A failed activation restores the previous revision, so the memory
       // runtime must follow it back (review P1-1).
@@ -1495,27 +1526,16 @@ export async function main(cliCommand = parseCliArgs(process.argv.slice(2))) {
   const agentReadiness = new AgentInstallationReadinessService({
     requiredAgentIds: () => ['pi-agent'],
     resolveCommand: definition => {
-      const driverId = definition.agentId === 'pi-agent' ? 'pi-cli' : 'codex-cli';
       const harness = Object.values(configurationRuntimeCoordinator.getSnapshot().config.harnesses)
-        .find(harness => harness.driverId === driverId && harness.transport === 'local-cli');
+        .find(harness => harness.driverId === 'pi-cli' && harness.transport === 'local-cli');
       const command = resolveExecutorTool(harness?.transport === 'local-cli' ? harness.command : definition.command,
         { releaseRoot: applicationRoot });
       return { command, managed: definition.agentId === 'pi-agent' && Boolean(process.env.METAWORK_MANAGED_PI
         || command.includes('/desktop-tools/executor/') || command.includes('.tools/executor/')) };
     },
-    probe: async (command, args, timeoutMs) => {
-      const result = await defaultVersionProbe(command, args, timeoutMs);
-      const codex = Object.values(configurationRuntimeCoordinator.getSnapshot().config.harnesses)
-        .find(harness => harness.driverId === 'codex-cli' && harness.transport === 'local-cli');
-      if (result.kind === 'exit' && result.code === 0
-        && command === resolveExecutorTool(codex?.transport === 'local-cli' ? codex.command : 'codex')) {
-        try { await validateCodexCommand(command); }
-        catch (error) { return { kind: 'error', detail: (error as Error).message }; }
-      }
-      return result;
-    },
+    probe: defaultVersionProbe,
     // Installation belongs to the shared tool, not one arbitrarily chosen assistant.
-    resolveDisplayName: agentId => agentId === 'pi-agent' ? 'Pi' : 'Codex CLI',
+    resolveDisplayName: () => 'Pi',
   });
   republishAgentReadiness = () => { void agentReadiness.refresh({ force: true }).catch(() => undefined); };
   const runtimePort = activatedAccountRuntime.getConversationPort();
@@ -1603,10 +1623,9 @@ export async function main(cliCommand = parseCliArgs(process.argv.slice(2))) {
       interactionTraceStream,
       planningContextBuilder,
       db,
-      getKernelConfiguration: () => stagedConfiguration.kernel,
+      getControlConfiguration: () => stagedConfiguration.kernel,
       getRuntimeConfiguration: runtimeBindings.getRuntimeConfiguration,
-      resolveConfigurationSnapshot: revisionId => configurationService.getSnapshot(revisionId),
-      spanRoutingEvaluator: spanRoutingAdvisor,
+      resolveConfigurationSnapshot: runtimeBindings.loadConfigurationSnapshot,
       lifetimeSignal: spanRoutingShutdown.signal,
       commandCatalog,
       commandReadServices,
@@ -1622,33 +1641,31 @@ export async function main(cliCommand = parseCliArgs(process.argv.slice(2))) {
           });
         },
       queryUsage: {
-        lifecycle: billingServices.lifecycle,
-        externalAccountRef: billingServices.externalAccountRef,
-        priceBookVersion: billingServices.priceBookVersion,
-        feePolicyVersion: billingServices.feePolicyVersion,
-        getPriceBookVersion: () => billingServices.priceBookVersion,
-        getFeePolicyVersion: () => billingServices.feePolicyVersion,
-        payerPolicyVersion: billingServices.payerPolicyVersion,
+        lifecycle: meteringServices.lifecycle,
         ingress: 'tui',
         usageObserver: event => usageRecorder.record(event),
-        usagePayer: configuredUsagePayer,
+        usagePayer: 'unknown',
+        resolveUsagePayer,
       },
       workspace,
-      dispose: async () => unregisterPlannerHost(),
+      dispose: async () => undefined,
     });
-    const unregisterPlannerHost = plannerHost.registerSession(conversationId, conversation);
 
+    // One scoping mechanism: the Turn runs inside the Conversation's execution
+    // binding, so the shared control services are used unproxied.
     const binder = accountRuntimeComposition.conversationExecutionBinder;
-    const kernelExecutionServices = binder.bind({
+    const binding = {
       sessionId: conversationId,
       persistenceService,
       presentation,
-      ...conversation.getKernelExecutionCallbacks(),
-    });
-
-    conversation.bindKernelExecutionRuntime(kernelExecutionServices.kernelExecutionRuntime);
-    conversation.bindSessionKernelRuntime(kernelExecutionServices.sessionKernelRuntime);
-    conversation.bindTaskExecutionApplicationService(kernelExecutionServices.taskExecutionApplicationService);
+      ...conversation.getControlExecutionCallbacks(),
+    };
+    conversation.bindControlExecutionRuntime(accountRuntimeComposition.controlExecutionServices.kernelExecutionRuntime);
+    conversation.bindSessionControlRuntime(accountRuntimeComposition.controlExecutionServices.sessionControlRuntime);
+    conversation.bindTaskExecutionApplicationService(
+      accountRuntimeComposition.controlExecutionServices.taskExecutionApplicationService,
+    );
+    conversation.bindRunInBinding(operation => binder.runWith(binding, operation));
 
     return conversation;
   };
@@ -1693,7 +1710,7 @@ export async function main(cliCommand = parseCliArgs(process.argv.slice(2))) {
   const eventJournal = eventJournalRuntime.journal;
   const normalizeHistoryPage = (turns: readonly ConversationTurn[]): ConversationTurn[] => {
     const taskIds = [...new Set(turns.flatMap(turn => turn.taskId ? [turn.taskId] : []))];
-    const aliases = new Map(new KernelDecisionRepo(db).listPresentationIdentitiesByTasks(taskIds)
+    const aliases = new Map(new WorkGraphRevisionRepo(db).listPresentationIdentitiesByTasks(taskIds)
       .map(plan => [plan.taskId, buildCanonicalSubtaskIdentityMap(
         plan.taskId, plan.graphRevision, plan.subtaskIds.map(id => ({ id })),
       )]));
@@ -1712,7 +1729,6 @@ export async function main(cliCommand = parseCliArgs(process.argv.slice(2))) {
         .map(row => row.planner_session_id));
       if (metadata?.plannerSessionId) plannerSessions.add(metadata.plannerSessionId);
       for (const plannerSessionId of plannerSessions) {
-        await plannerSupervisor.stopSession(plannerSessionId);
         const path = resolve(accountPaths.plannerSessions, `${plannerSessionId}.jsonl`);
         if (dirname(path) !== resolve(accountPaths.plannerSessions)) throw new Error('invalid_planner_session_path');
         await rm(path, { force: true });
@@ -1757,8 +1773,6 @@ export async function main(cliCommand = parseCliArgs(process.argv.slice(2))) {
     WHERE EXISTS (SELECT 1 FROM interactions WHERE session_id = ?)
        OR EXISTS (SELECT 1 FROM planner_runs WHERE session_id = ?)
        OR EXISTS (SELECT 1 FROM planner_proposal_turns WHERE session_id = ?)
-       OR EXISTS (SELECT 1 FROM kernel_events WHERE session_id = ?)
-       OR EXISTS (SELECT 1 FROM kernel_decisions WHERE session_id = ?)
   `);
   const authorizeConversationAttach = async (
     accountId: string,
@@ -1820,7 +1834,7 @@ export async function main(cliCommand = parseCliArgs(process.argv.slice(2))) {
         },
         subtasks: new SubtaskRepo(db).listByTask(taskId)
           .map(subtask => ({ id: subtask.id, status: subtask.status })),
-        dispatches: new KernelDispatchItemRepo(db).listByTask(taskId).map(item => ({
+        dispatches: new ControlDispatchItemRepo(db).listByTask(taskId).map(item => ({
           attemptId: item.attemptId,
           subtaskId: item.subtaskId,
           status: item.status,
@@ -1914,7 +1928,7 @@ export async function main(cliCommand = parseCliArgs(process.argv.slice(2))) {
   });
   const activityProjector = new ConversationActivityProjector(activityProjection, task => {
     const pending = new SqlitePermissionRepository(db).findPendingForTask(task.id);
-    const permissionId = pending && !new KernelWorkflowRepo(db).findPermissionResolution(pending.request.id) ? pending.request.id : null;
+    const permissionId = pending && !new SqlitePermissionRepository(db).findResolution(pending.request.id) ? pending.request.id : null;
     const view = projectTaskView(new SqliteTaskActivityFacts(db).read(task,
       permissionId ? { requestId: permissionId } : null));
     const generation = accountRuntimeComposition.runtimePort.queries.findActiveWorkGraphRevision(task.id)?.generationId ?? `unplanned:${task.id}`;
@@ -2023,10 +2037,9 @@ export async function main(cliCommand = parseCliArgs(process.argv.slice(2))) {
     taskView: task => projectTaskView(new SqliteTaskActivityFacts(db).read({ ...task, updatedAt: null }, null)),
     subtaskRepo: new SubtaskRepo(db),
     receiptRepo: new ExecutorAttemptReceiptRepo(db),
-    decisionRepo: new KernelDecisionRepo(db),
     publicationRepo: new WorkspacePublicationRepo(db),
     attemptRuntimeRepo: new ExecutorAttemptRuntimeRepo(db),
-    dispatchItemRepo: new KernelDispatchItemRepo(db),
+    dispatchItemRepo: new ControlDispatchItemRepo(db),
     configurationByRevision: timelineConfigurationByRevision,
   });
   const conversationGatewayRuntime = new ConversationGatewayRuntime({
@@ -2090,10 +2103,10 @@ export async function main(cliCommand = parseCliArgs(process.argv.slice(2))) {
     },
     resolveQuery: taskId => {
       const queryId = deliveryScheduler.getQueuedPayload(taskId)?.queryId
-        ?? billingServices.contexts.listQueryIdsForTask(taskId)[0];
-      return queryId ? billingServices.contexts.findById(queryId) : null;
+        ?? meteringServices.contexts.listQueryIdsForTask(taskId)[0];
+      return queryId ? meteringServices.contexts.findById(queryId) : null;
     },
-    taskForQuery: queryId => billingServices.contexts.findTaskLink(queryId)?.costTaskId ?? null,
+    taskForQuery: queryId => meteringServices.contexts.findTaskLink(queryId)?.taskId ?? null,
     read: conversationId => webSessionCatalog.read(conversationId),
     requestText: taskId => deliveryScheduler.getQueuedPayload(taskId)?.requestText ?? null,
     project: task => executionProjector.project(task),
@@ -2169,7 +2182,8 @@ export async function main(cliCommand = parseCliArgs(process.argv.slice(2))) {
   const gatewayReadOnlyQueryHandler = createGatewayReadOnlyQueryHandler({
     subscriptions: gatewaySubscriptions,
     journal: eventJournal,
-    billing: billingServices.queries,
+    tokenUsage: meteringServices.tokenUsage,
+    quotaGuidance,
     authorizeTask: (accountId, taskId) => {
       const task = taskRepo.findById(taskId);
       return Boolean(task && task.accountId === accountId);
@@ -2220,9 +2234,9 @@ export async function main(cliCommand = parseCliArgs(process.argv.slice(2))) {
       const liveTrace = conversationRegistry.getIfOpen(conversationId)?.getInteractionTrace() ?? null;
       const liveTurn = liveTrace && liveTrace.turnId === turnId ? liveTrace : null;
       const traceRead = await eventJournal.readTurnTaskObservation(accountId, conversationId, turnId);
-      const queryContext = billingServices.contexts.findByTurnId(accountId, turnId);
+      const queryContext = meteringServices.contexts.findByTurnId(accountId, turnId);
       const queryTaskId = queryContext?.conversationId === conversationId
-        ? billingServices.contexts.findTaskLink(queryContext.queryId)?.costTaskId ?? null
+        ? meteringServices.contexts.findTaskLink(queryContext.queryId)?.taskId ?? null
         : null;
       const association = resolveTaskViewTurnAssociation({
         accountId,
@@ -2260,7 +2274,7 @@ export async function main(cliCommand = parseCliArgs(process.argv.slice(2))) {
       const executionFacts = await projectTaskViewFacts({
         task,
         subtasks: new SubtaskRepo(db).listByTask(taskId),
-        dispatches: new KernelDispatchItemRepo(db).listByTask(taskId),
+        dispatches: new ControlDispatchItemRepo(db).listByTask(taskId),
         receipts: new ExecutorAttemptReceiptRepo(db).listByTask(taskId),
         findObject: resultId => deliveryResults.findObject(resultId),
         readConfiguration: revisionId => configurationRepository.readSnapshot(revisionId),
@@ -2305,11 +2319,7 @@ export async function main(cliCommand = parseCliArgs(process.argv.slice(2))) {
       const workspaceMerge = accountRuntimeComposition?.accountRuntime?.workspaceServices?.workspaceGitRepo
         ?.summary(taskId, activeGraph?.generationId) ?? null;
       return {
-        publicDelivery: publicDelivery?.mode === 'worktree'
-          ? ({ workspace: publicDelivery.workspace, taskDirectory: publicDelivery.taskDirectory,
-              mode: publicDelivery.mode, state: publicDelivery.state, stateLabel: publicDelivery.stateLabel,
-              files: publicDelivery.files, conflicts: publicDelivery.conflicts } as typeof publicDelivery)
-          : publicDelivery,
+        publicDelivery,
         workspaceId: task.workspaceId ?? null,
         workspaceMerge,
         queryVersion: GATEWAY_TASK_VIEW_QUERY_VERSION,
@@ -2421,7 +2431,11 @@ export async function main(cliCommand = parseCliArgs(process.argv.slice(2))) {
     newWorkAdmission: {
       check: async command => {
         if (command.kind === 'create_conversation') return { allowed: true };
-        const status = await officialAuthorization.verifyForProduction();
+        const acceptance = process.env.METAWORK_ACCEPTANCE_AUTHORIZATION === '1'
+          && process.env.NODE_ENV !== 'production';
+        const status = acceptance
+          ? { state: 'active' as const }
+          : await officialAuthorization.verifyForProduction();
         if (status.state !== 'active') return { allowed: false, reason: 'official_authorization_required' };
         if (!stagedConfiguration.plannerBinding) return { allowed: false, reason: 'configuration_invalid' };
         if (!Object.values(configurationRuntimeCoordinator.getSnapshot().config.agentClasses)
@@ -2430,10 +2444,7 @@ export async function main(cliCommand = parseCliArgs(process.argv.slice(2))) {
         }
         const missing = agentReadiness.getState().find(agent => agent.required && agent.status !== 'installed');
         if (missing) return { allowed: false, reason: 'required_agent_unavailable', agentId: missing.agentId };
-        const priceIssues = validateEnabledModelPrices(configurationRuntimeCoordinator.getSnapshot().config);
-        return priceIssues.length > 0
-          ? { allowed: false, reason: 'configuration_invalid' }
-          : { allowed: true };
+        return { allowed: true };
       },
     },
   });
@@ -2459,7 +2470,6 @@ export async function main(cliCommand = parseCliArgs(process.argv.slice(2))) {
     accountId: LOCAL_DEFAULT_ACCOUNT_ID, releaseId: desktopRelease?.releaseId ?? 'development',
     pid: process.pid, webOrigin: managementServer.address, gatewayProtocolVersion: 2,
   } : null);
-
 
   const gatewayServer = new MetaclawGatewayServer({
     socketPath: gatewaySocketPath,
@@ -2591,7 +2601,7 @@ export async function main(cliCommand = parseCliArgs(process.argv.slice(2))) {
           && revision?.generationId === request.request.generationId
           && request.request.fingerprint === job.fact.version
           && Date.parse(request.createdAt) + 24 * 60 * 60 * 1000 > Date.now()
-          && !new KernelWorkflowRepo(db).findPermissionResolution(job.fact.subjectId));
+          && !new SqlitePermissionRepository(db).findResolution(job.fact.subjectId));
       },
       deliver: async job => {
         if (!feishuNotificationPort) throw new Error('feishu_transport_unavailable');
@@ -2676,7 +2686,6 @@ export async function main(cliCommand = parseCliArgs(process.argv.slice(2))) {
           mediaType: record.mediaType,
           previewKind: record.previewKind,
         })),
-      billing: billingServices.queries,
       runtimePaths: {
         pairing: resolve(accountPaths.gateway, 'feishu-pairings.json'),
         audit: resolve(accountPaths.gateway, 'gateway-audit.jsonl'),
@@ -2729,6 +2738,7 @@ export async function main(cliCommand = parseCliArgs(process.argv.slice(2))) {
       clientNotifications: { read: cursor => clientNotifications.read(LOCAL_DEFAULT_ACCOUNT_ID, cursor) },
       serviceActivity: () => activityProjection.serviceSummary(LOCAL_DEFAULT_ACCOUNT_ID),
       agentReadiness,
+      tokenUsageQuery: createTokenUsageManagementQuery({ accountId: LOCAL_DEFAULT_ACCOUNT_ID, usage: meteringServices.tokenUsage, quotaContext }),
       memoryQuery: createMemoryManagementQuery({
         resolveRuntime: () => memoryRuntimeController.runtime,
         accountId: LOCAL_DEFAULT_ACCOUNT_ID,
@@ -2740,22 +2750,9 @@ export async function main(cliCommand = parseCliArgs(process.argv.slice(2))) {
       sessionRuntime: new WebGatewaySessionRuntime({
         accountId: LOCAL_DEFAULT_ACCOUNT_ID,
         catalog: webSessionCatalog,
-        readBillingTurnFacts: async (conversationId, turnId) => {
-          const turn = conversationReadModel.findTurn(LOCAL_DEFAULT_ACCOUNT_ID, conversationId, turnId);
-          const legacy = await webSessionCatalog.readTurn(conversationId, turnId);
-          return turn ? { userInput: turn.userInput, traceEvents: legacy?.traceEvents } : legacy;
-        },
         gateway: webGatewayAdapter,
         attachments: webAttachmentStore,
         normalizeTurnPresentation,
-        billing: billingServices.queries,
-        authorizeTask: (accountId, taskId) => {
-          const task = taskRepo.findById(taskId);
-          return Boolean(task && task.accountId === accountId);
-        },
-        listAccountTasks: accountId => taskRepo.findAll()
-          .filter(task => task.accountId === accountId)
-          .map(task => ({ id: task.id, title: task.title })),
         projectExecutionTimeline: taskId => {
           const task = taskRepo.findById(taskId);
           return task ? executionProjector.project(task) : null;
@@ -2763,7 +2760,7 @@ export async function main(cliCommand = parseCliArgs(process.argv.slice(2))) {
         projectExecutionTimelines: taskIds => executionProjector.projectMany(
           taskRepo.findTimelineByIds(LOCAL_DEFAULT_ACCOUNT_ID, taskIds),
         ),
-        resolveTaskIdsForTurns: turnIds => billingServices.contexts.taskIdsForTurns(LOCAL_DEFAULT_ACCOUNT_ID, turnIds),
+        resolveTaskIdsForTurns: turnIds => meteringServices.contexts.taskIdsForTurns(LOCAL_DEFAULT_ACCOUNT_ID, turnIds),
         projectTasksArtifacts: taskIds => {
           const grouped = new Map<string, ArtifactProjection[]>();
           for (const artifact of taskArtifactRepo.listByTasks(LOCAL_DEFAULT_ACCOUNT_ID, taskIds)) {
@@ -2774,12 +2771,12 @@ export async function main(cliCommand = parseCliArgs(process.argv.slice(2))) {
           return grouped;
         },
         resolveTaskIdForTurn: turnId => {
-          const queryContext = billingServices.contexts.findByTurnId(
+          const queryContext = meteringServices.contexts.findByTurnId(
             LOCAL_DEFAULT_ACCOUNT_ID,
             turnId,
           );
           return queryContext
-            ? billingServices.contexts.findTaskLink(queryContext.queryId)?.costTaskId ?? null
+            ? meteringServices.contexts.findTaskLink(queryContext.queryId)?.taskId ?? null
             : null;
         },
         projectTaskArtifacts: taskId => taskArtifactRepo.listByTask(taskId)
@@ -2803,16 +2800,13 @@ export async function main(cliCommand = parseCliArgs(process.argv.slice(2))) {
         projectWorkGraph: taskId => {
           const task = taskRepo.findById(taskId);
           if (!task) return null;
-          const subtasks = new SubtaskRepo(db).listByTask(taskId);
-          const decisions = new KernelDecisionRepo(db).listByTask(taskId);
-          const graphDecision = [...decisions].reverse().find(record => (
-            record.decision.action.type === 'authorize_task_plan'
-          ));
-          if (!graphDecision) return null;
-          const planAction = graphDecision.decision.action;
-          if (planAction.type !== 'authorize_task_plan') return null;
-          const graph = planAction.workGraph;
-          const dispatchItems = new KernelDispatchItemRepo(db).listByTask(taskId);
+          const revisionRepo = new WorkGraphRevisionRepo(db);
+          const revision = revisionRepo.findActive(taskId) ?? revisionRepo.findLatest(taskId);
+          if (!revision) return null;
+          const subtasks = new SubtaskRepo(db).listByTask(taskId)
+            .filter(subtask => subtask.generationId === revision.generationId);
+          if (!subtasks.length) return null;
+          const dispatchItems = new ControlDispatchItemRepo(db).listByTask(taskId);
           const receipts = new ExecutorAttemptReceiptRepo(db).listByTask(taskId);
           const publications = new WorkspacePublicationRepo(db).listByTask(taskId);
           const firstDispatchOrder = new Map<string, number>();
@@ -2822,19 +2816,36 @@ export async function main(cliCommand = parseCliArgs(process.argv.slice(2))) {
               firstDispatchOrder.set(item.subtaskId, item.batchOrder);
             }
           }
-          const planDecisionFacts = Object.entries(
-            planAction.authorizedBindingsBySubtask,
-          ).map(([subtaskId, authorizedBindings]) => ({
+          // The authorized graph is the owner fact; the decision ledger is gone.
+          const graph: WorkGraphProposal = {
+            schemaVersion: 7,
+            configurationRevision: revision.configurationRevision,
+            reason: revision.proposalSource,
+            subtasks: subtasks.map(subtask => ({
+              id: subtask.id,
+              title: subtask.title,
+              goal: subtask.goal,
+              dependencies: subtask.dependencies,
+              contextRefs: subtask.contextRefs,
+              requiredCapabilities: subtask.requiredCapabilities as unknown as WorkGraphSubtask['requiredCapabilities'],
+
+              deliveryKind: subtask.deliveryKind,
+              acceptance: subtask.acceptance,
+              riskLevel: subtask.riskLevel,
+              ...(subtask.workspaceEffect ? { workspaceEffect: subtask.workspaceEffect } : {}),
+              ...(subtask.fileOutputs ? { fileOutputs: subtask.fileOutputs } : {}),
+            })),
+          };
+          const planDecisionFacts = subtasks.map(subtask => ({
             taskId,
-            subtaskId,
-            action: graphDecision.action,
-            authorizedBindings,
-            routing: planAction.routing?.[subtaskId],
+            subtaskId: subtask.id,
+            action: 'authorize_task_plan',
+            authorizedBindings: subtask.executorBindings,
           }));
           const waits = new SqliteResourceLeaseRepository(db).findWaiting(taskId);
           return workGraphPresentationProjector.project({
             taskId,
-            graphRevision: planAction.graphRevision,
+            graphRevision: revision.revision,
             configuration: runtimeBindings.getRuntimeConfiguration(graph.configurationRevision)
               ?? runtimeBindings.getActiveRuntimeConfiguration(),
             graph,
@@ -2944,8 +2955,7 @@ export async function main(cliCommand = parseCliArgs(process.argv.slice(2))) {
                 ...(model.routingNotes ? { routingNotes: model.routingNotes } : {}),
                 ...(publicModel?.description ? { description: publicModel.description } : {}),
                 ...(publicModel?.contextLimit !== undefined ? { contextLimit: publicModel.contextLimit } : {}),
-                ...(publicModel?.costInputPerMillion !== undefined ? { costInputPerMillion: publicModel.costInputPerMillion } : {}),
-                ...(publicModel?.costOutputPerMillion !== undefined ? { costOutputPerMillion: publicModel.costOutputPerMillion } : {}),
+
                 ...(publicModel?.publicFacts ? { publicFacts: publicModel.publicFacts } : {}),
               }] : [];
             });
@@ -3012,9 +3022,7 @@ export async function main(cliCommand = parseCliArgs(process.argv.slice(2))) {
                   modelId: model.modelId,
                   capabilities: model.capabilities,
                   contextLimit: model.contextLimit,
-                  costInputPerMillion: model.costInputPerMillion,
-                  costOutputPerMillion: model.costOutputPerMillion,
-                  pricing: model.pricing,
+
                   latencyTier: model.latencyTier,
                   qualityTier: model.qualityTier,
                 },
@@ -3059,18 +3067,15 @@ export async function main(cliCommand = parseCliArgs(process.argv.slice(2))) {
                   ...(model.displayName ? { displayName: model.displayName } : {}),
                   ...(model.description ? { description: model.description } : {}),
                   ...(model.contextLimit !== undefined ? { contextLimit: model.contextLimit } : {}),
-                  ...(model.costInputPerMillion !== undefined ? { costInputPerMillion: model.costInputPerMillion } : {}),
-                  ...(model.costOutputPerMillion !== undefined ? { costOutputPerMillion: model.costOutputPerMillion } : {}),
+
                   ...(model.publicFacts ? { publicFacts: model.publicFacts } : {}),
-                  ...(model.pricing ? { pricing: model.pricing } : {}),
+
                 }]] : [];
               })),
             prices: Object.fromEntries(modelIds.flatMap(modelId => {
                 const model = openRouterCatalog.models[modelId];
                 return model ? [[modelId, {
-                  ...(model.costInputPerMillion !== undefined ? { inputCnyPerMillion: model.costInputPerMillion } : {}),
-                  ...(model.costOutputPerMillion !== undefined ? { outputCnyPerMillion: model.costOutputPerMillion } : {}),
-                  ...(model.pricing ? { pricing: model.pricing } : {}),
+
                 }]] : [];
               })),
             };
@@ -3100,18 +3105,15 @@ export async function main(cliCommand = parseCliArgs(process.argv.slice(2))) {
                 ...(model.displayName ? { displayName: model.displayName } : {}),
                 ...(model.description ? { description: model.description } : {}),
                 ...(model.contextLimit !== undefined ? { contextLimit: model.contextLimit } : {}),
-                ...(model.costInputPerMillion !== undefined ? { costInputPerMillion: model.costInputPerMillion } : {}),
-                ...(model.costOutputPerMillion !== undefined ? { costOutputPerMillion: model.costOutputPerMillion } : {}),
+
                 ...(model.publicFacts ? { publicFacts: model.publicFacts } : {}),
-                ...(model.pricing ? { pricing: model.pricing } : {}),
+
               }]] : [];
             })),
             prices: Object.fromEntries(modelIds.flatMap(modelId => {
               const model = openRouterCatalog.models[modelId];
               return model ? [[modelId, {
-                ...(model.costInputPerMillion !== undefined ? { inputCnyPerMillion: model.costInputPerMillion } : {}),
-                ...(model.costOutputPerMillion !== undefined ? { outputCnyPerMillion: model.costOutputPerMillion } : {}),
-                ...(model.pricing ? { pricing: model.pricing } : {}),
+
               }]] : [];
             })),
           };
@@ -3262,12 +3264,9 @@ export async function main(cliCommand = parseCliArgs(process.argv.slice(2))) {
       },
       stopRuntime: async () => {
         await stopServerRuntimes({
-          stopPlanner: async () => {
-            await Promise.all([
-              plannerHost.stop(),
-              plannerSupervisor.stop(),
-            ]);
-          },
+          // No Planner child runtime exists: planning runs inside the Manager
+          // turn, which is closed by the account registry shutdown below.
+          stopPlanner: async () => undefined,
           shutdownAccounts: () => accountRegistry.shutdown(),
           // Final deposition before the Server stops (design §5.2).
           stopMemory: () => memoryRuntimeController.stop(),
@@ -3333,6 +3332,14 @@ function resolvePlannerSchemaPath(applicationRoot: string): string {
     sourceBuild,
   ].filter((value): value is string => Boolean(value));
   return candidates.find(candidate => existsSync(candidate)) ?? candidates[0]!;
+}
+
+/**
+ * The Manager extension needs the same canonical Plan contract the validator
+ * uses; reuse the Planner schema resolver so both point at one file.
+ */
+function resolvePlanSchemaPath(applicationRoot: string): string {
+  return resolvePlannerSchemaPath(applicationRoot);
 }
 
 function asPayloadRecord(value: unknown): Record<string, unknown> {

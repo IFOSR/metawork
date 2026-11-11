@@ -22,17 +22,8 @@ export const HARNESS_DRIVER_CATALOG = {
     transport: 'local-process',
     executionProtocols: [],
   },
-  'codex-cli': {
-    kind: 'executor',
-    transport: 'local-cli',
-    command: 'codex',
-    executionProtocols: ['workspace-image-artifact-v1'],
-  },
-  'container-cli': {
-    kind: 'executor',
-    transport: 'container',
-    executionProtocols: [],
-  },
+
+
   'pi-cli': {
     kind: 'executor',
     transport: 'local-cli',

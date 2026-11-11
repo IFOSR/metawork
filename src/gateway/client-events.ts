@@ -38,7 +38,8 @@ export type GatewayEventKind =
   | 'delivery_status'
   | 'command_completion'
   | 'task_view_snapshot'
-  | 'usage_billing_projection';
+  | 'token_usage_projection'
+  | 'quota_guidance_projection';
 
 export const GATEWAY_EVENT_KINDS: readonly GatewayEventKind[] = [
   'conversation_resource',
@@ -66,7 +67,8 @@ export const GATEWAY_EVENT_KINDS: readonly GatewayEventKind[] = [
   'delivery_status',
   'command_completion',
   'task_view_snapshot',
-  'usage_billing_projection',
+  'token_usage_projection',
+  'quota_guidance_projection',
 ];
 
 export const TERMINAL_GATEWAY_EVENT_KINDS: readonly GatewayEventKind[] = [

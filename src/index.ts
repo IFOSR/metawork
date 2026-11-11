@@ -30,9 +30,22 @@ const run = command.kind === 'build'
         ? runPairing(command.command, command.userId)
         : command.kind === 'maintenance-reconcile'
           ? runMaintenanceReconcile()
-          : command.kind === 'tui' || command.kind === 'web'
-            ? runClientCommand(command)
-            : runServerCommand(command);
+          : command.kind === 'tui-retired'
+            ? runRetiredTuiNotice()
+            : command.kind === 'web'
+              ? runClientCommand(command)
+              : runServerCommand(command);
+
+/** The explicit `metawork tui` command reports that the retired surface is gone. */
+async function runRetiredTuiNotice(): Promise<void> {
+  process.stdout.write([
+    'MetaWork 不再提供终端界面（TUI）。',
+    '',
+    '启动 Runtime：metawork server start',
+    '打开 Web 客户端：metawork web',
+    '',
+  ].join('\n'));
+}
 
 async function runSetupFeishu(): Promise<void> {
   const paths = resolveMetaWorkPaths();

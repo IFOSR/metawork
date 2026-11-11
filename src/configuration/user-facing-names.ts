@@ -2,7 +2,6 @@ import { publicDisplayNameFromRef } from './public-provider-catalog.js';
 
 export const DEFAULT_AGENT_DISPLAY_NAMES: Readonly<Record<string, string>> = {
   'pi-agent': '智能体 1',
-  'codex-cli': '智能体 2',
 };
 
 export function resolveAgentDisplayName(

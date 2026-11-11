@@ -10,7 +10,8 @@ export interface WorkGraphRevisionRecord {
   revision: number;
   generationId: string;
   configurationRevision: string;
-  authorizedDecisionId: string | null;
+  /** Operation identity that authorized this revision (Kernel Decision today). */
+  authorizedOperationId: string | null;
   proposalSource: 'initial' | 'replan' | 'conflict_replan';
   automaticReplan: boolean;
   status: WorkGraphRevisionStatus;
@@ -27,6 +28,7 @@ interface RevisionRow {
   revision: number;
   generation_id: string;
   configuration_revision: string;
+  /** Historical column name; the value is the operation identity that authorized the revision. */
   authorized_decision_id: string | null;
   proposal_source: 'initial' | 'replan' | 'conflict_replan';
   automatic_replan: number;
@@ -66,6 +68,30 @@ export class WorkGraphRevisionRepo {
       ORDER BY revision DESC LIMIT 1
     `).get(taskId) as RevisionRow | undefined;
     return row ? rowToRecord(row) : null;
+  }
+
+  /** Presentation identity for a Task's latest authorized graph (owner fact). */
+  listPresentationIdentitiesByTasks(taskIds: readonly string[]): Array<{
+    taskId: string; graphRevision: number; subtaskIds: string[];
+  }> {
+    if (!taskIds.length) return [];
+    if (taskIds.length > 100) throw new Error('presentation_task_limit');
+    const placeholders = taskIds.map(() => '?').join(',');
+    const rows = this.db.prepare(`
+      SELECT revision.task_id, revision.revision,
+        (SELECT json_group_array(subtask.id) FROM subtasks subtask
+          WHERE subtask.task_id = revision.task_id
+            AND subtask.generation_id = revision.generation_id) AS subtask_ids_json
+      FROM work_graph_revisions revision
+      WHERE revision.task_id IN (${placeholders})
+        AND revision.revision = (SELECT MAX(latest.revision) FROM work_graph_revisions latest
+          WHERE latest.task_id = revision.task_id)
+    `).all(...taskIds) as Array<{ task_id: string; revision: number; subtask_ids_json: string | null }>;
+    return rows.map(row => ({
+      taskId: row.task_id,
+      graphRevision: row.revision,
+      subtaskIds: JSON.parse(row.subtask_ids_json ?? '[]') as string[],
+    }));
   }
 
   find(taskId: string, revision: number): WorkGraphRevisionRecord | null {
@@ -114,7 +140,7 @@ export class WorkGraphRevisionRepo {
         completion_requirements_json = excluded.completion_requirements_json
     `).run(
       input.id, input.taskId, input.revision, input.generationId, input.configurationRevision,
-      input.authorizedDecisionId, input.proposalSource, input.automaticReplan ? 1 : 0,
+      input.authorizedOperationId, input.proposalSource, input.automaticReplan ? 1 : 0,
       input.createdAt, input.updatedAt, JSON.stringify(input.completionRequirements ?? []),
     );
     return this.find(input.taskId, input.revision)!;
@@ -165,7 +191,7 @@ function rowToRecord(row: RevisionRow): WorkGraphRevisionRecord {
     revision: row.revision,
     generationId: row.generation_id,
     configurationRevision: row.configuration_revision,
-    authorizedDecisionId: row.authorized_decision_id,
+    authorizedOperationId: row.authorized_decision_id,
     proposalSource: row.proposal_source,
     automaticReplan: row.automatic_replan === 1,
     status: row.status,

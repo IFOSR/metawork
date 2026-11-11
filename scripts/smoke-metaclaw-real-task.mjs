@@ -1,4 +1,6 @@
 import {
+  accessSync,
+  constants,
   existsSync,
   mkdirSync,
   mkdtempSync,
@@ -152,7 +154,7 @@ export function readAuthoritativeTaskState(dbPath) {
       dispatchItems: db.prepare(`
         SELECT attempt_id AS attemptId, task_id AS taskId, subtask_id AS subtaskId,
                status, error_summary AS errorSummary
-        FROM kernel_dispatch_items
+        FROM dispatch_items
         ORDER BY created_at, attempt_id
       `).all(),
     };
@@ -182,13 +184,12 @@ function formatAuthoritativeFailure(state) {
 }
 
 export function buildSmokeConfig(input) {
-  const templatePath = input.templatePath ?? join(input.repoRoot, 'docker', 'tui-config.yaml');
-  if (!existsSync(templatePath)) {
-    throw new Error(`Smoke failed: shell config template does not exist: ${templatePath}`);
-  }
-  const config = load(readFileSync(templatePath, 'utf-8'));
+  const templatePath = input.templatePath;
+  const config = templatePath
+    ? load(readFileSync(templatePath, 'utf-8'))
+    : { version: 1, orchestration: { reminder_enabled: false, blocked_recheck_enabled: false } };
   if (typeof config !== 'object' || config === null || Array.isArray(config)) {
-    throw new Error(`Smoke failed: invalid shell config template: ${templatePath}`);
+    throw new Error(`Smoke failed: invalid smoke config template: ${templatePath}`);
   }
   config.executor = {
     ...(typeof config.executor === 'object' && config.executor !== null
@@ -372,16 +373,16 @@ export function run(command, args, options = {}) {
   return result;
 }
 
-function readPlannerDiagnostics(repoRoot, dbPath) {
+export function readPlannerDiagnostics(repoRoot, dbPath) {
   if (!existsSync(dbPath)) return '';
   const source = [
     "import Database from 'better-sqlite3';",
     "const db = new Database(process.argv[1], { readonly: true });",
     "const rows = db.prepare('SELECT status, attempt_count, error_summary FROM planner_runs ORDER BY created_at DESC LIMIT 3').all();",
-    "const decisions = db.prepare('SELECT event_type, action, reason FROM kernel_decisions ORDER BY created_at DESC LIMIT 5').all();",
+    "const recovery = db.prepare('SELECT id, status FROM task_recovery_items ORDER BY created_at DESC LIMIT 5').all();",
     "const attempts = db.prepare('SELECT terminal_state, error_code, error_detail, failure_json, substr(raw_response, 1, 1000) AS response FROM executor_attempt_receipts ORDER BY completed_at DESC LIMIT 3').all();",
     "const sandboxes = db.prepare('SELECT status, exit_code, cleanup_status, cleanup_error FROM attempt_sandboxes ORDER BY created_at DESC LIMIT 3').all();",
-    'process.stdout.write(JSON.stringify({ plannerRuns: rows, decisions, attempts, sandboxes }));',
+    'process.stdout.write(JSON.stringify({ plannerRuns: rows, recovery, attempts, sandboxes }));',
   ].join(' ');
   const result = spawnSync(process.execPath, ['--input-type=module', '-e', source, dbPath], {
     cwd: repoRoot,
@@ -424,16 +425,11 @@ function readPlannerInteractions(repoRoot, dbPath) {
   return JSON.parse(String(result.stdout ?? '[]'));
 }
 
-export function resolveSmokeMode(rawArgs, env, repoRoot = process.cwd()) {
-  const explicit = readOption(rawArgs, '--mode') ?? env.METACLAW_SMOKE_MODE;
-  if (explicit !== null && explicit !== undefined && String(explicit).trim() !== '') {
-    const mode = String(explicit).trim();
-    if (mode !== 'native' && mode !== 'docker') {
-      throw new Error(`Invalid smoke mode: ${explicit}. Expected one of: native, docker`);
-    }
-    return mode;
+export function resolveSmokeMode(rawArgs, env) {
+  const explicit = readOption(rawArgs, '--mode') ?? env.METACLAW_SMOKE_MODE ?? 'native';
+  if (String(explicit).trim() !== 'native') {
+    throw new Error(`Invalid smoke mode: ${explicit}. Only native is supported; Docker smoke is retired (ADR-0055 D12).`);
   }
-  // Docker is an optional compatibility surface; native is always the default.
   return 'native';
 }
 
@@ -462,16 +458,14 @@ export function buildNativeSmokeOverlay(env = process.env, repoRoot = resolve(pr
   ));
   const providerEnvFile = join(configHome, 'provider.env');
   const plannerHome = join(configHome, 'planner');
-  const codexHome = join(configHome, 'codex');
   const piHome = join(configHome, 'pi-home');
-  const plannerCommand = env.METACLAW_PLANNER_COMMAND
-    ?? join(repoRoot, 'planner', 'AnyFusion-Pi', 'packages', 'coding-agent', 'dist', 'cli.js');
+  const plannerCommand = env.METAWORK_PI_COMMAND
+    ?? join(repoRoot, 'desktop-tools', 'executor', 'bin', 'pi');
   const requiredPaths = [
     providerEnvFile,
     plannerCommand,
     join(plannerHome, 'models.json'),
     join(plannerHome, 'settings.json'),
-    join(codexHome, 'config.toml'),
     join(piHome, '.pi', 'agent', 'models.json'),
     join(piHome, '.pi', 'agent', 'settings.json'),
   ];
@@ -479,20 +473,20 @@ export function buildNativeSmokeOverlay(env = process.env, repoRoot = resolve(pr
     if (!existsSync(requiredPath)) {
       throw new Error([
         `Native smoke requires ${requiredPath}.`,
-        'Run `npm run setup:native` to install the native MetaWork configuration,',
-        'or configure the docker/*.env files and rerun with --mode docker.',
+        'Provide a dedicated METAWORK_CONFIG_HOME containing provider.env and separate Manager/Executor Pi models/settings fixtures.',
+        'Set METAWORK_PI_COMMAND to an explicitly prepared packaged Pi when running from source.',
       ].join(' '));
     }
   }
+  if (!statSync(plannerCommand).isFile()) throw new Error('Native smoke requires a packaged Pi executable file');
+  accessSync(plannerCommand, constants.X_OK);
   return {
-    METACLAW_PLANNER_COMMAND: plannerCommand,
-    METACLAW_PLANNER_TUI_COMMAND: plannerCommand,
+    METAWORK_PI_COMMAND: plannerCommand,
+    METAWORK_MANAGED_PI: plannerCommand,
     METACLAW_PLANNER_HOME: plannerHome,
     ANYFUSION_PLANNER_HOME: plannerHome,
     METACLAW_PLANNER_ENV_FILE: providerEnvFile,
     METACLAW_EXECUTOR_BACKEND: 'native',
-    METACLAW_EXECUTOR_CODEX_HOME: codexHome,
-    METACLAW_CODEX_EXECUTOR_ENV_FILE: providerEnvFile,
     METACLAW_EXECUTOR_PI_HOME: piHome,
     METACLAW_PI_EXECUTOR_ENV_FILE: providerEnvFile,
     METACLAW_PI_ATTEMPT_EXTENSION: join(repoRoot, 'dist', 'pi-attempt-tools.ts'),
@@ -500,25 +494,18 @@ export function buildNativeSmokeOverlay(env = process.env, repoRoot = resolve(pr
 }
 
 export function runSmoke(rawArgs = process.argv.slice(2), env = process.env) {
-  if (env.METACLAW_SMOKE_IN_DOCKER === 'true') {
-    runManagedSmoke(rawArgs, env);
-    return;
-  }
   if (rawArgs.includes('--help') || rawArgs.includes('-h')) {
     process.stdout.write(buildHelp());
     return;
   }
-  if (resolveSmokeMode(rawArgs, env) === 'docker') {
-    runDockerSmoke(rawArgs, env);
-    return;
-  }
+  resolveSmokeMode(rawArgs, env);
   runManagedSmoke(rawArgs, env, buildNativeSmokeOverlay(env));
 }
 
 function runManagedSmoke(rawArgs, env, overlayEnv = null) {
   const repoRoot = resolve(env.METACLAW_SMOKE_REPO_ROOT ?? process.cwd());
   const executorCommand = parseExecutorCommand(
-    readOption(rawArgs, '--executor') ?? env.METACLAW_SMOKE_EXECUTOR ?? 'codex',
+    readOption(rawArgs, '--executor') ?? env.METACLAW_SMOKE_EXECUTOR ?? 'pi',
   );
   const scenario = parseScenario(
     readOption(rawArgs, '--scenario') ?? env.METACLAW_SMOKE_SCENARIO ?? 'planner-session',
@@ -582,7 +569,7 @@ function runManagedSmoke(rawArgs, env, overlayEnv = null) {
         'ANYFUSION_CONFIG_HOME',
         join(homedir(), '.config', 'metawork'),
       ));
-    run('node', [
+    run(process.execPath, [
       join(repoRoot, 'dist', 'prepare-smoke-configuration.js'),
       installRoot,
       configHome,
@@ -599,7 +586,11 @@ function runManagedSmoke(rawArgs, env, overlayEnv = null) {
     // Keep the bridge socket path short: macOS rejects Unix socket paths
     // longer than 104 bytes, and tmpdir() roots are already deep.
     const bridgeSocketPath = join(scriptDir, 'bridge.sock');
+    const isolatedHome = join(installRoot, 'smoke-home');
+    mkdirSync(isolatedHome, { recursive: true, mode: 0o700 });
     const childEnv = {
+      PATH: env.PATH ?? process.env.PATH,
+      HOME: isolatedHome,
       ...(overlayEnv ?? {}),
       METAWORK_INSTALL_ROOT: installRoot,
       METACLAW_HOME: metaclawHome,
@@ -641,11 +632,6 @@ function runManagedSmoke(rawArgs, env, overlayEnv = null) {
     }
 
     const output = readFileSync(outputPath, 'utf8');
-    if (executorCommand === 'pi' && !output.includes('pi-agent')) {
-      process.stderr.write(output);
-      throw new Error('Smoke failed: expected route/execution output to mention pi-agent');
-    }
-
     const authoritativeState = scenario === 'planner-session'
       ? null
       : readAuthoritativeTaskState(accountPaths.database);
@@ -708,116 +694,29 @@ function removeTree(path) {
   }
 }
 
-function runDockerSmoke(rawArgs, env) {
-  if (rawArgs.includes('--help') || rawArgs.includes('-h')) {
-    process.stdout.write(buildHelp());
-    return;
-  }
-  const repoRoot = resolve(process.cwd());
-  if (!existsSync(join(repoRoot, 'planner', 'AnyFusion-Pi', 'package.json'))) {
-    throw new Error('Smoke requires the vendored AnyFusion-Pi planner at planner/AnyFusion-Pi');
-  }
-  const scenario = parseScenario(
-    readOption(rawArgs, '--scenario') ?? env.METACLAW_SMOKE_SCENARIO ?? 'planner-session',
-  );
-  const plannerTimeoutMs = parsePositiveInteger(env.METACLAW_PLANNER_TIMEOUT_MS, 180_000);
-  const smokeRoot = mkdtempSync(join(tmpdir(), 'metaclaw-docker-smoke-'));
-  const dataRoot = join(smokeRoot, 'data');
-  const workspaceRoot = join(smokeRoot, 'workspace');
-  const auxiliaryRoot = join(smokeRoot, 'auxiliary');
-  for (const directory of [dataRoot, workspaceRoot, auxiliaryRoot]) {
-    mkdirSync(directory, { recursive: true });
-  }
-  const suffix = `${process.pid}-${Date.now()}`;
-  const control = `metaclaw-smoke-control-${suffix}`;
-  const runtimeImage = 'metaclaw-runtime';
-  const mounts = [
-    ['docker/planner-pi.env', '/run/metaclaw/env/planner-pi.env'],
-    ['docker/executor-codex.env', '/run/metaclaw/env/executor-codex.env'],
-    ['docker/executor-pi.env', '/run/metaclaw/env/executor-pi.env'],
-  ];
-  for (const [hostPath] of mounts) {
-    if (!existsSync(join(repoRoot, hostPath))) {
-      throw new Error(`Smoke requires ${hostPath}; copy the corresponding .env.example and configure the provider.`);
-    }
-  }
-
-  let succeeded = false;
-  try {
-    run('docker', [
-      'build',
-      '-f', 'docker/Dockerfile.runtime',
-      '-t', runtimeImage,
-      '.',
-    ], { cwd: repoRoot });
-    const createArgs = [
-      'create', '--name', control, '--network', 'bridge',
-      '--workdir', '/workspace',
-      '--mount', `type=bind,src=${workspaceRoot},dst=/workspace`,
-      '--mount', `type=bind,src=${dataRoot},dst=/data`,
-      '--mount', `type=bind,src=${auxiliaryRoot},dst=/smoke`,
-      ...mounts.flatMap(([hostPath, containerPath]) => [
-        '--mount', `type=bind,src=${join(repoRoot, hostPath)},dst=${containerPath},readonly`,
-      ]),
-      '-e', 'METACLAW_SMOKE_IN_DOCKER=true',
-      '-e', 'METACLAW_SMOKE_SKIP_BUILD=true',
-      '-e', 'METACLAW_SMOKE_REPO_ROOT=/app',
-      '-e', 'METACLAW_SMOKE_CONFIG_TEMPLATE=/opt/metaclaw/default-config.yaml',
-      '-e', 'METACLAW_SMOKE_ROOT=/smoke',
-      '-e', 'METACLAW_SMOKE_SCRIPT_DIR=/smoke/script',
-      '-e', 'METACLAW_SMOKE_WORKDIR=/workspace',
-      '-e', 'METACLAW_SMOKE_MANAGED_BY_HOST=true',
-      '-e', 'METAWORK_INSTALL_ROOT=/data/metawork',
-      '-e', `METACLAW_PLANNER_TIMEOUT_MS=${plannerTimeoutMs}`,
-      '-e', 'METACLAW_EXECUTOR_BACKEND=native',
-      runtimeImage,
-      'node', '/app/scripts/smoke-metaclaw-real-task.mjs',
-      ...rawArgs,
-    ];
-    run('docker', createArgs, { cwd: repoRoot });
-    const result = run('docker', ['start', '--attach', control], { cwd: repoRoot });
-    process.stdout.write(result.stdout ?? '');
-    process.stderr.write(result.stderr ?? '');
-    succeeded = true;
-  } finally {
-    spawnSync('docker', ['rm', '-f', control], { cwd: repoRoot, encoding: 'utf8' });
-    if (succeeded) {
-      rmSync(smokeRoot, { recursive: true, force: true });
-    } else {
-      process.stderr.write(`Docker smoke diagnostics preserved at: ${smokeRoot}\n`);
-    }
-  }
-}
-
 export function buildHelp() {
   return [
-    'Usage: npm run smoke:metawork -- [--mode <native|docker>] [--executor <command>] [--scenario <planner-session|artifact|python-hello>] [--timeout <seconds>] [--max-duration <seconds>]',
+    'Usage: npm run smoke:metawork -- [--mode native] [--executor <command>] [--scenario <planner-session|artifact|python-hello>] [--timeout <seconds>] [--max-duration <seconds>]',
     '',
     'Modes:',
     '  native (default)  Run the Runtime and Planner as native host processes. Uses the',
     '                    native MetaWork configuration under METAWORK_CONFIG_HOME',
     '                    (default ~/.config/metawork) installed by `npm run setup:native`.',
-    '  docker            Build the unified runtime image and run the smoke inside a',
-    '                    control container. Requires the docker/*.env provider files.',
-    '                    Only used when explicitly requested; Docker is not needed otherwise.',
     '',
     'Environment variables:',
-    '  METACLAW_SMOKE_MODE          Smoke mode: native or docker. Defaults to native.',
+    '  METACLAW_SMOKE_MODE          Smoke mode: native (only supported mode).',
     '  METAWORK_CONFIG_HOME         Native configuration home. Defaults to ~/.config/metawork.',
     '  METAWORK_INSTALL_ROOT        Isolated runtime root. A temporary root is used by default.',
     '  ANYFUSION_CONFIG_HOME        compatibility alias for METAWORK_CONFIG_HOME.',
     '  ANYFUSION_INSTALL_ROOT       compatibility alias for METAWORK_INSTALL_ROOT.',
-    '  METACLAW_SMOKE_EXECUTOR      Executor command to place in the isolated config. Defaults to codex.',
-    '  METACLAW_SMOKE_SCENARIO      Scenario to run. Defaults to planner-session (two-turn AnyFusion-Pi memory).',
+    '  METACLAW_SMOKE_EXECUTOR      Executor command to place in the isolated config. Defaults to pi.',
+    '  METACLAW_SMOKE_SCENARIO      Scenario to run. Defaults to planner-session (two-turn upstream Pi memory).',
     '  METACLAW_SMOKE_TIMEOUT       Continuous no-output timeout in seconds.',
     '  METACLAW_SMOKE_MAX_DURATION  Legacy max_duration value in seconds.',
-    '  METACLAW_PLANNER_TIMEOUT_MS   Planner RPC timeout forwarded to the Runtime; Docker smoke defaults to 180000.',
-    '  METACLAW_SMOKE_IN_DOCKER      Internal recursion guard; Docker smoke runs set it inside the control container.',
     '',
     'Examples:',
     '  npm run smoke:metawork',
     '  npm run smoke:metawork -- --executor pi --scenario python-hello',
-    '  npm run smoke:metawork -- --mode docker --scenario artifact',
     '  METACLAW_SMOKE_EXECUTOR=pi METACLAW_SMOKE_SCENARIO=python-hello npm run smoke:metawork',
     '',
   ].join('\n');
