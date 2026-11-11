@@ -157,7 +157,11 @@ function hasRenderableExecutionFacts(turn: ConversationTurnProjection): boolean 
   ));
 }
 
-export function LivePlanningPanel({ turn }: { turn: ConversationTurnProjection }) {
+export function LivePlanningPanel({ turn, onOpenDetails }: {
+  turn: ConversationTurnProjection;
+  /** Opens the planning detail view; the card stays a plain status card without it. */
+  onOpenDetails?: () => void;
+}) {
   const [, setNowMs] = useState(() => Date.now());
   const activity = plannerActivity(turn);
   const live = activity?.state === 'running' && turn.status === 'running';
@@ -177,10 +181,22 @@ export function LivePlanningPanel({ turn }: { turn: ConversationTurnProjection }
   if (turn.status !== 'running' && activity.state !== 'failed') return null;
 
   return (
-    <section className="live-execution-panel live-planning-panel" aria-label="规划状态">
+    <section className="live-execution-panel live-planning-panel" aria-label="规划状态"
+      data-testid={onOpenDetails ? 'planning-open' : undefined}
+      role={onOpenDetails ? 'button' : undefined}
+      tabIndex={onOpenDetails ? 0 : undefined}
+      onClick={onOpenDetails}
+      onKeyDown={event => {
+        if (!onOpenDetails) return;
+        if (event.key === 'Enter' || event.key === ' ') {
+          event.preventDefault();
+          onOpenDetails();
+        }
+      }}>
       <header>
         <span>PLANNING</span>
         {live && <em data-pulse aria-hidden />}
+        {onOpenDetails && <span className="planning-card-open">查看规划过程 ›</span>}
       </header>
       <div className="live-execution-cards">
         <article className="execution-card" data-status={live ? 'running' : 'settled'}>

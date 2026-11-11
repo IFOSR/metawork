@@ -9398,3 +9398,139 @@ html[data-platform='desktop'] .workspace-header { column-gap: 16px; }
   .usage-summary strong { font-size: 24px; }
   .usage-chart-panel > header { align-items: baseline; flex-wrap: wrap; }
 }
+
+/* Planning detail: same shell as the Executor drawer, opened from the planning card. */
+.planning-card-open {
+  margin-left: auto;
+  color: #8fbf9f;
+  font-size: 10px;
+  letter-spacing: 0.04em;
+}
+
+.live-planning-panel[role='button'] {
+  cursor: pointer;
+}
+
+.live-planning-panel[role='button']:hover {
+  border-color: #46543f;
+}
+
+.planning-details-row {
+  display: flex;
+  justify-content: flex-end;
+  padding: 4px 2px 0;
+}
+
+.planning-details-link {
+  border: 1px solid #2c332c;
+  border-radius: 7px;
+  padding: 3px 8px;
+  color: var(--text-dim);
+  background: #161a15;
+  cursor: pointer;
+  font-size: 11px;
+}
+
+.planning-details-link:hover {
+  border-color: #46543f;
+  color: var(--text);
+}
+
+.planning-detail-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 60;
+  display: flex;
+  justify-content: flex-end;
+  background: rgba(4, 7, 4, 0.45);
+}
+
+.planning-detail-drawer {
+  flex: 0 0 clamp(380px, 40vw, 640px);
+  max-width: 92vw;
+  height: 100%;
+  box-shadow: -18px 0 40px rgba(0, 0, 0, 0.45);
+}
+
+.planning-detail-steps {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.planning-detail-step {
+  border-left: 2px solid #2c332c;
+  padding: 0 0 0 10px;
+}
+
+.planning-detail-step[data-kind='planner_failed'],
+.planning-detail-step[data-kind='proposal_rejected'],
+.planning-detail-step[data-kind='planner_convergence_exhausted'] {
+  border-left-color: #a2543f;
+}
+
+.planning-detail-step-head {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  font-size: 11px;
+}
+
+.planning-detail-step-head span {
+  color: #647068;
+  font-family: 'SFMono-Regular', Consolas, monospace;
+  font-size: 10px;
+}
+
+.planning-detail-step p {
+  margin: 2px 0 0;
+  color: var(--text-dim);
+  font-size: 11px;
+}
+
+.planning-detail-step small {
+  display: block;
+  margin-top: 2px;
+  color: #647068;
+  font-size: 10px;
+}
+
+.planning-detail-tools {
+  margin-top: 18px;
+}
+
+.planning-detail-tools h4 {
+  margin: 0 0 6px;
+  color: var(--text-dim);
+  font-size: 11px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.planning-detail-tools ul {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  font-size: 11px;
+}
+
+.planning-detail-tools li {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+}
+
+.planning-detail-tools li span {
+  color: var(--text-dim);
+}
+
+.planning-detail-tools li small {
+  color: #647068;
+  font-size: 10px;
+}

@@ -2017,6 +2017,29 @@ export class ConversationSession {
     const current = this.deps.interactionTraceStream?.getSnapshot();
     if (!current || current.status !== 'running') return;
     if (result.status === 'accepted') {
+      // Bounded proposal fact for the planning detail view. The plan body stays
+      // in storage; the client only needs the outcome and identity to explain
+      // what the Manager produced and how long it took.
+      this.appendTrace({
+        phase: 'planning',
+        actor: 'planner',
+        kind: 'planning_proposal_completed',
+        title: 'Structured plan completed',
+        summary: result.outcome === 'clarification_requested'
+          ? '需要用户澄清'
+          : result.outcome === 'task_authorized'
+            ? '计划已授权'
+            : result.outcome,
+        details: {
+          planId: result.planId,
+          outcome: result.outcome,
+          taskId: result.taskId,
+          kernelAction: result.kernel?.action ?? null,
+          decisionId: result.kernel?.decisionId ?? null,
+        },
+        eventKey: `${result.submissionId}:proposal`,
+        traceStatus: 'completed',
+      });
       if (result.outcome !== 'clarification_requested') return;
       this.appendTrace({
         phase: 'delivery',

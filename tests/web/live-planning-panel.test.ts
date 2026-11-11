@@ -221,6 +221,17 @@ describe('LivePlanningPanel', () => {
     expect(html).toContain('PLANNING');
   });
 
+  it('exposes the planning detail entry on the live card', () => {
+    const html = renderToStaticMarkup(createElement(LivePlanningPanel, {
+      turn: turn([
+        event({ sequence: 1, kind: 'planner_started', phase: 'planning', occurredAt: new Date().toISOString() }),
+      ]),
+      onOpenDetails: () => undefined,
+    }));
+    expect(html).toContain('data-testid="planning-open"');
+    expect(html).toContain('查看规划过程');
+  });
+
   it('renders nothing once the turn is completed and execution started', () => {
     const html = renderToStaticMarkup(createElement(LivePlanningPanel, {
       turn: turn([

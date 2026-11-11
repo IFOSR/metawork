@@ -13,6 +13,7 @@ import { mkdirSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 import { MANAGER_DEFAULT_TURN_TIMEOUT_MS, ManagerHostError, type ManagerProposal, type ManagerTurnInput, type ManagerUsageEvent } from './protocol.js';
 import { PiRpcClient, type PiRpcEvent } from './rpc-client.js';
+import type { PlannerRunProgressObserver, PlannerRunProgressPayload } from '../planner-progress.js';
 import { createHash, randomUUID } from 'node:crypto';
 
 export const MANAGER_PROPOSAL_TOOL = 'submit_manager_proposal';
@@ -34,6 +35,12 @@ export interface ManagerPlanOptions {
   timeoutMs?: number;
   /** Report each provider call immediately, including turns that later fail. */
   onUsage?: (usage: ManagerUsageEvent) => void;
+  /**
+   * Bounded planning telemetry for the client detail view. Tool arguments and
+   * results are reduced to field names; prompts, thinking and values never
+   * travel through this channel.
+   */
+  onProgress?: PlannerRunProgressObserver;
 }
 
 export class ManagerAgent {
@@ -94,11 +101,60 @@ export class ManagerAgent {
     let failure: ManagerHostError | null = null;
     let finalize: (() => void) | null = null;
     let cleanup: () => void = () => undefined;
+    let progressSequence = 0;
+    let progressTurn = 0;
+    let progressToolSequence = 0;
+    let streamStartedForTurn = -1;
+    const progressStartedAt = Date.now();
+    const emitProgress = (payload: PlannerRunProgressPayload) => {
+      if (!options.onProgress) return;
+      try {
+        options.onProgress({ ...payload, sequence: ++progressSequence,
+          elapsedMs: Date.now() - progressStartedAt });
+      } catch {
+        // Presentation telemetry can never fail or slow a planning turn.
+      }
+    };
 
     const done = new Promise<void>((resolvePromise, rejectPromise) => {
       finalize = () => resolvePromise();
       const onEvent = (event: PiRpcEvent) => {
         switch (event.type) {
+          case 'agent_start':
+            emitProgress({ kind: 'agent_started' });
+            break;
+          case 'turn_start':
+            progressTurn += 1;
+            emitProgress({ kind: 'turn_started', turn: progressTurn });
+            break;
+          case 'message_start': {
+            const message = asRecord(event.message);
+            if (message?.role === 'assistant' && streamStartedForTurn !== progressTurn) {
+              streamStartedForTurn = progressTurn;
+              emitProgress({ kind: 'model_stream_started', turn: progressTurn });
+            }
+            break;
+          }
+          case 'tool_execution_start': {
+            progressToolSequence += 1;
+            emitProgress({
+              kind: 'tool_started',
+              toolSequence: progressToolSequence,
+              toolName: typeof event.toolName === 'string' ? event.toolName : 'unknown',
+              argumentFields: fieldNames(event.args),
+            });
+            break;
+          }
+          case 'tool_execution_end':
+            emitProgress({
+              kind: 'tool_completed',
+              toolSequence: progressToolSequence,
+              toolName: typeof event.toolName === 'string' ? event.toolName : 'unknown',
+              argumentFields: [],
+              status: event.isError === true ? 'failed' : 'completed',
+              resultFields: fieldNames(event.result),
+            });
+            break;
           case 'message_end':
             {
               const reported = collectAssistantFailure(event);
@@ -122,6 +178,7 @@ export class ManagerAgent {
             }, message => { proposalError = message; });
             break;
           case 'agent_settled':
+            emitProgress({ kind: 'agent_completed' });
             settled = true;
             finalize?.();
             break;
@@ -180,6 +237,7 @@ export class ManagerAgent {
           retryable: true,
         });
       }
+      emitProgress({ kind: 'prompt_accepted' });
       await done;
       if (failure) throw failure;
       if (proposalError) {
@@ -314,6 +372,12 @@ export function renderTurnPrompt(input: ManagerTurnInput): string {
     'Never edit files, run privileged commands, authorize work or publish changes.',
   );
   return sections.join('\n');
+}
+
+/** Only the field names of a tool payload are telemetry; values never are. */
+function fieldNames(value: unknown): string[] {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return [];
+  return Object.keys(value as Record<string, unknown>).slice(0, 24);
 }
 
 /** Extracts a bounded, secret-free reason from a failed assistant message. */

@@ -308,3 +308,19 @@ P0 完成后重放该类请求，期望：Manager 直接产出 `plan_work_graph`
   并给出“换源/官方站点/标注未核实，不要让用户逐个确认链接”的指引；`web_search` 在
   Bing/百度返回拦截页时报告“搜索被反爬验证页拦截”而不是“网络不可用”；Executor 提示词
   同步该规则，禁止把验证页当证据、禁止 curl 硬抓、禁止让用户确认单条链接。
+
+## 第五轮：规划过程可观测（批 5，2026-11-11）
+
+- **Manager 遥测**：`ManagerAgent` 把 Pi RPC 的 `agent_start / turn_start /
+  message_start / tool_execution_start / tool_execution_end / agent_settled` 映射为
+  `PlannerRunProgress`（工具名 + 参数/结果**字段名** + 耗时），经 `onProgress` 进入
+  既有 `ConversationSession` 轨迹；不传 prompt、thinking 或参数值。
+- **提案落痕**：`ConversationSession` 的 accepted 结果新增
+  `planning_proposal_completed`（outcome、planId、taskId、kernel action），与既有的
+  拒绝/澄清事件一起构成规划终态。
+- **Web 规划详情**：运行中的规划卡可点击（“查看规划过程 ›”），已结束的 Turn 提供
+  “规划详情”入口；抽屉展示阶段时间线、工具调用、结果字段、总耗时与提案结果。
+  旧轮次没有遥测时明确显示“该轮未记录规划细节”，不伪造。
+- 真实环境验证：新会话规划期间打开抽屉即可看到 `read_metawork_context`、`ls`、
+  `submit_manager_proposal` 的调用与参数字段名；结束后入口仍可用，抽屉显示
+  “提案已提交 · 工具调用 4 次 · 10s”；页面无残留规划卡、无澄清。

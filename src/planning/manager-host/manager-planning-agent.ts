@@ -180,6 +180,7 @@ export class ManagerPlanningAgent implements PlanningAgent {
         signal: context.signal,
         ...(context.timeoutMs > 0 ? { timeoutMs: context.timeoutMs } : {}),
         onUsage: usage => (submitter?.onUsage ?? context.onUsage)?.(toHarnessUsageEvent(usage, context)),
+        ...(submitter?.onProgress ? { onProgress: submitter.onProgress } : {}),
       });
     } catch (error) {
       throw toPlannerRunError(error, context);
