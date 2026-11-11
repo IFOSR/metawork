@@ -224,6 +224,22 @@ describe('long event keys (production attempt ids)', () => {
     expect(new Set(progressEvents.map(event => event.id)).size).toBe(3);
   });
 
+  it('records no status for a progress fact, so a finished Turn cannot look live', () => {
+    const stream = new InteractionTraceStream('conv-stateless');
+    stream.beginTurn({ turnId: 'turn_stateless', userInput: 'build a deck' });
+    stream.append({
+      phase: 'execution',
+      actor: 'executor',
+      kind: 'executor_progress',
+      title: 'Executor progress: log',
+      summary: 'writing slide 3',
+      details: {},
+      eventKey: 'attempt:p:1',
+    });
+    const event = stream.getSnapshot()!.events.find(item => item.kind === 'executor_progress')!;
+    expect(event).not.toHaveProperty('status');
+  });
+
   it('still dedupes replays of the same long eventKey', () => {
     const stream = new InteractionTraceStream('conv-long-2');
     stream.beginTurn({ turnId: 'turn_1', userInput: 'research' });

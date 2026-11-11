@@ -73,7 +73,7 @@ export function ExecutionDetailDrawer({
         )}
         <ol className="execution-detail-stream">
           {events.map(event => (
-            <li key={event.id} data-kind={event.kind} data-status={event.status}>
+            <li key={event.id} data-kind={event.kind}>
               <time>{formatClock(event.occurredAt)}</time>
               <div className="execution-detail-entry">
                 <span className="execution-detail-kind">
@@ -171,7 +171,6 @@ export function collectDetailEvents(
         phase: 'execution',
         actor: 'executor',
         kind: 'executor_progress',
-        status: 'running',
         title: 'Executor 进度',
         summary: progress.text,
         details: {

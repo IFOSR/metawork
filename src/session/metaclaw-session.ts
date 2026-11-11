@@ -973,7 +973,6 @@ export class MetaclawSession {
       phase: 'planning',
       actor: 'planner',
       kind: 'planning_proposal_completed',
-      status: 'completed',
       title: 'Structured plan completed',
       summary: plan.reason,
       details: {
@@ -1620,7 +1619,6 @@ export class MetaclawSession {
       phase: 'planning',
       actor: 'planner',
       kind: 'planner_started',
-      status: 'running',
       title: 'Planner started',
       summary: 'Parsing the request and preparing a structured proposal.',
       details: {
@@ -1650,7 +1648,6 @@ export class MetaclawSession {
         phase: 'planning',
         actor: 'planner',
         kind: 'planner_failed',
-        status: 'failed',
         title: 'Planner failed',
         summary: (error as Error).message,
         details: {},
@@ -1695,7 +1692,6 @@ export class MetaclawSession {
           phase: 'planning',
           actor: 'planner',
           kind: 'planner_process_started',
-          status: 'running',
           title: 'Planner process started',
           summary: 'The isolated Planner RPC process is running.',
           details: baseDetails,
@@ -1707,7 +1703,6 @@ export class MetaclawSession {
           phase: 'planning',
           actor: 'planner',
           kind: 'planner_prompt_accepted',
-          status: 'running',
           title: 'Planner accepted the request',
           summary: 'The request entered the Planner agent loop.',
           details: baseDetails,
@@ -1719,7 +1714,6 @@ export class MetaclawSession {
           phase: 'planning',
           actor: 'planner',
           kind: 'planner_agent_started',
-          status: 'running',
           title: 'Planner agent loop started',
           summary: 'Planner is preparing the next structured action.',
           details: baseDetails,
@@ -1731,7 +1725,6 @@ export class MetaclawSession {
           phase: 'planning',
           actor: 'planner',
           kind: 'planner_turn_started',
-          status: 'running',
           title: `Planner processing cycle ${progress.turn}`,
           summary: 'Planner is evaluating available context and the next tool action.',
           details: { ...baseDetails, turn: progress.turn },
@@ -1743,7 +1736,6 @@ export class MetaclawSession {
           phase: 'planning',
           actor: 'planner',
           kind: 'planner_model_stream_started',
-          status: 'running',
           title: 'Planner model response started',
           summary: 'The model is generating a structured action; hidden reasoning is not exposed.',
           details: { ...baseDetails, turn: progress.turn },
@@ -1755,7 +1747,6 @@ export class MetaclawSession {
           phase: 'planning',
           actor: 'planner',
           kind: 'planner_model_waiting',
-          status: 'running',
           title: 'Planner is waiting for the model',
           summary: 'The Planner request is still active, but no model output has arrived yet.',
           details: {
@@ -1771,7 +1762,6 @@ export class MetaclawSession {
           phase: 'planning',
           actor: 'planner',
           kind: 'planner_tool_started',
-          status: 'running',
           title: `Planner tool started: ${progress.toolName}`,
           summary: plannerToolSummary(progress.toolName, 'started'),
           details: {
@@ -1788,7 +1778,6 @@ export class MetaclawSession {
           phase: 'planning',
           actor: 'planner',
           kind: 'planner_tool_completed',
-          status: progress.status,
           title: `Planner tool ${progress.status}: ${progress.toolName}`,
           summary: plannerToolSummary(progress.toolName, progress.status),
           details: {
@@ -1806,7 +1795,6 @@ export class MetaclawSession {
           phase: 'planning',
           actor: 'planner',
           kind: 'planner_agent_completed',
-          status: 'completed',
           title: 'Planner handoff confirmed',
           summary: 'Planner received the structured proposal result; the Task Runtime now owns the next action.',
           details: baseDetails,
@@ -1820,7 +1808,6 @@ export class MetaclawSession {
       phase: 'planning',
       actor: 'planner',
       kind: 'intent_classified',
-      status: 'completed',
       title: `Intent classified: ${plan.action}`,
       summary: plan.reason,
       details: {
@@ -1841,7 +1828,6 @@ export class MetaclawSession {
         phase: 'planning',
         actor: 'planner',
         kind: 'dag_quality_warning',
-        status: 'completed',
         title: 'Work Graph 拆解质量提示',
         summary: qualityWarnings.join('；'),
         details: { warnings: qualityWarnings, planId: plan.id },
@@ -1865,7 +1851,6 @@ export class MetaclawSession {
         phase: 'delivery',
         actor: 'runtime',
         kind: 'delivery_completed',
-        status: 'completed',
         title: 'Response delivered',
         summary: result.displayText,
         details: {
@@ -1922,7 +1907,6 @@ export class MetaclawSession {
       phase: 'planning',
       actor: 'planner',
       kind: mapped.kind,
-      status: mapped.eventStatus,
       title: mapped.title,
       summary,
       details: {
@@ -1969,7 +1953,6 @@ export class MetaclawSession {
       phase: 'authorization',
       actor: 'kernel',
       kind: 'kernel_decision',
-      status: decision.action.type === 'reject_request' ? 'failed' : 'completed',
       title: `Control operation: ${decision.action.type}`,
       summary: decision.reason,
       details: {
@@ -1991,7 +1974,6 @@ export class MetaclawSession {
           phase: 'routing',
           actor: 'kernel',
           kind: 'executor_routed',
-          status: 'completed',
           title: fallbackOrder === 0 ? 'Primary Executor authorized' : 'Fallback Executor authorized',
           summary:
             `${binding.agentClassRef} via ${binding.harnessRef} `

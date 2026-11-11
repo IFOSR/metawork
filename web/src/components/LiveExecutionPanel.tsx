@@ -310,8 +310,7 @@ export function collectExecutionCards(
         operationLastActivity(details.operationHealth),
         typeof details.lastActivityAt === 'string' ? details.lastActivityAt : undefined,
         event.kind === 'executor_progress' && !details.operationObservation && !details.operationHealth ? event.occurredAt : undefined),
-      healthText: ['completed', 'failed', 'cancelled'].includes(event.status) ? null
-        : 'operationHealth' in details ? operationHealthText(details.operationHealth) : existing.healthText,
+      healthText: 'operationHealth' in details ? operationHealthText(details.operationHealth) : existing.healthText,
       activityStatus: activityStatusFor(event),
       activityState: executorActivityState(details.activityState),
     };
@@ -386,18 +385,23 @@ function executionCardState(
 }
 
 function stateFromTraceEvent(event: InteractionTraceEvent): ExecutionCardState {
-  if (event.status === 'completed') return 'completed';
-  if (event.status === 'failed') return 'failed';
-  if (event.status === 'blocked') return 'blocked';
-  return 'running';
+  // The canonical card state comes from the Subtask/timeline. A trace event only
+  // seeds this while the card has no timeline yet, so it claims nothing.
+  if (event.kind.endsWith('_failed')) return 'failed';
+  if (event.kind.includes('blocked') || event.kind === 'clarification_requested') return 'blocked';
+  return 'unknown';
 }
 
 function activityStatusFor(event: InteractionTraceEvent): string {
   if (event.kind === 'executor_heartbeat') return 'heartbeat';
   if (event.kind === 'dependency_wait') return 'dependency_wait';
   if (event.kind === 'capacity_wait') return 'capacity_wait';
-  if (event.kind.includes('blocked') || event.status === 'blocked') return 'blocked';
-  return event.status === 'running' ? 'active' : event.status;
+  if (event.kind.includes('blocked')) return 'blocked';
+  if (event.kind.endsWith('_failed')) return 'failed';
+  if (/\(completed\)$|[:_]completed$/u.test(event.kind)) return 'completed';
+  // A progress line carries no outcome of its own; while the panel is live it is
+  // the running activity.
+  return 'active';
 }
 
 function isActiveActivity(status: string): boolean {

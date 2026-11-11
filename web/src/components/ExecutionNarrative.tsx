@@ -22,9 +22,7 @@ export function ExecutionNarrative({ turn, titleBySubtask }: {
 }) {
   const [nowMs, setNowMs] = useState(() => Date.now());
   const [collapsed, setCollapsed] = useState(true);
-  const activeEvent = turn.status === 'running'
-    ? [...turn.traceEvents].reverse().find(event => event.status === 'running')
-    : undefined;
+  const activeEvent = turn.status === 'running' ? turn.traceEvents.at(-1) : undefined;
 
   useEffect(() => {
     if (turn.status !== 'running') return;

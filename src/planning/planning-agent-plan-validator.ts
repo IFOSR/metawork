@@ -12,13 +12,34 @@ export interface PlanningAgentPlanValidationResult {
 
 const TASK_PRIORITIES = new Set(['normal', 'high', 'urgent']);
 
+/**
+ * Retired Planner contract fields that persisted proposals may still carry.
+ *
+ * `originalFilePolicy` gated admission on "may the existing target file be
+ * replaced?" for the retired in-place execution mode. Every admitted Task now
+ * executes in its own Conversation Git Worktree and publishes through the merge
+ * queue, so the question no longer describes a real decision: the field was
+ * removed from the Planner contract and the admission gate with it. Persisted and
+ * in-flight proposals are normalized here so retiring it cannot fail a Turn.
+ */
+function withoutRetiredWorkspaceIntentFields(value: unknown): unknown {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) return value;
+  const plan = value as Record<string, unknown>;
+  const intent = plan.workspaceIntent;
+  if (typeof intent !== 'object' || intent === null || Array.isArray(intent)) return value;
+  if (!('originalFilePolicy' in (intent as Record<string, unknown>))) return value;
+  const normalized = { ...(intent as Record<string, unknown>) };
+  delete normalized.originalFilePolicy;
+  return { ...plan, workspaceIntent: normalized };
+}
+
 export function validatePlanningAgentPlan(
   value: unknown,
   configuration: PlannerConfigurationView,
   pendingAuthorizationRequest: { requestId: string; taskId: string } | null = null,
   replan?: PlanningContext['replan'],
 ): PlanningAgentPlanValidationResult {
-  const parsed = PlanningAgentPlanSchema.safeParse(value);
+  const parsed = PlanningAgentPlanSchema.safeParse(withoutRetiredWorkspaceIntentFields(value));
   if (!parsed.success) {
     return {
       valid: false,

@@ -5,7 +5,6 @@ import {
   type InteractionTrace,
   type InteractionTraceActor,
   type InteractionTraceEvent,
-  type InteractionTraceEventStatus,
   type InteractionTracePhase,
   type InteractionTraceStatus,
 } from '../management/interaction-trace.js';
@@ -19,7 +18,6 @@ export interface InteractionTraceAppendInput {
   phase: InteractionTracePhase;
   actor: InteractionTraceActor;
   kind: string;
-  status: InteractionTraceEventStatus;
   title: string;
   summary: string;
   details: Record<string, unknown>;
@@ -60,7 +58,6 @@ export class InteractionTraceStream {
       phase: 'intake',
       actor: 'user',
       kind: 'query_received',
-      status: 'completed',
       title: 'User query received',
       summary: input.userInput,
       details: {},
@@ -109,7 +106,6 @@ export class InteractionTraceStream {
       phase: input.phase,
       actor: input.actor,
       kind: sanitizeInteractionTraceText(input.kind, 120),
-      status: input.status,
       title: sanitizeInteractionTraceText(input.title, 160),
       summary: sanitizeInteractionTraceText(input.summary, 500),
       details: sanitizeInteractionTraceDetails(input.details),

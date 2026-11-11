@@ -147,6 +147,10 @@ export function buildAccountControlExecutionServices(deps: {
         decide: async (_input: RouteRequest) => ({
           selectedAgentClassRef: null,
           rationale: 'Router decision model is unavailable; no default route is authorized',
+          // An absent decision model is the same situation as an unreachable
+          // one: the Router's deterministic default binding keeps eligible work
+          // runnable and records the fact in the trace.
+          unavailableReason: 'decision_model_unavailable',
         }),
       };
   const router = new RouterService({

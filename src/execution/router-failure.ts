@@ -16,3 +16,44 @@ export function routerFailureFacts(decision?: RouteDecision) {
       : '请检查 Executor 是否启用、能力及模型配置是否满足要求，再点击「继续未完成部分」。',
   };
 }
+
+/**
+ * Presentation-safe label for why the decision model produced no selection.
+ * The Router then runs its deterministic default binding, so this text always
+ * accompanies a successful route, never a failed Subtask.
+ */
+export function routerUnavailableReasonLabel(reason: string | undefined): string {
+  switch (reason) {
+    case 'span_http_error':
+      return '决策模型接口请求失败';
+    case 'span_timeout':
+      return '决策模型响应超时';
+    case 'span_invalid_response':
+      return '决策模型未返回合法的 System One 结果';
+    case 'span_candidate_mismatch':
+      return '决策模型返回的候选评分不完整或与当前候选不一致';
+    case 'span_input_too_large':
+      return '路由请求超出本地大小限制';
+    case 'span_proposal_budget_exhausted':
+      return '候选数量超出决策模型处理上限';
+    case 'span_secret_unavailable':
+      return '决策模型凭证不可用';
+    case 'span_disabled':
+      return '决策模型未启用';
+    case 'decision_model_unavailable':
+      return '决策模型未配置';
+    default:
+      return reason ? `决策模型不可用（${reason}）` : '决策模型不可用';
+  }
+}
+
+/** Public facts for a Subtask that ran on the Router's default binding. */
+export function routerDefaultFallbackFacts(decision: RouteDecision) {
+  return {
+    failureCode: 'route_decision_unavailable',
+    failureStage: 'routing',
+    selection: 'default_fallback',
+    unavailableReason: decision.unavailableReason ?? 'decision_model_unavailable',
+    attemptStarted: true,
+  };
+}

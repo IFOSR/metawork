@@ -191,7 +191,6 @@ export class WebConversationProjector {
       phase: 'delivery',
       actor: 'runtime',
       kind: 'submission_failed',
-      status: 'failed',
       title: 'Submission failed',
       summary,
       details: sanitizeInteractionTraceDetails({}),

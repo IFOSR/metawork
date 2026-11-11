@@ -126,20 +126,10 @@ export function resolveWorkspaceAdmission(
       reason: 'Workspace intent confidence is too low to authorize a write',
     };
   }
-  if (intent.originalFilePolicy === 'unknown') {
-    return {
-      status: 'clarification',
-      question: '请确认是否可以直接覆盖目标工作区中的原文件。',
-      reason: 'Planner marked the original-file policy as unknown',
-    };
-  }
-  if (intent.originalFilePolicy === 'must_preserve' && intent.operation !== 'create_in_target') {
-    return {
-      status: 'clarification',
-      question: '原文件需要保留。请指定要创建的新文件路径后再继续。',
-      reason: 'in-place execution cannot preserve an existing target while modifying it',
-    };
-  }
+  // `originalFilePolicy` used to gate writes here ("may the existing target be
+  // replaced?"). Execution is Conversation Git Worktree + merge queue, so that
+  // question is answered by the published diff, not by an admission gate; the
+  // field is retired and must not stop a Turn.
 
   const existing = input.facts.existingTaskBinding;
   if (existing) {

@@ -224,10 +224,13 @@ describe('Span Router decision-model integration', () => {
       model: new SpanRouterModel({ evaluator: advisor, timeoutMs: 5_000 }),
     });
     const decision = await router.decide(request);
-    // The validator rejects the unknown option, so the Router reports
-    // no-candidate instead of trusting the provider text.
-    expect(decision.selected).toBeNull();
-    expect(decision.outcome).toBe('no_candidate');
+    // The validator rejects the unknown option, so the provider text is never
+    // trusted; the Router falls back to its deterministic default binding and
+    // records why instead of stranding the Subtask.
+    expect(decision.outcome).toBe('selected');
+    expect(decision.selection).toBe('default_fallback');
+    expect(decision.unavailableReason).toBe('span_candidate_mismatch');
+    expect(decision.selected).toEqual(request.candidates[0]);
   });
 
   it('keeps cancelled routing from producing a decision', async () => {

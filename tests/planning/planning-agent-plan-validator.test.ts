@@ -31,7 +31,7 @@ function plan(subtasks = [subtask()]): PlanningAgentPlan {
       priority: { level: 'normal', reason: 'User request' } },
     risk: { level: 'low', requiresConfirmation: false, reasons: [] }, authorizationResolution: null,
     workspaceIntent: { targetWorkspaceId: null, targetPaths: ['report.md'], operation: 'create_in_target',
-      originalFilePolicy: 'may_replace', confidence: 0.9, reason: 'User requested this target file' },
+      confidence: 0.9, reason: 'User requested this target file' },
     workGraph: { schemaVersion: 7, configurationRevision: configuration.revisionId,
       reason: 'Capability-minimal work', subtasks }, source: 'anyfusion-planner' };
 }
@@ -41,6 +41,15 @@ function plan(subtasks = [subtask()]): PlanningAgentPlan {
 describe('validatePlanningAgentPlan schema 9', () => {
   it('accepts a capability-only proposal without selecting an Executor or Model', () => {
     expect(validatePlanningAgentPlan(plan(), configuration)).toEqual({ valid: true, errors: [] });
+  });
+
+  it('tolerates the retired originalFilePolicy on a persisted proposal', () => {
+    const candidate = plan();
+    candidate.workspaceIntent = {
+      ...candidate.workspaceIntent!,
+      originalFilePolicy: 'unknown',
+    } as PlanningAgentPlan['workspaceIntent'];
+    expect(validatePlanningAgentPlan(candidate, configuration)).toEqual({ valid: true, errors: [] });
   });
 
   it.each(['executorBindings', 'agentClassRef', 'modelRef'])('rejects Manager-owned %s at the exact subtask path', key => {

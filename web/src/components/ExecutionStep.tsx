@@ -17,7 +17,7 @@ export function ExecutionStep({
   active: boolean;
 }) {
   return (
-    <details className="execution-step" data-status={event.status} open={active}>
+    <details className="execution-step" data-active={active || undefined} open={active}>
       <summary>
         <span className="step-status" />
         <span className="step-actor">{ACTOR[event.actor]}</span>

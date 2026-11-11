@@ -1,5 +1,5 @@
 import type Database from 'better-sqlite3';
-import { routeDecisionInputHash, type RouteDecision, type RouteRequest } from '../routing/router.js';
+import { routeDecisionInputHash, routeSelectionSource, type RouteDecision, type RouteRequest } from '../routing/router.js';
 
 /** Durable append-only Router facts. Runtime owns when to write; this class
  * deliberately has no model or process dependency. */
@@ -127,6 +127,7 @@ interface RouteRow {
 }
 
 function rowToDecision(row: RouteRow): RouteDecision {
+  const selection = routeSelectionSource({ rationale: row.rationale });
   return {
     routeDecisionId: row.route_decision_id,
     taskId: row.task_id,
@@ -143,5 +144,6 @@ function rowToDecision(row: RouteRow): RouteDecision {
     createdAt: row.created_at,
     outcome: row.outcome,
     graphRevision: row.graph_revision,
+    ...selection,
   };
 }

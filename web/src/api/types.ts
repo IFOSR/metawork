@@ -155,7 +155,7 @@ export interface InteractionTraceEvent {
   phase: 'intake' | 'planning' | 'authorization' | 'routing' | 'execution' | 'verification' | 'delivery';
   actor: 'user' | 'planner' | 'kernel' | 'runtime' | 'executor';
   kind: string;
-  status: 'pending' | 'running' | 'completed' | 'failed' | 'blocked';
+  /** Events carry no status; only the Turn itself has a liveness state. */
   title: string;
   summary: string;
   details: Record<string, unknown>;

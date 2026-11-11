@@ -49,8 +49,8 @@ function turnFailureFacts(turn: ConversationTurnProjection): TurnFailureFacts | 
   for (const event of [...turn.traceEvents].reverse()) {
     if (event.kind === 'execution_resumed') return null;
     const details = event.details as Record<string, unknown> | undefined;
-    if (!turn.taskId && (event.status === 'failed' || event.status === 'blocked')
-      && (event.phase === 'planning' || event.kind === 'submission_failed')) {
+    if (!turn.taskId
+      && (event.kind === 'submission_failed' || event.kind.endsWith('_failed'))) {
       return {
         code: event.kind,
         label: '规划未完成',

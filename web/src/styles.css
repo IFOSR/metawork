@@ -288,21 +288,10 @@ body {
   background: var(--gray);
 }
 
-.interaction-event[data-status='running'] .event-rail span {
+/* Events carry no state of their own: the newest event of a live Turn is marked
+   active with a static accent, and nothing in the trace ever animates. */
+.interaction-event[data-active] .event-rail span {
   background: var(--accent);
-  animation: trace-pulse 1.4s ease-out infinite;
-}
-
-.interaction-event[data-status='completed'] .event-rail span {
-  background: var(--green);
-}
-
-.interaction-event[data-status='failed'] .event-rail span {
-  background: var(--red);
-}
-
-.interaction-event[data-status='blocked'] .event-rail span {
-  background: var(--yellow);
 }
 
 .interaction-event article {
@@ -313,7 +302,7 @@ body {
   background: rgba(29, 33, 48, 0.62);
 }
 
-.interaction-event[data-status='running'] article {
+.interaction-event[data-active] article {
   border-color: rgba(76, 141, 255, 0.7);
 }
 
@@ -411,11 +400,6 @@ body {
   font-size: 10px;
 }
 
-@keyframes trace-pulse {
-  0% { box-shadow: 0 0 0 0 rgba(76, 141, 255, 0.5); }
-  70% { box-shadow: 0 0 0 7px rgba(76, 141, 255, 0); }
-  100% { box-shadow: 0 0 0 0 rgba(76, 141, 255, 0); }
-}
 
 @media (max-width: 820px) {
   .main {
@@ -4011,17 +3995,8 @@ select {
   background: var(--gray);
 }
 
-.execution-step[data-status='running'] .step-status {
+.execution-step[data-active] .step-status {
   background: var(--accent);
-  animation: trace-pulse 1.4s infinite;
-}
-
-.execution-step[data-status='completed'] .step-status {
-  background: var(--green);
-}
-
-.execution-step[data-status='failed'] .step-status {
-  background: var(--red);
 }
 
 .execution-step[data-status='blocked'] .step-status {

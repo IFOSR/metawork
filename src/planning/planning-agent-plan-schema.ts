@@ -173,7 +173,6 @@ const WorkspaceIntentSchema = z.object({
     'read_only',
     'ambiguous',
   ]).describe('modify_existing: change an existing target file; continue_existing_edit: keep editing a file this Conversation already changed; create_in_target: add a new file in the target Workspace; run_in_target: run a command or process in the target Workspace; read_only: answer without workspace writes; ambiguous: the side effect needs a user decision.'),
-  originalFilePolicy: z.enum(['may_replace', 'must_preserve', 'unknown']),
   confidence: z.number().min(0).max(1),
   reason: z.string().trim().min(1).max(1000),
 }).strict();

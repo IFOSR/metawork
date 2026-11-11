@@ -439,7 +439,6 @@ export class ConversationSession {
       phase: 'authorization',
       actor: 'kernel',
       kind: 'kernel_decision',
-      status: 'completed',
       title: decision.action.type === 'request_clarification'
         ? '需要补充信息'
         : `Control operation: ${decision.action.type}`,
@@ -492,7 +491,6 @@ export class ConversationSession {
           phase: 'routing',
           actor: 'kernel',
           kind: 'executor_routed',
-          status: 'completed',
           title: fallbackOrder === 0 ? 'Primary Executor authorized' : 'Fallback Executor authorized',
           summary: `${identity.executorDisplayName} via ${identity.harnessDisplayName}`
             + ` using ${identity.providerDisplayName}/${identity.modelDisplayName}`,
@@ -548,7 +546,6 @@ export class ConversationSession {
       phase: 'execution',
       actor: 'runtime',
       kind: 'execution_resumed',
-      status: 'running',
       title: '任务已重新执行',
       summary: '已在原任务视图中恢复执行，并保留此前的轨迹记录。',
       details: { taskId },
@@ -982,7 +979,6 @@ export class ConversationSession {
       phase: 'planning',
       actor: 'planner',
       kind: 'planner_started',
-      status: 'running',
       title: 'Planner started',
       summary: 'Parsing the request and preparing a structured proposal.',
       details: { configurationRevision: context.configuration.revisionId },
@@ -1042,7 +1038,6 @@ export class ConversationSession {
         phase: 'planning',
         actor: 'planner',
         kind: 'planner_failed',
-        status: 'failed',
         title: 'Planner failed',
         summary: (error as Error).message,
         details: {},
@@ -1484,7 +1479,6 @@ export class ConversationSession {
       phase: 'planning',
       actor: 'runtime',
       kind: 'turn_cancel_requested',
-      status: 'running',
       title: 'Turn cancellation requested',
       summary: '用户请求取消当前轮。',
       details: {},
@@ -1536,7 +1530,6 @@ export class ConversationSession {
       phase: 'planning',
       actor: 'runtime',
       kind: 'turn_cancelled',
-      status: 'completed',
       title: 'Turn cancelled',
       summary,
       details: {},
@@ -1575,7 +1568,7 @@ export class ConversationSession {
         : task.status === 'failed' ? 'failed' : null;
     if (!traceStatus) return;
     this.appendTrace({
-      phase: 'delivery', actor: 'runtime', kind: 'turn_settled', status: traceStatus === 'failed' ? 'failed' : 'completed',
+      phase: 'delivery', actor: 'runtime', kind: 'turn_settled',
       title: traceStatus === 'completed' ? 'Turn completed' : `Turn ${traceStatus}`,
       summary: traceStatus === 'completed' ? '任务已完成，用户决策已应用。' : `任务已结束：${task.status}。`,
       details: { taskId, taskStatus: task.status }, eventKey: 'turn_settled', traceStatus,
@@ -1877,7 +1870,6 @@ export class ConversationSession {
           phase: 'delivery',
           actor: 'runtime',
           kind: 'command_completed',
-          status: 'completed',
           title: 'Command completed',
           summary: 'The control command replied; continuing execution is tracked by Task activity.',
           details: {},
@@ -1985,7 +1977,6 @@ export class ConversationSession {
         this.appendTrace({
           ...common,
           kind: 'planner_tool_completed',
-          status: progress.status,
           title: `Planner tool ${progress.status}: ${progress.toolName}`,
           summary: `Planner ${progress.status} ${progress.toolName}.`,
           details: {
@@ -2001,7 +1992,6 @@ export class ConversationSession {
         this.appendTrace({
           ...common,
           kind: 'planner_agent_completed',
-          status: 'completed',
           title: 'Planner handoff confirmed',
           summary: 'Planner completed the structured proposal handoff.',
         });
@@ -2017,7 +2007,6 @@ export class ConversationSession {
         phase: 'delivery',
         actor: 'runtime',
         kind: 'clarification_requested',
-        status: 'completed',
         title: 'Clarification requested',
         summary: result.displayText,
         details: {
@@ -2041,7 +2030,6 @@ export class ConversationSession {
           : result.status === 'convergence_exhausted'
             ? 'planner_convergence_exhausted'
             : 'proposal_rejected',
-      status,
       title: result.status === 'transport_uncertain'
         ? 'Planner handoff blocked'
         : result.status === 'conflict'

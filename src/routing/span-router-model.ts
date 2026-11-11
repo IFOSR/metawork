@@ -99,6 +99,9 @@ export class SpanRouterModel implements RouterModel {
     return {
       selectedAgentClassRef: null,
       rationale: `Router decision unavailable (${reason}); no route selected`,
+      // The Router converts this into its deterministic default binding so an
+      // unavailable decision service never strands an eligible Subtask.
+      unavailableReason: reason,
       ...call,
     };
   }

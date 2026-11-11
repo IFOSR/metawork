@@ -52,10 +52,63 @@ export interface RouteDecision {
   readonly createdAt: string;
   readonly outcome: 'selected' | 'no_candidate';
   /**
+   * Which policy produced `selected`. `decision_model` is the pinned decision
+   * model; `default_fallback` means the decision model was unavailable and the
+   * Router's deterministic default binding policy chose among the same already
+   * eligible candidates (ADR-0055 D1). The fact is carried by `rationale`, so a
+   * replayed decision reports the same source without a schema change.
+   */
+  readonly selection?: RouteSelectionSource;
+  /**
+   * Decision-model unavailability reason for a `default_fallback` decision
+   * (`span_http_error`, `span_timeout`, `decision_model_unavailable`, ...).
+   */
+  readonly unavailableReason?: string;
+  /**
    * Metering facts of the model call that produced this decision. They are not
    * persisted with the decision: a replayed decision consumed no new tokens.
    */
   readonly call?: RouterModelCallFacts;
+}
+
+export type RouteSelectionSource = 'decision_model' | 'default_fallback';
+
+/**
+ * Stable prefix of a default-fallback rationale. The decision reason is a
+ * persisted, presentation-safe string; the Runtime reads the same marker back so
+ * a replayed decision reports the identical selection source.
+ */
+export const DEFAULT_FALLBACK_RATIONALE_PREFIX = 'Router decision unavailable';
+
+/** Builds the persisted rationale of a default-fallback decision. */
+export function defaultFallbackRationale(
+  reason: string,
+  candidate: RouterCandidate,
+): string {
+  return `${DEFAULT_FALLBACK_RATIONALE_PREFIX} (${reason}); default binding selected `
+    + `${candidate.agentClassRef}/${candidate.providerRef}/${candidate.modelRef}`;
+}
+
+/**
+ * Reads the selection source (and unavailability reason) back out of a
+ * persisted decision. Anything that is not the documented default-fallback
+ * marker was produced by the decision model.
+ */
+export function routeSelectionSource(decision: Pick<RouteDecision, 'rationale'>): {
+  selection: RouteSelectionSource;
+  unavailableReason?: string;
+} {
+  const match = /^Router decision unavailable \(([^)]+)\); default binding selected /u
+    .exec(decision.rationale);
+  if (!match) return { selection: 'decision_model' };
+  return { selection: 'default_fallback', unavailableReason: match[1]!.trim() };
+}
+
+/** True when the decision model was unavailable and the default binding ran. */
+export function isDefaultFallbackSelection(
+  decision: Pick<RouteDecision, 'rationale'> | null | undefined,
+): boolean {
+  return Boolean(decision && routeSelectionSource(decision).selection === 'default_fallback');
 }
 
 export type RouterModelOutput = {
@@ -76,6 +129,13 @@ export type RouterModelOutput = {
   callAttempted?: boolean;
   /** Adapter-observed completion time of the decision-model call. */
   occurredAtUtc?: string;
+  /**
+   * Set when the adapter could not obtain a decision (`span_http_error`,
+   * `span_timeout`, `decision_model_unavailable`, ...). It authorizes the
+   * Router's deterministic default binding fallback; a decision model that
+   * simply declined to choose leaves it unset.
+   */
+  unavailableReason?: string;
 };
 
 /** Decision-model metering facts for one actual Router call. */
@@ -194,27 +254,49 @@ export class RouterService {
       if (output.selectedAgentClassRef !== null && !selected) {
         throw new RouterError('route_invalid_output', 'Router selected an unknown AgentClass');
       }
-      return {
+      const call: RouterModelCallFacts = {
+        ...(output.usage ? { usage: output.usage } : {}),
+        callAttempted: output.callAttempted ?? true,
+        occurredAtUtc: output.occurredAtUtc ?? this.now(),
+      };
+      const base = {
         routeDecisionId: this.createId(),
         taskId: input.taskId,
         attemptOrdinal: input.attemptOrdinal,
         inputSnapshotHash: snapshotHash,
         candidates,
         excluded: input.excluded,
-        selected,
         decisionModel: { providerRef: this.options.model.providerRef, modelRef: this.options.model.modelRef },
-        rationale: output.rationale.trim().slice(0, 2_000),
         configurationRevision: input.configurationRevision,
         generationId: input.generationId,
         subtaskId: input.subtaskId,
         graphRevision: input.graphRevision,
         createdAt: this.now(),
-        outcome: selected ? 'selected' : 'no_candidate',
-        call: {
-          ...(output.usage ? { usage: output.usage } : {}),
-          callAttempted: output.callAttempted ?? true,
-          occurredAtUtc: output.occurredAtUtc ?? this.now(),
-        },
+      };
+      if (selected) {
+        return {
+          ...base,
+          selected,
+          rationale: output.rationale.trim().slice(0, 2_000),
+          outcome: 'selected',
+          selection: 'decision_model',
+          call,
+        };
+      }
+      // The decision model could not decide. Eligible candidates exist, so the
+      // Router's own deterministic default binding runs instead of failing the
+      // Subtask: the first binding in the pinned candidate order (ADR-0055 D1).
+      // Router still never adds a candidate, widens a permission, or launches.
+      const fallback = candidates[0]!;
+      const unavailableReason = output.unavailableReason?.trim() || 'decision_model_unavailable';
+      return {
+        ...base,
+        selected: fallback,
+        rationale: defaultFallbackRationale(unavailableReason, fallback).slice(0, 2_000),
+        outcome: 'selected',
+        selection: 'default_fallback',
+        unavailableReason,
+        call,
       };
     } catch (error) {
       if (controller.signal.aborted) {

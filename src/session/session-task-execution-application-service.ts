@@ -114,7 +114,6 @@ export class SessionTaskExecutionApplicationService {
             phase: 'delivery',
             actor: 'runtime',
             kind: 'resume_not_executed',
-            status: 'completed',
             title: 'Task resume completed without execution',
             summary: message,
             details: {

@@ -1,6 +1,6 @@
 import type { ControlDecider } from '../control/control-workflow.js';
 import { PlanProposalUnavailableError } from './plan-proposal-store.js';
-import { routerFailureFacts } from './router-failure.js';
+import { routerDefaultFallbackFacts, routerFailureFacts, routerUnavailableReasonLabel } from './router-failure.js';
 import { workspaceCompletionResult, workspaceCompletionSources } from './workspace-completion-result.js';
 import { createHash } from 'node:crypto';
 import { TaskOperationKeys } from '../storage/task-state-change-repo.js';
@@ -61,6 +61,7 @@ import type { TaskRecoveryItemRepo } from '../storage/task-recovery-item-repo.js
 import type { WorkGraphRevisionRepo } from '../storage/work-graph-revision-repo.js';
 import type { MemoryEvidencePort } from '../memory/memory-evidence-service.js';
 import { deriveRecoverySafety } from '../routing/types.js';
+import { isDefaultFallbackSelection } from '../routing/router.js';
 import type { ControlEffectOutboxRepo } from '../storage/effect-outbox-repo.js';
 import type { RetryWakeRepo } from '../storage/retry-wake-repo.js';
 import type {
@@ -1734,7 +1735,6 @@ export class ControlExecutionRuntime {
           phase: 'delivery',
           actor: 'runtime',
           kind: 'turn_cancelled',
-          status: 'completed',
           title: 'Task cancellation completed',
           summary: 'Task cancellation and execution cleanup completed.',
           details: { taskId },
@@ -1951,7 +1951,6 @@ export class ControlExecutionRuntime {
         phase: 'verification',
         actor: 'runtime',
         kind: input.kind,
-        status: input.kind === 'cleanup_failed' ? 'failed' : 'blocked',
         title: 'Worktree execution directory cleanup',
         summary: input.reason,
         details: { taskId: input.taskId, generationId: input.generationId },
@@ -2382,7 +2381,6 @@ export class ControlExecutionRuntime {
       phase: 'authorization',
       actor: 'kernel',
       kind: 'kernel_decision_applied',
-      status: 'completed',
       title: `Kernel applied ${action.type}`,
       summary: decision.reason,
       details: {
@@ -2559,7 +2557,6 @@ export class ControlExecutionRuntime {
           phase: 'routing',
           actor: 'runtime',
           kind: failure.failureCode,
-          status: 'blocked',
           title: failure.failureLabel,
           summary: failure.failureSummary,
           details: {
@@ -2580,6 +2577,39 @@ export class ControlExecutionRuntime {
       }
       const routedItems = routedResults
         .flatMap(item => item.routed ? [item.routed] : []);
+      // An unavailable decision model never strands eligible work: the Router has
+      // already selected its deterministic default binding, and the trace states
+      // why so a degraded route is never silently presented as a model decision.
+      for (const { source: item, decision: routeDecision } of routedResults) {
+        if (!routeDecision || !isDefaultFallbackSelection(routeDecision) || !routeDecision.selected) continue;
+        const fallback = routerDefaultFallbackFacts(routeDecision);
+        const selected = routeDecision.selected;
+        this.appendExecutionTrace({
+          phase: 'routing',
+          actor: 'runtime',
+          kind: 'route_default_fallback',
+          title: 'Router 决策不可用，已使用默认执行器继续',
+          summary: `${routerUnavailableReasonLabel(fallback.unavailableReason)}，已按默认执行器 `
+            + `${selected.agentClassRef} / ${selected.providerRef} / ${selected.modelRef} 继续执行；`
+            + '恢复决策模型后重新发起可获得更优的模型选择。',
+          details: {
+            ...fallback,
+            decisionId: decision.id,
+            taskId: action.taskId,
+            subtaskId: item.subtaskId,
+            attemptId: item.attemptId,
+            selected: {
+              agentClassRef: selected.agentClassRef,
+              providerRef: selected.providerRef,
+              modelRef: selected.modelRef,
+            },
+            routeDecisionId: routeDecision.routeDecisionId,
+            outcome: routeDecision.outcome,
+          },
+          eventKey: `${decision.id}:route_default_fallback:${item.subtaskId}`,
+          taskId: action.taskId,
+        });
+      }
       if (noCandidateItems.length > 0) {
         await this.blockTaskInternal(
           action.taskId,
@@ -2693,7 +2723,6 @@ export class ControlExecutionRuntime {
         phase: 'routing',
         actor: 'kernel',
         kind: 'executor_dispatch_authorized',
-        status: 'completed',
         title: 'Kernel authorized Executor dispatch',
         summary: `Router selected ${dispatchAction.items.length} Executor attempt(s).`,
         details: {
@@ -2750,7 +2779,6 @@ export class ControlExecutionRuntime {
         phase: 'routing',
         actor: 'kernel',
         kind: 'execution_waiting_for_capacity',
-        status: 'running',
         title: '等待执行资源',
         summary: activeSibling
           ? '当前子任务等待执行名额；其他独立子任务继续执行。'
@@ -2948,7 +2976,6 @@ export class ControlExecutionRuntime {
         phase: 'verification',
         actor: 'kernel',
         kind: 'execution_blocked',
-        status: 'blocked',
         title: 'Execution needs attention',
         summary: decision.reason,
         details: {
@@ -3351,7 +3378,6 @@ export class ControlExecutionRuntime {
         phase: 'execution',
         actor: 'kernel',
         kind: 'execution_resumed',
-        status: 'running',
         title: 'Task resumed execution',
         summary: `容量已恢复，已恢复 ${display.executorDisplayName} 执行。`,
         details: {
@@ -3376,7 +3402,6 @@ export class ControlExecutionRuntime {
       phase: 'execution',
       actor: 'kernel',
       kind: 'executor_dispatch_started',
-      status: 'running',
       title: 'Executor dispatch started',
       summary: `Kernel started ${display.executorDisplayName} for "${subtask.title}".`,
       details: {
@@ -3407,7 +3432,6 @@ export class ControlExecutionRuntime {
       phase: 'execution',
       actor: 'runtime',
       kind: 'subtask_execution_started',
-      status: 'running',
       title: `Executing Subtask: ${subtask.title}`,
       summary: `${subtask.goal} Delivery: ${subtask.deliveryKind}.`,
       details: {
@@ -3463,7 +3487,6 @@ export class ControlExecutionRuntime {
         phase: 'execution',
         actor: 'executor',
         kind: 'executor_progress',
-        status: 'running',
         title: `Executor progress: ${event.kind}`,
         summary: safeText,
         details: {
@@ -3566,7 +3589,6 @@ export class ControlExecutionRuntime {
         phase: 'routing',
         actor: 'kernel',
         kind: 'executor_capacity_unavailable',
-        status: 'blocked',
         title: 'Executor capacity unavailable',
         summary: `No capacity is currently available for ${item.authorizedBinding.agentClassRef}.`,
         details: {
@@ -3593,7 +3615,6 @@ export class ControlExecutionRuntime {
         phase: 'authorization',
         actor: 'kernel',
         kind: 'kernel_waiting_for_partition',
-        status: 'blocked',
         title: 'Kernel is waiting for a resource partition',
         summary: 'Execution is paused until the conflicting resource leases are released.',
         details: {
@@ -4898,7 +4919,6 @@ export class ControlExecutionRuntime {
       phase: 'verification',
       actor: 'kernel',
       kind: 'service_verification_failed',
-      status: input.budgetExhausted ? 'failed' : 'blocked',
       title: 'Local service did not become healthy',
       summary,
       details: {
@@ -5017,7 +5037,6 @@ export class ControlExecutionRuntime {
       phase: 'delivery',
       actor: 'runtime',
       kind: 'publication_integrated',
-      status: 'completed',
       title: 'Publication integrated',
       summary: `Subtask ${outcome.subtaskId} was integrated into the task workspace.`,
       details: {
@@ -5111,7 +5130,6 @@ export class ControlExecutionRuntime {
       phase: 'verification',
       actor: 'executor',
       kind: 'executor_result_observed',
-      status,
       title: isCompleted ? 'Executor result observed' : 'Executor attempt settled',
       summary: isCompleted
         ? residual
@@ -5512,7 +5530,6 @@ export class ControlExecutionRuntime {
       phase: 'verification',
       actor: 'kernel',
       kind: 'execution_waiting_retry',
-      status: 'blocked',
       title: '等待自动重试',
       summary: `上游执行暂时不可用，系统将在 ${resumeAt} 自动重试。`,
       details: {
@@ -5740,7 +5757,6 @@ export class ControlExecutionRuntime {
       phase: 'delivery',
       actor: 'runtime',
       kind: 'delivery_completed',
-      status: 'completed',
       title: 'Final answer delivered',
       summary: 'The verified Executor result was delivered to the Conversation.',
       details: {

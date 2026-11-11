@@ -209,8 +209,7 @@ describe('Planner Workspace intent contract (schema 9)', () => {
       task: { ...base.task, priority: null },
       workspaceIntent: workspaceIntentFixture({
         operation: 'ambiguous',
-        originalFilePolicy: 'unknown',
-          confidence: 0.4,
+        confidence: 0.4,
       }),
     };
     expect(validatePlanningAgentPlan(plan, configuration)).toEqual({ valid: true, errors: [] });

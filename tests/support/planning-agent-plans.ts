@@ -216,9 +216,6 @@ export function workspaceIntentFixture(
     operation: typeof intent.operation === 'string'
       ? intent.operation as import('../../src/core/workspace-execution.js').WorkspaceOperation
       : 'modify_existing',
-    originalFilePolicy: typeof intent.originalFilePolicy === 'string'
-      ? intent.originalFilePolicy as import('../../src/core/workspace-execution.js').WorkspaceOriginalFilePolicy
-      : 'may_replace',
     confidence: typeof intent.confidence === 'number' ? intent.confidence : 0.9,
     reason: typeof intent.reason === 'string' ? intent.reason : 'test workspace intent',
   };

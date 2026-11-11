@@ -47,6 +47,24 @@ describe('Kernel Workspace admission', () => {
     expect(resolve({ intent: workspaceIntentFixture({ targetPaths: [] }) })).toMatchObject({ status: 'clarification' });
   });
 
+  it('never asks about replacing original files: the retired originalFilePolicy cannot block a Turn', () => {
+    // Persisted intents from the in-place era still carry the field. It is
+    // retired and ignored: the worktree diff plus the merge queue own the answer.
+    const legacyIntent = {
+      ...workspaceIntentFixture({ operation: 'create_in_target', targetPaths: ['deck.pptx'] }),
+      originalFilePolicy: 'unknown',
+    } as unknown as ReturnType<typeof workspaceIntentFixture>;
+    expect(resolve({ intent: legacyIntent })).toMatchObject({
+      status: 'resolved',
+      admission: { kind: 'write', targetPaths: ['deck.pptx'] },
+    });
+    const preserve = {
+      ...workspaceIntentFixture({ operation: 'modify_existing', targetPaths: ['src/app.ts'] }),
+      originalFilePolicy: 'must_preserve',
+    } as unknown as ReturnType<typeof workspaceIntentFixture>;
+    expect(resolve({ intent: preserve })).toMatchObject({ status: 'resolved', admission: { kind: 'write' } });
+  });
+
   it('rejects unsafe and cross-Workspace declarations', () => {
     expect(resolve({ intent: workspaceIntentFixture({ targetPaths: ['../escape'] }) })).toMatchObject({ status: 'rejected' });
     expect(resolve({ intent: workspaceIntentFixture({ targetWorkspaceId: 'workspace_other' }) })).toMatchObject({ status: 'rejected' });

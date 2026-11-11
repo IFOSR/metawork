@@ -26,7 +26,7 @@ function outputPlan() {
     risk: { level: 'low', requiresConfirmation: false, reasons: [] },
     authorizationResolution: null,
     workspaceIntent: { targetWorkspaceId: null, targetPaths: ['src/'], operation: 'modify_existing',
-      originalFilePolicy: 'may_replace', confidence: 0.9, reason: 'implement requested changes' },
+      confidence: 0.9, reason: 'implement requested changes' },
     workGraph: {
       schemaVersion: 7,
       configurationRevision: 'revision-2026-08-12',
