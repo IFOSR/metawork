@@ -131,6 +131,10 @@ describe("AnyFusion Planner MCP extension", () => {
 				ANYFUSION_PLANNER_MCP_ARGS_JSON: "[]",
 			}),
 		).toThrow("absolute shared image Node executable");
+		expect(
+			// Sessions without Planner MCP wiring (Executor runs) skip gracefully.
+			readPlannerMcpLaunchConfig({}),
+		).toBeNull();
 		expect(() =>
 			readPlannerMcpLaunchConfig({
 				ANYFUSION_PLANNER_MCP_COMMAND: "/usr/local/bin/node",

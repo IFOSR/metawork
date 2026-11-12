@@ -128,12 +128,13 @@ export class HttpClient {
     });
   }
 
-  summarizeModelInformation(catalogModelId: string): Promise<{
+  summarizeModelInformation(catalogModelId: string, preferredModel?: { providerRef: string; modelId: string; baseUrl?: string }): Promise<{
     catalogModelId: string;
     routingNotes: NonNullable<import('../settings-model').SettingsModelEntry['routingNotes']>;
+    degraded?: import('./types').DegradationNotice;
   }> {
     return this.request('/api/config/model-routing-profile', {
-      method: 'POST', body: JSON.stringify({ catalogModelId }),
+      method: 'POST', body: JSON.stringify({ catalogModelId, ...(preferredModel ?? {}) }),
     });
   }
 
@@ -152,7 +153,7 @@ export class HttpClient {
   describeAgentCapabilities(input: {
     kind: 'planner' | 'executor';
     affordances: string[];
-    models: Array<Pick<import('../settings-model').SettingsModelEntry, 'modelId' | 'capabilities' | 'description' | 'routingNotes' | 'publicFacts' | 'contextLimit'> & { modelRef: string }>;
+    models: Array<Pick<import('../settings-model').SettingsModelEntry, 'modelId' | 'capabilities' | 'description' | 'routingNotes' | 'publicFacts' | 'contextLimit'> & { modelRef: string; providerRef?: string }>;
     refresh?: boolean;
   }): Promise<import('./types').AgentCapabilityDescription> {
     return this.request('/api/config/agent-capabilities', { method: 'POST', body: JSON.stringify(input), signal: AbortSignal.timeout(150_000) });
@@ -227,9 +228,19 @@ export class HttpClient {
     parent: string | null;
     crumbs: Array<{ name: string; path: string }>;
     entries: Array<{ name: string; path: string }>;
+    root: string | null;
   }> {
     const suffix = path?.trim() ? `?path=${encodeURIComponent(path.trim())}` : '';
     return this.request(`/api/workspaces/browse${suffix}`);
+  }
+
+  createWorkspaceDirectory(parentPath: string, name: string): Promise<{
+    directory: { name: string; path: string };
+  }> {
+    return this.request('/api/workspaces/mkdir', {
+      method: 'POST',
+      body: JSON.stringify({ parentPath, name }),
+    });
   }
 
   selectWorkspace(path: string): Promise<{

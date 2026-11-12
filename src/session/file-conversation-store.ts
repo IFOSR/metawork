@@ -16,6 +16,7 @@ import { dirname, join, resolve } from 'node:path';
 import { measureNavigationStage } from '../utils/navigation-diagnostics.js';
 import { isValidConversationId } from './conversation-types.js';
 import type { ConversationHistoryStore, ConversationHistoryRequest } from './conversation-history-store.js';
+import { renameReplacingTarget } from '../utils/directory-pointer.js';
 import {
   CONVERSATION_FORMAT_VERSION,
   type ConversationCatalogFile,
@@ -293,7 +294,8 @@ export class FileConversationStore implements ConversationStore {
       throw new Error(`Invalid conversation id: ${conversationId}`);
     }
     const path = resolve(this.recordsDir, `${conversationId}.json`);
-    if (!path.startsWith(`${this.recordsDir}/`)) {
+    // Windows 的 resolve 产出反斜杠，前缀比较必须两种分隔符都接受。
+    if (!path.startsWith(`${this.recordsDir}/`) && !path.startsWith(`${this.recordsDir}\\`)) {
       throw new Error(`Invalid conversation id: ${conversationId}`);
     }
     return path;
@@ -324,7 +326,7 @@ async function atomicWriteJson(path: string, value: unknown): Promise<void> {
     await handle.sync();
     await handle.close();
     handle = undefined;
-    await rename(temporaryPath, path);
+    await renameReplacingTarget(temporaryPath, path);
     // Windows cannot fsync directories (FlushFileBuffers needs GENERIC_WRITE).
     if (process.platform !== 'win32') {
       const directory = await open(dirname(path), 'r');

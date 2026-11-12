@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { InternalLlmService, type InternalLlmDependencies } from './internal-llm-service.js';
+import { InternalLlmService, type DegradationNotice, type InternalLlmDependencies } from './internal-llm-service.js';
 import type { OpenRouterPublicFacts } from './openrouter-model-catalog.js';
 import type { ModelRoutingNotes } from './types.js';
 
@@ -22,6 +22,8 @@ export interface ResponsibilitySuggestion {
   selectedModelRefs: string[];
   evidence: string[];
   requiresConfirmation: true;
+  /** 用户指定的模型未生效时，说明本次由官方内置 AI 生成。 */
+  degraded?: DegradationNotice;
 }
 
 export interface CapabilityCompilation {
@@ -46,6 +48,7 @@ export class SettingsAssistant {
     intent?: string;
   }): Promise<ResponsibilitySuggestion> {
     const sourceText = input.sourceText.trim();
+    let degraded: DegradationNotice | undefined;
     const body = await this.llm.generate({
       action: 'AI 改写',
       operation: 'responsibility_rewrite',
@@ -59,6 +62,7 @@ export class SettingsAssistant {
           contextLimit: fact.contextLimit, publicFacts: fact.publicFacts,
         })),
       },
+      onDegraded: notice => { degraded = notice; },
     });
     const text = parseResponsibility(body);
     if (!text) throw new ResponsibilityRewriteError('AI 返回的职责内容不完整或格式不符合要求，请重试；原文未修改。');
@@ -67,6 +71,7 @@ export class SettingsAssistant {
       selectedModelRefs: input.modelFacts.map(fact => fact.modelRef),
       evidence: ['SettingsAssistant 内置模型建议'],
       requiresConfirmation: true,
+      ...(degraded ? { degraded } : {}),
     };
   }
 

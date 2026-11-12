@@ -314,10 +314,21 @@ export interface ProviderModelDiscoveryResult {
   }>;
 }
 
+/**
+ * 用户指定的模型未生效时的降级告知：本次结果由官方内置 AI 生成。
+ * 界面必须如实呈现，避免用户误以为结果出自自己的模型。
+ */
+export interface DegradationNotice {
+  modelId: string;
+  reason: string;
+  usedBy: 'official_ai';
+}
+
 export interface AgentCapabilityDescription {
   summary: string;
   abilities: Array<{ title: string; description: string }>;
   boundaries: string[];
+  degraded?: DegradationNotice;
 }
 
 export interface ResponsibilitySuggestion {
@@ -326,6 +337,7 @@ export interface ResponsibilitySuggestion {
   selectedModelRefs: string[];
   evidence: string[];
   requiresConfirmation: true;
+  degraded?: DegradationNotice;
 }
 
 export type ConfigurationRuntimeState = Pick<ConfigSnapshot,

@@ -175,6 +175,16 @@ function run(command, args, options = {}) {
   return result.stdout;
 }
 
+// Git for Windows puts GNU tar first on PATH: it treats an `E:\out.zip` output
+// as a remote host ("Cannot connect to E:") and cannot write zip with -a at all.
+// The win32 package target needs the Windows bsdtar, so pin it explicitly.
+function tarExecutable() {
+  if (process.platform === 'win32') {
+    return `${process.env.SystemRoot ?? 'C:\\Windows'}\\System32\\tar.exe`;
+  }
+  return 'tar';
+}
+
 function gitRevision(sourceRoot) {
   const result = spawnSync('git', ['-C', sourceRoot, 'rev-parse', '--short', 'HEAD'], {
     encoding: 'utf8',
@@ -309,14 +319,14 @@ const plannerArchiveExcludes = [
 async function packageArchive({ sourceRoot, stagingRoot, prefix, entries, exclude, outputPath, platform }) {
   mkdirSync(join(stagingRoot, prefix), { recursive: true });
   if (platform === 'win32') {
-    const pack = spawn('tar', [
+    const pack = spawn(tarExecutable(), [
       '-C', sourceRoot,
       '-h',
       ...(exclude ?? []).flatMap(pattern => ['--exclude', pattern]),
       '-cf', '-',
       ...entries,
     ]);
-    const unpack = spawn('tar', ['-C', join(stagingRoot, prefix), '-xf', '-']);
+    const unpack = spawn(tarExecutable(), ['-C', join(stagingRoot, prefix), '-xf', '-']);
     let unpackError = '';
     unpack.stderr.on('data', chunk => { unpackError += chunk.toString('utf8'); });
     pack.stdout.pipe(unpack.stdin);
@@ -330,10 +340,10 @@ async function packageArchive({ sourceRoot, stagingRoot, prefix, entries, exclud
     if (unpackResult.status === 'rejected') {
       throw new Error(`staging extract for ${prefix} failed: ${unpackResult.reason?.message ?? unpackResult.reason} ${unpackError}`);
     }
-    run('tar', ['-a', '-cf', outputPath, '-C', stagingRoot, prefix]);
+    run(tarExecutable(), ['-a', '-cf', outputPath, '-C', stagingRoot, prefix]);
     return;
   }
-  const pack = spawn('tar', [
+  const pack = spawn(tarExecutable(), [
     '-C', sourceRoot,
     // -h dereferences symlinks (npm workspace layouts create many) so the
     // archive is plain files and both bsdtar and GNU tar extract it safely.
@@ -342,7 +352,7 @@ async function packageArchive({ sourceRoot, stagingRoot, prefix, entries, exclud
     '-cf', '-',
     ...entries,
   ]);
-  const unpack = spawn('tar', ['-C', join(stagingRoot, prefix), '-xf', '-']);
+  const unpack = spawn(tarExecutable(), ['-C', join(stagingRoot, prefix), '-xf', '-']);
   let unpackError = '';
   unpack.stderr.on('data', chunk => { unpackError += chunk.toString('utf8'); });
   pack.stdout.pipe(unpack.stdin);
@@ -356,7 +366,7 @@ async function packageArchive({ sourceRoot, stagingRoot, prefix, entries, exclud
   if (unpackResult.status === 'rejected') {
     throw new Error(`staging extract for ${prefix} failed: ${unpackResult.reason?.message ?? unpackResult.reason} ${unpackError}`);
   }
-  run('tar', [
+  run(tarExecutable(), [
     '-C', stagingRoot,
     '--exclude', '.DS_Store',
     '-czf', outputPath,

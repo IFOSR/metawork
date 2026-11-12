@@ -465,7 +465,7 @@ export type AssistantMessageEvent =
 export interface OpenAICompletionsCompat {
 	/** Whether the provider supports the `store` field. Default: auto-detected from URL. */
 	supportsStore?: boolean;
-	/** Whether the provider supports the `developer` role (vs `system`). Default: auto-detected from URL. */
+	/** Whether the provider supports the `developer` role (vs `system`). Default: false except OpenAI-hosted endpoints and OpenRouter `openai/` + `anthropic/` models (auto-detected from URL). */
 	supportsDeveloperRole?: boolean;
 	/** Whether the provider supports `reasoning_effort`. Default: auto-detected from URL. */
 	supportsReasoningEffort?: boolean;

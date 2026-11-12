@@ -3,13 +3,13 @@ import {
   chmod,
   mkdir,
   readFile,
-  rename,
   rm,
   writeFile,
 } from 'node:fs/promises';
 import { dirname } from 'node:path';
 import type { SecretReference, SecretStore } from './secret-store.js';
 import { assertSecretReference } from './secret-store.js';
+import { renameReplacingTarget } from '../utils/directory-pointer.js';
 
 interface CredentialsDocument {
   version: 1;
@@ -20,26 +20,39 @@ interface CredentialsDocument {
    * `routing-span` can never share, overwrite or read this slot.
    */
   internal?: Record<string, string>;
+  /**
+   * Credentials of Providers the user filled in but has not activated yet.
+   * A separate namespace is a hard boundary: staging a new or edited Provider
+   * must never overwrite the working credential an active Provider still
+   * points at — an invalid staged key would otherwise break every task that
+   * uses the active one.
+   */
+  pending?: Record<string, string>;
 }
 
 const PROVIDER_REFERENCE =
   /^(?:file-secret|keychain):anyfusion\/(?:providers\/)?([a-z][a-z0-9-]{0,63})$/u;
 const INTERNAL_REFERENCE =
   /^(?:file-secret|keychain):anyfusion\/internal\/([a-z][a-z0-9-]{0,63})$/u;
+const PENDING_REFERENCE =
+  /^(?:file-secret|keychain):anyfusion\/pending\/([a-z][a-z0-9-]{0,63})$/u;
 
 type CredentialLocation =
   | { kind: 'provider'; key: string }
-  | { kind: 'internal'; key: string };
+  | { kind: 'internal'; key: string }
+  | { kind: 'pending'; key: string };
 
 /** Resolves a supported reference to exactly one credential namespace slot. */
 function locateCredential(reference: SecretReference): CredentialLocation {
   assertSecretReference(reference);
   const internal = INTERNAL_REFERENCE.exec(reference);
   if (internal) return { kind: 'internal', key: internal[1]! };
+  const pending = PENDING_REFERENCE.exec(reference);
+  if (pending) return { kind: 'pending', key: pending[1]! };
   const provider = PROVIDER_REFERENCE.exec(reference);
   if (provider) return { kind: 'provider', key: provider[1]! };
   throw new Error(
-    'credentials file store only supports Provider or internal secret references',
+    'credentials file store only supports Provider, pending or internal secret references',
   );
 }
 
@@ -64,7 +77,9 @@ export class CredentialsFileSecretStore implements SecretStore {
     const document = await this.read();
     const value = location.kind === 'provider'
       ? document.providers[location.key]
-      : document.internal?.[location.key];
+      : location.kind === 'pending'
+        ? document.pending?.[location.key]
+        : document.internal?.[location.key];
     if (!value) {
       throw new Error(`credential is missing: ${location.kind}/${location.key}`);
     }
@@ -74,14 +89,18 @@ export class CredentialsFileSecretStore implements SecretStore {
   async put(reference: SecretReference, value: string): Promise<void> {
     const location = locateCredential(reference);
     const current = await this.readOrEmpty();
-    await this.write(
-      location.kind === 'provider'
-        ? { ...current, providers: { ...current.providers, [location.key]: value } }
-        : {
-            ...current,
-            internal: { ...current.internal, [location.key]: value },
-          },
-    );
+    if (location.kind === 'provider') {
+      await this.write({ ...current, providers: { ...current.providers, [location.key]: value } });
+      return;
+    }
+    if (location.kind === 'pending') {
+      await this.write({ ...current, pending: { ...current.pending, [location.key]: value } });
+      return;
+    }
+    await this.write({
+      ...current,
+      internal: { ...current.internal, [location.key]: value },
+    });
   }
 
   async delete(reference: SecretReference): Promise<void> {
@@ -92,6 +111,13 @@ export class CredentialsFileSecretStore implements SecretStore {
       const providers = { ...current.providers };
       delete providers[location.key];
       await this.write({ ...current, providers });
+      return;
+    }
+    if (location.kind === 'pending') {
+      if (!current.pending || !(location.key in current.pending)) return;
+      const pending = { ...current.pending };
+      delete pending[location.key];
+      await this.write({ ...current, pending });
       return;
     }
     if (!current.internal || !(location.key in current.internal)) return;
@@ -153,11 +179,14 @@ export class CredentialsFileSecretStore implements SecretStore {
           ...(document.internal && Object.keys(document.internal).length > 0
             ? { internal: document.internal }
             : {}),
+          ...(document.pending && Object.keys(document.pending).length > 0
+            ? { pending: document.pending }
+            : {}),
         }, null, 2)}\n`,
         { encoding: 'utf8', mode: 0o600 },
       );
       await chmod(temporaryPath, 0o600);
-      await rename(temporaryPath, this.filePath);
+      await renameReplacingTarget(temporaryPath, this.filePath);
       await chmod(this.filePath, 0o600);
     } finally {
       await rm(temporaryPath, { force: true });
@@ -181,6 +210,11 @@ function isCredentialsDocument(value: unknown): value is CredentialsDocument {
     return false;
   }
   if (!Object.values(record.providers).every(item => typeof item === 'string')) {
+    return false;
+  }
+  if (record.pending !== undefined
+    && (!record.pending || typeof record.pending !== 'object' || Array.isArray(record.pending)
+      || !Object.values(record.pending as Record<string, unknown>).every(item => typeof item === 'string'))) {
     return false;
   }
   if (record.internal === undefined) return true;

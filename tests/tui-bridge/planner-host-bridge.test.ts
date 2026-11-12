@@ -13,6 +13,7 @@ import type {
   SessionSnapshot,
 } from '../../src/session/metaclaw-session.js';
 import { PlannerHostBridge, type PlannerHostBridgeSession } from '../../src/tui-bridge/planner-host-bridge.js';
+import { resolveLocalEndpointPath } from '../../src/platform/local-endpoint.js';
 
 class FakeSession implements PlannerHostBridgeSession {
   readonly executorResults: PlannerTuiExecutorResult[] = [];
@@ -104,7 +105,7 @@ afterEach(async () => {
 
 describe('PlannerHostBridge shared Proposal Host', () => {
   it('refuses to replace a reachable live Planner Host socket', async () => {
-    const socketPath = join(tmpdir(), `planner-host-${process.pid}-${Date.now()}-live.sock`);
+    const socketPath = resolveLocalEndpointPath(tmpdir(), `planner-host-${process.pid}-${Date.now()}-live.sock`);
     const first = new PlannerHostBridge({ socketPath });
     const second = new PlannerHostBridge({ socketPath });
     await first.start();
@@ -125,8 +126,8 @@ describe('PlannerHostBridge shared Proposal Host', () => {
     }
   });
 
-  it('reclaims a stale Planner Host socket', async () => {
-    const socketPath = join(tmpdir(), `planner-host-${process.pid}-${Date.now()}-stale.sock`);
+  it.skipIf(process.platform === 'win32')('reclaims a stale Planner Host socket', async () => {
+    const socketPath = resolveLocalEndpointPath(tmpdir(), `planner-host-${process.pid}-${Date.now()}-stale.sock`);
     await createStaleSocket(socketPath);
     const bridge = new PlannerHostBridge({ socketPath });
 
@@ -149,8 +150,8 @@ describe('PlannerHostBridge shared Proposal Host', () => {
     }
   });
 
-  it('does not unlink a replacement socket when the original bridge stops', async () => {
-    const socketPath = join(tmpdir(), `planner-host-${process.pid}-${Date.now()}-replacement.sock`);
+  it.skipIf(process.platform === 'win32')('does not unlink a replacement socket when the original bridge stops', async () => {
+    const socketPath = resolveLocalEndpointPath(tmpdir(), `planner-host-${process.pid}-${Date.now()}-replacement.sock`);
     const bridge = new PlannerHostBridge({ socketPath });
     await bridge.start();
     const originalIdentity = await socketIdentity(socketPath);
@@ -174,7 +175,7 @@ describe('PlannerHostBridge shared Proposal Host', () => {
   });
 
   it('binds hello to a registered session and returns the structured authoritative result', async () => {
-    const socketPath = join(tmpdir(), `planner-host-${process.pid}-${Date.now()}.sock`);
+    const socketPath = resolveLocalEndpointPath(tmpdir(), `planner-host-${process.pid}-${Date.now()}.sock`);
     const session = new FakeSession();
     const bridge = new PlannerHostBridge({ socketPath });
     bridges.push(bridge);
@@ -201,7 +202,7 @@ describe('PlannerHostBridge shared Proposal Host', () => {
   });
 
   it('requires hello and rejects proposal session drift', async () => {
-    const socketPath = join(tmpdir(), `planner-host-${process.pid}-${Date.now()}-drift.sock`);
+    const socketPath = resolveLocalEndpointPath(tmpdir(), `planner-host-${process.pid}-${Date.now()}-drift.sock`);
     const bridge = new PlannerHostBridge({ socketPath });
     bridges.push(bridge);
     bridge.registerSession('session-1', new FakeSession());
@@ -221,7 +222,7 @@ describe('PlannerHostBridge shared Proposal Host', () => {
   });
 
   it('fails closed when hello names an unregistered session', async () => {
-    const socketPath = join(tmpdir(), `planner-host-${process.pid}-${Date.now()}-unknown.sock`);
+    const socketPath = resolveLocalEndpointPath(tmpdir(), `planner-host-${process.pid}-${Date.now()}-unknown.sock`);
     const registered = new FakeSession();
     const bridge = new PlannerHostBridge({ socketPath });
     bridges.push(bridge);
@@ -242,7 +243,7 @@ describe('PlannerHostBridge shared Proposal Host', () => {
   });
 
   it('returns transport_uncertain when the authoritative session submission throws', async () => {
-    const socketPath = join(tmpdir(), `planner-host-${process.pid}-${Date.now()}-uncertain.sock`);
+    const socketPath = resolveLocalEndpointPath(tmpdir(), `planner-host-${process.pid}-${Date.now()}-uncertain.sock`);
     const session = new FakeSession();
     session.submitPlannerProposal.mockRejectedValueOnce(new Error('kernel connection lost'));
     const bridge = new PlannerHostBridge({ socketPath });
@@ -270,7 +271,7 @@ describe('PlannerHostBridge shared Proposal Host', () => {
   });
 
   it('advertises, replays, and incrementally emits each Executor result once per socket', async () => {
-    const socketPath = join(tmpdir(), `planner-host-${process.pid}-${Date.now()}-results.sock`);
+    const socketPath = resolveLocalEndpointPath(tmpdir(), `planner-host-${process.pid}-${Date.now()}-results.sock`);
     const session = new FakeSession();
     session.executorResults.push(executorResult('publication-1'));
     const bridge = new PlannerHostBridge({ socketPath });
@@ -302,7 +303,7 @@ describe('PlannerHostBridge shared Proposal Host', () => {
   });
 
   it('truncates only an oversized report while preserving result identity and artifacts', async () => {
-    const socketPath = join(tmpdir(), `planner-host-${process.pid}-${Date.now()}-large-result.sock`);
+    const socketPath = resolveLocalEndpointPath(tmpdir(), `planner-host-${process.pid}-${Date.now()}-large-result.sock`);
     const session = new FakeSession();
     session.executorResults.push({ ...executorResult('publication-large'), report: 'x'.repeat(1_100_000) });
     const bridge = new PlannerHostBridge({ socketPath });
@@ -329,7 +330,7 @@ describe('PlannerHostBridge shared Proposal Host', () => {
   });
 
   it('projects, closes, and resolves interactive permission requests', async () => {
-    const socketPath = join(tmpdir(), `planner-host-${process.pid}-${Date.now()}-permissions.sock`);
+    const socketPath = resolveLocalEndpointPath(tmpdir(), `planner-host-${process.pid}-${Date.now()}-permissions.sock`);
     const session = new FakeSession();
     session.permissionRequests.push(permissionRequest('permission-1'));
     const bridge = new PlannerHostBridge({ socketPath });
@@ -353,7 +354,7 @@ describe('PlannerHostBridge shared Proposal Host', () => {
   });
 
   it('does not project or accept permission requests on rpc sockets', async () => {
-    const socketPath = join(tmpdir(), `planner-host-${process.pid}-${Date.now()}-rpc-permissions.sock`);
+    const socketPath = resolveLocalEndpointPath(tmpdir(), `planner-host-${process.pid}-${Date.now()}-rpc-permissions.sock`);
     const session = new FakeSession();
     session.permissionRequests.push(permissionRequest('permission-1'));
     const bridge = new PlannerHostBridge({ socketPath });

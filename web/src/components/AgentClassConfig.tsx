@@ -129,6 +129,7 @@ export function AgentClassConfig({
                     : manuallyEdited ? '当前为你继续调整后的职责；保存并激活后生效。'
                       : responsibilityFeedback.status === 'unchanged' ? '本次返回内容与原文一致，无需替换；编辑框保留原文。'
                         : '编辑框已填入改写后内容。可继续修改，保存并激活后生效。'}
+              {...(responsibilityFeedback.note ? { note: responsibilityFeedback.note } : {})}
             />}
             <textarea
               className="text-input agent-responsibility-input"

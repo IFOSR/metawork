@@ -11,6 +11,7 @@ import {
   unlink,
 } from 'node:fs/promises';
 import { basename, dirname, join, resolve } from 'node:path';
+import { renameReplacingTarget } from '../utils/directory-pointer.js';
 import {
   CONVERSATION_FORMAT_VERSION,
   type ConversationCatalogFile,
@@ -198,7 +199,9 @@ export class WorkspaceConversationMigrator {
     if (
       journal.version !== 1
       || journal.state !== 'prepared'
-      || !stageRoot.startsWith(`${this.workspaceCatalogRoot}/.migration-`)
+      // join() keeps the separator platform-correct; a hardcoded '/' would make
+      // the check fail on Windows and strand the prepared migration.
+      || !stageRoot.startsWith(join(this.workspaceCatalogRoot, '.migration-'))
     ) {
       throw new Error('Invalid Workspace migration journal');
     }
@@ -271,7 +274,7 @@ async function atomicWriteJson(path: string, value: unknown): Promise<void> {
     await handle.sync();
     await handle.close();
     handle = undefined;
-    await rename(temporaryPath, path);
+    await renameReplacingTarget(temporaryPath, path);
   } catch (error) {
     await handle?.close().catch(() => undefined);
     await unlink(temporaryPath).catch(() => undefined);

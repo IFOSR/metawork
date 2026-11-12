@@ -123,8 +123,13 @@ function runProcess(
   cwd: string,
   env: NodeJS.ProcessEnv,
 ): Promise<void> {
+  // npm is a .cmd shim on Windows; Node ≥18.20 refuses to spawn it without a shell.
+  const executable = process.platform === 'win32' && command === 'npm' ? 'npm.cmd' : command;
   return new Promise((resolve, reject) => {
-    const child = spawn(command, args, { cwd, env, stdio: 'inherit' });
+    const child = spawn(executable, args, {
+      cwd, env, stdio: 'inherit',
+      shell: process.platform === 'win32' && executable.endsWith('.cmd'),
+    });
     child.once('error', reject);
     child.once('exit', (code, signal) => {
       if (code === 0) {

@@ -24,10 +24,12 @@ kubectl -n nexusfusionai create secret generic metawork-official-secrets \
   --from-literal=PAYMENT_HUB_CLIENT_ID='<生产 Client ID>' \
   --from-literal=PAYMENT_HUB_CLIENT_SECRET='<client secret>' \
   --from-literal=PAYMENT_NOTIFY_URL='https://metawork.nexusfusionai.com/v1/payments/notify' \
-  --from-literal=MODEL_BASE_URL='...' --from-literal=MODEL_API_KEY='...' --from-literal=MODEL_ID='...'
+  --from-literal=MODEL_BASE_URL='...' --from-literal=MODEL_API_KEY='...' --from-literal=MODEL_ID='...' \
+  --from-literal=RUNTIME_IMAGE='<实例工作负载镜像，如 registry.cn-shanghai.aliyuncs.com/metafusion/xxx:tag>' \
+  --from-literal=RUNTIME_ACCESS_SECRET="$(openssl rand -hex 32)"
 ```
 
-未配置 `PAYMENT_*` 时支付/退款关闭，服务其余行为不变；`MODEL_*` 缺省时仅内置 AI 不可用。
+未配置 `PAYMENT_*` 时支付/退款关闭，服务其余行为不变；`MODEL_*` 缺省时仅内置 AI 不可用；`RUNTIME_IMAGE` 缺省时仅实例创建接口返回 `instance_unavailable`。实例所需通配证书以 TLS Secret `metawork-nexusfusionai-com-tls` 存放在同一 namespace（覆盖 `*.metawork.nexusfusionai.com`），由运维提供。
 
 **支付网关已配置生产**：`PAYMENT_HUB_BASE_URL=https://opchub-openapi.metafusion.cn`。生产凭证部署时经 Secret 注入，不入库不进代码；联调用测试网关 `https://opc-openapi.dev.metafusion.cc`（已全链路验证）。凭证按环境隔离、不通用。
 系统域名（公网入口）为 `metawork.nexusfusionai.com`（当前无 DNS 记录，部署后 A 记录指向本 Ingress 外网地址），支付回调复用同域：`PAYMENT_NOTIFY_URL=https://metawork.nexusfusionai.com/v1/payments/notify`（`opchub-openapi.metafusion.cn` 是 Hub 自己的网关域名，不能用作我方回调）。
@@ -38,6 +40,8 @@ kubectl -n nexusfusionai create secret generic metawork-official-secrets \
 
 ```sh
 kubectl apply -f official-server.yaml
+kubectl apply -f sandbox-rbac.yaml      # 实例预配 ServiceAccount/Role/RoleBinding
+kubectl apply -f sandbox-baseline.yaml  # 实例 NetworkPolicy（标签选择，仅圈实例 Pod）+ LimitRange
 kubectl -n nexusfusionai rollout status deployment/metawork-official
 kubectl -n nexusfusionai get ingress metawork-official   # 等待外部地址，配置 DNS 解析
 ```
@@ -77,6 +81,6 @@ cd official-server && PAYMENT_HUB_BASE_URL=https://opchub-openapi.metafusion.cn 
 
 - **存储**：PVC 使用集群阿里云 NAS 存储类 `cloud-nas-cnfs`（网络附加，节点故障/Pod 迁移数据不丢）。SQLite 单写者低频写入，NAS 可承载，但**多副本与多挂载仍被禁止**（NAS 虽支持多挂载，双进程写同一 SQLite 文件会损坏数据）；上线验收先建账号/订单即真实写库验证。
 - **备份**：`kubectl -n nexusfusionai exec deploy/metawork-official -- node -e "require('node:sqlite').DatabaseSync ... .backup"` 或停服拷贝整个数据目录；不要只拷主文件忽略 WAL。NAS 不是备份，定期把备份同步到集群外。
-- **升级**：`kubectl set image` 后 Recreate 会先停旧再起新（秒级停机）；schema 升级是 `CREATE TABLE IF NOT EXISTS`，启动即完成。回滚 = 换回旧镜像 tag（schema 只增不改，向后兼容）。
-- **限流**：Ingress 后 `TRUST_PROXY` 不可信（代理非 loopback），per-IP 限流退化为全局桶，已通过 `HTTP_RATE_MAX`/`AUTH_RATE_MAX`/`EMAIL_RATE_MAX` 环境变量调高；notify 路由免限流。
+- **升级**：`kubectl set image` 后 Recreate 会先停旧再起新（秒级停机）；常规 schema 升级是 `CREATE TABLE IF NOT EXISTS`，启动即完成，回滚 = 换回旧镜像 tag（schema 只增不改，向后兼容）。**例外——2026-10-20 登录体系两次重建了 accounts 表**（邮箱验证码版为 email/password_hash schema）：跨版本的旧镜像配新库会因缺列直接报错，不存在向后兼容；升级必须按[运行指南](../../docs/current/official-account-operations.md)的数据前置核对 + 旧库备份流程执行，回滚需同时恢复备份旧库与旧镜像。
+- **限流**：Ingress 后 `TRUST_PROXY` 不可信（代理非 loopback），per-IP 限流退化为全局桶，已通过 `HTTP_RATE_MAX`/`AUTH_RATE_MAX` 环境变量调高，注册发码另有本机日预算熔断 `EMAIL_DAILY_MAX`（默认 100/上海自然日）；notify 路由免限流。
 - **扩容禁止**：不要把副本数调到 1 以上，也不要把 PVC 换成可多挂载的读写卷——SQLite 双写会损坏数据。多实例需先迁移 PostgreSQL 等服务端数据库，属独立立项。

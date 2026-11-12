@@ -3,7 +3,9 @@ import { access, mkdir, open, readFile, readdir, rename, unlink } from 'node:fs/
 import { dirname, join, resolve } from 'node:path';
 import type { ConversationTurn } from '../management/web-session-types.js';
 import { boundWebSessionTurns } from '../management/web-session-types.js';
+import { isPathInsideDirectory } from '../utils/paths.js';
 import { isValidConversationId } from '../session/conversation-types.js';
+import { renameReplacingTarget } from '../utils/directory-pointer.js';
 import type {
   ConversationHistoryStore, ConversationHistoryPage, ConversationHistoryRequest,
 } from '../session/conversation-history-store.js';
@@ -163,7 +165,7 @@ export class FileConversationPresentationStore implements ConversationPresentati
       throw new Error(`Invalid Conversation ID: ${conversationId}`);
     }
     const path = resolve(this.recordsDir, `${conversationId}.json`);
-    if (!path.startsWith(`${this.recordsDir}/`)) {
+    if (!isPathInsideDirectory(path, this.recordsDir)) {
       throw new Error(`Invalid Conversation ID: ${conversationId}`);
     }
     return path;
@@ -232,7 +234,7 @@ async function atomicWriteJson(path: string, value: unknown): Promise<void> {
     await handle.sync();
     await handle.close();
     handle = undefined;
-    await rename(temporaryPath, path);
+    await renameReplacingTarget(temporaryPath, path);
     await syncDirectory(dirname(path));
   } catch (error) {
     await handle?.close().catch(() => undefined);

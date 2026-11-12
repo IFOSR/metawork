@@ -167,17 +167,21 @@ async function fetchPublicText(
 	const requestSignal = options.signal
 		? AbortSignal.any([options.signal, timeoutController.signal])
 		: timeoutController.signal;
+	// Bun shims the npm `undici` module: its dispatcher objects lack close()/destroy(),
+	// and passing them to bun's fetch breaks the request. Under bun, skip the pinned
+	// dispatcher — assertPublicTarget still gates SSRF before every fetch.
+	const runsUnderBun = typeof (globalThis as { Bun?: unknown }).Bun !== "undefined";
 	try {
 		let current = parseCredentialFreeHttpUrl(input);
 		for (let redirectCount = 0; redirectCount <= options.maxRedirects; redirectCount += 1) {
 			const target = await assertPublicTarget(current, options.resolveHostname, requestSignal);
-			const dispatcher = options.createDispatcher(target.hostname, target.addresses);
+			const dispatcher = runsUnderBun ? undefined : options.createDispatcher(target.hostname, target.addresses);
 			try {
 				const response = await options.fetchOperation(current, {
 					method: "GET",
 					redirect: "manual",
 					signal: requestSignal,
-					dispatcher,
+					...(dispatcher ? { dispatcher } : {}),
 					headers: {
 						accept: "text/html,application/xhtml+xml,application/json,text/plain;q=0.9,*/*;q=0.1",
 						"user-agent": "MetaWork-AnyFusion-Planner/1.0 read-only-web",
@@ -219,7 +223,7 @@ async function fetchPublicText(
 					byteLength: body.byteLength,
 				};
 			} finally {
-				await closeDispatcher(dispatcher, requestSignal);
+				if (dispatcher) await closeDispatcher(dispatcher, requestSignal);
 			}
 		}
 		throw new Error("Planner Web request did not produce a response");

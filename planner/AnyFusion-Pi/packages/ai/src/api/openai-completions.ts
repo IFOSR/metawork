@@ -1179,7 +1179,13 @@ function detectCompat(model: Model<"openai-completions">): ResolvedOpenAIComplet
 		baseUrl.includes("open.bigmodel.cn");
 	const isTogether =
 		provider === "together" || baseUrl.includes("api.together.ai") || baseUrl.includes("api.together.xyz");
-	const isMoonshot = provider === "moonshotai" || provider === "moonshotai-cn" || baseUrl.includes("api.moonshot.");
+	// Kimi For Coding (api.kimi.com) is Moonshot AI's coding endpoint: it shares
+	// the platform API's request format, including rejecting the `developer` role.
+	const isMoonshot =
+		provider === "moonshotai" ||
+		provider === "moonshotai-cn" ||
+		baseUrl.includes("api.moonshot.") ||
+		baseUrl.includes("api.kimi.com");
 	const isOpenRouter = provider === "openrouter" || baseUrl.includes("openrouter.ai");
 	const isCloudflareWorkersAI = provider === "cloudflare-workers-ai" || baseUrl.includes("api.cloudflare.com");
 	const isCloudflareAiGateway = provider === "cloudflare-ai-gateway" || baseUrl.includes("gateway.ai.cloudflare.com");
@@ -1210,11 +1216,21 @@ function detectCompat(model: Model<"openai-completions">): ResolvedOpenAIComplet
 	const isDeepSeek = provider === "deepseek" || baseUrl.includes("deepseek.com");
 	const isOpenRouterDeveloperRoleModel =
 		isOpenRouter && (model.id.startsWith("anthropic/") || model.id.startsWith("openai/"));
+	// `developer` is an OpenAI-authored role. Only OpenAI-hosted endpoints (and
+	// OpenRouter models served by OpenAI/Anthropic) accept it reliably; strict
+	// third-party OpenAI-compatible endpoints (Kimi, Groq, Xiaomi, custom
+	// gateways, ...) reject it with 400. Default to `system` — universally
+	// accepted — and opt in per endpoint below.
+	const isOpenAIHosted =
+		provider === "openai" ||
+		baseUrl.includes("api.openai.com") ||
+		baseUrl.includes("openai.azure.com") ||
+		baseUrl.includes("cognitiveservices.azure.com");
 	const cacheControlFormat = provider === "openrouter" && model.id.startsWith("anthropic/") ? "anthropic" : undefined;
 
 	return {
 		supportsStore: !isNonStandard,
-		supportsDeveloperRole: isOpenRouterDeveloperRoleModel || (!isNonStandard && !isOpenRouter),
+		supportsDeveloperRole: isOpenRouterDeveloperRoleModel || isOpenAIHosted,
 		supportsReasoningEffort:
 			!isGrok && !isZai && !isMoonshot && !isTogether && !isCloudflareAiGateway && !isNvidia && !isAntLing,
 		supportsUsageInStreaming: true,

@@ -9,11 +9,11 @@ import {
   readlink,
   rename,
   rm,
-  symlink,
   writeFile,
 } from 'node:fs/promises';
 import { dirname, join, relative, resolve, sep } from 'node:path';
 import { load } from 'js-yaml';
+import { createDirectorySymlink, renameOverPointer } from '../utils/directory-pointer.js';
 import {
   ActivationJournalStore,
   type ActivationJournalIdentity,
@@ -169,8 +169,8 @@ export class FileConfigurationRepository {
   async replaceActivePointer(revisionId: string): Promise<void> {
     assertRevisionId(revisionId);
     const temporaryPath = join(this.rootPath, `.active-${randomUUID()}`);
-    await symlink(join('revisions', revisionId), temporaryPath, 'dir');
-    await rename(temporaryPath, this.activePath);
+    await createDirectorySymlink(join('revisions', revisionId), temporaryPath);
+    await renameOverPointer(temporaryPath, this.activePath);
     await syncDirectory(this.rootPath);
   }
 
@@ -252,11 +252,19 @@ export class FileConfigurationRepository {
     });
     if (target === null) return null;
     const normalized = target.replaceAll('\\', '/');
+    // POSIX pointers stay relative (`revisions/<id>`); Windows junctions read
+    // back as absolute paths ending in `/revisions/<id>`. Both forms identify
+    // a revision inside this repository's own revisions storage.
     const prefix = 'revisions/';
-    if (!normalized.startsWith(prefix)) {
+    const marker = '/revisions/';
+    const revisionId = normalized.startsWith(prefix)
+      ? normalized.slice(prefix.length)
+      : normalized.includes(marker)
+        ? normalized.slice(normalized.lastIndexOf(marker) + marker.length)
+        : null;
+    if (revisionId === null) {
       throw new RecoveryBlockedError('active configuration pointer escapes revision storage');
     }
-    const revisionId = normalized.slice(prefix.length);
     assertRevisionId(revisionId);
     return revisionId;
   }

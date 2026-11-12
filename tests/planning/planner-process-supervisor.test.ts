@@ -5,7 +5,11 @@ import { join, resolve } from 'node:path';
 import { PassThrough } from 'node:stream';
 import { describe, expect, it, vi } from 'vitest';
 import { PlannerRunError } from '../../src/planning/planner-audit-contract.js';
-import { PlannerProcessSupervisor } from '../../src/planning/planner-process-supervisor.js';
+import {
+  PlannerProcessSupervisor,
+  resolvePlannerCommand,
+  resolveVendoredPlannerCommand,
+} from '../../src/planning/planner-process-supervisor.js';
 
 interface FakeProcess extends EventEmitter {
   stdin: PassThrough;
@@ -389,10 +393,97 @@ describe('PlannerProcessSupervisor', () => {
       request: { sessionId: 'session-vendored', source: 'gateway' },
     } as never, 'kernel');
 
-    expect(spawn.mock.calls[0]?.[0]).toBe(resolve(
+    expect(spawn.mock.calls[0]?.[0]).toBe(process.execPath);
+    expect(spawn.mock.calls[0]?.[1]?.[0]).toBe(resolve(
       process.cwd(),
       'planner/AnyFusion-Pi/packages/coding-agent/dist/cli.js',
     ));
+  });
+
+  it('resolves the installed release Planner layout when the launcher env is missing', async () => {
+    const installRoot = await mkdtemp(join(tmpdir(), 'metawork-install-root-'));
+    const plannerCli = join(
+      installRoot,
+      'app',
+      'current',
+      'planner',
+      'packages',
+      'coding-agent',
+      'dist',
+      'cli.js',
+    );
+    await mkdir(join(plannerCli, '..'), { recursive: true });
+    await writeFile(plannerCli, '');
+    const previous = {
+      installRoot: process.env.METAWORK_INSTALL_ROOT,
+      anyFusionRoot: process.env.ANYFUSION_INSTALL_ROOT,
+      command: process.env.METACLAW_PLANNER_COMMAND,
+      tuiCommand: process.env.METACLAW_PLANNER_TUI_COMMAND,
+    };
+    process.env.METAWORK_INSTALL_ROOT = installRoot;
+    delete process.env.ANYFUSION_INSTALL_ROOT;
+    delete process.env.METACLAW_PLANNER_COMMAND;
+    delete process.env.METACLAW_PLANNER_TUI_COMMAND;
+    try {
+      const child = fakeProcess();
+      completeRpcTurn(child);
+      const spawn = vi.fn(() => child as never);
+      const supervisor = new PlannerProcessSupervisor({
+        plannerHome: join(tmpdir(), `planner-home-installed-${process.pid}`),
+        sessionDir: join(tmpdir(), `planner-session-installed-${process.pid}`),
+        spawn: spawn as never,
+      });
+
+      await supervisor.run('plan this', {
+        timeoutMs: 1_000,
+        request: { sessionId: 'session-installed', source: 'gateway' },
+      } as never, 'kernel');
+
+      expect(spawn.mock.calls[0]?.[0]).toBe(process.execPath);
+      expect(spawn.mock.calls[0]?.[1]?.[0]).toBe(plannerCli);
+    } finally {
+      if (previous.installRoot === undefined) delete process.env.METAWORK_INSTALL_ROOT;
+      else process.env.METAWORK_INSTALL_ROOT = previous.installRoot;
+      if (previous.anyFusionRoot === undefined) delete process.env.ANYFUSION_INSTALL_ROOT;
+      else process.env.ANYFUSION_INSTALL_ROOT = previous.anyFusionRoot;
+      if (previous.command === undefined) delete process.env.METACLAW_PLANNER_COMMAND;
+      else process.env.METACLAW_PLANNER_COMMAND = previous.command;
+      if (previous.tuiCommand === undefined) delete process.env.METACLAW_PLANNER_TUI_COMMAND;
+      else process.env.METACLAW_PLANNER_TUI_COMMAND = previous.tuiCommand;
+      await rm(installRoot, { recursive: true, force: true });
+    }
+  });
+
+  it('fails closed with an actionable message when no vendored Planner exists', () => {
+    const missing = resolveVendoredPlannerCommand({
+      moduleRoot: join(tmpdir(), 'metawork-missing-root', 'dist'),
+      cwd: join(tmpdir(), 'metawork-missing-cwd'),
+      appCurrent: join(tmpdir(), 'metawork-missing-app', 'current'),
+      pathExists: () => false,
+    });
+
+    expect(missing).toBeNull();
+    expect(() => resolvePlannerCommand({
+      env: {},
+      moduleRoot: join(tmpdir(), 'metawork-missing-root', 'dist'),
+      cwd: join(tmpdir(), 'metawork-missing-cwd'),
+      appCurrent: join(tmpdir(), 'metawork-missing-app', 'current'),
+      pathExists: () => false,
+    })).toThrow(/AnyFusion Planner command is unavailable.*METACLAW_PLANNER_COMMAND/su);
+  });
+
+  it('prefers the installed release Planner over a source tree in the working directory', () => {
+    const appCurrent = resolve('/install/app/current');
+    const installedCli = resolve(appCurrent, 'planner', 'packages', 'coding-agent', 'dist', 'cli.js');
+    const sourceCli = resolve('/repo', 'planner', 'AnyFusion-Pi', 'packages', 'coding-agent', 'dist', 'cli.js');
+
+    expect(resolveVendoredPlannerCommand({
+      env: { METAWORK_INSTALL_ROOT: resolve('/install') },
+      moduleRoot: resolve('/install/app/current/dist'),
+      cwd: resolve('/repo'),
+      appCurrent,
+      pathExists: path => path === installedCli || path === sourceCli,
+    })).toBe(installedCli);
   });
 
   it('forwards each completed Planner message usage with the active model identity', async () => {
@@ -477,6 +568,37 @@ describe('PlannerProcessSupervisor', () => {
     } finally {
       if (previousHome === undefined) delete process.env.METACLAW_PLANNER_HOME;
       else process.env.METACLAW_PLANNER_HOME = previousHome;
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('routes script-entry Planner commands through the Node executable', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'planner-supervisor-script-entry-'));
+    const sessionDir = join(root, 'planner-sessions');
+    const scriptCommand = join(root, 'planner', 'packages', 'coding-agent', 'dist', 'cli.js');
+    const child = fakeProcess();
+    completeRpcTurn(child);
+    const spawn = vi.fn((_command: string, _args: string[], options: {
+      env?: NodeJS.ProcessEnv;
+    }) => child as never);
+
+    try {
+      const supervisor = new PlannerProcessSupervisor({
+        command: scriptCommand,
+        sessionDir,
+        spawn: spawn as never,
+      });
+
+      await supervisor.run('plan this', {
+        timeoutMs: 1_000,
+        request: { sessionId: 'session-script-entry', source: 'gateway' },
+      } as never, 'kernel');
+
+      expect(spawn).toHaveBeenCalledTimes(1);
+      const [spawnCommand, spawnArgs] = spawn.mock.calls[0]!;
+      expect(spawnCommand).toBe(process.execPath);
+      expect(spawnArgs[0]).toBe(scriptCommand);
+    } finally {
       await rm(root, { recursive: true, force: true });
     }
   });

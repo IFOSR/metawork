@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { mkdir, open, readFile, rename, unlink } from 'node:fs/promises';
 import { dirname, join, resolve } from 'node:path';
 import type { WorkspaceCatalogStore } from '../workspace/workspace-catalog-store.js';
+import { renameReplacingTarget } from '../utils/directory-pointer.js';
 import {
   isValidWorkspaceId,
   normalizeWorkspaceDisplayName,
@@ -136,7 +137,7 @@ async function atomicWriteJson(path: string, value: unknown): Promise<void> {
     await handle.sync();
     await handle.close();
     handle = undefined;
-    await rename(temporaryPath, path);
+    await renameReplacingTarget(temporaryPath, path);
   } catch (error) {
     await handle?.close().catch(() => undefined);
     await unlink(temporaryPath).catch(() => undefined);

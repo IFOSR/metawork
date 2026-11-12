@@ -1,0 +1,134 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>MetaWork</title>
+  <link rel="icon" href="data:,">
+  <link rel="stylesheet" href="/console/style.css?v=1.5.13">
+</head>
+<body>
+  <!-- ─── 首页（公开落地页）─── -->
+  <div id="app-home" class="hidden">
+    <header class="site-nav">
+      <div class="site-brand">MetaWork</div>
+      <nav class="site-nav-right" id="home-nav-right"></nav>
+    </header>
+    <section class="hero">
+      <h1>MetaWork</h1>
+      <p class="tagline">面向持久化、可治理 Agent 工作流的商业 AI Task OS。将自然语言需求转化为可持久化的任务与工作图，交付可验收的结果，而不是停留在一次聊天回复。</p>
+      <div class="cta" id="home-cta">
+        <button id="cta-register">注册账号</button>
+        <button id="cta-login" class="ghost">登录</button>
+      </div>
+    </section>
+    <section class="why">
+      <h2>为什么用 MetaWork</h2>
+      <div class="why-grid">
+        <div class="card"><h3>持久工作</h3><p>任务、工作图、结果、恢复事实和审计记录可跨进程重启保留。</p></div>
+        <div class="card"><h3>受控执行</h3><p>Planner 负责提出工作，ControlKernel 负责授权状态变化，Executor 只执行明确获批的尝试。</p></div>
+        <div class="card"><h3>多端统一</h3><p>Desktop、Web、TUI 与飞书客户端使用同一套版本化命令与事件平面，查看同一批任务与会话。</p></div>
+        <div class="card"><h3>可解释路由</h3><p>每个获批尝试都固定到配置版本以及完整的模型与权限绑定。</p></div>
+      </div>
+    </section>
+    <section class="landing-plans">
+      <h2>套餐与价格</h2>
+      <div id="home-plans" class="plans-grid">加载中…</div>
+    </section>
+    <footer class="footer">© 2026 上海元聚变人工智能科技有限公司 · MetaWork · <span style="opacity:.6">v1.5.13</span></footer>
+  </div>
+
+  <!-- ─── 登录 / 注册 ─── -->
+  <div id="app-auth" class="hidden">
+    <header class="site-nav">
+      <div class="site-brand">MetaWork</div>
+      <nav class="site-nav-right">
+        <button id="auth-back-home" class="nav-link">返回首页</button>
+      </nav>
+    </header>
+    <div class="auth-card card">
+      <div class="tabs">
+        <button id="tab-login" class="tab active">登录</button>
+        <button id="tab-register" class="tab">注册</button>
+      </div>
+      <form id="form-login" class="stack">
+        <label>邮箱<input id="login-email" type="email" required autocomplete="email"></label>
+        <label>密码（至少 12 位）<input id="login-password" type="password" required minlength="12" autocomplete="current-password"></label>
+        <button type="submit">登录</button>
+        <p id="login-error" class="error"></p>
+      </form>
+      <form id="form-register" class="stack hidden">
+        <label>邮箱<input id="reg-email" type="email" required autocomplete="email"></label>
+        <label>密码（至少 12 位）<input id="reg-password" type="password" required minlength="12" autocomplete="new-password"></label>
+        <label>邮箱验证码
+          <span class="row">
+            <input id="reg-code" required maxlength="6">
+            <button id="btn-send-code" type="button" class="ghost">发送验证码</button>
+          </span>
+        </label>
+        <button type="submit">注册</button>
+        <p id="register-error" class="error"></p>
+      </form>
+      <p class="hint">遇到问题？在 MetaWork 应用内联系支持。</p>
+    </div>
+  </div>
+
+  <!-- ─── 后台（控制台）：左侧菜单 + 中央正文 ─── -->
+  <div id="app-console" class="shell hidden">
+    <aside class="sidebar">
+      <div class="sidebar-brand">
+        <div class="brand-mark">MW</div>
+        <div>
+          <strong>MetaWork</strong>
+          <small>控制台</small>
+        </div>
+      </div>
+      <nav class="sidebar-nav" id="console-nav"></nav>
+      <div class="sidebar-footer">
+        <div id="console-user" class="sidebar-user"></div>
+        <button id="btn-home" class="ghost small">返回首页</button>
+        <button id="btn-logout" class="danger small">退出登录</button>
+      </div>
+    </aside>
+    <main class="main">
+      <header class="main-header">
+        <h1 id="console-title">实例</h1>
+      </header>
+      <div class="content">
+        <section id="view-instances" class="hidden">
+          <div class="card">
+            <h2>我的实例</h2>
+            <div id="instance-detail" class="stack">加载中…</div>
+            <div id="instance-actions" class="row" style="margin-top: 14px;"></div>
+            <p id="instances-hint" class="hint"></p>
+          </div>
+        </section>
+        <section id="view-plans" class="hidden">
+          <div class="card">
+            <h2>购买套餐</h2>
+            <div id="plan-cards" class="plans-grid">加载中…</div>
+            <div id="pay-panel" class="pay-panel hidden">
+              <p id="pay-status"></p>
+              <div id="pay-qr" class="qr"></div>
+              <p class="hint">请使用微信扫码完成支付；支付成功后本页自动更新。</p>
+            </div>
+          </div>
+        </section>
+        <section id="view-account" class="hidden">
+          <div class="card">
+            <h2>账户信息</h2>
+            <div id="account-email" class="kv"></div>
+            <div id="account-created" class="kv"></div>
+            <div id="account-id" class="kv"></div>
+            <div id="account-entitlement" class="kv" style="margin-top: 14px;"></div>
+            <button id="btn-refresh-entitlement" class="ghost small">刷新权益</button>
+          </div>
+        </section>
+      </div>
+    </main>
+  </div>
+
+  <script src="/console/vendor/qrcode.js?v=1.4.4"></script>
+  <script src="/console/app.js?v=1.5.13"></script>
+</body>
+</html>

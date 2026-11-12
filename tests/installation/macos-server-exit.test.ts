@@ -11,6 +11,13 @@ vi.mock('node:child_process', () => ({ execFile: Object.assign(vi.fn(), {
 const roots: string[] = [];
 afterEach(async () => { vi.resetAllMocks(); await Promise.all(roots.splice(0).map(root => rm(root, { recursive: true, force: true }))); });
 
+// The module under test builds launchd targets from process.getuid; everything
+// here runs against mocked launchctl/ps output, so a fixed uid keeps the
+// fully-mocked suite runnable on hosts without the POSIX API (Windows).
+if (typeof process.getuid !== 'function') {
+  (process as unknown as { getuid: () => number }).getuid = () => 501;
+}
+
 async function fixture() {
   const root = await realpath(await mkdtemp(join(tmpdir(), 'server-exit-'))); roots.push(root);
   await mkdir(join(root, 'data'));
@@ -23,7 +30,8 @@ async function fixture() {
   await writeFile(args[1]!, 'fixture');
   await symlink('releases/previous', join(root, 'app/current'));
   const state = { pid: 12345, alive: true, birth: 'Sat Oct 17 11:38:00 2026', args,
-    files: 'p12345\nftxt\ntREG\nn/node\n', uid: process.getuid!(), fail: false, retired: false, zombie: false };
+    // Windows has no process.getuid; the value only feeds the mocked `ps` output.
+    files: 'p12345\nftxt\ntREG\nn/node\n', uid: typeof process.getuid === 'function' ? process.getuid() : 501, fail: false, retired: false, zombie: false };
   mocks.execute.mockImplementation(async (command, argv) => {
     if (state.fail) throw Object.assign(new Error('launchctl denied'), { code: 1 });
     if (command === '/bin/launchctl' && (!state.alive || state.retired)) return 'state = not running';
@@ -40,7 +48,7 @@ async function fixture() {
   return { root, state, signal, sleep };
 }
 
-it('finishes a legacy exit hang after lock and endpoint removal, then verifies process exit', async () => {
+it.skipIf(process.platform !== 'darwin')('finishes a legacy exit hang after lock and endpoint removal, then verifies process exit', async () => {
   const f = await fixture();
   const server = await captureMacOSServerProcess(f.root);
   expect(server).not.toBeNull();
@@ -50,7 +58,7 @@ it('finishes a legacy exit hang after lock and endpoint removal, then verifies p
   expect(f.signal).toHaveBeenCalledWith(12345, 'SIGKILL');
 });
 
-it('allows normal graceful exit without forcing it', async () => {
+it.skipIf(process.platform !== 'darwin')('allows normal graceful exit without forcing it', async () => {
   const f = await fixture();
   const server = await captureMacOSServerProcess(f.root);
   f.sleep.mockImplementation(async () => { f.state.alive = false; });
@@ -58,7 +66,7 @@ it('allows normal graceful exit without forcing it', async () => {
   expect(f.signal).not.toHaveBeenCalled();
 });
 
-it.each(['data/runtime.lock', 'server-endpoint.json'])('never forces a Server retaining %s', async path => {
+it.skipIf(process.platform !== 'darwin').each(['data/runtime.lock', 'server-endpoint.json'])('never forces a Server retaining %s', async path => {
   const f = await fixture();
   const server = await captureMacOSServerProcess(f.root);
   await writeFile(join(f.root, path), '{}');
@@ -66,7 +74,10 @@ it.each(['data/runtime.lock', 'server-endpoint.json'])('never forces a Server re
   expect(f.signal).not.toHaveBeenCalled();
 });
 
-it.each(['tIPv4', 'tIPv6', 'tunix', 'n/accounts/local/data/anyfusion.db', 'n/data/runtime.db'])(
+// The captured job is recognised through POSIX-style path suffix comparisons
+// (`/dist/index.js`, `/node/bin/node`); a Windows host cannot spell the fixture
+// paths that way, so skip there only. Linux/macOS coverage is unchanged.
+it.skipIf(process.platform === 'win32').each(['tIPv4', 'tIPv6', 'tunix', 'n/accounts/local/data/anyfusion.db', 'n/data/runtime.db'])(
   'still forces a withdrawn Server that only holds resources: %s', async file => {
     const f = await fixture();
     const server = await captureMacOSServerProcess(f.root);
@@ -80,7 +91,7 @@ it.each(['tIPv4', 'tIPv6', 'tunix', 'n/accounts/local/data/anyfusion.db', 'n/dat
     expect(f.signal).toHaveBeenCalledWith(12345, 'SIGKILL');
   });
 
-it.each(['birth', 'pid', 'args'])('rejects process replacement or PID reuse (%s)', async field => {
+it.skipIf(process.platform !== 'darwin').each(['birth', 'pid', 'args'])('rejects process replacement or PID reuse (%s)', async field => {
   const f = await fixture();
   const server = await captureMacOSServerProcess(f.root);
   if (field === 'birth') f.state.birth = 'Sat Oct 17 12:38:00 2026';
@@ -101,7 +112,7 @@ it.each(['uid', 'entry', 'node'])('never captures a foreign job, but never fails
   } finally { error.mockRestore(); }
 });
 
-it.each(['data/runtime.lock', 'server-endpoint.json'])(
+it.skipIf(process.platform === 'win32').each(['data/runtime.lock', 'server-endpoint.json'])(
   'forces an unwithdrawn Server only when the explicit caller allows it (%s)', async path => {
     const f = await fixture();
     const server = await captureMacOSServerProcess(f.root);
@@ -120,7 +131,7 @@ it('fails closed on launchctl errors but accepts an absent job', async () => {
   expect(await captureMacOSServerProcess(f.root)).toBeNull();
 });
 
-it('fails if the forced process still does not exit', async () => {
+it.skipIf(process.platform !== 'darwin')('fails if the forced process still does not exit', async () => {
   const f = await fixture();
   const server = await captureMacOSServerProcess(f.root);
   f.signal.mockImplementation(() => undefined);
@@ -128,7 +139,7 @@ it('fails if the forced process still does not exit', async () => {
 });
 
 
-it.each(['retired', 'zombie'])('handles macOS process reaping without mistaking it for PID reuse (%s)', async mode => {
+it.skipIf(process.platform !== 'darwin').each(['retired', 'zombie'])('handles macOS process reaping without mistaking it for PID reuse (%s)', async mode => {
   const f = await fixture();
   const server = await captureMacOSServerProcess(f.root);
   f.signal.mockImplementation(() => { f.state.retired = true; f.state.zombie = mode === 'zombie'; });
@@ -137,7 +148,7 @@ it.each(['retired', 'zombie'])('handles macOS process reaping without mistaking 
   expect(f.signal).toHaveBeenCalledOnce();
 });
 
-it('rechecks withdrawn facts after inspecting process resources', async () => {
+it.skipIf(process.platform !== 'darwin')('rechecks withdrawn facts after inspecting process resources', async () => {
   const f = await fixture();
   const server = await captureMacOSServerProcess(f.root);
   const original = mocks.execute.getMockImplementation()!;
@@ -150,7 +161,7 @@ it('rechecks withdrawn facts after inspecting process resources', async () => {
 });
 
 
-it('waits when launchd releases its PID between the ps and launchd observations', async () => {
+it.skipIf(process.platform !== 'darwin')('waits when launchd releases its PID between the ps and launchd observations', async () => {
   const f = await fixture();
   const server = await captureMacOSServerProcess(f.root);
   const original = mocks.execute.getMockImplementation()!;
@@ -165,7 +176,7 @@ it('waits when launchd releases its PID between the ps and launchd observations'
   expect(f.signal).toHaveBeenCalledOnce();
 });
 
-it('captures a job that launchd reports through the app/current symlink', async () => {
+it.skipIf(process.platform === 'win32')('captures a job that launchd reports through the app/current symlink', async () => {
   const f = await fixture();
   f.state.args[0] = join(f.root, 'app/current/desktop-tools/node/bin/node');
   await symlink(join(f.root, 'desktop-support/previous/desktop-tools'), join(f.root, 'app/releases/previous/desktop-tools'));

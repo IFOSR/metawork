@@ -35,6 +35,34 @@ function resolveRuntime(installRoot) {
   return { runtimeEntry, releaseId };
 }
 
+/** The managed launcher pins the vendored Planner; a Server started through
+ *  this entrypoint must resolve the same command, schema and session paths so
+ *  the Planner never falls back to a bare PATH lookup. An explicit environment
+ *  value still wins, matching the managed launcher's `if not defined` rule. */
+function resolvePlannerEnvironment(installRoot) {
+  const plannerCli = join(
+    installRoot, 'app', 'current', 'planner', 'packages', 'coding-agent', 'dist', 'cli.js',
+  );
+  const schema = join(installRoot, 'app', 'current', 'dist', 'planning-agent-plan-v8.schema.json');
+  const environment = {};
+  if (existsSync(plannerCli) && !process.env.METACLAW_PLANNER_COMMAND) {
+    environment.METACLAW_PLANNER_COMMAND = plannerCli;
+  }
+  if (!process.env.METACLAW_PLANNER_TUI_COMMAND && environment.METACLAW_PLANNER_COMMAND) {
+    environment.METACLAW_PLANNER_TUI_COMMAND = environment.METACLAW_PLANNER_COMMAND;
+  }
+  if (existsSync(schema) && !process.env.ANYFUSION_PLANNER_SCHEMA_PATH) {
+    environment.ANYFUSION_PLANNER_SCHEMA_PATH = schema;
+  }
+  if (!process.env.METACLAW_PLANNER_SCHEMA_PATH && environment.ANYFUSION_PLANNER_SCHEMA_PATH) {
+    environment.METACLAW_PLANNER_SCHEMA_PATH = environment.ANYFUSION_PLANNER_SCHEMA_PATH;
+  }
+  if (!process.env.METACLAW_PLANNER_SESSION_DIR) {
+    environment.METACLAW_PLANNER_SESSION_DIR = join(installRoot, 'data', 'planner-sessions');
+  }
+  return environment;
+}
+
 function signalExitCode(signal) {
   const signalNumber = {
     SIGHUP: 1,
@@ -51,6 +79,7 @@ function main() {
     ...process.env,
     METAWORK_INSTALL_ROOT: installRoot,
     ANYFUSION_INSTALL_ROOT: installRoot,
+    ...resolvePlannerEnvironment(installRoot),
   };
   if (releaseId) {
     env.METAWORK_RELEASE_ID = releaseId;

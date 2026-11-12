@@ -63,7 +63,10 @@ Desktop exit recovery implementation record for local acceptance.
 
 Official account authorization (2026-10-09, ADR-0047): the local Server now
 owns an in-memory official session and normalized entitlement state. Production
-Gateway admission verifies that entitlement online; active work triggers one
+Gateway admission verifies that entitlement online; a successful official login
+verifies the entitlement once more immediately, and every client page entry
+(already logged in) triggers one online verification while the periodic UI poll
+keeps reading only the local projection. Active work triggers one
 Server-level daily check after 24 hours from the last successful verification.
 The official reference service is deployed on huoshan and owns account/session
 digests, licenses, public plan prices, payment orders and fixed internal
@@ -74,10 +77,21 @@ payment-attempt history with exact integer money, refunds are admin-only over
 SSH loopback and restore the pre-purchase license revision, and money that
 cannot settle persists as `payment_incidents` for manual reconciliation.
 Local clients only proxy pay/poll/list; without `PAYMENT_HUB_*` credentials
-payments stay closed with otherwise unchanged behavior. Query billing remains
+payments AND the OPC unified login stay closed with otherwise unchanged
+behavior. Query billing remains
 separate. No local session token is persisted, and Server restart requires
 official login again. Local Web cookie / Desktop ticket authentication remains
 mandatory for official-account routes.
+Email login restored (2026-10-20, ADR-0051, superseding the one-day ADR-0049
+OPC-OTP experiment): registration now requires a mailbox verification code —
+the official service self-manages the 6-digit code (hashed, TTL 15 minutes,
+five attempts, one active code per mailbox) and delivers it over generic SMTP
+(nodemailer; `SMTP_*` configuration, K8s Secret injection). Unconfigured SMTP
+answers `email_unavailable` for registration while login keeps working.
+Accounts anchor to the email address again; the OPC identity model (ADR-0049)
+was terminated after production measurements showed its OTP channels never
+deliver to unregistered identities. Registration errors fail closed, and a
+local daily breaker plus rate limits guard the unauthenticated mail trigger.
 Official AI simplification (2026-10-10): the service authenticates/authorizes the
 request, selects a fixed business prompt, calls the configured model with provider
 defaults and returns parsed business JSON. It does not impose AI quotas, request
@@ -442,6 +456,13 @@ SettingsAssistant and selected-model OpenRouter profile summarization share
 InternalLlmService, using fixed official business operations in production
 (ADR-0047). Production does not load `internal/llm.json` or
 `internal/llm-credentials.json`, and has no local-model fallback.
+Capability description generation and model information summarization prefer the
+user's own configured model: the client submits only a model reference, the
+Server resolves the endpoint from the active configuration or the official
+public preset catalog and the credential from the local credential store, and
+the official service remains the fallback. Local direct calls send no sampling
+parameters, so fixed-subscription models that pin one value still work
+(2026-10-21).
 Summaries become model routingNotes; they never grant hard capabilities.
 The Agent settings capability section uses a separate read-only internal-LLM
 explanation of selected-model evidence and available tool affordances. It speaks
@@ -881,6 +902,8 @@ Task's durable historical projection after a newer Conversation turn begins.
 Executor path invariant: the Planner-projected `targetPaths` are Workspace-relative and the Kernel-derived `authorizedWorkingDirectory` is either the Conversation-bound Workspace root (or an authorized child) for writes, or a Runtime-owned scratch root for read-only work. Each Executor also needs a private runtime home for provider configuration, tools and sessions. These are separate path contracts. The adapter must materialize both before process launch and must never rely on a CLI's implicit `HOME` discovery. For Pi, the adapter must set `HOME`, `PI_CODING_AGENT_DIR` and `PI_CODING_AGENT_SESSION_DIR` and pre-create the session directory. For Codex, the adapter must set an isolated `CODEX_HOME` containing the rewritten provider config. Startup should fail with a path-specific diagnostic if either the authorized directory or private runtime home is missing. Native and Docker compatibility launches seed that private home from the operator-managed templates (`METACLAW_EXECUTOR_CODEX_HOME`, `METACLAW_EXECUTOR_PI_HOME`) and inject provider credentials from the assigned env files (`METACLAW_CODEX_EXECUTOR_ENV_FILE`, `METACLAW_PI_EXECUTOR_ENV_FILE`); the host environment whitelist never forwards `OPENAI_*` on its own.
 
 Turn cancellation invariant: the Client stop control cancels the Turn it is displaying, never by sending a Task command. The Application Shell latches the cancellation for that Turn, aborts the in-flight Planner process through `abortSession` (which keeps the Conversation session usable, unlike `stopSession`), rejects any Planner proposal that races the abort with `turn cancelled by user`, and cancels work that already became a Task through the existing Kernel cancellation fence. A cancelled Turn is `cancelled` (已取消), not `failed`, and a new Turn clears the latch. No Kernel event type is added, so cancellation stays a Client control over existing facts rather than a second strategic control plane (ADR-0040).
+
+Planner launch invariant: the Planner process is always the vendored AnyFusion-Pi fork; a host-global package is never used as the Planner. The launch command resolves in this order: an explicitly injected command, then `METACLAW_PLANNER_COMMAND`, then `METACLAW_PLANNER_TUI_COMMAND`, then the vendored CLI found in the release layout (`<install root>/app/current/planner/packages/coding-agent/dist/cli.js`) or the source-tree layout (`planner/AnyFusion-Pi/packages/coding-agent/dist/cli.js`), with an explicit install root taking precedence over a source tree that merely sits in the working directory. When none of these resolve, the launch fails closed with an actionable message; it never falls back to a bare executable name, because a PATH lookup failure only produces an opaque `spawn ENOENT` that hides a broken installation. The plan schema (`ANYFUSION_PLANNER_SCHEMA_PATH`) is required by `submit_planning_proposal` and is resolved from the same release when the environment does not name it.
 
 Managed path-naming invariant: durable identities (Task, generation, Subtask, attempt) stay complete in the database, the Kernel ledger and every handle/URI, while the on-disk directory names derived from them are deterministic bounded segments of at most 64 characters carrying a readable prefix/suffix plus an eight-character digest. This keeps a managed workspace at `<account>/workspace-store/workspaces/<segment>/<segment>/<segment>/files`, a managed Git repository and an attempt runtime HOME well inside `NAME_MAX` and inside the budget of tools that flatten a path into one component; a single long plan-event hash must never be repeated across nesting levels. The mapping is pure, so recovery recomputes the same directory without a lookup table. Executor failure facts are passed through the same way: `KernelFailure.summary` carries the upstream text as it happened, `detail` preserves the raw tail, `label` is only an optional localized headline, and `origin`, `stage`, `actor`, `provider` and `step` record where the failure came from. Client surfaces render that text instead of replacing it with a category.
 

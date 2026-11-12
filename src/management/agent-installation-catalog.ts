@@ -1,3 +1,9 @@
+import {
+  DEFAULT_TOOL_PROBE_POLICY,
+  MANAGED_TOOL_PROBE_POLICY,
+  type ToolProbePolicy,
+} from '../executor/tool-probe.js';
+
 export type SupportedAgentId = 'pi-agent' | 'codex-cli';
 
 export interface AgentInstallationDefinition {
@@ -6,6 +12,11 @@ export interface AgentInstallationDefinition {
   args: readonly string[];
   required: boolean;
   installUrl: string;
+  /**
+   * 探测策略：受管 Pi 是随包自包含二进制，首次启动要付出镜像加载与主机扫描
+   * 的冷启动代价，必须给更长预算并允许重试，否则健康安装会被判成损坏。
+   */
+  probe: ToolProbePolicy;
 }
 
 export const AGENT_INSTALLATION_CATALOG: readonly AgentInstallationDefinition[] = [
@@ -15,6 +26,7 @@ export const AGENT_INSTALLATION_CATALOG: readonly AgentInstallationDefinition[] 
     args: ['--version'],
     required: true,
     installUrl: 'https://github.com/badlogic/pi-mono/tree/main/packages/coding-agent',
+    probe: MANAGED_TOOL_PROBE_POLICY,
   },
   {
     agentId: 'codex-cli',
@@ -22,6 +34,7 @@ export const AGENT_INSTALLATION_CATALOG: readonly AgentInstallationDefinition[] 
     args: ['--version'],
     required: false,
     installUrl: 'https://developers.openai.com/codex/cli/',
+    probe: DEFAULT_TOOL_PROBE_POLICY,
   },
 ];
 

@@ -1,10 +1,24 @@
 import { readFileSync } from "node:fs";
+import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const DEFAULT_SKILL_PATH = fileURLToPath(new URL("../metaclaw-planner/SKILL.md", import.meta.url));
 
+/**
+ * `bun build --compile` rewrites `import.meta.url` into the virtual `B:\~BUN`
+ * root and does not embed files that are only read at runtime, so the compiled
+ * Executor binary resolves the fixed Skill next to the executable instead
+ * (copy-assets / copy-binary-assets stage it there).
+ */
+function skillCandidates(skillPath?: string): string[] {
+	if (skillPath?.trim()) return [skillPath];
+	const candidates = [DEFAULT_SKILL_PATH];
+	if (process.execPath) candidates.push(join(dirname(process.execPath), "metaclaw-planner", "SKILL.md"));
+	return candidates;
+}
+
 export function buildAnyFusionPlannerSystemPrompt(
-	skillPath = DEFAULT_SKILL_PATH,
+	skillPath?: string,
 	purpose: "kernel" | "validation" | "configuration" = process.env.ANYFUSION_PLANNER_TURN_PURPOSE === "configuration"
 		? "configuration"
 		: process.env.ANYFUSION_PLANNER_TURN_PURPOSE === "validation"
@@ -66,14 +80,18 @@ export function buildAnyFusionPlannerSystemPrompt(
 	].join("\n\n");
 }
 
-function readRequiredSkill(skillPath: string): string {
-	try {
-		const skill = readFileSync(skillPath, "utf8");
-		if (!skill.trim()) throw new Error("file is empty");
-		return skill;
-	} catch (error) {
-		throw new Error(
-			`AnyFusion Planner fixed Skill is unavailable at ${skillPath}: ${error instanceof Error ? error.message : String(error)}`,
-		);
+function readRequiredSkill(skillPath?: string): string {
+	let lastError: unknown = null;
+	for (const candidate of skillCandidates(skillPath)) {
+		try {
+			const skill = readFileSync(candidate, "utf8");
+			if (!skill.trim()) throw new Error("file is empty");
+			return skill;
+		} catch (error) {
+			lastError = error;
+		}
 	}
+	throw new Error(
+		`AnyFusion Planner fixed Skill is unavailable (tried ${skillCandidates(skillPath).join(", ")}): ${lastError instanceof Error ? lastError.message : String(lastError)}`,
+	);
 }

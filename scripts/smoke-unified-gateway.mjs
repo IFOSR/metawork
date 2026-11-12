@@ -99,15 +99,42 @@ try {
 } finally {
   if (activeServer?.exitCode === null) activeServer.kill('SIGTERM');
   // restart 会 detached 启动新实例：按 manifest PID 兜底清理，避免遗留进程。
+  const killed = [];
   try {
     if (existsSync(endpointManifest)) {
       const pid = JSON.parse(readFileSync(endpointManifest, 'utf8')).pid;
-      if (Number.isSafeInteger(pid) && pid > 0) process.kill(pid, 'SIGTERM');
+      if (Number.isSafeInteger(pid) && pid > 0) {
+        process.kill(pid, 'SIGTERM');
+        killed.push(pid);
+      }
     }
   } catch {
     // best-effort cleanup only
   }
+  // Windows cannot delete a file that a process still holds open, so wait for
+  // the Server to release its database before removing the tree.
+  await waitForProcessExit(killed);
+  if (activeServer?.exitCode === null) {
+    await waitForExit(activeServer).catch(() => killProcessGroup(activeServer, 'SIGKILL'));
+  }
   removeTree(smokeRoot);
+}
+
+async function waitForProcessExit(pids, timeoutMs = 20_000) {
+  if (pids.length === 0) return;
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    const alive = pids.filter(pid => {
+      try {
+        process.kill(pid, 0);
+        return true;
+      } catch {
+        return false;
+      }
+    });
+    if (alive.length === 0) return;
+    await new Promise(resolve => setTimeout(resolve, 100));
+  }
 }
 
 function runAcceptance(label, runner, files, cwd) {
@@ -180,13 +207,44 @@ async function runNativeMultiClientAcceptance() {
         && event.payload?.conversation?.conversationId === created.conversationId
       ));
 
+<<<<<<< HEAD
+      // The current client contract observes a Conversation instead of
+      // attaching to its raw event stream, so a client only receives
+      // Conversation detail once it follows that Conversation.
+      await clientA.client.followConversation(
+        created.conversationId,
+        view => clientA.observed.push(view),
+      );
+=======
       const viewsA = [];
       const stopA = await clientA.client.followConversation(created.conversationId, view => viewsA.push(view));
+>>>>>>> origin/main
       const helpReceipt = await clientA.client.submitSlashCommand('/help', {
         mode: 'attach',
         conversationId: created.conversationId,
       });
       assertAccepted(helpReceipt, 'attached Client command');
+<<<<<<< HEAD
+      await waitFor(
+        () => clientA.observed.some(view => view.turns.length > 0),
+        15_000,
+      );
+      if (
+        clientB.observed.some(view => view.conversationId === created.conversationId)
+        || clientB.events.some(event => event.conversationId === created.conversationId)
+      ) {
+        throw new Error('Unattached Client B received Conversation detail');
+      }
+
+      await clientB.client.followConversation(
+        created.conversationId,
+        view => clientB.observed.push(view),
+      );
+      await waitFor(
+        () => clientB.observed.some(view => view.turns.length > 0),
+        15_000,
+      );
+=======
       await waitFor(() => viewsA.some(view => view.turns.some(turn => turn.requestId === helpReceipt.requestId
         && turn.status === 'completed' && turn.answerRef)), 15_000);
       if (clientB.events.some(event => event.requestId === helpReceipt.requestId)) {
@@ -201,6 +259,7 @@ async function runNativeMultiClientAcceptance() {
       const answerB = viewsB.at(-1).turns.find(turn => turn.requestId === helpReceipt.requestId).answerRef;
       if (answerA.hash !== answerB.hash) throw new Error('Cross-client answer authority mismatch');
       stopA(); stopB();
+>>>>>>> origin/main
 
       const selectedC = await clientC.client.initializeWorkspace(`/workspace ${workspaceB}`);
       assertAccepted(selectedC, 'TUI Client C Workspace selection');
@@ -377,11 +436,13 @@ async function createClient(GatewayClient, GatewaySocketTransport, socketPath) {
   const transport = new GatewaySocketTransport(socketPath);
   const client = new GatewayClient(transport);
   const events = [];
+  const observed = [];
   const unsubscribe = client.onEvent(event => events.push(event));
   await client.connect();
   return {
     client,
     events,
+    observed,
     close() {
       unsubscribe();
       client.dispose();
@@ -495,13 +556,18 @@ function assertBuilt(path, hint) {
 
 // Native installation revisions are immutable, so restore owner write access before cleanup.
 function removeTree(path) {
-  try {
-    rmSync(path, { recursive: true, force: true });
-  } catch (error) {
-    if (error?.code !== 'EACCES' && error?.code !== 'EPERM') throw error;
-    spawnSync('chmod', ['-R', 'u+w', path]);
-    rmSync(path, { recursive: true, force: true });
+  for (let attempt = 0; attempt < 5; attempt += 1) {
+    try {
+      rmSync(path, { recursive: true, force: true });
+      return;
+    } catch (error) {
+      if (!['EACCES', 'EPERM', 'EBUSY'].includes(error?.code)) throw error;
+      // Windows uses the read-only attribute instead of POSIX permission bits.
+      if (process.platform === 'win32') spawnSync('attrib', ['-R', path, '/S', '/D']);
+      else spawnSync('chmod', ['-R', 'u+w', path]);
+    }
   }
+  rmSync(path, { recursive: true, force: true });
 }
 
 function runSync(label, command, args, options) {

@@ -6,6 +6,8 @@ export const PRODUCT_ENVIRONMENT = {
   providerRegion: ['METAWORK_PROVIDER_REGION', 'ANYFUSION_PROVIDER_REGION'],
   secretStore: ['METAWORK_SECRET_STORE', 'ANYFUSION_SECRET_STORE'],
   configHome: ['METAWORK_CONFIG_HOME', 'ANYFUSION_CONFIG_HOME'],
+  /** 用户可选工作目录的根；未设置则不限制。 */
+  workspaceRoot: ['METAWORK_WORKSPACE_ROOT', 'ANYFUSION_WORKSPACE_ROOT'],
 } as const;
 
 export function resolveProductEnvironment(

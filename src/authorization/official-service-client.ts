@@ -12,6 +12,9 @@ import {
   type OfficialPaymentView,
 } from './types.js';
 
+/** Production official service; baked into packaged releases. Deployments
+ *  targeting another official service override it with the
+ *  METAWORK_OFFICIAL_SERVER_URL environment variable (HTTPS URL). */
 export const DEFAULT_OFFICIAL_SERVICE_URL = 'https://14.103.216.193:9222';
 
 export interface OfficialServiceClientOptions {
@@ -50,8 +53,30 @@ export class OfficialServiceClient {
     return { sessionToken, account, entitlement };
   }
 
-  async register(email: string, password: string): Promise<void> {
-    await this.request('/v1/auth/register', { method: 'POST', body: { email, password } });
+  /** 沙盒免密：一次性 et 兑换官方代签发的登录形状会话（与登录响应同形状）。 */
+  async exchangeSandboxSession(et: string): Promise<{ sessionToken: string } & OfficialLoginResult> {
+    const data = parseObject(await this.request('/v1/runtime-access/session', {
+      method: 'POST',
+      body: { et },
+    }), 'sandbox session');
+    const account = parseAccount(data.account);
+    const entitlement = parseEntitlement(data.entitlement);
+    const sessionToken = typeof data.sessionToken === 'string' && data.sessionToken.length >= 32
+      ? data.sessionToken : null;
+    if (!sessionToken) throw new OfficialAuthorizationError('官方服务返回的沙盒会话无效', 'official_protocol_error');
+    return { sessionToken, account, entitlement };
+  }
+
+  async register(email: string, password: string, code: string): Promise<void> {
+    await this.request('/v1/auth/register', { method: 'POST', body: { email, password, code } });
+  }
+
+  async sendEmailCode(email: string): Promise<{ sent: boolean; expiresIn: number }> {
+    const data = parseObject(await this.request('/v1/auth/email/code', { method: 'POST', body: { email } }), 'email code');
+    const result = z.object({ sent: z.literal(true), expiresIn: z.number().int().positive() })
+      .safeParse({ sent: data.sent, expiresIn: data.expiresIn });
+    if (!result.success) throw new OfficialAuthorizationError('官方邮箱验证码响应无效', 'official_protocol_error');
+    return result.data;
   }
 
   async getPlans(): Promise<{ plans: Array<{ plan: 'trial' | 'monthly' | 'annual'; amountCny: string; currency: 'CNY'; duration: string; payment: string }> }> {
@@ -136,6 +161,13 @@ export class OfficialServiceClient {
       if (response.ok || (input.allowError && response.status === 401)) return data;
       const code = typeof data?.code === 'string' ? data.code : '';
       if (response.status === 401 && path === '/v1/auth/login') throw new OfficialAuthorizationError('邮箱或密码不正确', 'invalid_credentials');
+      if (['email_code_expired', 'invalid_email_code'].includes(code)) {
+        throw new OfficialAuthorizationError('验证码错误或已过期，请重新获取', 'request_rejected');
+      }
+      if (code === 'invalid_email') throw new OfficialAuthorizationError('请填写有效邮箱', 'request_rejected');
+      if (code === 'email_unavailable' || code === 'email_budget_exhausted') {
+        throw new OfficialAuthorizationError('注册功能暂时不可用，请联系客服', 'verification_unavailable');
+      }
       if (['trial_already_used', 'account_exists', 'invalid_account', 'idempotency_conflict', 'active_plan_conflict', 'rate_limited', 'daily_limit', 'request_already_processed', 'invalid_input', 'invalid_operation'].includes(code)) {
         throw new OfficialAuthorizationError(({ trial_already_used: '该账号已使用过试用', account_exists: '账号已存在', invalid_account: '请填写有效邮箱及 12–128 位密码', idempotency_conflict: '订单请求冲突，请刷新', active_plan_conflict: '当前套餐不支持此操作', rate_limited: '请求过于频繁，请稍后重试', daily_limit: '今日内置 AI 额度已用完', request_already_processed: '此请求已处理，请刷新后重试', invalid_input: '业务输入超出限制或格式不正确', invalid_operation: '不支持的内置 AI 操作' } as Record<string, string>)[code]!, 'request_rejected');
       }

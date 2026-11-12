@@ -3,6 +3,7 @@ import { randomUUID } from 'node:crypto';
 import { mkdir, open, opendir, readFile, rename, unlink, rm } from 'node:fs/promises';
 import type { Dir } from 'node:fs';
 import { resolve } from 'node:path';
+import { isPathInsideDirectory } from '../utils/paths.js';
 import { isValidAccountId } from '../account/account-id.js';
 import { isValidConversationId } from '../session/conversation-types.js';
 import type { EventJournal, TracePage } from './event-journal.js';
@@ -20,6 +21,7 @@ import {
   type GatewayEventEnvelope, type GatewayReplay,
 } from './client-events.js';
 import { projectConversationSnapshot } from './conversation-snapshot-store.js';
+import { renameReplacingTarget } from '../utils/directory-pointer.js';
 import {
   observeTurnTaskTrace, traceObservationTurnIds, type TurnTaskObservation,
 } from './turn-task-observation.js';
@@ -288,7 +290,7 @@ export class SegmentedEventJournal implements EventJournal {
   async close(): Promise<void> {
     // The owner stops the maintenance timer before closing the journal.
     await Promise.all([...operations.entries()]
-      .filter(([key]) => key.startsWith(`${resolve(this.root)}/`)).map(([, pending]) => pending.catch(() => undefined)));
+      .filter(([key]) => isPathInsideDirectory(key, this.root)).map(([, pending]) => pending.catch(() => undefined)));
     for (const directory of this.cleanupDirectories.values()) await directory.close();
     this.cleanupDirectories.clear();
   }
@@ -417,7 +419,7 @@ export class SegmentedEventJournal implements EventJournal {
     const handle = await open(temporary, 'wx', 0o600);
     try { await handle.writeFile(body); await handle.sync(); }
     finally { await handle.close(); }
-    await rename(temporary, path);
+    await renameReplacingTarget(temporary, path);
     // Windows cannot fsync directories (FlushFileBuffers needs GENERIC_WRITE).
     if (process.platform !== 'win32') {
       const dir = await open(directory, 'r');

@@ -1,7 +1,8 @@
 import { z } from 'zod';
 import type { ModelRoutingNotes } from './types.js';
 import type { OpenRouterModelMetadata } from './openrouter-model-catalog.js';
-import { InternalLlmService } from './internal-llm-service.js';
+import { InternalLlmService, type DegradationNotice, type PreferredModelReference } from './internal-llm-service.js';
+import { MODEL_SUMMARY_PROMPT } from './model-summary-prompt.js';
 
 const Text = z.string().trim().min(1).max(500);
 const Notes = z.object({
@@ -16,10 +17,17 @@ const Notes = z.object({
 export class ModelRoutingProfileService {
   constructor(private readonly llm: InternalLlmService) {}
 
-  async summarize(model: OpenRouterModelMetadata): Promise<ModelRoutingNotes> {
+  async summarize(
+    model: OpenRouterModelMetadata,
+    preferredModel?: PreferredModelReference | null,
+    onDegraded?: (notice: DegradationNotice) => void,
+  ): Promise<ModelRoutingNotes> {
     const response = await this.llm.generate({
       action: '模型信息提炼',
       operation: 'model_summary',
+      // 本地直调必须带同一产出契约的提示词：用户自己的模型不会知道
+      // MetaWork 的 JSON 字段约定。
+      system: MODEL_SUMMARY_PROMPT,
       data: {
         modelId: model.modelId, description: model.description,
         capabilities: model.capabilities, contextLimit: model.contextLimit,
@@ -27,6 +35,8 @@ export class ModelRoutingProfileService {
         costInputCnyPerMillion: model.costInputPerMillion,
         costOutputCnyPerMillion: model.costOutputPerMillion,
       },
+      ...(preferredModel ? { preferredModel } : {}),
+      ...(onDegraded ? { onDegraded } : {}),
     });
     try {
       const choices = (response as { choices?: Array<{ finish_reason?: string; message?: { content?: string } }> })?.choices;

@@ -26,6 +26,8 @@ import type {
   PlannerRunProgressPayload,
 } from './planner-progress.js';
 import { buildPlannerMcpLaunchEnv } from './planner-mcp-launch-env.js';
+import { withNodeScriptLauncher } from '../utils/spawn-command.js';
+import { resolveLocalEndpointPath } from '../platform/local-endpoint.js';
 import { materializePlannerRuntimeHome } from './planner-runtime-home.js';
 import {
   PlannerRunError,
@@ -366,7 +368,7 @@ export class PlannerProcessSupervisor implements PlannerProcessController {
       this.currentConfigurationRevision,
     );
     this.assertSessionOpen('probe');
-    const child = (this.deps.spawn ?? spawn)(launch.command, ['--version'], {
+    const child = (this.deps.spawn ?? spawn)(launch.command, [...launch.args, '--version'], {
       cwd: launch.cwd,
       stdio: ['ignore', 'pipe', 'pipe'],
       env: launch.env,
@@ -1035,7 +1037,7 @@ export class PlannerProcessSupervisor implements PlannerProcessController {
             ?? this.deps.socketPath
             ?? process.env.METACLAW_PLANNER_HOST_SOCKET
             ?? process.env.METACLAW_PLANNER_TUI_SOCKET
-            ?? join(plannerHome, 'gateway.sock'),
+            ?? resolveLocalEndpointPath(plannerHome, 'gateway.sock'),
           sessionId,
         )
         : [];
@@ -1045,10 +1047,14 @@ export class PlannerProcessSupervisor implements PlannerProcessController {
       ?? process.env.METACLAW_PLANNER_TUI_SOCKET;
     const schemaPath = this.deps.schemaPath
       ?? process.env.ANYFUSION_PLANNER_SCHEMA_PATH
-      ?? process.env.METACLAW_PLANNER_SCHEMA_PATH;
+      ?? process.env.METACLAW_PLANNER_SCHEMA_PATH
+      // submit_planning_proposal requires the plan schema; a Server started
+      // without the managed launcher must still resolve it from the release.
+      ?? findPlannerSchemaPath() ?? undefined;
+    const launch = withNodeScriptLauncher(command, args);
     return {
-      command,
-      args,
+      command: launch.command,
+      args: launch.args,
       cwd,
       sessionDir,
       env: {
@@ -1091,14 +1097,10 @@ export class PlannerProcessSupervisor implements PlannerProcessController {
   }
 
   private resolveCommand(): string {
-    // Native launchers provide the pinned command. Direct source-tree starts
-    // must use the vendored Planner too; falling back to PATH hides a broken
-    // installation behind an opaque ENOENT.
-    return this.deps.command
-      ?? process.env.METACLAW_PLANNER_COMMAND
-      ?? process.env.METACLAW_PLANNER_TUI_COMMAND
-      ?? findVendoredPlannerCommand()
-      ?? 'anyfusion-planner';
+    // Native launchers provide the pinned command. Direct source-tree and
+    // installed-release starts must use the vendored Planner too; falling back
+    // to PATH hides a broken installation behind an opaque ENOENT.
+    return resolvePlannerCommand({ command: this.deps.command });
   }
 
   private assertSessionOpen(sessionId: string): void {
@@ -1172,19 +1174,92 @@ export class PlannerProcessSupervisor implements PlannerProcessController {
   }
 }
 
-function findVendoredPlannerCommand(): string | null {
-  const relative = join(
-    'planner',
-    'AnyFusion-Pi',
-    'packages',
-    'coding-agent',
-    'dist',
-    'cli.js',
+const VENDORED_PLANNER_SOURCE_RELATIVE = join(
+  'planner',
+  'AnyFusion-Pi',
+  'packages',
+  'coding-agent',
+  'dist',
+  'cli.js',
+);
+const VENDORED_PLANNER_INSTALLED_RELATIVE = join(
+  'planner',
+  'packages',
+  'coding-agent',
+  'dist',
+  'cli.js',
+);
+
+export interface VendoredPlannerCommandOptions {
+  readonly env?: NodeJS.ProcessEnv;
+  readonly moduleRoot?: string;
+  readonly cwd?: string;
+  readonly appCurrent?: string;
+  readonly pathExists?: (path: string) => boolean;
+}
+
+/** Resolve the vendored Planner CLI for both supported layouts: the source
+ *  tree keeps the fork under planner/AnyFusion-Pi, while an installed release
+ *  stages it as <install root>/app/current/planner. */
+export function resolveVendoredPlannerCommand(
+  options: VendoredPlannerCommandOptions = {},
+): string | null {
+  const env = options.env ?? process.env;
+  const moduleRoot = options.moduleRoot ?? dirname(fileURLToPath(import.meta.url));
+  const cwd = options.cwd ?? process.cwd();
+  const appCurrent = options.appCurrent
+    ?? resolveMetaWorkPaths(undefined, undefined, env).appCurrent;
+  const pathExists = options.pathExists ?? existsSync;
+  const installedCandidates = [
+    resolve(appCurrent, VENDORED_PLANNER_INSTALLED_RELATIVE),
+    resolve(moduleRoot, '..', VENDORED_PLANNER_INSTALLED_RELATIVE),
+  ];
+  const sourceCandidates = [
+    resolve(cwd, VENDORED_PLANNER_SOURCE_RELATIVE),
+    resolve(moduleRoot, '../', VENDORED_PLANNER_SOURCE_RELATIVE),
+    resolve(moduleRoot, '../../', VENDORED_PLANNER_SOURCE_RELATIVE),
+  ];
+  // An explicit install root names the release the operator selected, so its
+  // staged Planner wins over a source tree that merely happens to sit in cwd.
+  const preferInstalled = Boolean(
+    env.METAWORK_INSTALL_ROOT?.trim() || env.ANYFUSION_INSTALL_ROOT?.trim(),
   );
+  const candidates = preferInstalled
+    ? [...installedCandidates, ...sourceCandidates]
+    : [...sourceCandidates, ...installedCandidates];
+  return candidates.find(candidate => pathExists(candidate)) ?? null;
+}
+
+export interface PlannerCommandResolution extends VendoredPlannerCommandOptions {
+  readonly command?: string;
+}
+
+/** Resolve the Planner command to launch. A configured command wins; otherwise
+ *  the vendored Planner must exist, because a bare PATH lookup only produces an
+ *  opaque spawn ENOENT for a broken installation. */
+export function resolvePlannerCommand(options: PlannerCommandResolution = {}): string {
+  const env = options.env ?? process.env;
+  const configured = options.command
+    ?? env.METACLAW_PLANNER_COMMAND
+    ?? env.METACLAW_PLANNER_TUI_COMMAND;
+  if (configured) return configured;
+  const vendored = resolveVendoredPlannerCommand({ ...options, env });
+  if (vendored) return vendored;
+  throw new Error(
+    'AnyFusion Planner command is unavailable: set METACLAW_PLANNER_COMMAND to the '
+    + 'vendored Planner CLI (packages/coding-agent/dist/cli.js) or reinstall the release',
+  );
+}
+
+export function findPlannerSchemaPath(): string | null {
+  // The plan schema ships beside the runtime entry in dist/ for both the
+  // source tree and an installed release.
+  const fileName = 'planning-agent-plan-v8.schema.json';
+  const moduleRoot = dirname(fileURLToPath(import.meta.url));
   const candidates = [
-    resolve(process.cwd(), relative),
-    resolve(dirname(fileURLToPath(import.meta.url)), '../../', relative),
-    resolve(dirname(fileURLToPath(import.meta.url)), '../', relative),
+    resolve(moduleRoot, fileName),
+    resolve(resolveMetaWorkPaths().appCurrent, 'dist', fileName),
+    resolve(process.cwd(), 'dist', fileName),
   ];
   return candidates.find(candidate => existsSync(candidate)) ?? null;
 }

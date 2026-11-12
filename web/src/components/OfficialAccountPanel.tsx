@@ -50,8 +50,10 @@ async function request<T>(path: string, body?: unknown): Promise<T> {
   }
   const value = response.status === 204 ? null : await response.json();
   if (!response.ok) {
-    throw new Error(value?.message
-      ?? (response.status === 401 ? '本机登录已过期，请刷新页面重新登录。' : '官方账号服务暂时不可用，请稍后重试。'));
+    const error = new Error(value?.message
+      ?? (response.status === 401 ? '本机登录已过期，请刷新页面重新登录。' : '官方账号服务暂时不可用，请稍后重试。')) as Error & { retryAfterSeconds?: number };
+    if (typeof value?.retryAfterSeconds === 'number') error.retryAfterSeconds = value.retryAfterSeconds;
+    throw error;
   }
   return value as T;
 }
@@ -60,7 +62,10 @@ export function OfficialAccountPanel({ onStatus }: { onStatus: (status: Official
   const [status, setStatus] = useState<OfficialStatus | null>(null);
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
+  const [otpCode, setOtpCode] = useState('');
+  const [codeSent, setCodeSent] = useState(false);
   const [registering, setRegistering] = useState(false);
+  const [countdown, setCountdown] = useState(0);
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState('');
   const [error, setError] = useState('');
@@ -86,6 +91,15 @@ export function OfficialAccountPanel({ onStatus }: { onStatus: (status: Official
     window.addEventListener('focus', refresh);
     return () => { clearInterval(timer); window.removeEventListener('focus', refresh); };
   }, [refresh]);
+  // 进入客户端页面即刷新权益：已登录时由本机 Server 在线核验官方权益，
+  // 未登录只读本机投影，不产生官方网络流量。
+  useEffect(() => {
+    let cancelled = false;
+    void request<OfficialStatus>('verify', {})
+      .then(value => { if (!cancelled) { setStatus(value); onStatus(value); } })
+      .catch(() => undefined);
+    return () => { cancelled = true; };
+  }, [onStatus]);
   const loadOrders = useCallback(async () => {
     try {
       const value = await request<{ orders: OrderView[] }>('orders');
@@ -177,28 +191,63 @@ export function OfficialAccountPanel({ onStatus }: { onStatus: (status: Official
     await startPayment(order.orderId);
     void loadOrders();
   });
+  // 邮箱验证码 60 秒重发锁（服务端 Retry-After 缺失时的兜底值）。
+  useEffect(() => {
+    if (countdown <= 0) return;
+    const timer = setInterval(() => setCountdown(value => (value > 0 ? value - 1 : 0)), 1000);
+    return () => clearInterval(timer);
+  }, [countdown > 0]);
+  const sendCode = () => act(async () => {
+    try {
+      const value = await request<{ sent: boolean; expiresIn: number }>('email/code', { email });
+      setCodeSent(true);
+      setCountdown(60);
+      setMessage(`验证码已发送至 ${email}，${Math.max(1, Math.round(value.expiresIn / 60))} 分钟内有效，请留意垃圾邮件文件夹。`);
+    } catch (cause) {
+      const retryAfter = (cause as { retryAfterSeconds?: number }).retryAfterSeconds;
+      if (!retryAfter) throw cause;
+      // 同步倒计时：按钮在锁窗内不可点，避免重复点击持续消耗每 IP 限频。
+      setCountdown(retryAfter);
+      throw new Error(`请求过于频繁，请 ${retryAfter} 秒后重试。`);
+    }
+  });
+  const submitAuth = () => act(async () => {
+    if (registering && !codeSent) throw new Error('请先获取邮箱验证码。');
+    if (registering) await request('register', { email, password, code: otpCode });
+    const projection = await request<OfficialStatus>('login', { email, password });
+    setPassword(''); setOtpCode(''); setCodeSent(false); setCountdown(0); setRegistering(false); orderKeys.current.clear();
+    // 登录成功后由本机 Server 在线核验权益，这里直接反映核验后的状态。
+    setMessage(projection.state === 'active' ? '已登录，权益已刷新。' : `已登录，${stateLabels[projection.state]}。`);
+  });
   const active = status?.state === 'active';
   return <>
     <div className="official-account-bar">
       <span><span className="official-indicator" data-active={active} />{status ? stateLabels[status.state] : '正在确认官方账号状态'}</span>
       <button type="button" onClick={open}>{status?.account ? '账号与订阅' : '登录 / 注册'}</button>
     </div>
-    <dialog ref={dialog} className="official-account-dialog" aria-labelledby="official-account-title" onClose={() => { setPassword(''); setPayment(null); }}>
+    <dialog ref={dialog} className="official-account-dialog" aria-labelledby="official-account-title" onClose={() => { setPassword(''); setOtpCode(''); setCodeSent(false); setCountdown(0); setRegistering(false); setPayment(null); }}>
       <header><div><small>METAWORK ACCOUNT</small><h2 id="official-account-title">账号与订阅</h2></div><button type="button" aria-label="关闭账号窗口" onClick={() => dialog.current?.close()}>关闭</button></header>
       <p className="official-note">此账号供本机的 Web、Desktop、TUI 和飞书共用。Server 重启后需重新登录；本机历史数据继续保留。</p>
       {!status?.account ? <form onSubmit={event => {
         event.preventDefault();
-        void act(async () => {
-          if (registering) await request('register', { email, password });
-          await request('login', { email, password }); setPassword(''); setRegistering(false); orderKeys.current.clear();
-          setMessage('已登录，请选择套餐或刷新现有权益。');
-        });
+        void submitAuth();
       }}>
         <label htmlFor="official-email">邮箱</label>
-        <input id="official-email" type="email" value={email} maxLength={254} required autoComplete="username" onChange={event => setEmail(event.target.value)} />
+        <input id="official-email" type="email" value={email} maxLength={254} required autoComplete="username" onChange={event => setEmail(event.target.value.trim())} />
+        {registering && <>
+          <label htmlFor="official-otp">邮箱验证码</label>
+          <div className="official-actions">
+            <input id="official-otp" type="text" inputMode="numeric" value={otpCode} maxLength={6} required autoComplete="one-time-code"
+              pattern="[0-9]{6}" title="6 位邮箱验证码" placeholder="6 位验证码"
+              onChange={event => setOtpCode(event.target.value.replace(/\D/gu, ''))} />
+            <button type="button" disabled={busy || countdown > 0 || !email} onClick={() => void sendCode()}>
+              {countdown > 0 ? `${countdown} 秒后重发` : '获取验证码'}
+            </button>
+          </div>
+        </>}
         <label htmlFor="official-password">密码{registering ? '（12–128 位）' : ''}</label>
         <input id="official-password" type="password" value={password} minLength={registering ? 12 : undefined} maxLength={128} required autoComplete={registering ? 'new-password' : 'current-password'} onChange={event => setPassword(event.target.value)} />
-        <div className="official-actions"><button className="primary" disabled={busy} type="submit">{busy ? '处理中…' : registering ? '注册并登录' : '登录'}</button><button disabled={busy} type="button" onClick={() => { setRegistering(!registering); setError(''); }}>{registering ? '已有账号，去登录' : '创建账号'}</button></div>
+        <div className="official-actions"><button className="primary" disabled={busy || (registering && !codeSent)} type="submit">{busy ? '处理中…' : registering ? '注册并登录' : '登录'}</button><button disabled={busy} type="button" onClick={() => { setRegistering(!registering); setCodeSent(false); setError(''); }}>{registering ? '已有账号，去登录' : '创建账号'}</button></div>
       </form> : <section className="official-current">
         <strong>{status.account.email}</strong><p>{stateLabels[status.state]} · {status.entitlement?.plan ? planLabels[status.entitlement.plan as keyof typeof planLabels] : '未选择套餐'}</p>
         {status.entitlement?.expiresAt && <p>到期时间：{new Date(status.entitlement.expiresAt).toLocaleString()}</p>}

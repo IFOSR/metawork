@@ -1,4 +1,5 @@
 import { EventEmitter } from 'node:events';
+import { resolve } from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
 import {
   TuiClientLauncher,
@@ -97,23 +98,62 @@ describe('TuiClientLauncher', () => {
     );
   });
 
+  it('routes script-entry client commands through the Node executable', async () => {
+    const child = new EventEmitter();
+    const spawnProcess = vi.fn(() => {
+      queueMicrotask(() => child.emit('exit', 0, null));
+      return child;
+    });
+    const launcher = new TuiClientLauncher({
+      manifestPath: '/tmp/endpoint.json',
+      command: '/tmp/planner-cli.js',
+      startupWorkspacePath: '/repo-a',
+      resolveEndpoint: async () => ({
+        ok: true,
+        manifestVersion: 1,
+        socketPath: '/tmp/gateway.sock',
+        webOrigin: 'http://127.0.0.1:8788',
+      }),
+      spawn: spawnProcess as never,
+    });
+
+    await launcher.start();
+
+    expect(spawnProcess).toHaveBeenCalledWith(
+      process.execPath,
+      ['/tmp/planner-cli.js', '--gateway-socket', '/tmp/gateway.sock', '--workspace-hint', '/repo-a'],
+      expect.objectContaining({ stdio: 'inherit' }),
+    );
+  });
+
   it('resolves the staged Planner layout from an installed release', () => {
-    const installedPlannerCommand = '/install/app/releases/1.2.0-preview.0/planner/packages/coding-agent/dist/cli.js';
+    // resolve() keeps the expectations platform-correct; the resolver compares
+    // resolved paths, not POSIX literals.
+    const installedPlannerCommand = resolve(
+      '/install/app/releases/1.2.0-preview.0',
+      'planner/packages/coding-agent/dist/cli.js',
+    );
 
     expect(resolveVendoredPlannerCommand(
-      '/install/app/releases/1.2.0-preview.0/dist',
-      '/workspace-a',
+      resolve('/install/app/releases/1.2.0-preview.0', 'dist'),
+      resolve('/workspace-a'),
       path => path === installedPlannerCommand,
     )).toBe(installedPlannerCommand);
   });
 
   it('does not select a Planner binary from the Client startup directory', () => {
-    const installedPlannerCommand = '/install/app/current/planner/packages/coding-agent/dist/cli.js';
-    const workspacePlannerCommand = '/workspace-a/planner/AnyFusion-Pi/packages/coding-agent/dist/cli.js';
+    const installedPlannerCommand = resolve(
+      '/install/app/current',
+      'planner/packages/coding-agent/dist/cli.js',
+    );
+    const workspacePlannerCommand = resolve(
+      '/workspace-a',
+      'planner/AnyFusion-Pi/packages/coding-agent/dist/cli.js',
+    );
 
     expect(resolveVendoredPlannerCommand(
-      '/install/app/current/dist',
-      '/workspace-a',
+      resolve('/install/app/current', 'dist'),
+      resolve('/workspace-a'),
       path => path === installedPlannerCommand || path === workspacePlannerCommand,
     )).toBe(installedPlannerCommand);
   });

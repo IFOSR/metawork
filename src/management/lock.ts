@@ -1,8 +1,12 @@
-import { open, readFile, unlink } from 'node:fs/promises';
+import { open, readFile, rm, unlink, writeFile } from 'node:fs/promises';
 import { readFileSync, unlinkSync } from 'node:fs';
 import { randomUUID } from 'node:crypto';
+import { dirname, join } from 'node:path';
+
+export const SERVER_SHUTDOWN_MARKER = 'server.shutdown.json';
 
 export interface InstanceLock {
+  readonly token: string;
   release(): Promise<void>;
   releaseOnExit(): void;
 }
@@ -54,8 +58,12 @@ export async function isInstanceRunning(
 interface StopInstanceForRestartOptions {
   timeoutMs?: number;
   pollIntervalMs?: number;
+  /** Windows-only: how long to wait for the marker-driven graceful stop. */
+  markerGraceMs?: number;
+  platform?: NodeJS.Platform;
   signalProcess?: (pid: number, signal: NodeJS.Signals | 0) => boolean;
   sleep?: (durationMs: number) => Promise<void>;
+  writeShutdownMarker?: (markerPath: string, token: string) => Promise<void>;
   /** Escalate to SIGKILL when the process does not exit within the grace window. */
   force?: boolean;
 }
@@ -63,6 +71,7 @@ interface StopInstanceForRestartOptions {
 interface LockRecord {
   pid: string;
   startedAt: string;
+  token?: string;
 }
 
 /**
@@ -107,6 +116,28 @@ export async function stopInstanceForRestart(
     return { status: 'not_running', pid };
   }
 
+  const pollIntervalMs = options.pollIntervalMs ?? 100;
+  const sleep = options.sleep ?? (durationMs => new Promise(resolve => setTimeout(resolve, durationMs)));
+
+  // Windows maps SIGTERM to TerminateProcess: a hard kill that skips journal
+  // flush and the SQLite checkpoint. The Server polls a token-gated marker and
+  // runs its internal graceful shutdown when the lock token matches; older
+  // Server versions ignore the marker and we fall through to the signal.
+  const platform = options.platform ?? process.platform;
+  if (platform === 'win32' && holder.token) {
+    const markerPath = join(dirname(lockPath), SERVER_SHUTDOWN_MARKER);
+    const writeMarker = options.writeShutdownMarker ?? defaultWriteShutdownMarker;
+    await writeMarker(markerPath, holder.token).catch(() => undefined);
+    const graceMs = options.markerGraceMs ?? 5_000;
+    const graceAttempts = Math.max(1, Math.ceil(graceMs / pollIntervalMs));
+    for (let attempt = 0; attempt < graceAttempts; attempt += 1) {
+      await sleep(pollIntervalMs);
+      if (!isProcessAlive(pid, signalProcess)) {
+        return { status: 'stopped', pid };
+      }
+    }
+  }
+
   try {
     signalProcess(pid, 'SIGTERM');
   } catch (error) {
@@ -117,9 +148,7 @@ export async function stopInstanceForRestart(
   }
 
   const timeoutMs = options.timeoutMs ?? 10_000;
-  const pollIntervalMs = options.pollIntervalMs ?? 100;
   const attempts = Math.max(1, Math.ceil(timeoutMs / pollIntervalMs));
-  const sleep = options.sleep ?? (durationMs => new Promise(resolve => setTimeout(resolve, durationMs)));
   for (let attempt = 0; attempt < attempts; attempt += 1) {
     await sleep(pollIntervalMs);
     if (!isProcessAlive(pid, signalProcess)) {
@@ -202,10 +231,40 @@ async function readLockIfPresent(lockPath: string): Promise<LockRecord | null> {
   }
   try {
     const parsed = JSON.parse(raw.trim()) as LockRecord;
-    return { pid: parsed.pid || 'unknown', startedAt: parsed.startedAt || '' };
+    return {
+      pid: parsed.pid || 'unknown',
+      startedAt: parsed.startedAt || '',
+      ...(typeof parsed.token === 'string' && parsed.token ? { token: parsed.token } : {}),
+    };
   } catch {
     return { pid: raw.trim() || 'unknown', startedAt: '' };
   }
+}
+
+async function defaultWriteShutdownMarker(markerPath: string, token: string): Promise<void> {
+  await writeFile(markerPath, `${JSON.stringify({ token })}\n`, { encoding: 'utf8', mode: 0o600 });
+}
+
+/** Server-side marker poll: a token match means the running instance owns the
+ *  request; consume it and run the same graceful shutdown as a signal. */
+export async function consumeShutdownMarker(
+  markerPath: string,
+  expectedToken: string,
+  requestShutdown: () => void,
+): Promise<void> {
+  let token: string;
+  try {
+    const raw = await readFile(markerPath, 'utf8');
+    token = (JSON.parse(raw.trim()) as { token?: string }).token ?? '';
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== 'ENOENT') {
+      console.error(`MetaWork 停机标记读取失败: ${(error as Error).message}`);
+    }
+    return;
+  }
+  if (token !== expectedToken) return;
+  await rm(markerPath, { force: true }).catch(() => undefined);
+  requestShutdown();
 }
 
 function isProcessAlive(
@@ -226,6 +285,7 @@ function lockContent(): string {
 }
 
 function makeLock(lockPath: string, content: string): InstanceLock {
+  const token = (JSON.parse(content) as { token: string }).token;
   let released = false;
   const release = () => {
     if (released) return;
@@ -236,6 +296,7 @@ function makeLock(lockPath: string, content: string): InstanceLock {
     released = true;
   };
   return {
+    token,
     async release() {
       release();
     },

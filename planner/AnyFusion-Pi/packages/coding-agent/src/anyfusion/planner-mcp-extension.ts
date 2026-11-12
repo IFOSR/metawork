@@ -62,6 +62,14 @@ export function createPlannerMcpExtensionFactory(options: PlannerMcpExtensionOpt
 			await connection?.close().catch(() => undefined);
 			closing = false;
 			const config = readPlannerMcpLaunchConfig();
+			if (!config) {
+				// No Planner MCP wiring in this session: keep the proposal tool
+				// politely unavailable instead of failing the whole session.
+				options.proposalGate.unavailableReason = plannerMcpUnavailableMessage(
+					"ANYFUSION_PLANNER_MCP_COMMAND is not configured for this session",
+				);
+				return;
+			}
 			const nextConnection = await connectionFactory(config, (error) => {
 				if (!closing) markUnavailable(error);
 			});
@@ -83,6 +91,12 @@ export function createPlannerMcpExtensionFactory(options: PlannerMcpExtensionOpt
 		};
 
 		await connectAndDiscover();
+
+		if (!connection) {
+			// Planner MCP not wired for this session: register no proposal tools
+			// (the gate would refuse calls anyway) and finish loading cleanly.
+			return;
+		}
 
 		for (const name of PLANNER_MCP_TOOL_NAMES) {
 			const description = toolDescriptions.get(name)!;
@@ -148,9 +162,12 @@ export function createPlannerMcpExtensionFactory(options: PlannerMcpExtensionOpt
 	};
 }
 
-export function readPlannerMcpLaunchConfig(env: NodeJS.ProcessEnv = process.env): PlannerMcpLaunchConfig {
+export function readPlannerMcpLaunchConfig(env: NodeJS.ProcessEnv = process.env): PlannerMcpLaunchConfig | null {
 	const command = env.ANYFUSION_PLANNER_MCP_COMMAND?.trim();
-	if (!command || !isAbsolute(command)) {
+	// Sessions without Planner MCP wiring (Executor runs) skip the proposal
+	// toolset entirely; a configured-but-invalid launch stays loud.
+	if (!command) return null;
+	if (!isAbsolute(command)) {
 		throw new Error("ANYFUSION_PLANNER_MCP_COMMAND must be the absolute shared image Node executable path");
 	}
 	const argsJson = env.ANYFUSION_PLANNER_MCP_ARGS_JSON;

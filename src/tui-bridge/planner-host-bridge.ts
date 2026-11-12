@@ -98,6 +98,17 @@ export class PlannerHostBridge {
     await new Promise<void>((resolve, reject) => {
       const onError = (error: Error) => {
         server.off('listening', onListening);
+        // A named pipe cannot be reclaimed the way a stale socket file is, so
+        // the "already active" case surfaces as a raw EADDRINUSE. Report the
+        // same operator-facing error POSIX gives.
+        if ((error as NodeJS.ErrnoException).code === 'EADDRINUSE') {
+          void this.isSocketReachable().then(reachable => {
+            reject(reachable
+              ? new Error(`Planner host socket is already active: ${this.deps.socketPath}`)
+              : error);
+          });
+          return;
+        }
         reject(error);
       };
       const onListening = () => {

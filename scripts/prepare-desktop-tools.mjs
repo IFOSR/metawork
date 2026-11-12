@@ -17,12 +17,13 @@ try {
   execFileSync('curl', ['--fail', '--location', '--proto', '=https', '--proto-redir', '=https',
     '--retry', '2', '--connect-timeout', '20', '--max-time', '600', '--output', archive, url], { stdio: 'inherit' });
   if (createHash('sha256').update(await readFile(archive)).digest('hex') !== checksum) throw new Error('Desktop tool archive checksum mismatch');
-  const entries = execFileSync('/usr/bin/tar', ['-tzf', archive], { encoding: 'utf8', maxBuffer: 32 * 1024 * 1024 }).trim().split('\n');
+  // Windows 10+ ships bsdtar as tar.exe; macOS/Linux have tar on PATH.
+  const entries = execFileSync('tar', ['-tzf', archive], { encoding: 'utf8', maxBuffer: 32 * 1024 * 1024 }).trim().split('\n');
   if (entries.some(path => !/^(node|git|executor)\//.test(path) || path.includes('\\')
     || path.split('/').includes('..'))) throw new Error('Invalid Desktop tool archive path');
-  const details = execFileSync('/usr/bin/tar', ['-tvzf', archive], { encoding: 'utf8', maxBuffer: 32 * 1024 * 1024 }).trim().split('\n');
+  const details = execFileSync('tar', ['-tvzf', archive], { encoding: 'utf8', maxBuffer: 32 * 1024 * 1024 }).trim().split('\n');
   if (details.some(line => !['-', 'd', 'h'].includes(line[0]))) throw new Error('Desktop tools must not contain links or special entries');
-  execFileSync('/usr/bin/tar', ['-xzf', archive, '-C', output]);
+  execFileSync('tar', ['-xzf', archive, '-C', output]);
   await rm(archive);
   verifyExecutorPi(join(output, 'executor/bin/pi'), {
     cwd: output,

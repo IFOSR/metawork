@@ -39,6 +39,9 @@ jobs:
         run: |
           if (-not $env:RELEASE_SIGNING_KEY) { throw 'METAWORK_RELEASE_SIGNING_KEY is required' }
           $env:RELEASE_SIGNING_KEY | Out-File -FilePath "$env:RUNNER_TEMP\metawork-release-key.pem" -Encoding utf8 -NoNewline
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
       - name: Build and package Windows Runtime
         shell: pwsh
         env:

@@ -9,7 +9,11 @@ const RETRYABLE_CODES = new Set([
 ]);
 
 export class HubError extends Error {
-  constructor(status, code, requestId) { super(code); this.status = status; this.code = code; this.requestId = requestId ?? null; }
+  constructor(status, code, requestId, retryAfterSeconds = null) {
+    super(code);
+    this.status = status; this.code = code; this.requestId = requestId ?? null;
+    this.retryAfterSeconds = Number.isFinite(retryAfterSeconds) && retryAfterSeconds > 0 ? Math.ceil(retryAfterSeconds) : null;
+  }
   get retryable() { return RETRYABLE_CODES.has(this.code); }
 }
 

@@ -1,14 +1,14 @@
 # 官方账号授权运行与验收
 
 - 日期：2026-10-09
-- 状态：主体集成及 2026-10-10 内置 AI 简化已部署；三个真实 AI 接口通过。完整长任务和多端执行验收仍待完成。
-- 架构权威：[ADR-0047](../adr/0047-account-license-and-official-ai.md)。
+- 状态：主体集成及 2026-10-10 内置 AI 简化已部署；三个真实 AI 接口通过。完整长任务和多端执行验收仍待完成。2026-10-20 OPC 统一登录（手机号验证码）已本地交付，生产切换待 OpenID 灰度 Gate 白名单与维护窗口（见下文专节）。
+- 架构权威：[ADR-0047](../adr/0047-account-license-and-official-ai.md)、[ADR-0049](../adr/0049-opc-unified-login.md)（修订 ADR-0047 第 19 段）。
 
 ## 部署
 
 2026-10-10 已按用户更正迁移至 `/root/metawork-offical-server/`，原错误目录已移除。停服后整体移动目录，更新 systemd 的工作目录、启动命令、可写目录及 `.env` 数据库路径；数据库文件摘要一致且 SQLite 完整性检查通过，凭据和权限保留。服务已恢复并保持开机启动，公网健康/套餐接口分别返回 200，未登录权益返回 401，管理入口返回 404。访问地址和客户端配置无需更改；此次迁移未提交或推送 GitHub。
 
-官方服务：`huoshan:/root/metawork-offical-server/`，systemd `metawork-official.service`，SQLite 位于 `data/official.sqlite`。HTTPS：`https://14.103.216.193:9222/`。应用服务仅监听 127.0.0.1:8780；nginx 在公网 9222 提供独立 HTTPS 入口，复用现有受信任证书。代理配置位于 `/etc/nginx/sites-available/metawork-official`，源码副本为 `official-server/deploy/nginx.conf`。原 443 `/metawork-official/` 入口暂保留。
+官方服务：`huoshan:/root/metawork-offical-server/`，systemd `metawork-official.service`，SQLite 位于 `data/official.sqlite`。生产地址（客户端默认）：`https://metawork.nexusfusionai.com/`；`https://14.103.216.193:9222/` 保留为开发/测试入口（开发运行经 `METAWORK_OFFICIAL_SERVER_URL` 指向它）。应用服务仅监听 127.0.0.1:8780；nginx 在公网 9222 提供独立 HTTPS 入口，复用现有受信任证书，生产域名指向同一 nginx。代理配置位于 `/etc/nginx/sites-available/metawork-official`，源码副本为 `official-server/deploy/nginx.conf`。原 443 `/metawork-official/` 入口暂保留。
 
 ```sh
 ssh huoshan
@@ -20,7 +20,14 @@ npm test
 
 `.env` 权限 600，管理密钥已随机生成，不下发本地安装。只在服务器配置 `MODEL_BASE_URL`、`MODEL_API_KEY`、`MODEL_ID`；2026-10-10 用户已补齐三个字段并重启加载。配置只在进程启动时读取，后续修改后须执行 `systemctl restart metawork-official`，再在有效权益下验收三个业务操作。不得把本机用户 Key 自动上传来填充空缺。
 
-内部永久权益在用户完成注册后，通过 SSH 下的 `node admin.js grant-perpetual <email>` 签发。撤销用 `node admin.js revoke <email>`；禁用登录用 `disable`。公开套餐无永久选项，公网 `/v1/admin` 返回 404。管理脚本不将密钥输出或放入 argv。
+内部永久权益在用户首次手机号验证码登录自动建号后，通过 SSH 下的 `node admin.js grant-perpetual <open-id>` 签发（账号定位用 `node admin.js accounts` 列表，或 `accounts --phone` 从 stdin 输入手机号按不可逆 phone_hash 检索）。撤销用 `node admin.js revoke <open-id>`；禁用登录用 `disable`。公开套餐无永久选项，公网 `/v1/admin` 返回 404。管理脚本不将密钥或手机号输出或放入 argv。
+
+## OPC 统一登录（2026-10-20，切换前置条件）
+
+- **登录方式**：邮箱+密码（原体系，[ADR-0047](../adr/0047-account-license-and-official-ai.md)），注册时须**邮箱验证码**验证邮箱有效性——`POST /api/official-auth/email/code` 发码（15 分钟有效、5 次尝试上限、同邮箱重发作废旧码），注册携带验证码，成功即已验证（[ADR-0051](../adr/0051-email-registration-verification.md)）。OPC 统一登录路线（ADR-0049）已终止：生产实测其对未录入身份的手机号做同形假发送，不满足开放注册；OpenID 灰度白名单申请同步终止。投递到垃圾箱/延迟是邮箱验证的固有特性，注册页需提示检查垃圾邮件。
+- **上线前置（强制）**：① 向 OPC 平台申请将 `PAYMENT_HUB_CLIENT_ID` 加入 **OpenID 灰度 Gate 白名单**（未开通时发码 503/403，手机号登录整体不可用）；② 停服后对旧库执行 `SELECT count(*)` 核对 `orders`/`order_payments`/`licenses`/`payment_incidents`/`accounts`，任一非空则中止并人工确认；③ 把 `data/official.sqlite`（含 WAL/SHM）**移入带日期的备份路径保留至新版验收通过**（不删除），再启动新版本自动建新 schema。无存量用户是业务前提，代码不迁移。
+- **发布顺序与回滚**：服务端（Gate 开通 + 部署 + 数据核对重置）与客户端（Desktop 自动更新）须在同一维护窗口完成——混合版本互斥且切换为单向操作。回滚需同时满足：恢复备份旧库 + 回退服务端版本 + 客户端降级/停更；缺一不可。
+- **值班与告警**：日志 `email_send_failed`/`email_code_budget_exhausted`（SMTP 投递失败/本机日预算熔断，`EMAIL_DAILY_MAX` 默认 100/上海自然日）出现时按 [official-server README](../../official-server/README.md) 限频说明排查；SMTP 未配置时注册返回 503 `email_unavailable`，登录不受影响。
 
 更新时保留 `.env`、`data/`，只替换源文件与 lockfile，执行 `npm ci --omit=dev --ignore-scripts`，测试后重启。备份必须使用 SQLite backup API 或停服务后复制整个数据库；不能在写入时只复制主文件而忽略 WAL。当前部署备份目录只包含部署前程序/代理配置，不能当作数据库备份。
 
@@ -83,15 +90,17 @@ npm test
 
 ## 运行行为
 
-Web/Desktop 顶部“登录 / 注册”或“账号与订阅”进入账号窗口。注册后选择七天试用，已订阅者刷新权益。月/年订单经 OPC Hub（微信 Native 扫码）真实支付：Web 弹窗展示二维码并轮询，官方服务接收网关 `PAYMENT.PAID` 回调（HMAC 验签）后事务结算并顺延/起算权益，重复回调不重复加时长；退款通道本期仅管理员/客服发起（`node admin.js refund ...`，全额退、恢复购买前权益），Web 无退款入口，无法结算的资金一律落 `payment_incidents` 台账（`node admin.js incidents`）人工对账。K8s 部署配置 `PAYMENT_HUB_BASE_URL=https://opchub-openapi.metafusion.cn`（生产网关；`https://opc-openapi.dev.metafusion.cc` 为测试网关，仅联调）、`PAYMENT_HUB_CLIENT_ID` / `PAYMENT_HUB_CLIENT_SECRET`（**生产凭证部署时经 K8s Secret 注入，不入库不进聊天**）与 `PAYMENT_NOTIFY_URL`——回调必须是**域名**（真实 Hub 以 `OPC_PARAM_INVALID` 拒绝 IP 字面量），路径 `/v1/payments/notify`；未配置时支付关闭、行为与未接入一致（ADR-0048）。全链路真实冒烟：`official-server/test/real-hub-smoke.mjs`（凭证走环境变量，13 步含真实下单/二维码/关单与本地服务端到端）。
+Web/Desktop 顶部“登录”或“账号与订阅”进入账号窗口。手机号验证码登录后选择七天试用，已订阅者刷新权益。月/年订单经 OPC Hub（微信 Native 扫码）真实支付：Web 弹窗展示二维码并轮询，官方服务接收网关 `PAYMENT.PAID` 回调（HMAC 验签）后事务结算并顺延/起算权益，重复回调不重复加时长；退款通道本期仅管理员/客服发起（`node admin.js refund ...`，全额退、恢复购买前权益），Web 无退款入口，无法结算的资金一律落 `payment_incidents` 台账（`node admin.js incidents`）人工对账。K8s 部署配置 `PAYMENT_HUB_BASE_URL=https://opchub-openapi.metafusion.cn`（生产网关；`https://opc-openapi.dev.metafusion.cc` 为测试网关，仅联调）、`PAYMENT_HUB_CLIENT_ID` / `PAYMENT_HUB_CLIENT_SECRET`（**生产凭证部署时经 K8s Secret 注入，不入库不进聊天；client_id 不可轮换**）与 `PAYMENT_NOTIFY_URL`——回调必须是**域名**（真实 Hub 以 `OPC_PARAM_INVALID` 拒绝 IP 字面量），路径 `/v1/payments/notify`；未配置时支付与 OPC 登录一并关闭、行为与未接入一致（ADR-0048/0049）。全链路真实冒烟：`official-server/test/real-hub-smoke.mjs`（凭证走环境变量，13 步含真实下单/二维码/关单与本地服务端到端）。
 
-生产性请求经 Gateway 在线核验，已有链内部使用当前事实；本地 UI 每五秒只读一次本机投影，不额外请求官方核验。TUI/飞书的生产性拒绝消息引导到 Web/Desktop，取消/历史访问不要求商业权益。已知到期立即阻断，后台核验只在活动工作达到 24 小时基准时发起一次；退款成功后的权益降级时序与到期/撤销一致（新请求即时阻断，24 小时仅影响已开跑工作）。
+生产性请求经 Gateway 在线核验，已有链内部使用当前事实；本地 UI 每五秒只读一次本机投影，不额外请求官方核验。账号登录成功后本机 Server 立即在线核验一次权益（登录响应里的权益只是登录瞬间的快照），客户端每次进入页面（已登录）也触发一次在线核验，未登录时不产生官方网络流量。TUI/飞书的生产性拒绝消息引导到 Web/Desktop，取消/历史访问不要求商业权益。已知到期立即阻断，后台核验只在活动工作达到 24 小时基准时发起一次；退款成功后的权益降级时序与到期/撤销一致（新请求即时阻断，24 小时仅影响已开跑工作）。
 
 失去授权后，既有尝试可以受控完成并落盘，Kernel 阻断后续派发、重试、重规划。持久化应用与排队尝试暂缓恢复；重新登录/核验后通过既有恢复机制继续。当前进程更换账号必须先用旧账号完成或取消未结束任务。账号不构成本地数据隔离或跨机器同步承诺。
 
+2026-10-21 起，能力说明生成与模型资料提炼**优先使用用户已配置模型**：设置页点「获取模型信息」/「能力更新」时，本机 Server 直调该 Provider 的 OpenAI 兼容接口（凭证由本机凭据库解析，端点只认可已激活配置或官方公开预设），官方内置 AI 降级为兜底。因此这两步**不再强制要求登录官方账号**；官方内置 AI 仍用于其余固定业务操作（职责改写等），并继续受权益门控。本地直调不发 `temperature` 等采样参数，固定订阅模型（如 `kimi-for-coding` 只接受 `temperature=1`）不会因参数校验被拒。
+
 ## 隐私及资源限制
 
-内置 AI 上传当前编辑文本和必要模型公开资料，不上传整个 Workspace、对话历史或 Provider Key。官方密码以 scrypt 保存，随机会话仅存摘要；账号、订单及权益为持久事实。AI 用量仅记录账号/业务类型/请求标识/时间，30 天后清理，不记录正文。官方模型供应商保留政策需在配置供应商后确认并补充。
+内置 AI 上传当前编辑文本和必要模型公开资料，不上传整个 Workspace、对话历史或 Provider Key。账号保存邮箱与 scrypt 密码哈希，随机会话仅存摘要（ADR-0047/0050）；账号、订单及权益为持久事实。AI 用量仅记录账号/业务类型/请求标识/时间，30 天后清理，不记录正文。官方模型供应商保留政策需在配置供应商后确认并补充。
 
 请求/响应、频率、并发和每日预算详见 [official-server README](../../official-server/README.md)。2026-10-10 根据用户要求移除 AI 专用额度、并发/频率、大小/字数、生成参数和重复内容/schema 检查；固定 operation 及账号/权益判断继续有效。旧的排障记录描述的是当时的版本，当前行为以本文“内置 AI 简化”及 README 为准。
 
@@ -100,7 +109,7 @@ Web/Desktop 顶部“登录 / 注册”或“账号与订阅”进入账号窗�
 - macOS Node 22.23.3：TypeScript 检查及产品/Web 构建通过。
 - 全量回归：536 个文件通过、12 个跳过；3485 项通过、22 项跳过。随后最终 Gateway 输入标签绕过修复及授权/Replan 针对性 54 项通过。覆盖旧响应隔离、单飞、24 小时周期、失败不快速重试、时钟/到期、排队派发与持久化恢复阻断。
 - Management、native 安装及相关回归 89 项通过，覆盖本地认证/Origin/官方 token 不外泄和无模型安装。
-- 官方服务 8 项集成测试（历史基线）在 macOS、huoshan Node 22.19.0 及 Docker Node 22.19.0 均通过，使用临时 SQLite 和上游桩；覆盖事务试用、幂等隔离、待支付无权益、AI 边界、并发/退出、管理签发与撤销。2026-10-14 支付/退款通道接入后扩至 22/22（9 项既有回归 + 13 项支付/退款桩测，含已结算行外部退款观测与丢 notify 重复支付笔退款），另有真实网关 smoke 13/13（见 [支付接入计划](../plans/2026-10-14-official-account-payment-integration.md)）。
+- 官方服务 8 项集成测试（历史基线）在 macOS、huoshan Node 22.19.0 及 Docker Node 22.19.0 均通过，使用临时 SQLite 和上游桩；覆盖事务试用、幂等隔离、待支付无权益、AI 边界、并发/退出、管理签发与撤销。2026-10-14 支付/退款通道接入后扩至 22/22（9 项既有回归 + 13 项支付/退款桩测，含已结算行外部退款观测与丢 notify 重复支付笔退款），另有真实网关 smoke 13/13（见 [支付接入计划](../plans/2026-10-14-official-account-payment-integration.md)）。2026-10-20 OPC 统一登录接入后扩至 **31/31**（新增发码/登录/限频/日预算/时钟漂移告警/协议防御/落盘隐私/管理面 seam 用例，含全部既有支付回归；见 [统一登录计划](../plans/2026-10-20-opc-unified-login.md)）。
 - 真实 HTTPS `https://14.103.216.193:9222/healthz` 返回 200，无跳过 TLS 校验；套餐接口返回服务端价格，未登录权益接口返回 401，公网管理路径返回 404。nginx 与官方服务均为 active/enabled。
 - 隔离本机安装 `/tmp/metawork-official-acceptance` 无 internal 凭据，能启动 Web 登录/设置。Chrome 已通过真实 HTTPS 下的注册、登录、七天试用、待支付订单、退出、重新登录及 1440/390 宽度交互；Server 重启后投影为 logged_out。测试账号已删除。
 

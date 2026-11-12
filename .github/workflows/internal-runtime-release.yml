@@ -64,6 +64,11 @@ jobs:
           set -euo pipefail
           test -n "$RELEASE_SIGNING_KEY"
           printf '%s\n' "$RELEASE_SIGNING_KEY" > "$RUNNER_TEMP/metawork-release-key.pem"
+<<<<<<< HEAD
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+=======
       # The packaged Runtime ships the memory engine, so the same pinned
       # preparation and FTS5 gate as the formal release apply here. Both need the
       # repository's own toolchain (esbuild), so install dependencies first.
@@ -73,6 +78,7 @@ jobs:
         run: node scripts/prepare-memory-engine.mjs
       - name: Verify memory engine (FTS5 gate)
         run: node scripts/verify-memory-engine.mjs
+>>>>>>> origin/main
       - name: Build and package Runtime
         shell: bash
         env:

@@ -37,7 +37,11 @@ describe('Desktop account preferences', () => {
     await Promise.all(Array.from({ length: 80 }, (_, n) => store.setDraft('conversation', { text: `edit ${n}`, attachments: [] })));
     const restored = new DesktopPreferenceStore(path); await restored.load();
     expect(restored.read().drafts.conversation.text).toBe('edit 79');
-    expect((await stat(path)).mode & 0o077).toBe(0);
+    // The group/other read bits are a POSIX file-mode contract. Windows has no
+    // POSIX permission bits, so the file inherits the directory's ACL instead.
+    if (process.platform !== 'win32') {
+      expect((await stat(path)).mode & 0o077).toBe(0);
+    }
     await restored.clearDrafts();
     expect(JSON.parse(await readFile(path, 'utf8')).drafts).toEqual({});
   });

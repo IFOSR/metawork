@@ -1,10 +1,12 @@
 import { execFile } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { existsSync } from 'node:fs';
-import { chmod, copyFile, mkdir, writeFile } from 'node:fs/promises';
+import { existsSync, realpathSync } from 'node:fs';
+import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
+import { pathToFileURL } from 'node:url';
 import { promisify } from 'node:util';
 import { resolveMetaWorkPaths } from '../installation/paths.js';
+import { buildPlannerMcpLaunchEnv } from '../planning/planner-mcp-launch-env.js';
 import {
   resolveCurrentRuntimeHome,
   resolveRevisionRuntimeHome,
@@ -119,12 +121,14 @@ export class PiCliDriver implements HarnessDriver {
         HOME: homePath,
         PI_CODING_AGENT_DIR: agentPath,
         PI_CODING_AGENT_SESSION_DIR: sessionPath,
+        ANYFUSION_PLANNER_HOME: agentPath,
+        ANYFUSION_PLANNER_SESSION_DIR: sessionPath,
         ...input.environment,
         METACLAW_PI_WEB_TOOLS_ENABLED: hasWebResearchAffordances(input.executorAffordances) ? '1' : '0',
       },
       homeDirectories: ['.pi/agent/sessions'],
     });
-    await this.seedProviderConfig(homePath, input.revisionId);
+    await this.seedProviderConfig(homePath, input.revisionId, input);
     const extensionsPath = join(homePath, '.pi', 'agent', 'extensions');
     await mkdir(extensionsPath, { recursive: true, mode: 0o700 });
     await writeFile(join(extensionsPath, 'metawork-provider-options.ts'),
@@ -148,39 +152,55 @@ export class PiCliDriver implements HarnessDriver {
 
   buildLaunch(input: HarnessLaunchInput): HarnessLaunchSpec {
     const agentPath = `${input.runtimeHomePath}/.pi/agent`;
-    // Workspace access describes the Runtime's filesystem boundary. It is not
-    // a Planner-controlled tool allowlist. The Executor owns its own tool
-    // registry and must retain shell access for read/inspect/run tasks.
-    //
-    // A normal Attempt runs Pi's complete registry: the built-in workspace
-    // tools plus every extension the Executor materialized for this Attempt
-    // (web tools, evidence/ResultReference tools, pdf tools). Pi's `--tools` is
-    // a global allowlist that also covers extension and custom tools, so
-    // deriving it from affordances silently deleted those extensions. The
-    // Executor affordance projection still decides what gets materialized
-    // (see METACLAW_PI_WEB_TOOLS_ENABLED and seedWebExtension); it must not
-    // remove tools at launch.
-    //
-    // The only intentionally reduced launch is the explicit response-only
-    // correction path: its contract is one completion trailer, no action, so it
-    // runs with no tools and no session.
-    const toolArgs = input.responseOnly ? ['--no-session', '--no-tools'] : [];
+    // The vendored Planner CLI denies `--provider`/`--model`/`--tools` from any
+    // client (planner-policy DENIED_FLAGS): provider and model selection flow
+    // through the seeded home settings.json instead, and the managed web
+    // research tools register inline (env-gated) because file extensions and
+    // tool CLI flags cannot load under the policy. Response-only attempts keep
+    // default tools because settings expose no tools toggle.
+    // The workspace boundary env uses realpath form to match the supervisor's
+    // Planner injection — the boundary check compares raw strings and mangles
+    // forward-slash Windows paths. (Realpath may fail on synthetic launch
+    // inputs; the raw cwd is an acceptable fallback.)
+    let authorizedWorkspace = input.cwd;
+    try {
+      authorizedWorkspace = realpathSync(input.cwd);
+    } catch {
+      /* keep raw cwd */
+    }
+    // Debug capture override must also win over the OPENAI_BASE_URL env (the
+    // ai package prefers it over the models.json baseUrl when both exist).
+    const debugBaseUrl = process.env.METACLAW_DEBUG_BASE_URL_OVERRIDE?.trim();
+    const environment: Record<string, string> = {
+      HOME: input.runtimeHomePath,
+      // The vendored fork renamed the agent-dir env: it honors
+      // ANYFUSION_PLANNER_HOME/ANYFUSION_PLANNER_SESSION_DIR and ignores the
+      // legacy PI_CODING_AGENT_DIR names. Keep both for older layouts.
+      PI_CODING_AGENT_DIR: agentPath,
+      PI_CODING_AGENT_SESSION_DIR: `${agentPath}/sessions`,
+      ANYFUSION_PLANNER_HOME: agentPath,
+      ANYFUSION_PLANNER_SESSION_DIR: `${agentPath}/sessions`,
+      ANYFUSION_PLANNER_WORKSPACE: authorizedWorkspace,
+      ANYFUSION_PLANNER_SCHEMA_PATH: process.env.METACLAW_PLANNER_SCHEMA_PATH
+        ?? join(resolveMetaWorkPaths().appCurrent, 'dist', 'planning-agent-plan-v8.schema.json'),
+      // No Planner MCP env here: Executor sessions do not submit planning
+      // proposals, and the vendored MCP extension skips itself gracefully
+      // when ANYFUSION_PLANNER_MCP_COMMAND is unset.
+    };
+    if (debugBaseUrl) {
+      environment.OPENAI_BASE_URL = debugBaseUrl;
+    }
     return {
       command: this.command,
       args: [
         '--mode',
         'json',
-        ...toolArgs,
-        ...(input.providerRef && input.modelId
-          ? ['--provider', input.providerRef, '--model', input.modelId]
-          : []),
+        ...(input.responseOnly ? ['--no-session'] : []),
         input.prompt,
       ],
       cwd: input.cwd,
       environment: {
-        HOME: input.runtimeHomePath,
-        PI_CODING_AGENT_DIR: agentPath,
-        PI_CODING_AGENT_SESSION_DIR: `${agentPath}/sessions`,
+        ...environment,
         PYTHONDONTWRITEBYTECODE: '1',
         // The stall guard and the MetaWork host must agree on the window and on
         // where tool-call stall facts land.
@@ -342,7 +362,11 @@ export class PiCliDriver implements HarnessDriver {
     return null;
   }
 
-  private async seedProviderConfig(homePath: string, revisionId: string): Promise<void> {
+  private async seedProviderConfig(
+    homePath: string,
+    revisionId: string,
+    binding?: { providerRef?: string; modelId?: string },
+  ): Promise<void> {
     const revisionHome = this.generatedRuntimeRoot
       ? resolveRevisionRuntimeHome(this.generatedRuntimeRoot, revisionId, 'pi-home')
       : undefined;
@@ -364,9 +388,37 @@ export class PiCliDriver implements HarnessDriver {
         throw new Error(`Pi executor home template is missing ${fileName}: ${source}`);
       }
       const target = join(targetDir, fileName);
-      await copyFile(source, target);
-      await chmod(target, 0o600);
+      await writeFileWithRetry(target, await readFile(source, 'utf8'));
     }
+		// The attempt binding overrides the generation-wide template defaults: the
+		// vendored CLI resolves the session model from `enabledModels` (scoped
+		// models take priority over env-based fallbacks) and falls back to
+		// `defaultProvider`/`defaultModel`. The manifest hash side seeds the
+		// same three keys (agent-runtime-renderer executorRuntimeFileHashes).
+		if (binding?.providerRef && binding?.modelId) {
+			const settingsPath = join(targetDir, 'settings.json');
+			const settings = JSON.parse(await readFile(settingsPath, 'utf8')) as Record<string, unknown>;
+			settings.defaultProvider = binding.providerRef;
+			settings.defaultModel = binding.modelId;
+			settings.enabledModels = [`${binding.providerRef}/${binding.modelId}`];
+			await writeFileWithRetry(settingsPath, `${JSON.stringify(settings, null, 2)}\n`);
+		}
+		// Debug capture escape hatch (METACLAW_DEBUG_BASE_URL_OVERRIDE): redirect
+		// the provider baseUrl to a local capture/forwarding proxy. Pairs with
+		// verifyExecutorRuntimeHome's matching models.json hash skip.
+		const debugBaseUrl = process.env.METACLAW_DEBUG_BASE_URL_OVERRIDE?.trim();
+		if (debugBaseUrl) {
+			const modelsPath = join(targetDir, 'models.json');
+			const models = JSON.parse(await readFile(modelsPath, 'utf8')) as {
+				providers?: Record<string, { baseUrl?: unknown }>;
+			};
+			for (const provider of Object.values(models.providers ?? {})) {
+				if (typeof provider.baseUrl === 'string' && provider.baseUrl.includes('api.kimi.com')) {
+					provider.baseUrl = debugBaseUrl;
+				}
+			}
+			await writeFileWithRetry(modelsPath, `${JSON.stringify(models, null, 2)}\n`);
+		}
   }
 
   private async seedWebExtension(
@@ -379,8 +431,15 @@ export class PiCliDriver implements HarnessDriver {
     const extensionsDir = join(homePath, '.pi', 'agent', 'extensions');
     await mkdir(extensionsDir, { recursive: true, mode: 0o700 });
     const target = join(extensionsDir, 'metawork-web-tools.ts');
-    await copyFile(this.webExtensionSourcePath, target);
-    await chmod(target, 0o600);
+    // The isolated attempt home has no node_modules up-tree, so the seeded
+    // extension's `@earendil-works/*` bare imports cannot resolve there.
+    // Rewrite them to absolute file URLs into the staged fork packages.
+    const stagedRoot = join(resolveMetaWorkPaths().appCurrent, 'planner', 'packages');
+    let source = await readFile(this.webExtensionSourcePath, 'utf8');
+    source = source
+      .replaceAll('"@earendil-works/pi-ai"', `"${pathToFileURL(join(stagedRoot, 'ai', 'dist', 'index.js')).href}"`)
+      .replaceAll('"@earendil-works/pi-coding-agent"', `"${pathToFileURL(join(stagedRoot, 'coding-agent', 'dist', 'index.js')).href}"`);
+    await writeFileWithRetry(target, source);
   }
 }
 
@@ -443,6 +502,25 @@ class PiResultStreamTracker implements HarnessResultStreamTracker {
         safeTextBytes: Buffer.byteLength(output ?? '', 'utf8'),
       },
     };
+  }
+}
+
+/**
+ * Windows Defender real-time scanning transiently locks freshly written
+ * source files, surfacing as EPERM/EBUSY/EACCES on the immediate reopen.
+ * Retry a few times with a growing delay before giving up.
+ */
+async function writeFileWithRetry(path: string, content: string): Promise<void> {
+  const transient = ['EPERM', 'EBUSY', 'EACCES'];
+  for (let attempt = 0; ; attempt++) {
+    try {
+      await writeFile(path, content, { encoding: 'utf8', mode: 0o600, flag: 'w' });
+      return;
+    } catch (error) {
+      const code = (error as NodeJS.ErrnoException).code ?? '';
+      if (attempt >= 4 || !transient.includes(code)) throw error;
+      await new Promise((resolveDelay) => setTimeout(resolveDelay, 150 * (attempt + 1)));
+    }
   }
 }
 

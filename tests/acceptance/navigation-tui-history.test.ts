@@ -3,6 +3,7 @@ import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { expect, it, vi } from 'vitest';
+import { resolveLocalEndpointPath } from '../../src/platform/local-endpoint.js';
 import { GatewayClient } from '../../planner/AnyFusion-Pi/packages/coding-agent/src/anyfusion/gateway-client.js';
 import { GatewaySocketTransport } from '../../planner/AnyFusion-Pi/packages/coding-agent/src/anyfusion/gateway-socket-transport.js';
 import { MetaWorkTuiController } from '../../planner/AnyFusion-Pi/packages/coding-agent/src/modes/metawork-tui/controller.js';
@@ -54,8 +55,9 @@ it('navigates long Unicode history through the real Unix Gateway and TUI control
       ? observation.content(account, command.conversationId, command.hash!, command.offset ?? 0, 16 * 1024)
       : observation.page(account, command.conversationId, command.cursor, 24 * 1024, command.beforeTurnId),
   });
+  const socketPath = resolveLocalEndpointPath(root, 'gateway.sock');
   const server = new MetaclawGatewayServer({
-    socketPath: join(root, 'gateway.sock'), journal, subscriptions, observation,
+    socketPath, journal, subscriptions, observation,
     authorizeAttach: async (_account, id) => id === 'conv_history',
     gateway: {
       handle: async (envelope: GatewayCommandEnvelope) => {
@@ -66,7 +68,7 @@ it('navigates long Unicode history through the real Unix Gateway and TUI control
       },
     } as ClientGateway,
   });
-  const transport = new GatewaySocketTransport(join(root, 'gateway.sock'));
+  const transport = new GatewaySocketTransport(socketPath);
   const controllerGateway = new GatewayClient(transport);
   const controller = new MetaWorkTuiController({ gateway: controllerGateway });
   try {

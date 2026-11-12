@@ -17,8 +17,11 @@ if (!(await readFile(join(pythonCache, 'ready')).catch(() => null))) {
   await mkdir(pythonCache, { recursive: true });
   const archive = join(pythonCache, 'python.tar.gz');
   const name = `cpython-${pythonRelease.version}+${pythonRelease.release}-${asset.target}-install_only_stripped.tar.gz`;
+  // 国内网络直连 GitHub releases 常超时；PI_PDF_ASSET_MIRROR 允许拼接加速镜像
+  // 前缀（如 https://ghfast.top/https://github.com/...），缺省保持直连。
+  const downloadUrl = `${process.env.PI_PDF_ASSET_MIRROR ?? ''}https://github.com/astral-sh/python-build-standalone/releases/download/${pythonRelease.release}/${encodeURIComponent(name)}`;
   await exec('curl', ['--fail', '--location', '--retry', '2', '--connect-timeout', '20', '--max-time', '300',
-    '--output', archive, `https://github.com/astral-sh/python-build-standalone/releases/download/${pythonRelease.release}/${encodeURIComponent(name)}`]);
+    '--output', archive, downloadUrl]);
   if (createHash('sha256').update(await readFile(archive)).digest('hex') !== asset.sha256) throw new Error('Pi PDF Python archive checksum mismatch');
   await exec('tar', ['-xzf', archive, '-C', pythonCache]);
   await exec(python, ['-I', '-c', 'import ssl,sys;assert sys.version_info[:2] == (3,12)']);

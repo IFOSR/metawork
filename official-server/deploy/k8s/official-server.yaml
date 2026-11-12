@@ -35,6 +35,8 @@ spec:
       labels:
         app: metawork-official
     spec:
+      # 实例预配专用身份（deploy/k8s/sandbox-rbac.yaml）；权限仅限本 namespace 白名单资源 + scale。
+      serviceAccountName: metawork-official-provisioner
       securityContext:
         runAsNonRoot: true
         runAsUser: 1000
@@ -42,7 +44,7 @@ spec:
         fsGroup: 1000
       containers:
         - name: official-server
-          image: registry.cn-shanghai.aliyuncs.com/metafusion/official-server:1.0.4
+          image: registry.cn-shanghai.aliyuncs.com/metafusion/official-server:1.5.13
           imagePullPolicy: IfNotPresent
           ports:
             - containerPort: 8780
@@ -59,13 +61,32 @@ spec:
               value: "6000"
             - name: AUTH_RATE_MAX
               value: "600"
-            - name: EMAIL_RATE_MAX
-              value: "600"
+            # 本机短信日预算熔断（可选，默认 500/上海自然日，仅上游成功计入）。
+            # - name: OPC_SEND_DAILY_MAX
+            #   value: "500"
             - name: TRUST_PROXY
               value: "0"
             - name: ADMIN_TOKEN
               valueFrom:
                 secretKeyRef: { name: metawork-official-secrets, key: ADMIN_TOKEN }
+            # 实例预配（可选：缺 RUNTIME_IMAGE 时创建接口返回 instance_unavailable，其余功能不变）。
+            # 免密 HMAC 密钥（RUNTIME_IMAGE 存在时启动强制校验）；私有仓库拉取凭据（可选）。
+            - name: RUNTIME_IMAGE
+              valueFrom:
+                secretKeyRef: { name: metawork-official-secrets, key: RUNTIME_IMAGE, optional: true }
+            # 实例直跑镜像内代码（见 ADR-0055）：版本即镜像 tag，RUNTIME_RELEASE_ID 不再
+            # 被容器路径使用（Secret 里遗留的 key 留着无害）。
+            - name: RUNTIME_ACCESS_SECRET
+              valueFrom:
+                secretKeyRef: { name: metawork-official-secrets, key: RUNTIME_ACCESS_SECRET, optional: true }
+            - name: RUNTIME_IMAGE_PULL_SECRET
+              valueFrom:
+                secretKeyRef: { name: metawork-official-secrets, key: RUNTIME_IMAGE_PULL_SECRET, optional: true }
+            # 用户可选工作目录的根（容器内路径）。缺省=不限制（与历史行为一致）；
+            # 设置后租户只能在它之下浏览/选择/新建工作目录，根不存在时实例启动失败。
+            - name: RUNTIME_WORKSPACE_ROOT
+              valueFrom:
+                secretKeyRef: { name: metawork-official-secrets, key: RUNTIME_WORKSPACE_ROOT, optional: true }
             # 生产支付网关（微信 Native）。生产凭证经 Secret 注入，不入库；联调可用测试网关
             # https://opc-openapi.dev.metafusion.cc（已全链路验证）。
             - name: PAYMENT_HUB_BASE_URL

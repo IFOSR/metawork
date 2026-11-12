@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import { AgentCapabilityDescriptionService } from '../../src/configuration/agent-capability-description.js';
-import { InternalLlmService } from '../../src/configuration/internal-llm-service.js';
+import { InternalLlmService, PreferredModelError } from '../../src/configuration/internal-llm-service.js';
 import { DEFAULT_INTERNAL_SETTINGS_ASSISTANT_CONFIG } from '../../src/configuration/internal-settings-assistant-config.js';
 
 const input = { kind: 'executor' as const, affordances: ['workspace-read-write'], models: [
@@ -25,9 +25,21 @@ describe('Agent capability description', () => {
   it('sends fixed business data without system prompts or provider credentials', async () => {
     const officialAi = vi.fn(async () => generated);
     const service = new AgentCapabilityDescriptionService(new InternalLlmService({ officialAi }));
-    expect(await service.describe(input)).toEqual(generated);
+    expect((await service.describe(input)).description).toEqual(generated);
     expect(officialAi).toHaveBeenCalledWith({ operation: 'capability_explanation', input });
     expect(JSON.stringify(officialAi.mock.calls)).not.toContain('system');
+  });
+
+  it('reports the degradation when the user model could not be used', async () => {
+    const officialAi = vi.fn(async () => generated);
+    const service = new AgentCapabilityDescriptionService(new InternalLlmService({
+      officialAi,
+      preferredModel: async () => { throw new PreferredModelError('用户配置模型尚未保存激活'); },
+    }));
+    const result = await service.describe(input);
+    expect(result.description).toEqual(generated);
+    expect(result.degraded).toMatchObject({ usedBy: 'official_ai' });
+    expect(result.degraded?.reason).toContain('尚未保存激活');
   });
 
   it('caches matching facts, regenerates changed selection and supports explicit refresh', async () => {

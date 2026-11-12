@@ -31,3 +31,34 @@ it('probes and launches the same explicit executable for both drivers', async ()
     expect(driver.buildLaunch({ runtimeHomePath: '/tmp/isolated', prompt: 'test', cwd: '/tmp' } as never).command).toBe(command);
   }
 });
+
+it('resolves Windows PATHEXT candidates for a bare managed tool name', () => {
+  const root = fixture();
+  const tools = join(root, 'desktop-tools', 'executor', 'bin');
+  mkdirSync(tools, { recursive: true });
+  writeFileSync(join(tools, 'pi.exe'), 'launcher');
+  expect(resolveExecutorTool('pi', { releaseRoot: root, managedPi: '', platform: 'win32' }))
+    .toBe(join(tools, 'pi.exe'));
+});
+
+it('prefers Windows executable candidates over the bare POSIX script name', () => {
+  const root = fixture();
+  const dir = join(root, 'bin');
+  mkdirSync(dir, { recursive: true });
+  writeFileSync(join(dir, 'pi'), '#!/bin/sh\n');
+  writeFileSync(join(dir, 'pi.exe'), 'launcher');
+  expect(resolveExecutorTool('pi', { releaseRoot: root, managedPi: '', searchPath: dir, platform: 'win32' }))
+    .toBe(join(dir, 'pi.exe'));
+});
+
+it('prefers an explicit managed Pi but adopts its Windows executable sibling', () => {
+  const root = fixture();
+  const managed = join(root, 'managed', 'pi');
+  mkdirSync(join(root, 'managed'), { recursive: true });
+  writeFileSync(`${managed}.exe`, 'launcher');
+  expect(resolveExecutorTool('pi', { releaseRoot: root, managedPi: managed, platform: 'win32' }))
+    .toBe(`${managed}.exe`);
+  writeFileSync(managed, 'tool');
+  expect(resolveExecutorTool('pi', { releaseRoot: root, managedPi: managed, platform: 'win32' }))
+    .toBe(managed);
+});

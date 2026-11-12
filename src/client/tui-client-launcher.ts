@@ -1,11 +1,12 @@
 import {
-	resolveClientEndpoint,
-	type ClientEndpointResult,
+  resolveClientEndpoint,
+  type ClientEndpointResult,
 } from './client-endpoint-resolver.js';
 import { spawn, type ChildProcess } from 'node:child_process';
 import { existsSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { withNodeScriptLauncher } from '../utils/spawn-command.js';
 
 export interface TuiClientLauncherDeps {
   readonly manifestPath: string;
@@ -67,13 +68,14 @@ async function runVendoredPlannerClient(
     ANYFUSION_PLANNER_WORKSPACE: _plannerWorkspace,
     ...clientEnvironment
   } = process.env;
-  const child = spawnProcess(command, [
+  const launch = withNodeScriptLauncher(command, [
     '--gateway-socket',
     socketPath,
     ...(conversationId ? ['--conversation-id', conversationId] : []),
     '--workspace-hint',
     workspaceHint,
-  ], {
+  ]);
+  const child = spawnProcess(launch.command, launch.args, {
     cwd: workspaceHint,
     stdio: 'inherit',
     env: {

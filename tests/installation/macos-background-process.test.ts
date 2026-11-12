@@ -17,7 +17,7 @@ async function fixture() {
     cwd: root, env: { FIXTURE: 'value & "quoted"' }, logPath: join(root, 'helper.log') };
 }
 
-it('launches a one-shot job without retaining its environment or registering a login item', async () => {
+it.skipIf(process.platform !== 'darwin')('launches a one-shot job without retaining its environment or registering a login item', async () => {
   const input = await fixture();
   mocks.execute.mockImplementation(async (_command, args) => {
     if (args[0] === 'print') throw new Error('not registered');
@@ -33,21 +33,21 @@ it('launches a one-shot job without retaining its environment or registering a l
   expect(await readdir(join(input.root, 'desktop-support'))).toEqual([]);
 });
 
-it('never stops a live job to launch another helper', async () => {
+it.skipIf(process.platform !== 'darwin')('never stops a live job to launch another helper', async () => {
   const input = await fixture();
   mocks.execute.mockResolvedValue('state = running\n\tpid = 12345\n');
   await expect(startMacOSBackgroundProcess(input)).rejects.toThrow('already running');
   expect(mocks.execute).toHaveBeenCalledOnce();
 });
 
-it('lets concurrent clients wait for the existing Server readiness check', async () => {
+it.skipIf(process.platform !== 'darwin')('lets concurrent clients wait for the existing Server readiness check', async () => {
   const input = await fixture();
   mocks.execute.mockResolvedValue('state = running\n\tpid = 12345\n');
   await startMacOSBackgroundProcess({ ...input, role: 'server' });
   expect(mocks.execute).toHaveBeenCalledOnce();
 });
 
-it('retires a finished job before the next update and fails closed if launchd refuses it', async () => {
+it.skipIf(process.platform !== 'darwin')('retires a finished job before the next update and fails closed if launchd refuses it', async () => {
   const input = await fixture();
   mocks.execute.mockImplementation(async (_command, args) => {
     if (args[0] === 'print') return 'state = not running\nlast exit code = 0\n';

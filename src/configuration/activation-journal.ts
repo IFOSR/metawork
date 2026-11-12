@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto';
-import { mkdir, open, readFile, rename, rm, writeFile } from 'node:fs/promises';
+import { mkdir, open, readFile, rm, writeFile } from 'node:fs/promises';
 import { dirname } from 'node:path';
+import { renameReplacingTarget } from '../utils/directory-pointer.js';
 
 export interface ActivationJournalIdentity {
   transactionId: string;
@@ -59,7 +60,7 @@ export class ActivationJournalStore {
       mode: 0o600,
     });
     await syncFile(temporaryPath);
-    await rename(temporaryPath, this.path);
+    await renameReplacingTarget(temporaryPath, this.path);
     await syncDirectory(directory);
   }
 }

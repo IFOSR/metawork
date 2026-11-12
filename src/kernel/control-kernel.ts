@@ -2259,9 +2259,14 @@ export class ControlKernel {
     const elapsed = Date.parse(event.occurredAt) - Date.parse(snapshot.capacityBlockedAt);
     if (!Number.isFinite(elapsed) || elapsed < snapshot.recheckAfterMs) return decision(event, { type: 'no_op' }, 'capacity recheck interval has not elapsed');
     const unavailable = unavailableAgentClasses(snapshot.executorStatuses, event.occurredAt);
-    const candidate = snapshot.capacityBindings.find(binding =>
+    const healthy = snapshot.capacityBindings.find(binding =>
       !unavailable.has(binding.agentClassRef)
     );
+    // A blocked Executor can only become healthy again through a successful
+    // capacity probe, so when every bound class is unavailable the recheck
+    // probes the blocked class itself instead of stalling. The recheck timer
+    // (recheckAfterMs) throttles repeated probes of a genuinely dead Executor.
+    const candidate = healthy ?? snapshot.capacityBindings[0];
     return candidate
       ? decision(event, {
           type: 'probe_capacity',
@@ -2269,8 +2274,10 @@ export class ControlKernel {
           subtaskId: event.subtaskId,
           authorizedBinding: candidate,
           bindingFingerprint: authorizedExecutorBindingFingerprint(candidate),
-        }, 'capacity timer recheck authorized')
-      : decision(event, { type: 'no_op' }, 'no healthy AgentClass is eligible for capacity probe');
+        }, healthy
+          ? 'capacity timer recheck authorized'
+          : 'capacity timer recheck probes the blocked Executor class')
+      : decision(event, { type: 'no_op' }, 'no AgentClass binding is available for capacity probe');
   }
 
   private decideRecovery(

@@ -265,7 +265,8 @@ PAYMENT_CHANNEL=wechat_native
 
 ## 9. 待提供与已记录的平台事项（部署阶段）
 
-- OPC Hub 商户凭证：`PAYMENT_HUB_CLIENT_ID` / `PAYMENT_HUB_CLIENT_SECRET` **按环境隔离**；生产凭证部署时经 K8s Secret 注入，不经手、不入库、不进代码。
+- OPC Hub 商户凭证：`PAYMENT_HUB_CLIENT_ID` / `PAYMENT_HUB_CLIENT_SECRET` **按环境隔离**；生产凭证部署时经 K8s Secret 注入，不经手、不入库、不进代码（已注入并验证生效）。
+- **回调域名无需平台登记**（2026-10-15 生产实测：携带该地址的订单被生产网关正常接受、支付后回调链路秒级完成结算）；仅需满足文档格式约束——HTTPS、公网可达、禁内网地址、无重定向、≤512 字符，`metawork.nexusfusionai.com` 全部满足且证书/健康检查实测通过。
 - **API 域名分环境，凭证不通用**（2026-10-14/15 真实环境验证）：生产网关 `https://opchub-openapi.metafusion.cn`（部署配置目标，用户指定）；测试网关 `https://opc-openapi.dev.metafusion.cc`（测试凭证有效，全链路 13/13 通过）。凭证按环境隔离，生产凭证部署时经 Secret 注入。`opchub.dev.metafusion.cc` 是门户站点（POST 一律 405）；`opchub-openapi.metafusion.cn` 是 Hub 自己的生产域名（DNS 指向 Hub），**不可**用作我方回调域名。
 - **notify_url 必须是域名**：真实 Hub 以 `OPC_PARAM_INVALID` 拒绝 IP 字面量 `https://14.103.216.193:9222/...`（真实环境已验证）。部署前需为回调准备解析到该主机的域名（或在平台侧登记白名单），nginx 按现有 `/v1/*` 代理即可。
 - 已记录：文档最低金额两页不一致（创建订单页"最低 1 分" vs 错误码页 `OPC_PAY_AMOUNT_TOO_SMALL` "100 分/1 元"），本方案 990/9900 在任一口径下均安全；微信渠道对陈旧交易的退款时限由平台/渠道掌握，超时拒退落 `manual_required` 人工路径；Hub 幂等键字符集未在文档明示（示例仅见字母数字与连字符），实现层对 `pay-<orderId>` / `refund-<orderId>-<attempt>` 等键做 sanitize（去除字母数字与连字符以外字符）并保持唯一，联调确认——真实环境已接受 sanitize 后的键。

@@ -90,8 +90,14 @@ export METACLAW_EXECUTOR_BACKEND=native
 # Workspace as a separate, explicit hint.
 unset ANYFUSION_PLANNER_WORKSPACE METACLAW_PLANNER_WORKDIR
 export ANYFUSION_PI_SOURCE_ROOT="$METAWORK_INSTALL_ROOT/app/current/planner"
-export METACLAW_PLANNER_COMMAND="$ANYFUSION_PI_SOURCE_ROOT/packages/coding-agent/dist/cli.js"
-export METACLAW_PLANNER_TUI_COMMAND="$METACLAW_PLANNER_COMMAND"
+: "\${METACLAW_PLANNER_COMMAND:=$ANYFUSION_PI_SOURCE_ROOT/packages/coding-agent/dist/cli.js}"
+export METACLAW_PLANNER_COMMAND
+: "\${METACLAW_PLANNER_TUI_COMMAND:=$METACLAW_PLANNER_COMMAND}"
+export METACLAW_PLANNER_TUI_COMMAND
+# The release bundles a native Pi Executor compiled from the same vendored
+# fork as the Planner; managed beats any PATH lookup.
+: "\${METAWORK_MANAGED_PI:=$ANYFUSION_PI_SOURCE_ROOT/packages/coding-agent/dist/pi}"
+export METAWORK_MANAGED_PI
 export METACLAW_PLANNER_SESSION_DIR="$METAWORK_INSTALL_ROOT/data/planner-sessions"
 export METACLAW_PLANNER_SCHEMA_PATH="$METAWORK_INSTALL_ROOT/app/current/dist/planning-agent-plan-v9.schema.json"
 export ANYFUSION_PLANNER_SCHEMA_PATH="$METACLAW_PLANNER_SCHEMA_PATH"
@@ -115,8 +121,11 @@ set "METAWORK_SECRET_STORE=file"
 set "ANYFUSION_PLANNER_WORKSPACE="
 set "METACLAW_PLANNER_WORKDIR="
 set "ANYFUSION_PI_SOURCE_ROOT=%METAWORK_INSTALL_ROOT%\\app\\current\\planner"
-set "METACLAW_PLANNER_COMMAND=%ANYFUSION_PI_SOURCE_ROOT%\\packages\\coding-agent\\dist\\cli.js"
-set "METACLAW_PLANNER_TUI_COMMAND=%METACLAW_PLANNER_COMMAND%"
+if not defined METACLAW_PLANNER_COMMAND set "METACLAW_PLANNER_COMMAND=%ANYFUSION_PI_SOURCE_ROOT%\\packages\\coding-agent\\dist\\cli.js"
+if not defined METACLAW_PLANNER_TUI_COMMAND set "METACLAW_PLANNER_TUI_COMMAND=%METACLAW_PLANNER_COMMAND%"
+REM The release bundles a native Pi Executor compiled from the same vendored
+REM fork as the Planner; managed beats any PATH lookup.
+if not defined METAWORK_MANAGED_PI set "METAWORK_MANAGED_PI=%ANYFUSION_PI_SOURCE_ROOT%\\packages\\coding-agent\\dist\\pi.exe"
 set "METACLAW_PLANNER_SESSION_DIR=%METAWORK_INSTALL_ROOT%\\data\\planner-sessions"
 set "METACLAW_PLANNER_SCHEMA_PATH=%METAWORK_INSTALL_ROOT%\\app\\current\\dist\\planning-agent-plan-v9.schema.json"
 set "ANYFUSION_PLANNER_SCHEMA_PATH=%METACLAW_PLANNER_SCHEMA_PATH%"

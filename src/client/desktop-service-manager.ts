@@ -1,7 +1,7 @@
 import { spawn } from 'node:child_process';
 import { access, mkdir, open, realpath } from 'node:fs/promises';
 import { constants } from 'node:fs';
-import { dirname, join, relative, isAbsolute, sep, resolve } from 'node:path';
+import { delimiter, dirname, join, relative, isAbsolute, sep, resolve } from 'node:path';
 import { isInstanceRunning } from '../management/lock.js';
 import { readReleaseIdentity } from '../installation/release-identity.js';
 import { discoverDesktopSession } from './desktop-session-client.js';
@@ -200,10 +200,17 @@ export class DesktopServiceManager {
     delete env.ANYFUSION_PLANNER_WORKSPACE;
     delete env.METACLAW_PLANNER_WORKDIR;
     const tools = resolve(dirname(this.runtime.nodePath), '../..');
+    // Windows PATH entries are `;`-joined; a `:` join yields one mangled entry.
+    const pathEntries = [
+      dirname(this.runtime.nodePath),
+      join(tools, 'git', 'bin'),
+      join(tools, 'executor', 'bin'),
+      join(root, 'bin'),
+      env.PATH ?? '',
+    ].filter(entry => entry !== '');
     return {
       ...env,
-      PATH: [dirname(this.runtime.nodePath), join(tools, 'git', 'bin'),
-        join(tools, 'executor', 'bin'), join(root, 'bin'), env.PATH ?? '/usr/bin:/bin'].join(':'),
+      PATH: pathEntries.join(delimiter),
       METAWORK_INSTALL_ROOT: this.runtime.installRoot,
       ANYFUSION_INSTALL_ROOT: this.runtime.installRoot,
       ...(this.runtime.configHome ? { METAWORK_CONFIG_HOME: this.runtime.configHome, ANYFUSION_CONFIG_HOME: this.runtime.configHome } : {}),

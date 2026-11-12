@@ -112,6 +112,10 @@ export interface RuntimeHomeInput {
   bindingFingerprint: string;
   attemptsRoot: string;
   environment: Record<string, string>;
+  /** Attempt model binding. Pi drivers seed it into the copied home settings:
+   *  the vendored Planner CLI denies `--provider`/`--model` client flags. */
+  providerRef?: string;
+  modelId?: string;
 }
 
 export interface MaterializedRuntimeHome {
@@ -161,6 +165,15 @@ export function safeHostEnvironment(environment: NodeJS.ProcessEnv): NodeJS.Proc
     // Embedded Python helpers must not create mutable __pycache__ files in
     // the signed Desktop payload after launch.
     'PYTHONDONTWRITEBYTECODE',
+    // Windows toolchains locate global config and install roots through these;
+    // without them git and npm silently misbehave inside Executor attempts.
+    'ALLUSERSPROFILE',
+    'APPDATA',
+    'HOMEDRIVE',
+    'HOMEPATH',
+    'LOCALAPPDATA',
+    'PROGRAMFILES',
+    'USERPROFILE',
   ] as const;
   return Object.fromEntries(allowed.flatMap(key => {
     const value = environment[key];

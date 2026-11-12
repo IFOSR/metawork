@@ -1,6 +1,7 @@
 import { chmod, copyFile, lstat, mkdir, readdir, rename, rm, writeFile } from 'node:fs/promises';
 import { randomUUID } from 'node:crypto';
 import { dirname, join, relative, resolve, sep } from 'node:path';
+import { restoreWriteAccess } from '../utils/directory-pointer.js';
 
 const materializations = new Map<string, Promise<string>>();
 
@@ -187,7 +188,9 @@ async function copyTree(source: string, target: string): Promise<void> {
     if (!entry.isFile()) {
       throw new Error(`Unsupported entry in Planner generated home: ${sourcePath}`);
     }
-    // 上次物化会按源权限把目标文件设为只读；重新物化前先移除，避免覆盖只读文件时 EACCES。
+    // 上次物化会按源权限把目标文件设为只读；Windows 删除只读文件会 EPERM，
+    // 先恢复写位再移除，避免重新物化时失败。
+    await restoreWriteAccess(targetPath).catch(() => undefined);
     await rm(targetPath, { force: true });
     await copyFile(sourcePath, targetPath);
     const sourceInfo = await lstat(sourcePath);

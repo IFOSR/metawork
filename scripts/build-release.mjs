@@ -41,7 +41,10 @@ function parseArguments(argv) {
 }
 
 function run(command, args, cwd = process.cwd()) {
-  const executable = process.platform === 'win32' && command === 'npm' ? 'npm.cmd' : command;
+  // npm and bun are .cmd shims on Windows; Node ≥18.20 refuses to spawn them
+  // without a shell.
+  const shims = command === 'npm' || command === 'bun';
+  const executable = process.platform === 'win32' && shims ? `${command}.cmd` : command;
   const result = spawnSync(executable, args, {
     cwd,
     stdio: 'inherit',
@@ -96,6 +99,14 @@ function assertNativeTarget(options) {
   }
 }
 
+// npm -g installs bun as .cmd/sh shims on Windows; a bare spawnSync misses
+// them, so fall back to a shell-resolved probe there.
+function bunAvailable() {
+  if (spawnSync('bun', ['--version'], { stdio: 'ignore' }).status === 0) return true;
+  if (process.platform !== 'win32') return false;
+  return spawnSync('bun', ['--version'], { stdio: 'ignore', shell: true }).status === 0;
+}
+
 function main() {
   const options = parseArguments(process.argv.slice(2));
   assertNativeTarget(options);
@@ -120,6 +131,18 @@ function main() {
     run('npm', ['run', 'build']);
     run('npm', ['ci', '--ignore-scripts'], plannerRoot);
     run('npm', ['run', 'build:offline'], plannerRoot);
+    // Bundle a native Pi Executor compiled from the same vendored fork when
+    // bun is available; the packaging allowlist picks up dist/pi(.exe) and
+    // launchers point METAWORK_MANAGED_PI at it. Optional: builds without bun
+    // keep working, only without the managed executor binary. The package
+    // builds have already produced dist/bun/cli.js; the full build:binary
+    // chain is not used because packages/ai carries pre-existing type errors.
+    if (bunAvailable()) {
+      run('bun', ['build', '--compile', './dist/bun/cli.js', './src/utils/image-resize-worker.ts', '--outfile', 'dist/pi'],
+        resolve(plannerRoot, 'packages', 'coding-agent'));
+    } else {
+      process.stdout.write('bun not found; skipping the bundled Pi executor binary\n');
+    }
     run('npm', ['ci', '--omit=dev']);
     run('npm', ['ci', '--omit=dev'], plannerRoot);
     assertBetterSqlite3Runtime(process.cwd());

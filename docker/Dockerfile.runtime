@@ -12,7 +12,8 @@ COPY planner/AnyFusion-Pi/packages/tui/package.json packages/tui/package.json
 COPY planner/AnyFusion-Pi/packages/ai/package.json packages/ai/package.json
 COPY planner/AnyFusion-Pi/packages/agent/package.json packages/agent/package.json
 COPY planner/AnyFusion-Pi/packages/coding-agent/package.json packages/coding-agent/package.json
-RUN npm ci --ignore-scripts
+# 国内源：npm 走 npmmirror（构建环境在中国大陆，直连 registry.npmjs.org 不稳定）。
+RUN npm ci --ignore-scripts --registry=https://registry.npmmirror.com
 
 COPY planner/AnyFusion-Pi/. .
 RUN npm run build:offline \
@@ -25,14 +26,33 @@ FROM docker:27-cli AS docker-cli
 
 FROM node:22.19.0-bookworm-slim AS builder
 
+# better-sqlite3 falls back to node-gyp when its prebuilt download fails; the
+# slim base image ships no Python/build chain, so provide it explicitly.
+# 国内源：apt 走阿里云镜像，npm 走 npmmirror。
+RUN for f in /etc/apt/sources.list.d/debian.sources /etc/apt/sources.list; do \
+      [ -f "$f" ] && sed -i 's|deb.debian.org|mirrors.aliyun.com|g; s|security.debian.org|mirrors.aliyun.com|g' "$f" || true; \
+    done \
+  && apt-get update \
+  && apt-get install -y --no-install-recommends python3 make g++ curl ca-certificates \
+  && rm -rf /var/lib/apt/lists/*
+
 WORKDIR /app
 COPY package.json package-lock.json ./
-RUN npm ci
+RUN npm ci --registry=https://registry.npmmirror.com
 COPY . .
+# prepare-pi-pdf 从 GitHub releases 下载嵌入式 Python 并用 pip 装依赖；
+# 境内直连常超时，分别走加速镜像与 pip 国内源（预置缓存时两项均不触发）。
+ENV PI_PDF_ASSET_MIRROR=https://gh-proxy.com/
+ENV PIP_INDEX_URL=https://mirrors.aliyun.com/pypi/simple/
 RUN npm run build
 
 FROM node:22.19.0-bookworm-slim AS runtime
 
+# Executor `pi` must be the vendored fork (MetaWork patches: kimi/Moonshot
+# request-compat family, planner session dirs) — the npm upstream release
+# sends `developer` roles that kimi endpoints reject with 400. The RUN below
+# overwrites the npm `pi` shim with a wrapper around the vendored Planner
+# build (/opt/anyfusion-planner/app), which already carries the patches.
 WORKDIR /app
 ENV NODE_ENV=production \
     CI=true \
@@ -41,8 +61,8 @@ ENV NODE_ENV=production \
     ANYFUSION_PLANNER_HOME=/var/lib/metaclaw/anyfusion-planner/agent \
     METACLAW_PLANNER_HOME=/var/lib/metaclaw/anyfusion-planner/agent \
     METACLAW_PLANNER_SESSION_DIR=/var/lib/metaclaw/anyfusion-planner/sessions \
-    METACLAW_PLANNER_SCHEMA_PATH=/opt/metaclaw/schema/planning-agent-plan-v8.schema.json \
-    ANYFUSION_PLANNER_SCHEMA_PATH=/opt/metaclaw/schema/planning-agent-plan-v8.schema.json \
+    METACLAW_PLANNER_SCHEMA_PATH=/opt/metaclaw/schema/planning-agent-plan-v9.schema.json \
+    ANYFUSION_PLANNER_SCHEMA_PATH=/opt/metaclaw/schema/planning-agent-plan-v9.schema.json \
     METACLAW_PLANNER_WORKDIR=/workspace \
     METACLAW_PLANNER_ENV_FILE=/run/metaclaw/env/planner-pi.env \
     METACLAW_PLANNER_COMMAND=/opt/anyfusion-planner/bin/anyfusion-planner \
@@ -56,7 +76,11 @@ ENV NODE_ENV=production \
     METACLAW_CODEX_EXECUTOR_ENV_FILE=/run/metaclaw/env/executor-codex.env \
     METACLAW_PI_EXECUTOR_ENV_FILE=/run/metaclaw/env/executor-pi.env
 
-RUN apt-get update \
+# 国内源：apt 走阿里云镜像。
+RUN for f in /etc/apt/sources.list.d/debian.sources /etc/apt/sources.list; do \
+      [ -f "$f" ] && sed -i 's|deb.debian.org|mirrors.aliyun.com|g; s|security.debian.org|mirrors.aliyun.com|g' "$f" || true; \
+    done \
+  && apt-get update \
   && apt-get install -y --no-install-recommends bash ca-certificates curl fd-find git openssh-client openssh-server python3 ripgrep \
   && ln -sf /usr/bin/fdfind /usr/local/bin/fd \
   && rm -rf /var/lib/apt/lists/* \
@@ -64,9 +88,12 @@ RUN apt-get update \
   && echo 'root:metaclaw' | chpasswd \
   && sed -i 's/^#*PermitRootLogin.*/PermitRootLogin yes/' /etc/ssh/sshd_config \
   && sed -i 's/^#*PasswordAuthentication.*/PasswordAuthentication yes/' /etc/ssh/sshd_config \
-  && npm install -g --ignore-scripts @openai/codex@0.144.1 @earendil-works/pi-coding-agent@0.80.2
+  && npm install -g --ignore-scripts --registry=https://registry.npmmirror.com @openai/codex@0.144.1 @earendil-works/pi-coding-agent@0.80.2 \
+  && printf '#!/bin/sh\nexec /usr/local/bin/node /opt/anyfusion-planner/app/packages/coding-agent/dist/cli.js "$@"\n' > /usr/local/bin/pi \
+  && chmod +x /usr/local/bin/pi
 
 COPY --from=builder /app/dist ./dist
+COPY --from=builder /app/web/dist ./web/dist
 COPY --from=builder /app/node_modules ./node_modules
 COPY --from=builder /app/package.json ./package.json
 COPY --from=builder /app/dist/pi-attempt-tools.ts /opt/metaclaw/pi-attempt-tools.ts
@@ -80,7 +107,7 @@ COPY docker/planner-pi-config /opt/metaclaw/planner-pi-config
 COPY docker/tui-config.yaml /opt/metaclaw/default-config.yaml
 COPY scripts/smoke-planner-mcp.mjs /app/scripts/smoke-planner-mcp.mjs
 COPY scripts/smoke-metaclaw-real-task.mjs /app/scripts/smoke-metaclaw-real-task.mjs
-COPY --from=builder /app/dist/planning-agent-plan-v8.schema.json /opt/metaclaw/schema/planning-agent-plan-v8.schema.json
+COPY --from=builder /app/dist/planning-agent-plan-v9.schema.json /opt/metaclaw/schema/planning-agent-plan-v9.schema.json
 
 RUN test "$(node --version)" = 'v22.19.0' \
   && test ! -e /opt/anyfusion-planner/node \

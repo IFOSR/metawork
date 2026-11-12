@@ -20,14 +20,60 @@ const inputs = readFileSync(resolve(inputFile), 'utf8')
 
 const client = await connect(socketPath);
 const output = [];
+const connectionId = `smoke_conn_${Date.now()}`;
 try {
   await client.next(message => message.type === 'hello');
-  await submit(`/workspace ${workspace}`);
+  // The Gateway only accepts an input inside an attached Conversation, so the
+  // client binds a Workspace, creates a Conversation and attaches to it before
+  // sending anything, exactly like the Web and TUI clients do.
+  const selected = await command({
+    requestId: `smoke_select_${Date.now()}`,
+    command: { kind: 'select_workspace', path: workspace },
+    scope: { kind: 'workspace' },
+  });
+  if (selected.status !== 'accepted' || !selected.workspaceId) {
+    throw new Error(`Workspace selection failed: ${selected.reason ?? selected.status}`);
+  }
+  const created = await command({
+    requestId: `smoke_create_${Date.now()}`,
+    command: { kind: 'create_conversation', workspaceId: selected.workspaceId },
+    scope: { kind: 'workspace' },
+  });
+  if (created.status !== 'accepted' || !created.conversationId) {
+    throw new Error(`Conversation creation failed: ${created.reason ?? created.status}`);
+  }
+  client.socket.write(`${JSON.stringify({
+    type: 'attach',
+    connectionId,
+    conversationId: created.conversationId,
+    resumeFromSequence: 0,
+  })}\n`);
+  await client.next(message => message.type === 'hello' && message.attached === true);
   for (const text of inputs) await submit(text);
   writeFileSync(outputPath, `${output.join('\n')}\n`, 'utf8');
 } finally {
   client.socket.end(JSON.stringify({ type: 'close' }) + '\n');
   client.socket.destroy();
+}
+
+async function command({ requestId, command: payload, scope }) {
+  client.socket.write(`${JSON.stringify({
+    type: 'command',
+    envelope: {
+      protocolVersion: 2,
+      requestId,
+      idempotencyKey: `${requestId}_idempotency`,
+      connectionId,
+      scope,
+      command: payload,
+      clientCapabilities: ['trace_v1'],
+    },
+  })}\n`);
+  const terminal = await client.next(message => (
+    message.type === 'receipt' && message.receipt.requestId === requestId
+  ) || (message.type === 'error' && message.requestId === requestId));
+  if (terminal.type === 'error') throw new Error(terminal.message);
+  return terminal.receipt;
 }
 
 async function submit(text) {
@@ -41,7 +87,10 @@ async function submit(text) {
   const terminal = await client.next(message => (
     (message.type === 'output' && message.event.requestId === requestId
       && (message.event.kind === 'final_answer' || message.event.kind === 'conversation_snapshot'))
-    || (message.type === 'error' && message.requestId === requestId)
+    // A terminal turn error is delivered as an error carrying the event, so the
+    // request id lives on the event rather than on the error envelope.
+    || (message.type === 'error'
+      && (message.requestId === requestId || message.event?.requestId === requestId))
   ));
   if (terminal.type === 'error') throw new Error(terminal.message);
   output.push(...terminal.lines);

@@ -17,6 +17,7 @@ import { basename, dirname, join, relative, resolve } from 'node:path';
 import Database from 'better-sqlite3';
 import { LOCAL_DEFAULT_ACCOUNT_ID } from '../account/account-id.js';
 import { resolveAccountPaths } from '../account/account-paths.js';
+import { createDirectorySymlink, createFilePointer } from '../utils/directory-pointer.js';
 import { ConfigurationCompiler } from '../configuration/configuration-compiler.js';
 import { createProductionConfigurationProbe } from '../configuration/production-configuration-probe.js';
 import { ConfigurationService } from '../configuration/configuration-service.js';
@@ -485,7 +486,11 @@ async function createFreshDatabase(path: string): Promise<void> {
 async function replaceRelativeSymlink(path: string, target: string): Promise<void> {
   await mkdir(dirname(path), { recursive: true, mode: 0o700 });
   const temporary = `${path}.next-${randomUUID()}`;
-  await symlink(target, temporary);
+  // Directory pointers become junctions on Windows (creatable without
+  // privilege); the `database` file pointer keeps plain symlink semantics.
+  const targetInfo = await lstat(resolve(dirname(path), target)).catch(() => null);
+  if (targetInfo?.isDirectory()) await createDirectorySymlink(target, temporary);
+  else await symlink(target, temporary);
   await rename(temporary, path);
 }
 
@@ -509,6 +514,9 @@ async function assertInstallTargetIsClean(
 }
 
 async function makeImmutable(path: string): Promise<void> {
+  // Python writes __pycache__ inside dist/pi-pdf at runtime; keep that subtree
+  // writable (its integrity is hash-verified by the signed release manifest).
+  if (basename(path) === 'pi-pdf' && basename(dirname(path)) === 'dist') return;
   const info = await lstat(path);
   if (info.isDirectory()) {
     const { readdir } = await import('node:fs/promises');

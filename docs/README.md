@@ -19,6 +19,14 @@ This directory contains both current technical documentation and historical plan
 
 ## Current Docs
 
+## Current Docs
+
+- [官方服务实例创建与查询方案（一期）](plans/2026-11-09-official-runtime-provisioning-design.md)：官方服务新增 `POST/GET /v1/runtimes` 与免密登录（access-url/redeem/verify/session），经 in-cluster ServiceAccount 在既有 `nexusfusionai` namespace（与官方服务同 namespace）创建 PVC/Deployment/VPA/Service/Ingress×2，生成专属域名 `<slug>.metawork.nexusfusionai.com`（指定通配证书）。一账号一活跃实例；权益失效宽限 1 天停机、续费查询即重启同一实例；停机超 30 天或 30 天无本人查询标记回收、人工 close 删除。免密：一次性钥匙链接（60 秒）兑换长期门票 Cookie + 租户 Runtime 自动采纳官方会话（权益刷新），除 `/_auth/redeem` 外全路径门禁。2026-11-11 确认实施，见文档 §9/§11。
+
+- [工作目录根限制与目录新建](plans/2026-11-12-workspace-root-limitation-design.md)：实例容器用 `METAWORK_WORKSPACE_ROOT` 指定用户可选工作目录的根，未配置则不限制（与历史行为一致）；浏览/选择/新建三个接口共用同一边界（判定在 realpath 之后，符号链接无法越界）；根位置不再返回上级目录。新增 `POST /api/workspaces/mkdir` 与弹窗内"+ 新建目录"。官方服务侧 `RUNTIME_WORKSPACE_ROOT` 注入租户 Deployment，`/workspace` 走实例已有 PVC 的 `workspace` 子路径（subPath 挂载需 initContainer 先建目录）；根不存在时实例启动失败。2026-11-12 确认实施。
+
+- [未激活模型的 AI 辅助可用性](plans/2026-11-12-unactivated-model-ai-assist-design.md)：设置页新增模型但未保存激活时，"更新模型能力/智能体能力/智能体介绍"等需要调用模型的辅助功能不再直接失败——解析不到用户模型时改用官方内置 AI 完成生成，并把原因如实回报（`degraded`）而不是让用户误以为结果出自自己的模型；错误文案统一指向"尚未保存激活"。新增待激活 Provider 暂存区（端点落本机、密钥仍走凭据库、不放松 SSRF 边界），Provider 激活后转正清理。用户设置流程不变。2026-11-12 确认实施。
+
 - [结果恢复与停止状态闭环](plans/2026-11-04-result-recovery-deadlock-fix.md)：移除隐式接受未验收结果，拒绝历史自动接受抢占用户重试，统一实时结果动作和控制命令收尾；补齐 WebSocket 历史运行态及同版本客户端自动收敛。2026-11-05 已发布 v0.1.25，真实浏览器及安装升级验收通过；全部 14 个附件及 DMG 校验完成，全量 CI 遗留失败详见 [发布记录](plans/2026-11-05-v0.1.25-release.md)。
 
 - [Server 关停有界与退出恢复](plans/2026-11-04-server-shutdown-bounded-exit-recovery.md)：2026-11-04 已实施。关停按 Planner → 记忆沉积 → 账户存储释放排序；Server 在 drain 前武装独立的退出看门狗（默认 60s）；实例锁只在进程真正退出时释放，`status` 能识别卡住的实例，`metawork server stop --force` 与 Desktop 停止/重连都能回收它；停止原因可审计。
@@ -76,6 +84,7 @@ This directory contains both current technical documentation and historical plan
 - [历史会话空白修复](plans/2026-10-10-history-viewport-restore-fix.md)：修复 Desktop 重启后长报告滚动位置恢复导致的空白，历史内容无需重建。
 
 - [官方账号服务运行与验收](current/official-account-operations.md)：huoshan 部署、管理入口、凭证停用、隐私与验收证据。
+- [官方账号登录体系方案（含 OPC 登录实验与回归邮箱验证码）](plans/2026-10-20-opc-unified-login.md)：定版邮箱+密码+注册邮箱验证码（ADR-0051）；OPC OTP 路线经生产实测终止（ADR-0049 归档）；并合并三项随版缺陷修复（§12），其中 §12.4 为登录与客户端页面进入时自动刷新权益。
 
 - [Pi 随应用维护与可选执行工具接入方案](plans/2026-10-09-managed-pi-and-optional-tools-design.md)：v0.1.14 arm64 DMG 与自动验收完成并已发布；Pi 随 MetaWork 维护，Codex 支持自动发现与路径配置，其缺失不阻断应用更新。
 
@@ -192,6 +201,8 @@ replacing those semantics.
 - [ADR-0047: 官方账号授权与内置 AI](adr/0047-account-license-and-official-ai.md)：一期实现边界、授权核验和官方服务职责。
 
 - [ADR-0048: 官方账号支付结算与退款通道](adr/0048-official-account-payment-settlement.md)：回调唯一授权、attempt 历史幂等结算、整数分金额、append-only 退款恢复、仅管理端退款与支付 incident 台账；本地实施完成，部署验收待办。[方案](plans/2026-10-14-official-account-payment-integration.md)。
+
+- [ADR-0051: 回归邮箱体系并验证注册邮箱](adr/0051-email-registration-verification.md)：注册须邮箱验证码（自管+通用 SMTP），替代 ADR-0049（OPC OTP 对未录入身份假发送，不满足开放注册，已归档）。[方案](plans/2026-10-20-opc-unified-login.md)。
 
 - [Desktop 接入已有 Web Runtime](plans/2026-10-08-desktop-existing-runtime-adoption.md)：同版本复用与工具补齐、旧版本原地升级、数据保留及联合激活回滚验证。
 

@@ -35,6 +35,16 @@ import { resolveMetaclawDir } from '../utils/paths.js';
 import { formatCliHelp, parseCliArgs } from '../cli/args.js';
 import { runConfigurationAdmin, type ConfigurationMutationResult } from '../commands/configuration-admin.js';
 import { FileConfigurationRepository } from '../configuration/file-configuration-repository.js';
+import {
+  FilePendingProviderStore,
+  type PendingProviderStore,
+} from '../configuration/pending-provider-store.js';
+import {
+  bootstrapContainerConfiguration,
+  containerBootstrapRequested,
+  ensureBootstrapProviderCredentials,
+} from '../configuration/container-bootstrap.js';
+import { createConfigurationRevisionId } from '../configuration/revision-id.js';
 import { AgentRuntimeRenderer } from '../configuration/agent-runtime-renderer.js';
 import {
   ConfigurationService,
@@ -124,6 +134,7 @@ import {
 } from '../workspace/conversation-workspace-service.js';
 import { WorkspaceConversationMigrator } from '../workspace/workspace-conversation-migrator.js';
 import { WorkspaceDirectoryService } from '../workspace/workspace-directory-service.js';
+import { resolveWorkspaceRoot } from '../workspace/workspace-root.js';
 import { WorkspaceDirectoryBrowser } from '../management/workspace-directory-browser.js';
 import {
   AgentInstallationReadinessService,
@@ -171,7 +182,9 @@ import { ExecutorAttemptRuntimeRepo } from '../storage/executor-attempt-runtime-
 import { KernelDispatchItemRepo } from '../storage/kernel-dispatch-item-repo.js';
 import {
   acquireInstanceLock,
+  consumeShutdownMarker,
   isInstanceRunning,
+  SERVER_SHUTDOWN_MARKER,
   readInstanceLock,
   stopInstanceForRestart,
   type InstanceLock,
@@ -221,8 +234,11 @@ import {
 import { matchOpenRouterModel, OpenRouterModelCatalog } from '../configuration/openrouter-model-catalog.js';
 import { SettingsAssistant } from '../configuration/settings-assistant.js';
 import { InternalLlmService } from '../configuration/internal-llm-service.js';
+import { resolvePreferredModel } from '../configuration/preferred-model-resolver.js';
 import { ModelRoutingProfileService } from '../configuration/model-routing-profile-service.js';
 import { AgentCapabilityDescriptionService } from '../configuration/agent-capability-description.js';
+import { CAPABILITY_EXPLANATION_PROMPT } from '../configuration/agent-capability-description-prompt.js';
+import { PreferredModelError, type DegradationNotice } from '../configuration/internal-llm-service.js';
 import { ConfigurationRevisionRepo } from '../storage/configuration-revision-repo.js';
 import {
   classifyServerReadiness,
@@ -350,6 +366,32 @@ async function activateConfiguration(
   return toMutationResult(await service.activateDraft(draft.revisionId, baseRevisionId, 'activation'));
 }
 
+/**
+ * 可用 Provider 集合 = 已激活配置 ∪ 待激活暂存区。
+ *
+ * 已激活优先：它是权威事实。暂存区只补"用户填好但还没保存激活"的 Provider，
+ * 让需要调用模型的辅助功能在等待激活期间可用。两者都只提供端点与密钥引用，
+ * 密钥本体始终留在凭据库。
+ */
+async function resolvePreferredProviders(
+  active: Readonly<Record<string, { baseUrl: string; apiKeyRef: string; protocol: string; enabled?: boolean } | undefined>>,
+  pendingStore: PendingProviderStore,
+): Promise<Record<string, { baseUrl: string; apiKeyRef: string; protocol: string; enabled?: boolean }>> {
+  const pending = await pendingStore.read();
+  const merged: Record<string, { baseUrl: string; apiKeyRef: string; protocol: string; enabled?: boolean }> = {};
+  for (const provider of pending) {
+    merged[provider.providerRef] = {
+      baseUrl: provider.baseUrl,
+      apiKeyRef: provider.apiKeyRef,
+      protocol: provider.protocol,
+    };
+  }
+  for (const [providerRef, provider] of Object.entries(active)) {
+    if (provider) merged[providerRef] = provider;
+  }
+  return merged;
+}
+
 async function startWebMode(options: {
   port: number;
   noOpen: boolean;
@@ -371,13 +413,18 @@ async function startWebMode(options: {
   launchContexts: WebLaunchContextService;
   agentReadiness: AgentInstallationReadinessService;
   officialAuthorization?: LocalAuthorizationService;
+  sandboxSessionExchange?: (et: string) => Promise<Parameters<LocalAuthorizationService['adoptSession']>[0]>;
   memoryQuery?: MemoryManagementQuery;
+  /** 配置的工作目录根；null 表示不限制。 */
+  workspaceRoot?: string | null;
 }): Promise<ManagementServer> {
   const webDistDir = process.env.ANYFUSION_WEB_DIST
     ? resolve(process.env.ANYFUSION_WEB_DIST)
     : resolve(dirname(fileURLToPath(import.meta.url)), '..', 'web', 'dist');
   const managementServer = new ManagementServer({
     port: options.port,
+    // 显式配置才进入远程监听（k8s/沙盒部署）；缺省保持仅本机回环访问。
+    host: process.env.METAWORK_WEB_HOST?.trim() || undefined,
     webDistDir,
     token: options.webAuth.manualAccessToken,
     webAuth: options.webAuth,
@@ -386,7 +433,10 @@ async function startWebMode(options: {
     serviceActivity: options.serviceActivity,
     conversationGateway: options.conversationGateway,
     launchContexts: options.launchContexts,
-    workspaceDirectoryBrowser: new WorkspaceDirectoryBrowser(),
+    workspaceDirectoryBrowser: new WorkspaceDirectoryBrowser({
+      workspaceRoot: () => options.workspaceRoot ?? null,
+    }),
+    workspaceRoot: options.workspaceRoot ?? null,
     runningRevisionId: options.runningRevisionId,
     sessionRuntime: options.sessionRuntime,
     executionQuery: options.executionQuery,
@@ -396,6 +446,7 @@ async function startWebMode(options: {
     artifactQuery: options.artifactQuery,
     agentReadiness: options.agentReadiness,
     officialAuthorization: options.officialAuthorization,
+    sandboxSessionExchange: options.sandboxSessionExchange,
     ...(options.memoryQuery ? { memoryQuery: options.memoryQuery } : {}),
   });
   await managementServer.start();
@@ -646,6 +697,19 @@ export async function main(cliCommand = parseCliArgs(process.argv.slice(2))) {
   // Only standalone Server startup owns the Runtime instance lock. Client
   // launchers are separated from this composition in the following tasks.
   let instanceLock: InstanceLock | null = null;
+  // 可选的工作目录根：配置了就必须存在且是目录，否则启动失败。
+  // 一个拼错的根路径会让用户"看不到任何目录"，比启动即报错更难解释。
+  // 校验只在 Server 模式下执行——status/stop/doctor 与客户端启动仍可照常使用。
+  let workspaceRoot: string | null = null;
+  if (cliCommand.kind === 'server') {
+    workspaceRoot = await resolveWorkspaceRoot(process.env).catch((error: unknown) => {
+      const message = error instanceof Error ? error.message : String(error);
+      throw new Error(`工作目录根配置无效：${message}`);
+    });
+    if (workspaceRoot) {
+      console.log(`[workspace-root] 用户可选工作目录根：${workspaceRoot}`);
+    }
+  }
   if (cliCommand.kind === 'server') {
     const dataDir = paths.data;
     mkdirSync(dataDir, { recursive: true });
@@ -681,12 +745,48 @@ export async function main(cliCommand = parseCliArgs(process.argv.slice(2))) {
 
   const configurationRepository = new FileConfigurationRepository(accountPaths.config);
   await configurationRepository.initialize();
+  // 待激活 Provider 暂存区：用户在设置页填好 Provider 但还没点"保存并激活"时，
+  // 这些事实只存在于浏览器内存里。这里让需要调用模型的辅助功能在等待激活
+  // 期间也能工作——端点来自本机落盘数据，密钥仍走凭据库。
+  const pendingProviderStore = new FilePendingProviderStore(accountPaths.config);
   const recovery = await configurationRepository.recover();
   if (recovery.status === 'empty') {
-    throw new Error('active configuration is missing; run `anyfusion-install install`');
+    // 容器直跑镜像（ADR-0055）：全新 PVC 上没有 active 配置，播种最小配置后正常
+    // 启动。显式环境开关——原生路径没有它，保持"提示先运行 install"行为不变。
+    if (containerBootstrapRequested(process.env)) {
+      const bootstrapService = new ConfigurationService({
+        repository: configurationRepository,
+        renderer: new AgentRuntimeRenderer(resolve(accountPaths.generated, 'agent-runtime')),
+        // 直通 probe：占位 Provider 无有效凭据，真探测必然失败；见
+        // bootstrapContainerConfiguration 的注释。
+        probe: async () => ({ ok: true, issues: [] }),
+        createRevisionId: () => createConfigurationRevisionId(
+          'bootstrap', new Date().toISOString(),
+        ),
+      });
+      const bootstrap = await bootstrapContainerConfiguration(bootstrapService);
+      console.log(`[bootstrap] 容器首启配置已播种：${bootstrap.revisionId}`);
+    } else {
+      throw new Error('active configuration is missing; run `anyfusion-install install`');
+    }
   }
   const migratedSnapshot = await configurationRepository.getActiveSnapshot();
   const config = buildApplicationConfig(migratedSnapshot);
+  // 容器自愈：引导播种的占位 Provider 是 enabled 的，凭据缺失会被启动期解析
+  // 失败关断（崩溃循环）。每次容器启动补写任何 enabled Provider 缺失的凭据；
+  // 补写的是明确占位值（针对它的调用得到供应商 401，可在设置页替换），
+  // 绝不覆盖已存在的非空凭据。必须发生在 Planner 绑定解析凭据之前。
+  if (containerBootstrapRequested(process.env)) {
+    const bootstrapSecrets = createProductionSecretStore({ credentialsFile: paths.credentials });
+    await prepareProductionSecretStore(bootstrapSecrets);
+    const healed = await ensureBootstrapProviderCredentials({
+      config: migratedSnapshot.config,
+      secretStore: bootstrapSecrets,
+    });
+    if (healed.length > 0) {
+      console.log(`[bootstrap] 占位凭据已自愈：${healed.join(', ')}`);
+    }
+  }
   // The legacy Markdown preview server served copies under the internal
   // workspace store. Delivery now writes into the user Workspace (ADR-0050), so
   // no Server-wide root is authorized to serve; clients use the Workspace
@@ -717,10 +817,11 @@ export async function main(cliCommand = parseCliArgs(process.argv.slice(2))) {
     providers: migratedSnapshot.config.providers,
     secretStore,
   });
+  const officialServiceClient = new OfficialServiceClient({
+    baseUrl: process.env.METAWORK_OFFICIAL_SERVER_URL ?? DEFAULT_OFFICIAL_SERVICE_URL,
+  });
   const officialAuthorization = new LocalAuthorizationService({
-    client: new OfficialServiceClient({
-      baseUrl: process.env.METAWORK_OFFICIAL_SERVER_URL ?? DEFAULT_OFFICIAL_SERVICE_URL,
-    }),
+    client: officialServiceClient,
     hasActiveWork: () => Boolean(accountRuntimeComposition?.accountRuntime.getConfigurationActivationFacts().activeTaskId),
     hasUnfinishedWork: () => Boolean(accountRuntimeComposition?.accountRuntime.getConfigurationActivationFacts().unfinishedWork.count),
     hasUnsettledWork: () => {
@@ -728,8 +829,68 @@ export async function main(cliCommand = parseCliArgs(process.argv.slice(2))) {
       return Boolean(facts?.plannerTurnActive || facts?.pendingWorkRequestCount || facts?.activeLeaseCount || facts?.publicationPending);
     },
   });
+  // 能力说明生成与模型资料提炼优先使用用户已配置模型（本地直调其
+  // Provider），官方内置 AI 仅作兜底；未固定模型或本地失败时保持原有
+  // 官方路径。
+  const readProviderCredential = async (reference: string): Promise<string | null> => {
+    try {
+      assertSecretReference(reference);
+    } catch {
+      return null;
+    }
+    const value = await secretStore.get(reference).catch(() => null);
+    return value && value.trim() ? value.trim() : null;
+  };
   const internalLlm = new InternalLlmService({
     officialAi: input => officialAuthorization.callOfficialAi(input.operation, input.input, input.requestId),
+    preferredModel: async input => {
+      const snapshot = await configurationService.getActiveSnapshot();
+      // 可用 Provider = 已激活配置 ∪ 待激活暂存区。已激活优先（它是权威事实）。
+      const providers = await resolvePreferredProviders(snapshot.config.providers, pendingProviderStore);
+      // 调用方显式指定的用户已配置模型（模型资料提炼）：直接使用该
+      // Provider 通道。解析不到就如实呈现，不静默回退官方内置 AI 掩盖
+      // 配置缺失。
+      if (input.preferredModel) {
+        return resolvePreferredModel({
+          reference: input.preferredModel,
+          providers,
+          readCredential: readProviderCredential,
+        });
+      }
+      if (input.operation !== 'capability_explanation') return null;
+      const facts = (input.data as { models?: Array<{ modelRef?: string; modelId?: string; providerRef?: string }> } | null)?.models ?? [];
+      const usable: { baseUrl: string; apiKey: string; modelId: string }[] = [];
+      const wanted: string[] = [];
+      for (const fact of facts) {
+        if (fact.modelId) wanted.push(fact.modelId);
+        // 优先用调用方给出的 Provider 引用（编辑态的模型尚未进入已激活配置，
+        // 无法从 modelRef 反查 Provider）。
+        const providerRef = fact.providerRef
+          ?? (fact.modelRef ? snapshot.config.models[fact.modelRef]?.providerRef : undefined);
+        if (!providerRef) continue;
+        const provider = providers[providerRef];
+        if (!provider?.enabled || provider.protocol !== 'openai-compatible') continue;
+        try {
+          assertSecretReference(provider.apiKeyRef);
+        } catch {
+          continue;
+        }
+        const apiKey = await secretStore.get(provider.apiKeyRef).catch(() => null);
+        if (!apiKey) continue;
+        usable.push({ baseUrl: provider.baseUrl, apiKey, modelId: fact.modelId ?? providerRef });
+      }
+      // 用户固定了模型但没有任何一条可用凭证：这是用户可操作的配置问题，
+      // 如实呈现，而不是静默回退官方内置 AI 掩盖配置缺失。
+      if (facts.length > 0 && usable.length === 0) {
+        throw new PreferredModelError(
+          `固定模型（${wanted.join('、') || '未识别'}）尚不可用：请在模型设置中保存并激活对应 Provider`
+          + '（未激活时该模型的 API Key 不会入库），或改选已配置凭证的模型。',
+        );
+      }
+      return usable[0]
+        ? { ...usable[0], system: CAPABILITY_EXPLANATION_PROMPT }
+        : null;
+    },
   });
   const settingsAssistant = new SettingsAssistant(internalLlm);
   const modelRoutingProfiles = new ModelRoutingProfileService(internalLlm);
@@ -941,6 +1102,7 @@ export async function main(cliCommand = parseCliArgs(process.argv.slice(2))) {
     accountId: LOCAL_DEFAULT_ACCOUNT_ID,
     workspaceCatalog: workspaceCatalogStore,
     conversationStore,
+    workspaceRoot,
     projection: directoryProjection,
     runtimeRoot: paths.root,
     workspaceStoreRoot: accountPaths.workspaceStore,
@@ -2538,6 +2700,17 @@ export async function main(cliCommand = parseCliArgs(process.argv.slice(2))) {
     shutdownForSignal('SIGTERM');
   });
 
+  // Windows 的 SIGTERM 是 TerminateProcess 硬杀；本地停服 CLI 写入带锁令牌的
+  // 停机标记，Server 命中令牌即走与信号一致的内部优雅停机。
+  if (instanceLock) {
+    const lock = instanceLock;
+    const shutdownMarkerPath = resolve(paths.data, SERVER_SHUTDOWN_MARKER);
+    const shutdownMarkerTimer = setInterval(() => {
+      void consumeShutdownMarker(shutdownMarkerPath, lock.token, () => shutdownForSignal('SIGTERM'));
+    }, 500);
+    shutdownMarkerTimer.unref?.();
+  }
+
   await gatewayServer.start();
   eventJournalRuntime.start();
   // Rebuild yields between bounded batches. Navigation reports rebuilding
@@ -2704,6 +2877,7 @@ export async function main(cliCommand = parseCliArgs(process.argv.slice(2))) {
       port: resolveServerWebPort(process.env),
       noOpen: true,
       runningRevisionId: stagedConfiguration.snapshot.revisionId,
+      workspaceRoot,
       attachmentStore: webAttachmentStore,
       artifactQuery: new ArtifactPreviewService({
         taskArtifactSource: taskArtifactRepo,
@@ -2912,12 +3086,21 @@ export async function main(cliCommand = parseCliArgs(process.argv.slice(2))) {
             input.config,
           )
         ),
-        describeAgentCapabilities: (input, refresh) => agentCapabilityDescriptions.describe(input, refresh),
-        summarizeModelInformation: async catalogModelId => {
+        describeAgentCapabilities: async (input, refresh) => {
+          const result = await agentCapabilityDescriptions.describe(input, refresh);
+          return { ...result.description, ...(result.degraded ? { degraded: result.degraded } : {}) };
+        },
+        summarizeModelInformation: async (catalogModelId, preferredModel) => {
           const catalog = await openRouterModelCatalog.getSnapshot();
           const model = catalog.models[catalogModelId];
           if (!model) throw new Error('OpenRouter 未找到所选模型，请重新获取模型信息。');
-          return { catalogModelId, routingNotes: await modelRoutingProfiles.summarize(model) };
+          let degraded: DegradationNotice | undefined;
+          const routingNotes = await modelRoutingProfiles.summarize(
+            model,
+            preferredModel,
+            notice => { degraded = notice; },
+          );
+          return { catalogModelId, routingNotes, ...(degraded ? { degraded } : {}) };
         },
         suggestAgentResponsibility: async ({ agentClassRef, sourceText, config, modelFacts }) => {
           const snapshot = config && typeof config === 'object'
@@ -3027,6 +3210,9 @@ export async function main(cliCommand = parseCliArgs(process.argv.slice(2))) {
           const baseUrl = input.baseUrl.trim();
           let protocol = input.protocol;
           let apiKey = input.apiKey?.trim() ?? '';
+          // 明文密钥来自调用方（用户在设置页刚填的），不是从已激活配置读出的。
+          // 这决定了下方的暂存语义：只有本次带明文密钥时才写入待激活暂存区。
+          const suppliedApiKey = apiKey;
           if (!apiKey && input.providerRef) {
             try {
               const snapshot = await configurationService.getActiveSnapshot();
@@ -3040,6 +3226,8 @@ export async function main(cliCommand = parseCliArgs(process.argv.slice(2))) {
               apiKey = '';
             }
           }
+          // 待激活暂存在发现成功之后进行（见下方）：只有"连接测试通过"的密钥
+          // 才算可用，才允许进入暂存区。
           if (!/^https?:\/\//iu.test(baseUrl)) {
             return { status: 'unavailable' as const, modelIds: [], capabilities: {} };
           }
@@ -3077,6 +3265,28 @@ export async function main(cliCommand = parseCliArgs(process.argv.slice(2))) {
           }
           if (!apiKey) return { status: 'unavailable' as const, modelIds: [], capabilities: {} };
           const discovery = await discoverOpenAiCompatibleModels({ baseUrl, apiKey, protocol });
+          // 待激活暂存：用户填好 Provider 但还没保存激活时，先把端点与密钥落到
+          // 本机，让"获取模型能力"这类需要调用模型的辅助功能在等待激活期间可用。
+          //
+          // 两条硬约束：
+          // 1. 密钥走**独立的 pending 命名空间**，绝不写已激活 Provider 的引用
+          //    ——否则用户编辑 Provider 时填的无效密钥会覆盖正在生效的密钥，
+          //    把原本可用的模型弄坏。
+          // 2. 只在连接测试**成功之后**暂存——测试通过即证明该密钥可用，
+          //    无效密钥不会进入暂存区。
+          if (discovery.status === 'discovered' && suppliedApiKey && input.providerRef && protocol) {
+            const pendingApiKeyRef = `file-secret:anyfusion/pending/${input.providerRef}` as const;
+            await secretStore.put(pendingApiKeyRef, suppliedApiKey).catch(() => undefined);
+            await pendingProviderStore.remember({
+              providerRef: input.providerRef,
+              baseUrl,
+              protocol,
+              apiKeyRef: pendingApiKeyRef,
+              savedAt: new Date().toISOString(),
+            }).catch((error: unknown) => {
+              console.warn(`[config] pending provider staging failed: ${error instanceof Error ? error.message : String(error)}`);
+            });
+          }
           // OpenRouter 的公开目录不需要登录；它只用于补充任意 Provider
           // 返回的同名模型事实，只有 OpenRouter Provider 才把目录模型全部列出。
           const openRouterCatalog = await openRouterModelCatalog.getSnapshot();
@@ -3136,6 +3346,17 @@ export async function main(cliCommand = parseCliArgs(process.argv.slice(2))) {
               });
             } catch (error) {
               console.warn(`[config] credential cleanup failed: ${(error as Error).message}`);
+            }
+            // Provider 已进入已激活配置：待激活暂存事实转正，不再保留两份。
+            // pending 命名空间里的密钥同时清除——正式引用已由 stageSecrets 写入。
+            try {
+              const activatedRefs = Object.keys(result.snapshot.config.providers);
+              await pendingProviderStore.forget(activatedRefs);
+              for (const providerRef of activatedRefs) {
+                await secretStore.delete(`file-secret:anyfusion/pending/${providerRef}`).catch(() => undefined);
+              }
+            } catch (error) {
+              console.warn(`[config] pending provider cleanup failed: ${(error as Error).message}`);
             }
             return {
               ok: true,
@@ -3223,6 +3444,7 @@ export async function main(cliCommand = parseCliArgs(process.argv.slice(2))) {
       },
       configurationRuntime: configurationRuntimeCoordinator,
       officialAuthorization,
+      sandboxSessionExchange: et => officialServiceClient.exchangeSandboxSession(et),
     });
     const webOrigin = managementServer?.address ?? 'http://127.0.0.1:8788';
     const composition = createServerComposition({

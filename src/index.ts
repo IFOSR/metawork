@@ -1,4 +1,4 @@
-import { parseCliArgs } from './cli/args.js';
+import { parseCliArgs, type CliCommand } from './cli/args.js';
 import { runClientCommand } from './client/client-command.js';
 import { main as runServerCommand } from './server/server-application.js';
 import { runBuildCommand } from './build/build-command.js';
@@ -9,10 +9,11 @@ import { runGatewayPairingCommand } from './gateway/pairing-cli.js';
 import { runTaskStateReconciler } from './execution/task-state-reconciler.js';
 import { LOCAL_DEFAULT_ACCOUNT_ID } from './account/account-id.js';
 import { resolveAccountPaths } from './account/account-paths.js';
-import { existsSync } from 'node:fs';
 import { spawn } from 'node:child_process';
 import { join } from 'node:path';
 import { stopInstanceForRestart } from './management/lock.js';
+import { resolveGatewaySocketPath } from './gateway/gateway-paths.js';
+import { probeLocalEndpoint } from './platform/local-endpoint.js';
 import { findInstalledServerProcesses } from './management/server-process-scan.js';
 
 const command = parseCliArgs(process.argv.slice(2));
@@ -93,8 +94,10 @@ async function restartServerWithCurrentRelease(force: boolean): Promise<void> {
   });
   child.unref();
   const deadline = Date.now() + 90_000;
+  const gatewaySocketPath = resolveGatewaySocketPath(paths.data);
   while (Date.now() < deadline) {
-    if (existsSync(join(paths.data, 'gateway.sock'))) {
+    // Named pipes have no filesystem listing, so readiness is a connection probe.
+    if (await probeLocalEndpoint(gatewaySocketPath, 250)) {
       process.stdout.write('MetaWork Server 已启动。\n');
       return;
     }

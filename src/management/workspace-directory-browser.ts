@@ -1,6 +1,7 @@
 import { readdir, realpath, stat } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { dirname, isAbsolute, join, parse, resolve, sep } from 'node:path';
+import { isWithinWorkspaceRoot } from '../workspace/workspace-root.js';
 
 export const MAX_BROWSE_ENTRIES = 500;
 
@@ -19,38 +20,49 @@ export interface WorkspaceBrowseResult {
   readonly parent: string | null;
   readonly crumbs: WorkspaceBrowseCrumb[];
   readonly entries: WorkspaceBrowseEntry[];
+  /** 配置的工作目录根；null 表示未限制。 */
+  readonly root: string | null;
 }
 
 export interface WorkspaceDirectoryBrowserDeps {
   readonly defaultPath?: () => string;
   readonly maxEntries?: number;
+  /** 配置的工作目录根；返回 null 表示不限制。 */
+  readonly workspaceRoot?: () => string | null;
 }
 
 /**
  * 只读目录列举，供未创建的 Workspace 选择使用。
  *
- * 根策略为 `/`：允许向上导航到文件系统根，不排除任何目录。path、parent、crumbs
- * 与 entries 中的每个路径都经过 realpath 归一化，因此符号链接目录会以其目标目录
- * 的规范路径出现——这正是 select_workspace 之后会重新解析并存储的路径。crumbs 由
- * Server 生成，客户端不再自行解析操作系统路径，Windows 盘符与分隔符语义完全留在
- * Server 侧。
+ * 根策略由部署配置决定：未配置 METAWORK_WORKSPACE_ROOT 时根策略为 `/`——允许向上
+ * 导航到文件系统根，不排除任何目录，与历史行为一致。配置了根时，浏览起点就是该根，
+ * 且不能越过它：根位置不再返回 parent（没有上级目录可回），越界路径直接拒绝。
  *
- * 这里只增加“可发现性”，不增加授权能力：select_workspace 本来就接受任意存在的
- * 绝对目录。
+ * path、parent、crumbs 与 entries 中的每个路径都经过 realpath 归一化，因此符号链接
+ * 目录会以其目标目录的规范路径出现——这正是 select_workspace 之后会重新解析并存储
+ * 的路径。crumbs 由 Server 生成，客户端不再自行解析操作系统路径，Windows 盘符与
+ * 分隔符语义完全留在 Server 侧。
+ *
+ * 这里只增加“可发现性”，不增加授权能力：select_workspace 本身会独立校验同一边界。
  */
 export class WorkspaceDirectoryBrowser {
   private readonly defaultPath: () => string;
   private readonly maxEntries: number;
+  private readonly workspaceRoot: () => string | null;
 
   constructor(deps: WorkspaceDirectoryBrowserDeps = {}) {
     this.defaultPath = deps.defaultPath ?? homedir;
     this.maxEntries = deps.maxEntries ?? MAX_BROWSE_ENTRIES;
+    this.workspaceRoot = deps.workspaceRoot ?? (() => null);
   }
 
   async browse(requestedPath?: string): Promise<WorkspaceBrowseResult> {
-    const candidate = requestedPath?.trim() || this.defaultPath();
+    const root = this.workspaceRoot();
+    const candidate = requestedPath?.trim() || root || this.defaultPath();
     if (!isAbsolute(candidate)) throw new Error('browse_path_invalid');
     const canonical = await resolveCanonical(candidate);
+    // 根限制在 realpath 之后判定：符号链接别名与 `..` 拼写无法把候选路径挪出根外。
+    if (!isWithinWorkspaceRoot(root, canonical)) throw new Error('browse_path_forbidden');
     const info = await stat(canonical).catch(() => null);
     if (!info) throw new Error('browse_path_not_found');
     if (!info.isDirectory()) throw new Error('browse_path_invalid');
@@ -68,13 +80,21 @@ export class WorkspaceDirectoryBrowser {
     for (const name of names) {
       const target = await resolveDirectory(resolve(canonical, name));
       if (!target) continue;
+      // 根目录内的符号链接若指向根外，列出来也选不中；直接不展示。
+      if (!isWithinWorkspaceRoot(root, target)) continue;
       entries.push({ name, path: target });
     }
     return {
       path: canonical,
-      parent: canonical === dirname(canonical) ? null : dirname(canonical),
-      crumbs: buildCrumbs(canonical),
+      // 根目录没有上级可回：这是"不显示返回上级目录"的服务端保证。
+      parent: canonical === dirname(canonical)
+        ? null
+        : isWithinWorkspaceRoot(root, dirname(canonical))
+          ? dirname(canonical)
+          : null,
+      crumbs: buildCrumbs(canonical, root),
       entries,
+      root,
     };
   }
 }
@@ -89,10 +109,11 @@ async function resolveDirectory(path: string): Promise<string | null> {
   }
 }
 
-function buildCrumbs(canonical: string): WorkspaceBrowseCrumb[] {
-  const root = parse(canonical).root;
-  const crumbs: WorkspaceBrowseCrumb[] = [{ name: root, path: root }];
-  for (const segment of canonical.slice(root.length).split(sep).filter(Boolean)) {
+function buildCrumbs(canonical: string, root: string | null = null): WorkspaceBrowseCrumb[] {
+  // 根限制下，面包屑从根开始：根之上不可导航，因此不出现文件系统根。
+  const base = root && isWithinWorkspaceRoot(root, canonical) ? root : parse(canonical).root;
+  const crumbs: WorkspaceBrowseCrumb[] = [{ name: base, path: base }];
+  for (const segment of canonical.slice(base.length).split(sep).filter(Boolean)) {
     crumbs.push({
       name: segment,
       path: join(crumbs[crumbs.length - 1]!.path, segment),

@@ -15,6 +15,7 @@ import {
 } from './workspace-conversation-projector.js';
 import type { ConversationActivityProjection } from './conversation-activity-projector.js';
 import type { WorkspaceDirectoryProjection } from './workspace-directory-projection.js';
+import { isWithinWorkspaceRoot } from './workspace-root.js';
 import { measureNavigationStageSync } from '../utils/navigation-diagnostics.js';
 
 export interface WorkspaceSelectionResult {
@@ -73,6 +74,11 @@ export interface WorkspaceDirectoryServiceDeps {
   readonly workspaceCatalog: WorkspaceCatalogStore;
   readonly conversationStore: ConversationStore;
   readonly authorize: (path: string, principalId: string) => Promise<boolean> | boolean;
+  /**
+   * 部署方配置的可选工作目录根。设置后，只有该根及其后代可以被选为 Workspace；
+   * 未设置（null）时不限制，与历史行为一致。
+   */
+  readonly workspaceRoot?: string | null;
   /** Install and internal workspace roots which are never valid user Workspaces. */
   readonly runtimeRoot?: string;
   readonly workspaceStoreRoot?: string;
@@ -109,6 +115,10 @@ export class WorkspaceDirectoryService {
 
   async selectByPath(path: string, principalId: string): Promise<WorkspaceSelectionResult> {
     const canonicalPath = await this.preflightPath(path);
+    // 根限制在 realpath 之后判定：符号链接别名与 `..` 拼写无法把候选路径挪出根外。
+    if (!isWithinWorkspaceRoot(this.deps.workspaceRoot ?? null, canonicalPath)) {
+      throw new Error('workspace_outside_root');
+    }
     if (!(await this.deps.authorize(canonicalPath, principalId))) {
       throw new Error('workspace_unauthorized');
     }

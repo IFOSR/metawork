@@ -2498,9 +2498,13 @@ already running Server to pick up this startup fix.
 ADR-0047 adds a Server-owned in-memory commercial account session, entitlement
 projection and official service adapter under `src/authorization/`. Web/Desktop
 login is exposed through `/api/official-auth/`; production Gateway admission
-uses the same online entitlement verification. The reference official service
+uses the same online entitlement verification. The entitlement is also verified
+online right after a successful login and on every client page entry while an
+official session exists; the five-second UI poll keeps reading only the local
+projection. The reference official service
 in `official-server/` runs on huoshan at
-`https://14.103.216.193:9222/`, with persistent data under
+`https://metawork.nexusfusionai.com/` (production; `https://14.103.216.193:9222/`
+remains the dev/test entry), with persistent data under
 `/root/metawork-offical-server/data/`. Its systemd unit is
 `metawork-official.service`. Official model credentials remain service-side. Routes require the existing local
 Web session or local bearer authentication and validate mutation origins.
@@ -2519,6 +2523,17 @@ that cannot settle automatically. Local clients gain pay/poll/list
 passthrough routes and a QR dialog; refunds never surface to clients.
 Without `PAYMENT_HUB_*` credentials the payment paths answer
 `payment_unavailable` and all other behavior is unchanged.
+ADR-0051 (2026-10-20) restores the email+password model (superseding the
+one-day ADR-0049 OPC-OTP experiment, whose phone channels could not serve
+unregistered identities) and adds mailbox verification at registration:
+`POST /v1/auth/email/code` delivers a self-managed 6-digit code (hashed,
+TTL 15 minutes, five attempts, one active code per mailbox) over generic SMTP
+via nodemailer (`SMTP_*` configuration; unconfigured deployments answer
+`email_unavailable` while login keeps working), and `POST /v1/auth/register`
+requires that code, so every account starts verified. The admin surface
+locates accounts by `email` again and the former provisioning seam is gone.
+Session issuance, memory-only sessions, generation fencing and the production
+admission gate are unchanged from ADR-0047.
 
 ### Provider 显式协议（2026-10-13）
 

@@ -1008,6 +1008,106 @@ describe("openai-completions tool_choice", () => {
 		expect(params.messages?.[0]?.role).toBe("developer");
 	});
 
+	it("uses system messages for Kimi For Coding reasoning model instructions", async () => {
+		// MetaWork renders user-configured Kimi endpoints as custom providers on
+		// api.kimi.com; detection must classify them as Moonshot-family: system
+		// role (Kimi rejects `developer` with 400), max_tokens, no store field.
+		const model: Model<"openai-completions"> = {
+			...localOpenAICompletionsModel,
+			id: "kimi-for-coding",
+			name: "Kimi For Coding",
+			provider: "kimi",
+			baseUrl: "https://api.kimi.com/coding/v1",
+			compat: { supportsReasoningEffort: true },
+		};
+		let payload: unknown;
+
+		await streamSimple(
+			model,
+			{
+				systemPrompt: "Follow instructions.",
+				messages: [{ role: "user", content: "Hi", timestamp: Date.now() }],
+			},
+			{
+				apiKey: "test",
+				reasoning: "high",
+				maxTokens: 8192,
+				onPayload: (params: unknown) => {
+					payload = params;
+				},
+			},
+		).result();
+
+		const params = payload as {
+			messages?: Array<{ role?: string }>;
+			max_tokens?: number;
+			max_completion_tokens?: number;
+			store?: boolean;
+		};
+		expect(params.messages?.[0]?.role).toBe("system");
+		expect(params.max_tokens).toBe(8192);
+		expect(params.max_completion_tokens).toBeUndefined();
+		expect(params).not.toHaveProperty("store");
+	});
+
+	it("uses system messages for unknown OpenAI-compatible gateway reasoning model instructions", async () => {
+		// Third-party gateways default to `system`: only OpenAI-hosted endpoints
+		// and OpenRouter openai/*/anthropic/* models opt into the `developer` role.
+		const model: Model<"openai-completions"> = {
+			...localOpenAICompletionsModel,
+			id: "reasoning-model",
+			name: "Custom Gateway Model",
+			provider: "custom-model-2",
+			baseUrl: "https://llm-gateway.example.com/v1",
+		};
+		let payload: unknown;
+
+		await streamSimple(
+			model,
+			{
+				systemPrompt: "Follow instructions.",
+				messages: [{ role: "user", content: "Hi", timestamp: Date.now() }],
+			},
+			{
+				apiKey: "test",
+				onPayload: (params: unknown) => {
+					payload = params;
+				},
+			},
+		).result();
+
+		const params = payload as { messages?: Array<{ role?: string }> };
+		expect(params.messages?.[0]?.role).toBe("system");
+	});
+
+	it("keeps developer messages for Azure OpenAI reasoning model instructions", async () => {
+		const model: Model<"openai-completions"> = {
+			...localOpenAICompletionsModel,
+			id: "gpt-5.5",
+			name: "GPT-5.5",
+			provider: "azure-openai",
+			baseUrl: "https://example-resource.openai.azure.com/openai/v1",
+		};
+		let payload: unknown;
+
+		await streamSimple(
+			model,
+			{
+				systemPrompt: "Follow instructions.",
+				messages: [{ role: "user", content: "Hi", timestamp: Date.now() }],
+			},
+			{
+				apiKey: "test",
+				onPayload: (params: unknown) => {
+					payload = params;
+				},
+			},
+		).result();
+
+		const params = payload as { messages?: Array<{ role?: string }> };
+		expect(params.messages?.[0]?.role).toBe("developer");
+	});
+
 	it("stores OpenRouter Kimi K2.6 reasoning replay compat in built-in metadata", () => {
 		// `:free` variant delisted from the OpenRouter API; the generator override
 		// matches any `moonshotai/kimi-k2.6*` variant that is listed.

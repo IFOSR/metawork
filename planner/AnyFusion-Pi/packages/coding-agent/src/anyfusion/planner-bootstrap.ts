@@ -8,6 +8,7 @@ import {
 } from "./planner-mcp-extension.ts";
 import { PLANNER_ACTIVE_TOOL_NAMES } from "./planner-policy.ts";
 import { createPlannerProposalGate } from "./planner-proposal-gate.ts";
+import { createPlannerWebTools } from "./planner-web-tools.ts";
 import { createExecutorManualProposalTool, createPlanningProposalTool } from "./planner-proposal-tool.ts";
 import { buildAnyFusionPlannerSystemPrompt } from "./planner-system-prompt.ts";
 
@@ -59,14 +60,21 @@ export function createAnyFusionPlannerBootstrap(options: AnyFusionPlannerBootstr
 		proposalGate,
 		connectionFactory: options.connectionFactory,
 	};
+	// File-based extensions cannot load in AnyFusion sessions (DENIED_FLAGS
+	// blocks --extension), so the managed web research tools register here
+	// inline, gated by the Executor launch env, and join the active tool list.
+	const webTools = process.env.METACLAW_PI_WEB_TOOLS_ENABLED === "1" ? createPlannerWebTools() : [];
 	return {
 		systemPrompt: buildAnyFusionPlannerSystemPrompt(options.skillPath, purpose),
 		activeToolNames:
-			purpose === "configuration" ? ["submit_executor_manual_proposal"] : [...PLANNER_ACTIVE_TOOL_NAMES],
+			purpose === "configuration"
+				? ["submit_executor_manual_proposal"]
+				: [...PLANNER_ACTIVE_TOOL_NAMES, ...webTools.map((tool) => tool.name)],
 		thinkingLevelOverride: purpose === "configuration" ? ("low" as const) : undefined,
 		extensionFactories: purpose === "configuration" ? [] : [createPlannerMcpExtensionFactory(extensionOptions)],
 		customTools: [
 			...(purpose === "configuration" ? [] : [createPlanningProposalTool(options.schemaPath, proposalGate)]),
+			...webTools,
 			createExecutorManualProposalTool(),
 		] as ToolDefinition[],
 	};

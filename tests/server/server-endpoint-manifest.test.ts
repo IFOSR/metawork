@@ -71,7 +71,11 @@ describe('server endpoint manifest', () => {
 
     expect(await readEndpointManifest(value.path)).toEqual(value.manifest);
     expect(JSON.parse(await readFile(value.path, 'utf8'))).not.toHaveProperty('workspace');
-    expect((await stat(value.path)).mode & 0o777).toBe(0o600);
+    // The mode-0600 contract belongs to POSIX files. Windows has no POSIX
+    // permission bits, so the manifest inherits the directory's ACL instead.
+    if (process.platform !== 'win32') {
+      expect((await stat(value.path)).mode & 0o777).toBe(0o600);
+    }
   });
 
   it('rejects malformed, draining, stale, or protocol-incompatible manifests', async () => {

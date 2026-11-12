@@ -1,6 +1,7 @@
 import { spawn } from 'node:child_process';
 import { existsSync } from 'node:fs';
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
+import { homedir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { build } from '../apps/desktop/node_modules/esbuild/lib/main.js';
@@ -8,7 +9,7 @@ import { prepareDevelopmentShell } from '../apps/desktop/packaging/development-s
 
 const source = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const root = resolve(process.env.METAWORK_DESKTOP_DEVELOPMENT_ROOT ?? join(source, '.tmp', 'desktop-development'));
-if (root === resolve(process.env.METAWORK_INSTALL_ROOT ?? join(process.env.HOME, '.metawork'))) throw new Error('Development must use an isolated installation');
+if (root === resolve(process.env.METAWORK_INSTALL_ROOT ?? join(homedir(), '.metawork'))) throw new Error('Development must use an isolated installation');
 const productionAssets = process.argv.includes('--production-assets');
 const prepareOnly = process.argv.includes('--prepare-only');
 const refresh = process.argv.includes('--refresh');
@@ -25,8 +26,13 @@ const env = { ...process.env, METAWORK_INSTALL_ROOT: root, ANYFUSION_INSTALL_ROO
   METAWORK_DESKTOP_DEVELOPMENT_ROOT: root, METAWORK_DESKTOP_NODE: process.execPath, METAWORK_DESKTOP_RELEASE: releaseId };
 delete env.NODE_OPTIONS; delete env.NODE_PATH;
 function run(command, args, cwd = source) {
+  // npm is a .cmd shim on Windows; Node ≥18.20 refuses to spawn it without a shell.
+  const executable = process.platform === 'win32' && command === 'npm' ? 'npm.cmd' : command;
   return new Promise((resolve, reject) => {
-    const child = spawn(command, args, { cwd, env, stdio: 'inherit' });
+    const child = spawn(executable, args, {
+      cwd, env, stdio: 'inherit',
+      shell: process.platform === 'win32' && executable.endsWith('.cmd'),
+    });
     child.once('error', reject); child.once('exit', code => code === 0 ? resolve() : reject(new Error(`${command} exited ${code}`)));
   });
 }

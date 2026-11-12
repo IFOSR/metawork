@@ -24,15 +24,35 @@ function argument(name, fallback) {
 
 const target = resolve(argument('--target', join(repoRoot, 'memory', 'tdai')));
 
+// `npm` is a shell script on POSIX and `npm.cmd` on Windows; spawning the bare
+// name fails there with ENOENT and status null. Same rule as build-release.mjs.
+function executableFor(command) {
+  return process.platform === 'win32' && command === 'npm' ? 'npm.cmd' : command;
+}
+
 function run(command, args, cwd) {
-  const result = spawnSync(command, args, { cwd, stdio: 'inherit', env: process.env });
+  const executable = executableFor(command);
+  const result = spawnSync(executable, args, {
+    cwd,
+    stdio: 'inherit',
+    env: process.env,
+    shell: process.platform === 'win32' && executable.endsWith('.cmd'),
+  });
   if (result.status !== 0) {
-    throw new Error(`${command} ${args.join(' ')} failed with exit code ${result.status}`);
+    throw new Error(
+      `${executable} ${args.join(' ')} failed with exit code ${result.status ?? 'unknown'}`
+      + (result.error ? `: ${result.error.message}` : ''),
+    );
   }
 }
 
 function capture(command, args, cwd) {
-  const result = spawnSync(command, args, { cwd, encoding: 'utf8' });
+  const executable = executableFor(command);
+  const result = spawnSync(executable, args, {
+    cwd,
+    encoding: 'utf8',
+    shell: process.platform === 'win32' && executable.endsWith('.cmd'),
+  });
   if (result.status !== 0) return '';
   return result.stdout.trim();
 }
@@ -124,7 +144,34 @@ if (!existsSync(join(target, lock.entry))) {
   );
 }
 
+// Windows ships a prebuilt native binding for `@node-rs/jieba`, and that binary
+// needs the MSVC runtime (vcruntime140.dll). A machine without the Visual C++
+// redistributable cannot load it, which made the memory engine fail to start even
+// though everything else worked. The package already supports a WebAssembly
+// flavour; installing it (plus its runtime peers) next to the native binding
+// gives that fallback without changing any engine code.
+//
+// This runs only after `prune` on purpose: the fallback is not a declared
+// dependency of the upstream tree, so an earlier install would be pruned away
+// anyway, and touching the dependency tree before the build risks perturbing it.
 // Build tools are needed during compilation, but are not shipped at runtime.
 run('npm', ['prune', '--omit=dev', '--no-audit', '--no-fund', '--legacy-peer-deps'], target);
+
+if (process.platform === 'win32') {
+  // `prune` drops packages that are not declared dependencies of the upstream
+  // tree, so the fallback is installed afterwards and then asserted.
+  run('npm', [
+    'install', '--no-save', '--no-package-lock', '--no-audit', '--no-fund', '--legacy-peer-deps',
+    '@node-rs/jieba-wasm32-wasi@2.0.4',
+    '@emnapi/core@2.0.0-alpha.5',
+    '@emnapi/runtime@2.0.0-alpha.5',
+    '@napi-rs/wasm-runtime@1.2.5',
+  ], target);
+  const fallback = join(target, 'node_modules', '@node-rs', 'jieba-wasm32-wasi');
+  if (!existsSync(fallback)) {
+    throw new Error('memory engine is missing the Windows WebAssembly jieba fallback');
+  }
+  process.stdout.write(`Windows jieba fallback present: ${fallback}\n`);
+}
 
 process.stdout.write(`memory engine ready: ${target} @ ${head}\n`);

@@ -1909,6 +1909,34 @@ describe('ControlKernel', () => {
     }).action).toEqual({ type: 'no_op' });
   });
 
+  it('probes a blocked Executor class when no healthy class remains', () => {
+    // Single-Executor accounts can only recover through a successful capacity
+    // probe: refusing to probe an unavailable class would stall the Task forever.
+    const kernel = new ControlKernel();
+    const timer = runtimeEvent({
+      type: 'timer_tick', occurredAt: '2026-07-20T00:01:00.000Z', wakeKind: 'capacity',
+      sourceDecisionId: 'decision_capacity', scheduledFor: '2026-07-20T00:01:00.000Z', retry: null,
+    });
+    const timerSnapshot: KernelSnapshot = {
+      schemaVersion: 5, type: 'timer', capacityBlockedAt: '2026-07-20T00:00:00.000Z', recheckAfterMs: 60_000,
+      task: { id: 'task_1', status: 'needs_action' }, wakeAuthorized: true,
+      capacityBindings: [piBinding],
+      executorStatuses: [{
+        agentClassName: 'pi-research', classHealth: 'error', recentAttempts: [], recentRecoveryChecks: [],
+        updatedAt: '2026-07-20T00:00:30.000Z',
+      }],
+      nativeContinuationAgentClasses: ['pi-cli'],
+      defaultResourceGrant: [],
+    };
+    expect(kernel.decide(timer, timerSnapshot).action).toEqual({
+      type: 'probe_capacity',
+      taskId: 'task_1',
+      subtaskId: 'subtask_1',
+      authorizedBinding: piBinding,
+      bindingFingerprint: piFingerprint,
+    });
+  });
+
   it('allows a capacity wake while an independent sibling keeps the Task running', () => {
     const kernel = new ControlKernel();
     const timer = runtimeEvent({

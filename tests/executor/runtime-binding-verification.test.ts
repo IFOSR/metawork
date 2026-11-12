@@ -42,6 +42,18 @@ async function fixture(driverId: 'pi-cli' | 'codex-cli', protocol: 'openai-compa
   };
   const input = { runtimeBinding, authorizedBinding, driverId, modelId: 'chosen-model',
     homePath: join(root, 'revision', driverId === 'pi-cli' ? 'pi-home' : 'codex') };
+  if (driverId === 'pi-cli') {
+    // Materialization seeds the authorized binding into the home settings
+    // (seedProviderConfig injects defaultProvider/defaultModel/enabledModels
+    // because the vendored fork rejects --provider/--model CLI flags); mirror
+    // that step before verification.
+    const settingsPath = join(input.homePath, '.pi', 'agent', 'settings.json');
+    const settings = JSON.parse(await readFile(settingsPath, 'utf8')) as Record<string, unknown>;
+    settings.defaultProvider = 'selected';
+    settings.defaultModel = 'chosen-model';
+    settings.enabledModels = ['selected/chosen-model'];
+    await writeFile(settingsPath, JSON.stringify(settings));
+  }
   async function edit(path: string, change: (value: any) => void) {
     const fullPath = join(input.homePath, path);
     const value = path.endsWith('.toml') ? parse(await readFile(fullPath, 'utf8')) : JSON.parse(await readFile(fullPath, 'utf8'));

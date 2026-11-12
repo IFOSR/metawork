@@ -16,3 +16,4 @@ metaclaw-tasks
 *.db
 *.log
 docker/*.env
+memory/tdai

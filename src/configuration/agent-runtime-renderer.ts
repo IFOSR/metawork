@@ -1,10 +1,11 @@
 import { randomUUID } from 'node:crypto';
 import { existsSync, readFileSync } from 'node:fs';
-import { chmod, lstat, mkdir, readFile, readdir, rename, rm, writeFile } from 'node:fs/promises';
+import { mkdir, readFile, rename, rm, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { parse as parseToml } from 'smol-toml';
 import type { AnyFusionConfigurationV2, ConfigurationSnapshot, ExecutorRuntimeConfiguration } from './types.js';
 import { buildExecutorCapabilityManual } from '../routing/executor-capability-manual.js';
+import { restoreWriteAccess } from '../utils/directory-pointer.js';
 
 type RuntimeRenderConfiguration = Pick<AnyFusionConfigurationV2, 'providers' | 'models' | 'agentClasses'>;
 
@@ -244,17 +245,6 @@ function buildCodexConfigToml(config: RuntimeRenderConfiguration): string {
  * 读取 generatedRoot/current 得到当前 revisionId，返回 generatedRoot/<revisionId>/<subdir>。
  * current 缺失或目录未渲染时返回 null（调用方回退到环境变量/默认值）。
  */
-async function restoreWriteAccess(path: string): Promise<void> {
-  const info = await lstat(path).catch(() => null);
-  if (!info) return;
-  await chmod(path, info.mode | 0o200).catch(() => undefined);
-  if (info.isDirectory()) {
-    for (const entry of await readdir(path, { withFileTypes: true })) {
-      await restoreWriteAccess(join(path, entry.name));
-    }
-  }
-}
-
 export function resolveCurrentRuntimeHome(generatedRoot: string, subdir: string): string | undefined {
   try {
     const revisionId = readFileSync(join(generatedRoot, 'current'), 'utf8').trim();
@@ -289,7 +279,19 @@ export function executorRuntimeConfiguration(
     const { models, ...provider } = entry;
     const model = (models as Record<string, unknown>[]).find(item => item.id === modelId);
     if (!model) throw new Error('Authorized Pi Model is missing from runtime configuration');
-    const { defaultProvider, defaultModel, enabledModels, ...settings } = buildSettingsJson(config, '');
+    const { defaultProvider, defaultModel, enabledModels, ...sharedSettings } = buildSettingsJson(config, '');
+    // 材质化时 seedProviderConfig 会按任务授权把 defaultProvider/defaultModel/
+    // enabledModels 注入执行器 home（vendored fork 的 CLI 拒绝 --provider/--model
+    // 客户端标志，模型选择必须落在 settings.json）。期望值必须镜像同一注入，
+    // 否则执行配置校验永远失败。
+    const settings = providerRef && modelId
+      ? {
+          ...sharedSettings,
+          defaultProvider: providerRef,
+          defaultModel: modelId,
+          enabledModels: [`${providerRef}/${modelId}`],
+        }
+      : sharedSettings;
     return { provider, model, settings };
   }
   if (driverId === 'codex-cli') {
