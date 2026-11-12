@@ -5,8 +5,9 @@ import { promises as originalFs } from 'original-fs';
 import { dirname, join, resolve } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { verifyDesktopRelease } from '../../../src/installation/desktop-release.js';
+import { readDesktopUpdateDiagnostic } from '../../../src/installation/desktop-update-diagnostics.js';
 import { readReleaseIdentity } from '../../../src/installation/release-identity.js';
-import { compareReleaseVersions, decideReleaseCompatibility, parseReleaseManifest } from '../../../src/installation/release-manifest.js';
+import { compareReleaseVersions, compareSemanticVersions, decideReleaseCompatibility, parseReleaseManifest } from '../../../src/installation/release-manifest.js';
 import { desktopSupportRoot } from '../../../src/installation/desktop-support.js';
 import { DesktopInstallation } from './installation.js';
 import { startMacOSBackgroundProcess } from '../../../src/installation/macos-background-process.js';
@@ -20,6 +21,36 @@ export async function pendingDesktopUpdate(root: string): Promise<boolean> {
     if (error.code === 'ENOENT') return null; throw error;
   });
   return raw !== null && !['committed', 'rolled-back'].includes(JSON.parse(raw).phase);
+}
+
+/** Only a newer signed Desktop may discard an update that failed while restoring an incompatible Runtime. */
+export async function canCleanReinstallAfterRestoreFailure(
+  root: string,
+  applicationPath: string,
+  currentReleaseId: string,
+): Promise<boolean> {
+  const raw = await readFile(join(root, 'upgrades/desktop-activation.json'), 'utf8').catch(error => {
+    if (error.code === 'ENOENT') return null;
+    throw error;
+  });
+  if (!raw) return false;
+  let activation: { schemaVersion?: unknown; phase?: unknown; candidateReleaseId?: unknown; applicationPath?: unknown };
+  try { activation = JSON.parse(raw); } catch { return false; }
+  if (activation.schemaVersion !== 1 || activation.phase !== 'prepared'
+    || typeof activation.candidateReleaseId !== 'string' || typeof activation.applicationPath !== 'string') return false;
+  const productVersion = (releaseId: string) => /^(\d+\.\d+\.\d+)/u.exec(releaseId)?.[1];
+  const currentVersion = productVersion(currentReleaseId);
+  const failedVersion = productVersion(activation.candidateReleaseId);
+  if (!currentVersion || !failedVersion || compareSemanticVersions(currentVersion, failedVersion) <= 0) return false;
+  const [recordedApplication, currentApplication, diagnostic] = await Promise.all([
+    realpath(activation.applicationPath).catch(() => null),
+    realpath(applicationPath).catch(() => null),
+    readDesktopUpdateDiagnostic(root),
+  ]);
+  return Boolean(recordedApplication && currentApplication && recordedApplication === currentApplication
+    && diagnostic?.operation === 'update' && diagnostic.outcome === 'failed'
+    && diagnostic.stage === 'restoreRuntime'
+    && diagnostic.failures.some(failure => failure.stage === 'restoreRuntime'));
 }
 function teamId(path: string): string {
   const signature = spawnSync('/usr/bin/codesign', ['--verify', '--deep', '--strict', path], { encoding: 'utf8' });

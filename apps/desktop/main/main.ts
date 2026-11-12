@@ -1,6 +1,6 @@
 import { app, BrowserWindow, dialog, ipcMain, Menu, nativeImage, Notification, powerMonitor, screen, session, shell, type IpcMainInvokeEvent, type Session } from 'electron';
 import { randomUUID } from 'node:crypto';
-import { access, appendFile, mkdir, open, readFile, rename, rm, writeFile } from 'node:fs/promises';
+import { access, appendFile, mkdir, open, readFile, readdir, rename, rm, writeFile } from 'node:fs/promises';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { resolveMetaWorkPaths } from '../../../src/installation/paths.js';
@@ -15,7 +15,8 @@ import type { DesktopDraft, DesktopMenuAction, ShellState } from '../shared/brid
 import { DesktopNotifications } from './notifications.js';
 import { readWindowState, writeWindowState, type WindowState } from './window-state.js';
 import { DesktopInstallation } from './installation.js';
-import { launchDesktopUpdate, pendingDesktopUpdate, prepareDesktopRepair, prepareDesktopUpdate } from './update.js';
+import { isolateInterruptedInstallation, restoreInterruptedInstallation } from './interrupted-install-recovery.js';
+import { canCleanReinstallAfterRestoreFailure, launchDesktopUpdate, pendingDesktopUpdate, prepareDesktopRepair, prepareDesktopUpdate } from './update.js';
 import { readDesktopUpdateDiagnostic } from '../../../src/installation/desktop-update-diagnostics.js';
 import { installNativeLauncher } from '../../../src/installation/native-launcher.js';
 import { authorizeDesktopShellCheck, writeDesktopShellHealth } from '../../../src/installation/desktop-shell-health.js';
@@ -34,6 +35,8 @@ if (!app.isPackaged) {
     throw new Error('Use npm run dev:desktop with an isolated installation; direct development access to the normal runtime is disabled.');
   }
   app.setPath('userData', join(resolve(developmentRoot), 'desktop-profile'));
+} else if (process.env.METAWORK_DESKTOP_INTERNAL === '1' && process.env.METAWORK_DESKTOP_TEST_USER_DATA) {
+  app.setPath('userData', resolve(process.env.METAWORK_DESKTOP_TEST_USER_DATA));
 }
 let window: BrowserWindow | null = null;
 let origin: string | null = null;
@@ -42,6 +45,9 @@ let webSession: Session;
 let manager: DesktopServiceManager;
 let installation: DesktopInstallation | null = null;
 let installRoot: string;
+let interruptedInstallBackup: string | null = null;
+let interruptedInstallAttempted = false;
+let interruptedInstallCompleted = false;
 let selectedConfigHome: string | undefined;
 let preferences: DesktopPreferenceStore | null = null;
 let state: ShellState = { phase: 'connecting', message: '正在连接后台服务…' };
@@ -177,14 +183,27 @@ async function connectOnce(): Promise<void> {
       const release = await installation.verify();
       stage = 'installation';
       await installation.recoverIncompleteCurrent(release.releaseId);
-      recoveryRequired = await pendingDesktopUpdate(installRoot)
-        && !(shellCheckChallenge && await authorizeDesktopShellCheck(installRoot, {
+      const updatePending = await pendingDesktopUpdate(installRoot);
+      const shellUpdateAuthorized = Boolean(updatePending && shellCheckChallenge && await authorizeDesktopShellCheck(installRoot, {
           challenge: shellCheckChallenge, applicationPath: resolve(process.resourcesPath, '../..'), releaseId: release.releaseId,
         }));
+      const canReinstall = updatePending && !shellUpdateAuthorized
+        && await canCleanReinstallAfterRestoreFailure(installRoot,
+          resolve(process.resourcesPath, '../..'), release.releaseId);
+      recoveryRequired = updatePending && !shellUpdateAuthorized && !canReinstall;
       if (recoveryRequired) throw new Error('Desktop update requires recovery');
+      if (canReinstall) {
+        recoveryRequired = false;
+        interruptedInstallAttempted = true;
+        setState({ phase: 'connecting', message: '检测到上次更新未完成，正在自动移除不兼容版本并安装当前版本…' });
+        interruptedInstallBackup = await isolateInterruptedInstallation(installRoot);
+        installation = new DesktopInstallation(process.resourcesPath, installRoot, app.getVersion());
+      }
       if (!await installation.installed()) {
-        setState({ phase: 'connecting', message: '正在准备首次使用…' });
+        setState({ phase: 'connecting', message: interruptedInstallAttempted
+          ? '正在安装当前版本并初始化本机服务…' : '正在准备首次使用…' });
         await installation.run('install');
+        if (interruptedInstallAttempted) interruptedInstallCompleted = true;
       }
       if (await installation.needsUpgrade()) {
         const installedIdentity = await readReleaseIdentity(join(installRoot, 'app/current/release-identity.json'));
@@ -229,6 +248,11 @@ async function connectOnce(): Promise<void> {
         instanceId: grant.instanceId, pid: process.pid });
     }
     setState({ phase: 'ready', message: '后台服务已连接' });
+    if (interruptedInstallBackup) {
+      interruptedInstallBackup = null;
+      interruptedInstallAttempted = false;
+      interruptedInstallCompleted = false;
+    }
     if (installation && !shellCheckChallenge && !piCheckStarted) {
       // Tool inventory can take seconds. It must not hold the connection promise
       // after ready, otherwise reconnect silently reuses that completed session.
@@ -244,9 +268,24 @@ async function connectOnce(): Promise<void> {
     console.error('[MetaWork Desktop] startup failed', diagnostic);
     await appendFile(join(app.getPath('userData'), 'startup.log'), `${JSON.stringify(diagnostic)}\n`, { mode: 0o600 })
       .catch(() => undefined);
+    if (interruptedInstallBackup && !interruptedInstallCompleted) {
+      try {
+        await restoreInterruptedInstallation(installRoot, interruptedInstallBackup);
+        interruptedInstallBackup = null;
+      } catch (restoreError) {
+        console.error('[MetaWork Desktop] previous installation restore failed', startupFailureCode(restoreError));
+      }
+    }
     origin = null;
-    setState({ phase: 'error', message: error instanceof Error && /update requires recovery/u.test(error.message)
-      ? '配套更新尚未完成。请使用 MetaWork 菜单中的“修复未完成的更新”。'
+    const resetBlockedByProcess = error instanceof Error
+      && /Previous (?:MetaWork Server|Desktop update helper) is still running/u.test(error.message);
+    setState({ phase: 'error', retryable: !recoveryRequired && !interruptedInstallAttempted,
+      message: interruptedInstallAttempted && resetBlockedByProcess
+      ? '旧后台仍在退出，系统没有更改安装文件。关闭旧后台后重新打开 MetaWork，系统会自动完成安装。'
+      : interruptedInstallAttempted
+      ? `自动重新安装未完成（${startupFailureCode(error)}）。旧安装已保留；请检查磁盘空间和写入权限后重新打开 MetaWork。`
+      : recoveryRequired
+      ? '检测到此前更新未完成。请从 MetaWork 菜单选择“修复未完成的更新”，系统会继续恢复。'
       : error instanceof Error && /mismatch/u.test(error.message)
       ? '已安装版本与桌面版本不匹配。请先完成配套升级，再重新连接。'
       : '后台服务尚未就绪。请确认配套运行时已安装，或查看安装目录中的服务日志。' });
@@ -541,11 +580,12 @@ async function logoutDesktop(): Promise<void> {
 
 async function selectInstallation(): Promise<void> {
   if (!app.isPackaged || !window) return;
-  const selected = await dialog.showOpenDialog(window, { title: '选择已有 MetaWork 安装目录', properties: ['openDirectory', 'showHiddenFiles'] });
+  const selected = await dialog.showOpenDialog(window, { title: '选择 MetaWork 数据目录（可选择空目录开始新安装）', properties: ['openDirectory', 'createDirectory', 'showHiddenFiles'] });
   if (selected.canceled || !selected.filePaths[0]) return;
   const root = resolve(selected.filePaths[0]);
   try {
-    await access(join(root, 'app/current/release-identity.json'));
+    const existing = await access(join(root, 'app/current/release-identity.json')).then(() => true, () => false);
+    if (!existing && (await readdir(root)).length > 0) throw new Error('Selected directory is not empty');
     const config = await dialog.showOpenDialog(window, { title: '选择配置目录（取消则使用默认配置目录）', properties: ['openDirectory', 'showHiddenFiles'] });
     const configHome = config.canceled ? undefined : config.filePaths[0];
     await preferences?.flush();
@@ -557,7 +597,7 @@ async function selectInstallation(): Promise<void> {
     installRoot = root; selectedConfigHome = configHome;
     installation = new DesktopInstallation(process.resourcesPath, root, app.getVersion());
     await window.loadURL(shellUrl); await connect();
-  } catch { dialog.showErrorBox('无法使用该安装', '请选择包含 app/current 的 MetaWork 安装目录。原安装的数据不会被迁移或合并。'); }
+  } catch { dialog.showErrorBox('无法使用该目录', '请选择已有 MetaWork 安装目录，或选择一个空目录开始新安装。原安装的数据不会被迁移或合并。'); }
 }
 
 async function installTerminalCommand(): Promise<void> {
