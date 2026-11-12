@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import Database from 'better-sqlite3';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { runMigrations } from '../../src/storage/migrations.js';
+import { initializeDatabaseSchema } from '../../src/storage/schema.js';
 import { TaskArtifactRepo } from '../../src/storage/task-artifact-repo.js';
 import {
   UserArtifactPublicationService,
@@ -24,7 +24,7 @@ function createService(root: string, extraTaskIds: string[] = []): UserArtifactP
   const startupWorkspaceRoot = join(root, 'startup');
   mkdirSync(startupWorkspaceRoot, { recursive: true });
   const db = new Database(':memory:');
-  runMigrations(db);
+  initializeDatabaseSchema(db);
   for (const taskId of ['seeded', ...extraTaskIds]) {
     db.prepare(`
       INSERT INTO tasks (id, title, goal, status, summary, snapshot_json, resources_json,

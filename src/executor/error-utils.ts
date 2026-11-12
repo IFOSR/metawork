@@ -175,7 +175,10 @@ export function normalizeExecutorFailure(
       kind: 'configuration',
       scope: 'task',
       code: 'workspace_contains_runtime_root',
-      summary: 'Workspace 包含 MetaWork 运行目录，系统已在 Executor 启动前停止任务',
+      // Keep the workspace service's exact diagnostic in `summary`. The
+      // localized explanation is an optional label and must not hide the
+      // paths that tell the user which directories conflict.
+      summary,
       label: 'Workspace 配置无效',
       stage: 'workspace_preflight',
       ...passthrough,
@@ -186,7 +189,7 @@ export function normalizeExecutorFailure(
       kind: 'configuration',
       scope: 'task',
       code: 'workspace_binding_missing',
-      summary: '任务没有有效 Workspace 绑定，系统未启动 Executor',
+      summary,
       label: 'Workspace 配置缺失',
       stage: 'workspace_preflight',
       ...passthrough,

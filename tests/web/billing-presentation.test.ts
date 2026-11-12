@@ -12,9 +12,9 @@ describe('Web token usage presentation', () => {
     ]);
     expect(app).toContain('<TokenUsageView http={http} />');
     expect(turn).not.toContain('TurnBillCard');
-    expect(usage).toContain('Total tokens');
-    expect(usage).toContain('Included');
-    expect(usage).toContain('On-demand');
+    expect(usage).toContain('累计 Token');
+    expect(usage).toContain('官方额度');
+    expect(usage).toContain('自备模型');
   });
 
   it('offers period and Provider grouping controls over the token timeline', async () => {
@@ -23,7 +23,7 @@ describe('Web token usage presentation', () => {
       readFile(new URL('api/http.ts', root), 'utf8'),
     ]);
     expect(usage).toContain('时间区间');
-    expect(usage).toContain('Group By');
+    expect(usage).toContain('统计维度');
     expect(usage).toContain('按 Provider');
     expect(usage).toContain('按天用量趋势');
     expect(http).toContain('/api/usage/timeline');

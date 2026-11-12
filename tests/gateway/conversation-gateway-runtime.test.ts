@@ -1,5 +1,5 @@
 import Database from 'better-sqlite3';
-import { runMigrations } from '../../src/storage/migrations.js';
+import { initializeDatabaseSchema } from '../../src/storage/schema.js';
 import { SqliteConversationTurnStore } from '../../src/storage/conversation-turn-repo.js';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { createHash } from 'node:crypto';
@@ -37,7 +37,7 @@ afterEach(() => {
 
 describe('ConversationGatewayRuntime', () => {
   it('persists exact input before execution and revisions before journal publication, and recovers a failed publisher', async () => {
-    const db = new Database(':memory:'); runMigrations(db);
+    const db = new Database(':memory:'); initializeDatabaseSchema(db);
     const store = new SqliteConversationTurnStore(db);
     const input = 'raw query  \r\n' + 'long input🙂'.repeat(1000);
     const output = '完整回答'.repeat(5000);

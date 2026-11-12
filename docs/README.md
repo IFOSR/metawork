@@ -9,6 +9,15 @@
 
 ## 现行架构与契约（本轮收敛）
 
+- [2026-11-12 账单与记忆画像展示优化](plans/2026-11-12-billing-memory-presentation.md)
+  —— 账号 Token 汇总、趋势与明细重排；记忆增加整体画像、主题分布和可核对摘要，保留 L1/L2/L3 管理；8788 桌面、窄屏和错误重试验证通过。
+
+- [2026-11-12 默认角色与模型绑定引导](plans/2026-11-12-default-agent-roles.md)
+  —— 新安装预设总管、助理、分析师；设置默认启用、显式绑定自有模型后激活，保留已有角色配置。
+
+- [2026-11-12 Web 恢复与代码复查](plans/2026-11-12-web-recovery-review.md)
+  —— 8788 真实登录、失败重试、服务固定版本准备/健康检查/停止、产物下载；修复服务竞争、macOS 路径别名与恢复误导。全量测试和历史日志缺片仍为明确未关闭项，仅本地修改。
+
 - [2026-11-11 Manager 的 Workspace 事实与澄清边界](plans/2026-11-11-manager-workspace-facts-and-clarification-scope.md)
   —— 去掉 Manager turn 的“只读/可写”Workspace 标签，改为 Runtime 拥有的执行写入事实；
   澄清只用于用户意图歧义，系统能力问题由 Runtime 自述；Workspace Git 根失败走 rejection。

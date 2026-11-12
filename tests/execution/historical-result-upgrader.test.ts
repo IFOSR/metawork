@@ -5,7 +5,7 @@ import Database from 'better-sqlite3';
 import { afterEach, describe, expect, it } from 'vitest';
 import { HistoricalResultUpgrader } from '../../src/execution/historical-result-upgrader.js';
 import type { ExecutorAttemptReceipt } from '../../src/storage/executor-attempt-receipt-repo.js';
-import { runMigrations } from '../../src/storage/migrations.js';
+import { initializeDatabaseSchema } from '../../src/storage/schema.js';
 
 const roots: string[] = [];
 
@@ -16,7 +16,7 @@ afterEach(() => {
 describe('HistoricalResultUpgrader', () => {
   it('idempotently recovers a safe v3 body without exposing its trailer or secret', () => {
     const db = new Database(':memory:');
-    runMigrations(db);
+    initializeDatabaseSchema(db);
     const now = '2026-08-21T00:00:00.000Z';
     db.prepare(`
       INSERT INTO tasks (id, title, created_at, updated_at)
@@ -68,7 +68,7 @@ describe('HistoricalResultUpgrader', () => {
 
   it('does not reinterpret current safety-blocked receipts as historical safe results', () => {
     const db = new Database(':memory:');
-    runMigrations(db);
+    initializeDatabaseSchema(db);
     const root = mkdtempSync(join(tmpdir(), 'anyfusion-current-result-'));
     roots.push(root);
     const upgrader = new HistoricalResultUpgrader({

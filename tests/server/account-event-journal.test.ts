@@ -5,7 +5,7 @@ import { join } from 'node:path';
 import { expect, it, vi } from 'vitest';
 import { createAccountEventJournal } from '../../src/server/account-event-journal.js';
 import { FileEventJournal } from '../../src/gateway/file-event-journal.js';
-import { runMigrations } from '../../src/storage/migrations.js';
+import { initializeDatabaseSchema } from '../../src/storage/schema.js';
 import type { GatewayEventEnvelope } from '../../src/gateway/client-events.js';
 
 it('uses a single segmented writer, retaining the legacy file only for import and rollback', async () => {
@@ -14,7 +14,7 @@ it('uses a single segmented writer, retaining the legacy file only for import an
   const onError = vi.fn();
   let runtime: ReturnType<typeof createAccountEventJournal> | undefined;
   try {
-    runMigrations(db);
+    initializeDatabaseSchema(db);
     const old: GatewayEventEnvelope = {
       protocolVersion: 2, accountId: 'local-default', conversationId: 'conv_one', eventId: 'legacy',
       turnId: 'turn_one', requestId: 'request_one', sequence: 0, kind: 'final_answer',
@@ -48,7 +48,7 @@ it('reports whether a maintenance pass did work so the loop can idle', async () 
   const db = new Database(':memory:');
   let runtime: ReturnType<typeof createAccountEventJournal> | undefined;
   try {
-    runMigrations(db);
+    initializeDatabaseSchema(db);
     runtime = createAccountEventJournal({ db, root, accountId: 'local-default', onError: vi.fn() });
     const base: GatewayEventEnvelope = {
       protocolVersion: 2, accountId: 'local-default', conversationId: 'conv_work', eventId: 'event_1',
@@ -84,7 +84,7 @@ it('surfaces a corrupt half-projected history row as a failing pass with its Con
   const db = new Database(':memory:');
   let runtime: ReturnType<typeof createAccountEventJournal> | undefined;
   try {
-    runMigrations(db);
+    initializeDatabaseSchema(db);
     runtime = createAccountEventJournal({ db, root, accountId: 'local-default', onError: vi.fn() });
     // A half-completed import: the stream exists and the checkpoint is behind,
     // but the stored body cannot be projected.
@@ -111,7 +111,7 @@ it('keeps suppressed maintenance failures out of the production error callback',
   const onError = vi.fn();
   let runtime: ReturnType<typeof createAccountEventJournal> | undefined;
   try {
-    runMigrations(db);
+    initializeDatabaseSchema(db);
     runtime = createAccountEventJournal({ db, root, accountId: 'local-default', onError });
     db.prepare(`INSERT INTO conversation_history_streams (account_id, conversation_id, kind, last_sequence)
       VALUES ('local-default', 'conv_noisy', 'conversation', 1)`).run();

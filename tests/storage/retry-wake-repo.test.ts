@@ -1,6 +1,6 @@
 import Database from 'better-sqlite3';
 import { describe, expect, it } from 'vitest';
-import { runMigrations } from '../../src/storage/migrations.js';
+import { initializeDatabaseSchema } from '../../src/storage/schema.js';
 import { RetryWakeRepo, type RetryWakeRecord } from '../../src/storage/retry-wake-repo.js';
 
 const wake: RetryWakeRecord = {
@@ -26,7 +26,7 @@ describe('RetryWakeRepo', () => {
   it('persists one armed wake and claims it at most once', () => {
     const db = new Database(':memory:');
     try {
-      runMigrations(db);
+      initializeDatabaseSchema(db);
       const repo = new RetryWakeRepo(db);
 
       expect(repo.arm(wake)).toBe(true);
@@ -45,7 +45,7 @@ describe('RetryWakeRepo', () => {
   it('does not claim a wake before its due time and can supersede it idempotently', () => {
     const db = new Database(':memory:');
     try {
-      runMigrations(db);
+      initializeDatabaseSchema(db);
       const repo = new RetryWakeRepo(db);
       repo.arm(wake);
 

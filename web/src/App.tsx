@@ -12,6 +12,11 @@ import { OfficialAccountPanel, type OfficialStatus } from './components/Official
 
 export function App() {
   const [officialStatus, setOfficialStatus] = useState<OfficialStatus | null>(null);
+  // The account panel polls every five seconds; unchanged status must not
+  // invalidate the entire conversation tree and its inline callbacks.
+  const updateOfficialStatus = useCallback((status: OfficialStatus | null) => {
+    setOfficialStatus(previous => JSON.stringify(previous) === JSON.stringify(status) ? previous : status);
+  }, []);
   const [memorySettingsRequested, setMemorySettingsRequested] = useState(false);
   const {
     themePreference, setThemePreference, authenticated, authError, connected,
@@ -50,7 +55,7 @@ export function App() {
   }
   return (
     <div className="official-app-frame">
-      <OfficialAccountPanel onStatus={setOfficialStatus} />
+      <OfficialAccountPanel onStatus={updateOfficialStatus} />
       <WorkspaceShell
         sessions={sessions}
         hasMoreConversations={directoryCursor !== null}
@@ -214,4 +219,4 @@ function clampPreviewWidth(width: number): number {
   const max = Math.max(360, Math.min(viewport - 360, 1_200));
   return Math.round(Math.max(320, Math.min(width, max)));
 }
-import { useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';

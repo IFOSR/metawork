@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it } from 'vitest';
 import Database from 'better-sqlite3';
-import { runMigrations } from '../../src/storage/migrations.js';
+import { initializeDatabaseSchema } from '../../src/storage/schema.js';
 import { MemoryEvidenceService } from '../../src/memory/memory-evidence-service.js';
 import { MemoryService } from '../../src/memory/memory-service.js';
 import { MemoryRecallRepo } from '../../src/storage/memory-recall-repo.js';
@@ -16,7 +16,7 @@ const ACCOUNT = 'local-default';
 function createTestDb() {
   const db = new Database(':memory:');
   db.pragma('foreign_keys = ON');
-  runMigrations(db);
+  initializeDatabaseSchema(db);
   db.prepare(`INSERT INTO tasks
     (id, title, goal, status, created_at, updated_at, account_id, conversation_id, workspace_id)
     VALUES ('task-1', '记忆任务', '验证证据投递', 'running', '2026-10-22T00:00:00.000Z',

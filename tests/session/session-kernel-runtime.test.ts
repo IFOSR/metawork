@@ -3,7 +3,7 @@ import { mkdir, mkdtemp, rm } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { describe, expect, it, vi } from 'vitest';
-import { runMigrations } from '../../src/storage/migrations.js';
+import { initializeDatabaseSchema } from '../../src/storage/schema.js';
 import { TaskRepo } from '../../src/storage/task-repo.js';
 import { TaskEngine } from '../../src/task/task-engine.js';
 import { TaskRuntimeService } from '../../src/task/task-runtime-service.js';
@@ -19,7 +19,7 @@ import { parseApplicationSettlement } from '../../src/kernel/kernel-application-
 describe('SessionKernelRuntime parallel admission', () => {
   it('surfaces a cross-Conversation service refusal before settling the parent application', async () => {
     const database = new Database(':memory:');
-    runMigrations(database);
+    initializeDatabaseSchema(database);
     database.prepare(`INSERT INTO configuration_revisions (revision_id, content_hash, source_kind, imported_at)
       VALUES ('revision-test', 'test-content', 'native', '2026-10-23T00:00:00.000Z')`).run();
     const taskRepo = new TaskRepo(database);
@@ -88,7 +88,7 @@ describe('SessionKernelRuntime parallel admission', () => {
 
   it('settles the parent application and preserves the user-visible refusal end to end', async () => {
     const database = new Database(':memory:');
-    runMigrations(database);
+    initializeDatabaseSchema(database);
     database.prepare(`INSERT INTO configuration_revisions (revision_id, content_hash, source_kind, imported_at)
       VALUES ('revision-test', 'test-content', 'native', '2026-10-23T00:00:00.000Z')`).run();
     const taskRepo = new TaskRepo(database);
@@ -183,7 +183,7 @@ describe('SessionKernelRuntime parallel admission', () => {
 
   it('resolves an existing project Workspace by Conversation id, not Planner session id', async () => {
     const database = new Database(':memory:');
-    runMigrations(database);
+    initializeDatabaseSchema(database);
     const taskRepo = new TaskRepo(database);
     const taskRuntimeService = new TaskRuntimeService({
       taskEngine: new TaskEngine(taskRepo, '/tmp/metawork-test-snapshots'),
@@ -239,7 +239,7 @@ describe('SessionKernelRuntime parallel admission', () => {
 
   it('persists a same-Conversation queued Task without preparing execution', async () => {
     const database = new Database(':memory:');
-    runMigrations(database);
+    initializeDatabaseSchema(database);
     const taskRepo = new TaskRepo(database);
     const taskRuntimeService = new TaskRuntimeService({
       taskEngine: new TaskEngine(taskRepo, '/tmp/metawork-test-snapshots'),
@@ -327,7 +327,7 @@ describe('SessionKernelRuntime parallel admission', () => {
 
   it('keeps clear_tasks scoped to the current Conversation', async () => {
     const database = new Database(':memory:');
-    runMigrations(database);
+    initializeDatabaseSchema(database);
     const taskRepo = new TaskRepo(database);
     const taskRuntimeService = new TaskRuntimeService({
       taskEngine: new TaskEngine(taskRepo, '/tmp/metawork-test-snapshots'),
@@ -389,7 +389,7 @@ describe('SessionKernelRuntime parallel admission', () => {
 
   it('preserves an account-capacity queue reason when slot admission loses the race', async () => {
     const database = new Database(':memory:');
-    runMigrations(database);
+    initializeDatabaseSchema(database);
     const taskRepo = new TaskRepo(database);
     const taskRuntimeService = new TaskRuntimeService({
       taskEngine: new TaskEngine(taskRepo, '/tmp/metawork-test-snapshots'),
@@ -463,7 +463,7 @@ describe('SessionKernelRuntime abandon_task and durable clear outcomes (2026-09-
     cancelThrows?: string;
   } = {}) {
     const database = new Database(':memory:');
-    runMigrations(database);
+    initializeDatabaseSchema(database);
     const taskRepo = new TaskRepo(database);
     const taskRuntimeService = new TaskRuntimeService({
       taskEngine: new TaskEngine(taskRepo, '/tmp/metawork-abandon-test'),
@@ -625,7 +625,7 @@ describe('SessionKernelRuntime abandon-and-create (2026-09-06 plan §5.4)', () =
     cancelOutcome?: import('../../src/task/task-control-types.js').TaskClearOutcome;
   } = {}) {
     const database = new Database(':memory:');
-    runMigrations(database);
+    initializeDatabaseSchema(database);
     const taskRepo = new TaskRepo(database);
     const taskRuntimeService = new TaskRuntimeService({
       taskEngine: new TaskEngine(taskRepo, '/tmp/metawork-abandon-create'),
@@ -749,7 +749,7 @@ describe('SessionKernelRuntime abandon-and-create (2026-09-06 plan §5.4)', () =
 describe('SessionKernelRuntime abandon-and-create holds during cleanup (closure round 3)', () => {
   it('never creates the new Task while the old cancellation is still cleaning up', async () => {
     const database = new Database(':memory:');
-    runMigrations(database);
+    initializeDatabaseSchema(database);
     const taskRepo = new TaskRepo(database);
     const taskRuntimeService = new TaskRuntimeService({
       taskEngine: new TaskEngine(taskRepo, '/tmp/metawork-abandon-hold'),

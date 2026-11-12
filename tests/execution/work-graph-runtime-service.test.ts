@@ -4,7 +4,7 @@ import type { AuthorizedExecutorBinding } from '../../src/core/authorized-execut
 import type { Task } from '../../src/core/types.js';
 import { WorkGraphRuntimeService } from '../../src/execution/work-graph-runtime-service.js';
 import type { WorkGraphProposal } from '../../src/work-graph/types.js';
-import { runMigrations } from '../../src/storage/migrations.js';
+import { initializeDatabaseSchema } from '../../src/storage/schema.js';
 import { SubtaskRepo } from '../../src/storage/subtask-repo.js';
 import { TaskEventRepo } from '../../src/storage/task-event-repo.js';
 import { TaskRepo } from '../../src/storage/task-repo.js';
@@ -31,7 +31,7 @@ const authorizedBinding: AuthorizedExecutorBinding = {
 function createDb(): Database.Database {
   const db = new Database(':memory:');
   db.pragma('foreign_keys = ON');
-  runMigrations(db);
+  initializeDatabaseSchema(db);
   db.prepare(`
     INSERT INTO configuration_revisions (
       revision_id, content_hash, source_kind, imported_at

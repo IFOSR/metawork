@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import Database from 'better-sqlite3';
-import { runMigrations } from '../../src/storage/migrations.js';
+import { initializeDatabaseSchema } from '../../src/storage/schema.js';
 import { AgentClassRepo } from '../../src/storage/agent-class-repo.js';
 import { WorkUnitRepo } from '../../src/storage/work-unit-repo.js';
 import { WorkUnitClaimService } from '../../src/execution/work-unit-claim-service.js';
@@ -18,7 +18,7 @@ const authorizedBinding: AuthorizedExecutorBinding = {
 
 function createDb(): Database.Database {
   const db = new Database(':memory:');
-  runMigrations(db);
+  initializeDatabaseSchema(db);
   return db;
 }
 

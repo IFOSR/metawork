@@ -1,6 +1,6 @@
 import Database from 'better-sqlite3';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { runMigrations } from '../../src/storage/migrations.js';
+import { initializeDatabaseSchema } from '../../src/storage/schema.js';
 import { SqliteWorkspaceDirectoryProjectionRepo } from '../../src/storage/workspace-directory-projection-repo.js';
 import { WorkspaceDirectoryProjector } from '../../src/workspace/workspace-directory-projector.js';
 import type { ConversationMetadata } from '../../src/session/conversation-store.js';
@@ -20,7 +20,7 @@ function metadata(id: string): ConversationMetadata {
 function reconciliationFixture(initial: readonly ConversationMetadata[]) {
   const db = new Database(':memory:');
   databases.push(db);
-  runMigrations(db);
+  initializeDatabaseSchema(db);
   const repo = new SqliteWorkspaceDirectoryProjectionRepo(db, 'local-default');
   let source = initial;
   const make = (options: {
@@ -219,7 +219,7 @@ describe('Workspace directory rebuild', () => {
   it('does not overwrite newer Planner activity while an earlier row publication is awaiting', async () => {
     const db = new Database(':memory:');
     databases.push(db);
-    runMigrations(db);
+    initializeDatabaseSchema(db);
     const repo = new SqliteWorkspaceDirectoryProjectionRepo(db, 'local-default');
     let injecting = false;
     const published: string[] = [];
@@ -248,7 +248,7 @@ describe('Workspace directory rebuild', () => {
   it('resumes committed batches after interruption without projecting unbound or other accounts', async () => {
     const db = new Database(':memory:');
     databases.push(db);
-    runMigrations(db);
+    initializeDatabaseSchema(db);
     const repo = new SqliteWorkspaceDirectoryProjectionRepo(db, 'local-default');
     const source = [
       ...Array.from({ length: 5 }, (_, i) => metadata(`conv_${i}`)),
@@ -280,7 +280,7 @@ describe('Workspace directory rebuild', () => {
   it('keeps activity when only metadata changes and refreshes facts older than the observation', async () => {
     const db = new Database(':memory:');
     databases.push(db);
-    runMigrations(db);
+    initializeDatabaseSchema(db);
     const repo = new SqliteWorkspaceDirectoryProjectionRepo(db, 'local-default');
     const projector = new WorkspaceDirectoryProjector({
       accountId: 'local-default', projection: repo, readMetadata: async () => [],

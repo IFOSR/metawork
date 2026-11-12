@@ -13,7 +13,7 @@ import type { ConversationMetadata, ConversationTurn } from '../../src/session/c
 import { SqliteConversationHistoryRepo } from '../../src/storage/conversation-history-repo.js';
 import { SqliteConversationMetadataIndex } from '../../src/storage/conversation-metadata-index-repo.js';
 import { FileWorkspaceCatalogStore } from '../../src/storage/file-workspace-catalog-store.js';
-import { runMigrations } from '../../src/storage/migrations.js';
+import { initializeDatabaseSchema } from '../../src/storage/schema.js';
 import { stageSourceRelease } from '../../src/installation/source-native-installer.js';
 
 /** Real CLI composition in an isolated installation; provider URLs never leave loopback. */
@@ -50,7 +50,7 @@ export async function startProductionObservationServer(options: { installed?: bo
     displayName: 'Production acceptance', canonicalPath: workspace, availability: 'available', archived: false,
     createdAt: now, updatedAt: now, createdByPrincipal: 'local' }] });
   const db = new Database(account.database);
-  runMigrations(db);
+  initializeDatabaseSchema(db);
   const history = new SqliteConversationHistoryRepo<ConversationTurn>(db, 'local-default', 'conversation');
   const store = new FileConversationStore(join(account.conversations, 'gateway'), {
     history, metadataIndex: new SqliteConversationMetadataIndex(db, 'local-default'),

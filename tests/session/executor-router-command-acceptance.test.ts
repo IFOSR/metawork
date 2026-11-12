@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import Database from 'better-sqlite3';
-import { runMigrations } from '../../src/storage/migrations.js';
+import { initializeDatabaseSchema } from '../../src/storage/schema.js';
 import { TaskRepo } from '../../src/storage/task-repo.js';
 import { TaskEngine } from '../../src/task/task-engine.js';
 import { OrchestrationEngine } from '../../src/guidance/orchestration.js';
@@ -12,7 +12,7 @@ import { FakeAttemptExecutionBackend } from '../support/fake-attempt-execution-b
 
 function createDb(): Database.Database {
   const db = new Database(':memory:');
-  runMigrations(db);
+  initializeDatabaseSchema(db);
   return db;
 }
 

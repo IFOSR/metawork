@@ -3,7 +3,7 @@ import { describe, expect, it } from 'vitest';
 import { KernelExecutorStatusProjector } from '../../src/execution/kernel-executor-status-projector.js';
 import { AgentClassRepo } from '../../src/storage/agent-class-repo.js';
 import { KernelExecutorStatusRepo } from '../../src/storage/kernel-executor-status-repo.js';
-import { runMigrations } from '../../src/storage/migrations.js';
+import { initializeDatabaseSchema } from '../../src/storage/schema.js';
 import type { AgentClass } from '../../src/core/types.js';
 
 const REVISION = 'revision-projector';
@@ -27,7 +27,7 @@ function agentClass(name = 'codex-cli'): AgentClass {
 describe('KernelExecutorStatusProjector', () => {
   it('keeps transient failures as recent facts without making the class unhealthy and bounds history', () => {
     const db = new Database(':memory:');
-    runMigrations(db);
+    initializeDatabaseSchema(db);
     seedConfigurationRevision(db);
     new AgentClassRepo(db).upsert(agentClass());
     const repo = new KernelExecutorStatusRepo(db);
@@ -56,7 +56,7 @@ describe('KernelExecutorStatusProjector', () => {
 
   it('marks confirmed adapter/configuration faults as class errors and success as healthy', () => {
     const db = new Database(':memory:');
-    runMigrations(db);
+    initializeDatabaseSchema(db);
     seedConfigurationRevision(db);
     new AgentClassRepo(db).upsert(agentClass());
     const repo = new KernelExecutorStatusRepo(db);
@@ -94,7 +94,7 @@ describe('KernelExecutorStatusProjector', () => {
 
   it('never automatically recovers a disabled class', () => {
     const db = new Database(':memory:');
-    runMigrations(db);
+    initializeDatabaseSchema(db);
     seedConfigurationRevision(db);
     new AgentClassRepo(db).upsert(agentClass());
     const repo = new KernelExecutorStatusRepo(db);

@@ -2,7 +2,7 @@ import Database from 'better-sqlite3';
 import { describe, expect, it } from 'vitest';
 import { AttemptTerminalService } from '../../src/execution/attempt-terminal-service.js';
 import type { KernelEvent } from '../../src/kernel/control-kernel.js';
-import { runMigrations } from '../../src/storage/migrations.js';
+import { initializeDatabaseSchema } from '../../src/storage/schema.js';
 import { ExecutorAttemptReceiptRepo } from '../../src/storage/executor-attempt-receipt-repo.js';
 import { KernelDispatchItemRepo } from '../../src/storage/kernel-dispatch-item-repo.js';
 import { KernelWorkflowRepo } from '../../src/storage/kernel-workflow-repo.js';
@@ -30,7 +30,7 @@ const bindingFingerprint = 'binding-fingerprint-terminal';
 
 function setup(workflowMode: 'capturing' | 'real' = 'capturing') {
   const db = new Database(':memory:');
-  runMigrations(db);
+  initializeDatabaseSchema(db);
   const now = '2026-07-28T00:00:00.000Z';
   db.prepare(`
     INSERT INTO tasks (

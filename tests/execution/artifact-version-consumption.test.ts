@@ -7,7 +7,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 import { resolveArtifactContent, resolveArtifactContentSync } from '../../src/delivery/artifact-content-resolver.js';
 import { ArtifactVersionRepo } from '../../src/storage/artifact-version-repo.js';
 import type { TaskArtifactRecord } from '../../src/storage/task-artifact-repo.js';
-import { runMigrations } from '../../src/storage/migrations.js';
+import { initializeDatabaseSchema } from '../../src/storage/schema.js';
 
 const roots: string[] = [];
 afterEach(() => { for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }); });
@@ -142,7 +142,7 @@ describe('artifact version consumption', () => {
 
   it('registers versions idempotently per workspace, path and hash', () => {
     const db = new Database(':memory:');
-    runMigrations(db);
+    initializeDatabaseSchema(db);
     const repo = new ArtifactVersionRepo(db);
     const input = {
       accountId: 'local-default',

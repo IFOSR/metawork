@@ -1,12 +1,12 @@
 import Database from 'better-sqlite3';
 import { describe, expect, it } from 'vitest';
-import { runMigrations } from '../../src/storage/migrations.js';
+import { initializeDatabaseSchema } from '../../src/storage/schema.js';
 import { ExecutorAttemptRuntimeRepo } from '../../src/storage/executor-attempt-runtime-repo.js';
 
 describe('ExecutorAttemptRuntimeRepo', () => {
   it('persists an early continuation token and bounded recovery facts independently of receipts', () => {
     const db = new Database(':memory:');
-    runMigrations(db);
+    initializeDatabaseSchema(db);
     const repo = new ExecutorAttemptRuntimeRepo(db);
     const now = '2026-07-21T00:00:00.000Z';
     repo.start({
@@ -30,7 +30,7 @@ describe('ExecutorAttemptRuntimeRepo', () => {
 
   it('appends bounded safe progress history while retaining the latest summary', () => {
     const db = new Database(':memory:');
-    runMigrations(db);
+    initializeDatabaseSchema(db);
     const repo = new ExecutorAttemptRuntimeRepo(db);
     repo.start({
       attemptId: 'attempt_progress',
@@ -81,7 +81,7 @@ describe('ExecutorAttemptRuntimeRepo', () => {
 
   it('touches an Attempt heartbeat without adding a fake progress step', () => {
     const db = new Database(':memory:');
-    runMigrations(db);
+    initializeDatabaseSchema(db);
     const repo = new ExecutorAttemptRuntimeRepo(db);
     repo.start({
       attemptId: 'attempt_heartbeat',

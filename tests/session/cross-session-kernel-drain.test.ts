@@ -10,7 +10,7 @@ import {
   type AccountKernelCoordinatorSubmitContext,
 } from '../../src/account/account-kernel-coordinator.js';
 import { KernelWorkflowRepo } from '../../src/storage/kernel-workflow-repo.js';
-import { runMigrations } from '../../src/storage/migrations.js';
+import { initializeDatabaseSchema } from '../../src/storage/schema.js';
 
 const CONFIGURATION_REVISION = 'revision_cross_session';
 
@@ -27,7 +27,7 @@ const CONFIGURATION_REVISION = 'revision_cross_session';
 describe('cross-session kernel drain ownership', () => {
   it('serializes all account events through one coordinator', async () => {
     const db = new Database(':memory:');
-    runMigrations(db);
+    initializeDatabaseSchema(db);
     seedConfigurationRevision(db);
     const repo = new KernelWorkflowRepo(db);
 

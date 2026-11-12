@@ -15,7 +15,7 @@ import type { ExecutionTraceAppendInput } from '../../src/execution/execution-tr
 import type { KernelDecision, KernelEvent } from '../../src/kernel/control-kernel.js';
 import { InteractionTraceStream } from '../../src/session/interaction-trace-stream.js';
 import { KernelWorkflowRepo } from '../../src/storage/kernel-workflow-repo.js';
-import { runMigrations } from '../../src/storage/migrations.js';
+import { initializeDatabaseSchema } from '../../src/storage/schema.js';
 
 const workspaceFixtures: string[] = [];
 afterEach(async () => {
@@ -1232,7 +1232,7 @@ describe('KernelExecutionRuntime executor recovery', () => {
 
   it('resolves only waiting requests pinned to the recovered configuration revision', async () => {
     const db = new Database(':memory:');
-    runMigrations(db);
+    initializeDatabaseSchema(db);
     insertConfigurationRevision(db, 'revision-a');
     insertConfigurationRevision(db, 'revision-b');
 

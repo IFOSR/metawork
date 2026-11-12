@@ -1,6 +1,6 @@
 import Database from 'better-sqlite3';
 import { afterEach, describe, expect, it } from 'vitest';
-import { runMigrations } from '../../src/storage/migrations.js';
+import { initializeDatabaseSchema } from '../../src/storage/schema.js';
 import { SqliteConversationHistoryRepo } from '../../src/storage/conversation-history-repo.js';
 
 const databases: Database.Database[] = [];
@@ -8,7 +8,7 @@ afterEach(() => { for (const db of databases.splice(0)) db.close(); });
 function fixture(account = 'local-default', kind = 'presentation') {
   const db = new Database(':memory:');
   databases.push(db);
-  runMigrations(db);
+  initializeDatabaseSchema(db);
   return { db, repo: new SqliteConversationHistoryRepo<{ id: string; text: string }>(db, account, kind) };
 }
 

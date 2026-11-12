@@ -1,6 +1,6 @@
 import Database from 'better-sqlite3';
 import { beforeEach, describe, expect, it } from 'vitest';
-import { runMigrations } from '../../src/storage/migrations.js';
+import { initializeDatabaseSchema } from '../../src/storage/schema.js';
 import {
   PlannerTurnInputRepo,
   plannerTurnInputHash,
@@ -23,7 +23,7 @@ describe('PlannerTurnInputRepo', () => {
 
   beforeEach(() => {
     db = new Database(':memory:');
-    runMigrations(db);
+    initializeDatabaseSchema(db);
     repo = new PlannerTurnInputRepo(db);
   });
 

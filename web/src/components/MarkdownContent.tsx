@@ -21,6 +21,10 @@ export function MarkdownContent({ value, artifacts = noArtifacts, onOpenArtifact
 }) {
   const root = useRef<HTMLDivElement>(null);
   const canOpenArtifact = Boolean(onOpenArtifact);
+  // Polling returns fresh arrays even when attachment facts did not change.
+  // Rebuilding slots for those arrays remounts charts/images and loses their
+  // layout, selection and controls while an already finished answer is read.
+  const artifactsKey = JSON.stringify(artifacts);
   const rendered = useMemo(() => {
     const fragment = DOMPurify.sanitize(markdown.parse(value, { async: false }), {
       RETURN_DOM_FRAGMENT: true, FORBID_ATTR: ['data-markdown-slot', 'data-image-slot'],
@@ -67,7 +71,7 @@ export function MarkdownContent({ value, artifacts = noArtifacts, onOpenArtifact
     }
     const container = document.createElement('div'); container.append(fragment);
     return { html: container.innerHTML, slots };
-  }, [value, artifacts, canOpenArtifact]);
+  }, [value, artifactsKey, canOpenArtifact]);
   const [mounted, setMounted] = useState<{ rendered: typeof rendered; targets: Element[] }>();
   useLayoutEffect(() => {
     setMounted({ rendered, targets: [...root.current!.querySelectorAll('[data-markdown-slot]')] });

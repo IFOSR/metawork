@@ -3,7 +3,7 @@ import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { runMigrations } from '../../src/storage/migrations.js';
+import { initializeDatabaseSchema } from '../../src/storage/schema.js';
 import { createAccountEventJournal } from '../../src/server/account-event-journal.js';
 import { ConversationObservationService, type ConversationObservationFrame } from '../../src/gateway/conversation-observation.js';
 import { GatewaySubscriptions } from '../../src/gateway/gateway-subscriptions.js';
@@ -12,7 +12,7 @@ import { SqliteEventJournalSegmentIndex } from '../../src/storage/event-journal-
 describe('parallel durable progress observation', () => {
   it.each([3, 8, 20])('browses %i independently progressing Conversations without sharing cursors or stopping work', async count => {
     const root = await mkdtemp(join(tmpdir(), 'mw-parallel-observation-'));
-    const db = new Database(':memory:'); runMigrations(db);
+    const db = new Database(':memory:'); initializeDatabaseSchema(db);
     const subscriptions = new GatewaySubscriptions();
     const runtime = createAccountEventJournal({ db, root, accountId: 'account', onError: error => { throw error; } });
     const service = new ConversationObservationService({ model: runtime.readModel, subscriptions,
@@ -47,7 +47,7 @@ describe('parallel durable progress observation', () => {
   });
 
   it('pages 30,000 safe trace events through the index within the byte budget', () => {
-    const db = new Database(':memory:'); runMigrations(db);
+    const db = new Database(':memory:'); initializeDatabaseSchema(db);
     try {
       const index = new SqliteEventJournalSegmentIndex(db);
       for (let batch = 0; batch < 300; batch++) index.indexTraceEvents('account', 'conversation',

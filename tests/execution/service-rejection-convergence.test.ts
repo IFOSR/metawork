@@ -8,7 +8,7 @@ import {
 import { parseApplicationSettlement } from '../../src/kernel/kernel-application-settlement.js';
 import { KernelExecutionRuntime } from '../../src/execution/kernel-execution-runtime.js';
 import { KernelWorkflowRepo } from '../../src/storage/kernel-workflow-repo.js';
-import { runMigrations } from '../../src/storage/migrations.js';
+import { initializeDatabaseSchema } from '../../src/storage/schema.js';
 import { TaskResidueReader } from '../../src/execution/task-residue-reader.js';
 import { KernelDispatchItemRepo } from '../../src/storage/kernel-dispatch-item-repo.js';
 import { WorkspacePublicationRepo } from '../../src/storage/workspace-publication-repo.js';
@@ -43,7 +43,7 @@ function compose(input: {
       initialToken: null; result: null; error: string | null }>;
 }) {
   db = new Database(':memory:');
-  runMigrations(db);
+  initializeDatabaseSchema(db);
   db.prepare(`INSERT INTO configuration_revisions (revision_id, content_hash, source_kind, imported_at)
     VALUES ('revision_1', 'test-content', 'native', ?)`).run(NOW);
   const store = new KernelWorkflowRepo(db);

@@ -58,6 +58,8 @@ export interface TaskRawReceiptFact {
     | 'cancelled_or_stale';
   readonly failureCode: string | null;
   readonly failureKind: string | null;
+  /** Exact bounded failure text from the attempt receipt, when available. */
+  readonly failureSummary?: string | null;
   readonly completedAt: string;
   readonly accepted?: boolean;
 }
@@ -742,7 +744,11 @@ function failureReasonFor(receipt: TaskRawReceiptFact): TaskReason {
         : receipt.failureCode === 'retry_exhausted'
           ? 'retry_exhausted' as const
           : 'execution_failed' as const;
-  return createTaskReason(code, failureMessageFor(code), [`receipt:${receipt.attemptId}`]);
+  return createTaskReason(
+    code,
+    receipt.failureSummary?.trim() || failureMessageFor(code),
+    [`receipt:${receipt.attemptId}`],
+  );
 }
 
 function failureMessageFor(code: ReturnType<typeof failureReasonFor>['code']): string {

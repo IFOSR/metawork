@@ -59,6 +59,8 @@ export type CommandResult =
       type: 'text' | 'table' | 'dashboard' | 'confirm';
       content: string;
       payload?: unknown;
+      /** Durable Task produced or reused by this command, for Turn association. */
+      relatedTaskId?: string;
     }
   | {
       type: 'error';

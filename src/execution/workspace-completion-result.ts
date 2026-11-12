@@ -15,12 +15,14 @@ export function workspaceCompletionResult(input: {
   receipts: ExecutorAttemptReceiptRepo;
   results: ResultObjectRepo;
   summary?: string;
+  serviceStatus?: string;
   acceptedAttemptIds?: ReadonlySet<string>;
 }): ConversationResultDelivery | null {
   const sources = workspaceCompletionSources(input);
   if (!sources || (sources.length > 1 && !input.summary?.trim())) return null;
   const last = sources.at(-1)!;
   const content = redactSensitiveText(['任务已完成。',
+    ...(input.serviceStatus ? [input.serviceStatus, '执行阶段记录：'] : []),
     sources.length === 1 ? sources[0]!.content : input.summary!.trim(),
   ].join('\n\n'));
   const object = input.results.putObject({

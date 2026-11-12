@@ -1,5 +1,5 @@
 import Database from 'better-sqlite3';
-import { runMigrations } from '../../src/storage/migrations.js';
+import { initializeDatabaseSchema } from '../../src/storage/schema.js';
 import { SqliteQueryContextStore } from '../../src/storage/query-usage-context-repo.js';
 import { SqliteMeteringStore } from '../../src/storage/metering-repo.js';
 import {
@@ -47,7 +47,7 @@ export function createBillingHarness(options: {
 } = {}): BillingHarness {
   const db = new Database(':memory:');
   db.pragma('foreign_keys = ON');
-  runMigrations(db);
+  initializeDatabaseSchema(db);
 
   const contexts = new SqliteQueryContextStore(db);
   const metering = new SqliteMeteringStore(db, prefix => `${prefix}_${Math.random().toString(36).slice(2, 10)}`);

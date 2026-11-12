@@ -1,12 +1,12 @@
 import { describe, expect, it } from 'vitest';
 import Database from 'better-sqlite3';
-import { runMigrations } from '../../src/storage/migrations.js';
+import { initializeDatabaseSchema } from '../../src/storage/schema.js';
 import { PlannerProposalRepo } from '../../src/storage/planner-proposal-repo.js';
 
 describe('PlannerProposalRepo', () => {
   it('records one user turn and replays the same accepted submission', () => {
     const db = new Database(':memory:');
-    runMigrations(db);
+    initializeDatabaseSchema(db);
     const repo = new PlannerProposalRepo(db);
 
     expect(repo.ensureTurn('sess_1', 'turn_1', 'hello')).toEqual({ created: true, conflict: false });
@@ -37,7 +37,7 @@ describe('PlannerProposalRepo', () => {
 
   it('allows a revised submission after a rejection while replaying the rejected revision', () => {
     const db = new Database(':memory:');
-    runMigrations(db);
+    initializeDatabaseSchema(db);
     const repo = new PlannerProposalRepo(db);
     repo.ensureTurn('sess_1', 'turn_1', 'hello');
     repo.reserveSubmission({
@@ -62,7 +62,7 @@ describe('PlannerProposalRepo', () => {
 
   it('reports an in-flight matching submission separately from a different fingerprint conflict', () => {
     const db = new Database(':memory:');
-    runMigrations(db);
+    initializeDatabaseSchema(db);
     const repo = new PlannerProposalRepo(db);
     repo.ensureTurn('sess_1', 'turn_1', 'hello');
     repo.reserveSubmission({
@@ -82,7 +82,7 @@ describe('PlannerProposalRepo', () => {
 
   it('allows an uncertain submission to be retried with the same event identity', () => {
     const db = new Database(':memory:');
-    runMigrations(db);
+    initializeDatabaseSchema(db);
     const repo = new PlannerProposalRepo(db);
     db.prepare(`
       INSERT INTO configuration_revisions (

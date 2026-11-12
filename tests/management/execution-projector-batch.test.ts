@@ -1,7 +1,7 @@
 import Database from 'better-sqlite3';
 import { expect, it, vi } from 'vitest';
 import type { AuthorizedExecutorBinding } from '../../src/core/authorized-executor-binding.js';
-import { runMigrations } from '../../src/storage/migrations.js';
+import { initializeDatabaseSchema } from '../../src/storage/schema.js';
 import { TaskRepo } from '../../src/storage/task-repo.js';
 import { SubtaskRepo } from '../../src/storage/subtask-repo.js';
 import { ExecutorAttemptReceiptRepo } from '../../src/storage/executor-attempt-receipt-repo.js';
@@ -17,7 +17,7 @@ it('batches timeline facts with constant SQL count and preserves the canonical p
   const queries: string[] = [];
   const db = new Database(':memory:', { verbose: sql => queries.push(String(sql)) });
   try {
-    runMigrations(db);
+    initializeDatabaseSchema(db);
     const tasks = new TaskRepo(db);
     const projector = new ExecutionProjector({
       subtaskRepo: new SubtaskRepo(db), receiptRepo: new ExecutorAttemptReceiptRepo(db),
@@ -58,7 +58,7 @@ const UNUSED_PAYLOAD = `TIMELINE_UNUSED_PAYLOAD_${'x'.repeat(8192)}`;
 function populatedFixture() {
   const queries: string[] = [];
   const db = new Database(':memory:', { verbose: sql => queries.push(String(sql)) });
-  runMigrations(db);
+  initializeDatabaseSchema(db);
   const repos = {
     subtaskRepo: new SubtaskRepo(db), receiptRepo: new ExecutorAttemptReceiptRepo(db),
     decisionRepo: new KernelDecisionRepo(db), dispatchItemRepo: new KernelDispatchItemRepo(db),

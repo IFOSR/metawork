@@ -6,7 +6,7 @@ import { join } from 'node:path';
 import { expect, it, vi } from 'vitest';
 import { FileConversationStore } from '../../src/session/file-conversation-store.js';
 import { SqliteConversationHistoryRepo } from '../../src/storage/conversation-history-repo.js';
-import { runMigrations } from '../../src/storage/migrations.js';
+import { initializeDatabaseSchema } from '../../src/storage/schema.js';
 import type { ConversationTurn } from '../../src/session/conversation-store.js';
 import { SqliteConversationMetadataIndex } from '../../src/storage/conversation-metadata-index-repo.js';
 
@@ -14,7 +14,7 @@ it('creates an empty durable record once and recovers interrupted index initiali
   const root = await mkdtemp(join(tmpdir(), 'navigation-empty-create-'));
   const db = new Database(':memory:');
   try {
-    runMigrations(db);
+    initializeDatabaseSchema(db);
     const history = new SqliteConversationHistoryRepo<ConversationTurn>(db, 'local-default', 'conversation');
     const metadataIndex = new SqliteConversationMetadataIndex(db, 'local-default');
     const store = new FileConversationStore(root, { history, metadataIndex });
@@ -46,7 +46,7 @@ it('backfills rich-only legacy Turns around canonical anchors once without losin
   const root = await mkdtemp(join(tmpdir(), 'navigation-history-backfill-'));
   const db = new Database(':memory:');
   try {
-    runMigrations(db);
+    initializeDatabaseSchema(db);
     const legacy = new FileConversationStore(root);
     await legacy.initialize();
     const make = (id: string): ConversationTurn => ({
@@ -85,7 +85,7 @@ it('reads old pages without parsing the aggregate and retains turns after rollin
   const root = await mkdtemp(join(tmpdir(), 'navigation-history-'));
   const db = new Database(':memory:');
   try {
-    runMigrations(db);
+    initializeDatabaseSchema(db);
     const history = new SqliteConversationHistoryRepo<ConversationTurn>(db, 'local-default', 'conversation');
     const metadataIndex = new SqliteConversationMetadataIndex(db, 'local-default');
     const store = new FileConversationStore(root, { history, metadataIndex });

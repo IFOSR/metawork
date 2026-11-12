@@ -3,7 +3,7 @@ import type { Task } from '../core/types.js';
 export type ConversationActivityTask = Pick<
   Task,
   'id' | 'title' | 'status' | 'updatedAt' | 'stateVersion' | 'stateDetail'
->;
+> & Partial<Pick<Task, 'completedAt' | 'archivedAt' | 'retryOfTaskId'>>;
 
 export interface ConversationActivitySource {
   page(accountId: string, conversationId: string, cursor?: string, limit?: number): {

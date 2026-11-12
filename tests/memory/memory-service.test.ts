@@ -1,7 +1,7 @@
 import { seedAuthoritativeTurn } from '../support/conversation-turn-fixture.js';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import Database from 'better-sqlite3';
-import { runMigrations } from '../../src/storage/migrations.js';
+import { initializeDatabaseSchema } from '../../src/storage/schema.js';
 import { MemoryService } from '../../src/memory/memory-service.js';
 import { MemoryBindingsRepo } from '../../src/storage/memory-bindings-repo.js';
 import { MemoryFlushCursorRepo } from '../../src/storage/memory-flush-cursor-repo.js';
@@ -15,7 +15,7 @@ const CONVERSATION = 'conv-1';
 function createTestDb() {
   const db = new Database(':memory:');
   db.pragma('foreign_keys = ON');
-  runMigrations(db);
+  initializeDatabaseSchema(db);
   return db;
 }
 

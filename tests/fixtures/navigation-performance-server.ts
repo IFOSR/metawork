@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { createServer } from 'node:net';
-import { runMigrations } from '../../src/storage/migrations.js';
+import { initializeDatabaseSchema } from '../../src/storage/schema.js';
 import { FileConversationStore } from '../../src/session/file-conversation-store.js';
 import { FileConversationPresentationStore } from '../../src/storage/file-conversation-presentation-store.js';
 import { FileWorkspaceCatalogStore } from '../../src/storage/file-workspace-catalog-store.js';
@@ -41,7 +41,7 @@ export async function createNavigationPerformanceFixture(webDistDir = resolve('w
   const root = await realpath(await mkdtemp(join(tmpdir(), 'metawork-navigation-')));
   const accountId = 'local-default';
   const db = new Database(join(root, 'fixture.db'));
-  runMigrations(db);
+  initializeDatabaseSchema(db);
   const projection = new SqliteWorkspaceDirectoryProjectionRepo(db, accountId);
   let projector: WorkspaceDirectoryProjector | null = null;
   const presentations = new FileConversationPresentationStore(join(root, 'presentations'),

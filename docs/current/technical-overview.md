@@ -1,5 +1,7 @@
 # MetaWork 技术概览
 
+> 2026-11-12 Web 恢复复查：8788 实测修复服务准备与周期恢复竞争导致提前失败、macOS 路径别名误判服务规格导致端口/健康检查丢失、跨任务服务规格更新、重试反馈及无效重试按钮。恢复项校验所属任务和真实幂等诊断；最终服务答复等待平台启动成功后持久化。专项、真实打包 Pi 和 Web 验收边界、全量测试遗留问题见[复查记录](../plans/2026-11-12-web-recovery-review.md)。整体升级验收尚未关闭。
+
 > 2026-11-11 状态一致性续修：黄金、英伟达和天气任务的最终收尾已通过正常恢复流程完成，Executor 未重跑。最终汇总按已认证 contract correction 与 source 身份读取不可变正文；complete_task 恢复不再误报未知外部操作。对话/轨迹共用当前 TaskView，超 64 KiB 的研究进度在查询边界压缩，保留所有子任务状态；历史分页不改变实时卡片。内部上下文引用错误交还 Manager 有界修正。详见[修复与真实验收](../plans/2026-11-11-task-completion-status-consistency-fix.md)。
 
 > 当前状态（2026-11-10，ADR-0055 / Review R-01～R-32）：Kernel inbox、decision/application ledger 与重放已删除；直接准入由提案/结果 owner 承载。Task Runtime facade 保持进程内生命周期职责。Manager strict proposal 已删除 executorBindings/modelSelection，准入保留固定配置中的全部硬资格池；Runtime 的绑定池不等于 Manager 选择。dispatch Router 使用实际 modelId、失败 receipt 与事务内 owner 重读；评估失败或缺失不默认选路。动态资格、失败/恢复链与旧 Span 轨迹仍待收敛。

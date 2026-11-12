@@ -1,3 +1,4 @@
+import { DEFAULT_AGENT_ROLES, isUnboundDefaultAgentRole, isDefaultAgentSetupPending } from '../../../src/configuration/default-agent-roles';
 import { ProviderProtocolSelect } from './ProviderProtocolSelect';
 import { ModelCapabilityDetails } from './ModelCapabilityDetails';
 import { ExecutorTools } from './ExecutorTools';
@@ -276,6 +277,9 @@ function loadRuntimePolicy(config: RawRecord): RuntimePolicyDraft {
 
 function loadRoutingDraft(config: RawRecord): RoutingDraft {
   const rawAgentClasses = asRecord(config.agentClasses);
+  const setupPending = isDefaultAgentSetupPending(Object.fromEntries(
+    Object.entries(rawAgentClasses).map(([ref, raw]) => [ref, asRecord(raw)]),
+  ), asRecord(config.models));
   const modelEntries = Object.entries(asRecord(config.models)).map(([ref, raw]) => {
     const model = asRecord(raw);
     return {
@@ -309,13 +313,13 @@ function loadRoutingDraft(config: RawRecord): RoutingDraft {
     return [
       agentClassRef,
       {
-        enabled: agentClass.enabled !== false,
+        enabled: isPlanner || setupPending || agentClass.enabled !== false,
         displayName: resolveAgentDisplayName(
           agentClassRef,
           typeof agentClass.displayName === 'string' ? agentClass.displayName : undefined,
         ),
         responsibility: isPlanner
-          ? '理解用户意图，拆解任务为 DAG 图，选择执行智能体并完成编排规划。'
+          ? DEFAULT_AGENT_ROLES.planner.responsibility
           : typeof agentClass.responsibility === 'string'
             ? agentClass.responsibility : '',
         mode,
@@ -635,7 +639,7 @@ export function SettingsPanel({
     for (const [agentClassRef, entry] of Object.entries(draft)) {
       const agentFacts = facts[agentClassRef];
       if (!agentFacts) continue;
-      if (agentFacts.enabled === false || entry.enabled === false) continue;
+      if (entry.enabled === false) continue;
       const modelRefs = entry.mode === 'fixed'
         ? [entry.modelRef]
         : [...new Set([entry.defaultModelRef, ...entry.allowedModelRefs])];
@@ -895,7 +899,7 @@ export function SettingsPanel({
       .map(provider => provider.providerRef);
     if (draftValidationIssues.length > 0) {
       setResult(null);
-      setLoadError(`以下路由配置需要重新选择可用模型：${draftValidationIssues.join('、')}`);
+      setLoadError(`以下路由配置需要重新选择可用模型：${draftValidationIssues.map(ref => draft[ref]?.displayName || ref).join('、')}`);
       return;
     }
     if (missingCredentials.length > 0) {
@@ -2196,8 +2200,9 @@ export function SettingsPanel({
                     onClick={() => { void openExecutorEditor('create'); }}>新增智能体</button>
                 </div>
                 {executorView?.executors.length === 0 && <p role="status">尚无智能体。新增并启用智能体后才能开始新工作。</p>}
-                {executorView && executorView.executors.length > 0 && executorView.executors.every(agent => !agent.enabled)
+                {executorView && executorView.executors.length > 0 && executorView.executors.every(agent => draft[agent.agentClassRef]?.enabled === false)
                   && <p role="status">全部智能体已停用，请先启用至少一名智能体。</p>}
+                <p className="routing-section-note">预设总管、助理、分析师三个角色，默认启用。总管是任务规划的必需角色，始终启用。每个角色都必须绑定你自己的模型：先在“模型服务”添加 Provider 和模型，再展开角色选择模型，保存并激活后才能执行任务。</p>
                 <p className="routing-section-note">智能体按“职责 → 模型 → 能力画像”组织。默认收起配置详情，先看整体状态，再进入单个智能体编辑。</p>
                 <div className="routing-stack">
                   {Object.entries(draft)
@@ -2207,6 +2212,7 @@ export function SettingsPanel({
                     if (!agentFacts) return null;
                     const managed = executorView?.executors.find(agent => agent.agentClassRef === ref);
                     const expanded = expandedAgents.has(ref);
+                    const needsModel = entry.enabled !== false && invalidRoutingDrafts({ [ref]: entry }, Object.values(catalog.models)).length > 0;
                     return (
                       <div key={ref}>
                         <div className={`agent-summary-row ${agentFacts.kind === 'planner' ? 'agent-summary-planner' : ''}`}>
@@ -2229,15 +2235,18 @@ export function SettingsPanel({
                             <span className="agent-summary-chevron" aria-hidden="true">{expanded ? '⌃' : '⌄'}</span>
                           </button>
                           <div className="agent-summary-meta">
-                            <span className={`state-badge ${entry.enabled === false ? 'state-badge-warning' : ''}`}>
-                              {entry.enabled === false ? '已停用' : '已启用'}
+                            <span className={`state-badge ${entry.enabled === false || needsModel ? 'state-badge-warning' : ''}`}>
+                              {entry.enabled === false ? '已停用' : needsModel ? '默认启用 · 待绑定模型' : agentFacts.kind === 'planner' ? '始终启用' : '已启用'}
                             </span>
                             <span className="agent-summary-model">
                               {entry.modelRef && catalog.models[entry.modelRef]?.modelId
                                 ? catalog.models[entry.modelRef]?.modelId
-                                : entry.mode === 'auto' ? '自动选择模型' : '未选择模型'}
+                                : entry.mode === 'auto' && !needsModel ? '自动选择模型' : '请绑定你自己的模型'}
                             </span>
                           </div>
+                          {needsModel && <button type="button" className="ghost-button"
+                            aria-label={`为${entry.displayName || agentFacts.displayName}绑定模型`}
+                            onClick={() => setExpandedAgents(current => new Set([...current, ref]))}>绑定模型</button>}
                           <p className="agent-summary-responsibility">
                             {entry.responsibility || (agentFacts.kind === 'planner' ? '理解复杂用户意图并拆解可执行 DAG' : '尚未填写职责')}
                           </p>
@@ -2246,24 +2255,24 @@ export function SettingsPanel({
                         {agentFacts.kind === 'planner' ? (
                           <div className="executor-management-actions">
                             <p className="routing-section-note planner-agent-note">
-                              规划智能体负责理解意图并编排工作。选择模型后启用，再保存并激活。
+                              总管是所有任务的规划入口，始终启用，无需单独开启。请绑定你自己的模型，再保存并激活。
                             </p>
-                            <label>
-                              <input type="checkbox" checked={entry.enabled !== false} disabled={editingDisabled}
-                                onChange={event => {
-                                  const enabled = event.target.checked;
-                                  setDraft(current => current ? { ...current, [ref]: { ...current[ref], enabled } } : current);
-                                }} /> 启用规划智能体
-                            </label>
                           </div>
                         ) : (
                           <div className="executor-management-actions">
-                            <span>{managed?.enabled === false ? '已停用' : '已启用'}</span>
+                            <span>{entry.enabled === false ? '已停用' : needsModel ? '待绑定模型' : '已启用'}</span>
                             <button type="button" className="ghost-button" disabled={editingDisabled || !managed?.tool}
                               onClick={() => { void openExecutorEditor('update', ref); }}>编辑智能体</button>
                             <button type="button" className="ghost-button" disabled={editingDisabled || !managed}
-                              onClick={() => { void openExecutorEditor(managed?.enabled ? 'disable' : 'enable', ref); }}>
-                              {managed?.enabled ? '停用' : '启用'}
+                              onClick={() => {
+                                const pendingPreset = managed?.enabled === false && isUnboundDefaultAgentRole(ref, {
+                                  displayName: entry.displayName, responsibility: entry.responsibility,
+                                  modelPolicy: { mode: 'fixed', modelRef: 'default-model' },
+                                }, catalog.models);
+                                if (pendingPreset) setDraft(current => current ? { ...current, [ref]: { ...current[ref], enabled: entry.enabled === false } } : current);
+                                else void openExecutorEditor(entry.enabled !== false ? 'disable' : 'enable', ref);
+                              }}>
+                              {entry.enabled !== false ? '停用' : '启用'}
                             </button>
                             <button type="button" className="ghost-button" disabled={editingDisabled || !managed}
                               onClick={() => { void openExecutorEditor('remove', ref); }}>删除</button>
@@ -2384,6 +2393,7 @@ export function SettingsPanel({
         {(draft || loadError) && (
           <footer className="drawer-footer settings-footer">
             <div className="settings-footer-note">
+              {draftValidationIssues.length > 0 && <p role="status">请先为以下角色绑定可用的自有模型：{draftValidationIssues.map(ref => draft?.[ref]?.displayName || ref).join('、')}。点击角色旁的“绑定模型”完成选择；没有模型时，先在“模型服务”添加。</p>}
               所有修改先保留在草稿中。「保存并激活」会统一应用连接与 Key、模型、智能体、决策模型和运行时策略。
             </div>
             <div className="settings-footer-actions">

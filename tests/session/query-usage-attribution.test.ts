@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import Database from 'better-sqlite3';
-import { runMigrations } from '../../src/storage/migrations.js';
+import { initializeDatabaseSchema } from '../../src/storage/schema.js';
 import { SqliteQueryContextStore } from '../../src/storage/query-usage-context-repo.js';
 import { SqliteMeteringStore } from '../../src/storage/metering-repo.js';
 import { createQueryContextService } from '../../src/metering/query-context-service.js';
@@ -16,7 +16,7 @@ let service: ReturnType<typeof createQueryContextService>;
 beforeEach(() => {
   db = new Database(':memory:');
   db.pragma('foreign_keys = ON');
-  runMigrations(db);
+  initializeDatabaseSchema(db);
   store = new SqliteQueryContextStore(db);
   metering = new SqliteMeteringStore(db, prefix => `${prefix}_${ids++}`);
   ids = 0;

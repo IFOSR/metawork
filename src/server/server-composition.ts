@@ -1158,8 +1158,7 @@ export async function main(cliCommand = parseCliArgs(process.argv.slice(2))) {
     isPublishedServiceSpecification: async (taskId, root, relativePath) => {
       const source=workspaceGitServices().workspaceGitRepo.sourceForTask(taskId);
       if(source) {
-        const checkout=await workspaceGitServices().serviceWorktrees.prepare(taskId,`discovery_${taskId}`);
-        return root===checkout.rootPath && (await workspaceGitServices().conversationWorktrees.git.entries(workspaceGitServices().workspaceGitRepo.root(source.workspaceId)!.repositoryPath,source.commit)).some(entry=>entry.path===relativePath && entry.kind==='file');
+        return workspaceGitServices().serviceWorktrees.containsPublishedFile(taskId, root, relativePath);
       }
       const published = taskArtifactRepo.publicFiles.list(LOCAL_DEFAULT_ACCOUNT_ID, taskId)
         .some(item => item.status === 'published' && item.relativePath === relativePath
@@ -1845,6 +1844,9 @@ export async function main(cliCommand = parseCliArgs(process.argv.slice(2))) {
           stateVersion: task.stateVersion,
           stateDetail: task.stateDetail,
           updatedAt: task.updatedAt,
+          completedAt: task.completedAt ?? null,
+          archivedAt: task.archivedAt ?? null,
+          retryOfTaskId: task.retryOfTaskId ?? null,
         },
         subtasks: new SubtaskRepo(db).listByTask(taskId)
           .map(subtask => ({ id: subtask.id, status: subtask.status })),
@@ -2352,6 +2354,7 @@ export async function main(cliCommand = parseCliArgs(process.argv.slice(2))) {
           reason: lifecycleProjection.state.reason,
           pendingActions: lifecycleProjection.state.pendingActions,
           cleanup: lifecycleProjection.state.cleanup,
+          retryOfTaskId: lifecycleProjection.state.retryOfTaskId,
           executionGeneration: lifecycleProjection.executionGeneration,
           activeAttempt: lifecycleProjection.activeAttempt
             ? {

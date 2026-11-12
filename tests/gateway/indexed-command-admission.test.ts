@@ -7,7 +7,7 @@ import { ClientGateway, type ClientGatewayDeps } from '../../src/gateway/client-
 import type { GatewayCommandEnvelope } from '../../src/gateway/client-protocol.js';
 import { FileCommandAdmissionStore, type CommandAdmissionStore } from '../../src/gateway/command-admission-store.js';
 import { SqliteCommandAdmissionStore } from '../../src/storage/command-admission-repo.js';
-import { runMigrations } from '../../src/storage/migrations.js';
+import { initializeDatabaseSchema } from '../../src/storage/schema.js';
 
 const accountId = 'local-default';
 const create: GatewayCommandEnvelope = {
@@ -20,7 +20,7 @@ afterEach(async () => { for (const cleanup of cleanups.splice(0).reverse()) awai
 async function fixture() {
   const root = await mkdtemp(join(tmpdir(), 'indexed-gateway-admission-'));
   let db = new Database(join(root, 'index.db'));
-  runMigrations(db);
+  initializeDatabaseSchema(db);
   const legacy = new FileCommandAdmissionStore(join(root, 'legacy'));
   cleanups.push(async () => { db.close(); await rm(root, { recursive: true, force: true }); });
   return {

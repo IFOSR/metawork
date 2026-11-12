@@ -7,6 +7,7 @@ import type {
 import { memoryEngineProblemNote } from './MemorySettingsPanel';
 import { MarkdownContent } from './MarkdownContent';
 import { markdownPreview } from '../markdown-preview';
+import { loadMemoryProfile, type MemoryProfile } from '../memory-profile';
 
 /** One page of memory assets; the list never grows without bound. */
 const ASSET_PAGE_SIZE = 10;
@@ -29,6 +30,11 @@ export interface MemoryAssetsPanelProps {
 export function MemoryAssetsPanel({ api, onOpenSettings, configurationRevision }: MemoryAssetsPanelProps) {
   const [status, setStatus] = useState<MemoryStatusView | null>(null);
   const [view, setView] = useState<MemoryAssetListView | null>(null);
+  const [profile, setProfile] = useState<MemoryProfile | null>(null);
+  const [profileError, setProfileError] = useState<string | null>(null);
+  const [profilePartial, setProfilePartial] = useState(false);
+  const [profileLoading, setProfileLoading] = useState(false);
+  const [profileRevision, setProfileRevision] = useState(0);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [offset, setOffset] = useState(0);
@@ -108,6 +114,30 @@ export function MemoryAssetsPanel({ api, onOpenSettings, configurationRevision }
   }, [load, configurationRevision]);
 
   useEffect(() => {
+    const controller = new AbortController();
+    if (status?.mode !== 'enabled') {
+      setProfile(null);
+      setProfileLoading(false);
+      setProfileError(null);
+      return;
+    }
+    setProfileLoading(true);
+    setProfileError(null);
+    void loadMemoryProfile(api, controller.signal).then(result => {
+      if (!controller.signal.aborted) {
+        setProfile(result.profile);
+        setProfilePartial(result.partial);
+      }
+    }).catch(failure => {
+      if (!controller.signal.aborted) {
+        setProfile(null);
+        setProfileError((failure as Error).message);
+      }
+    }).finally(() => { if (!controller.signal.aborted) setProfileLoading(false); });
+    return () => controller.abort();
+  }, [api, status?.mode, configurationRevision, profileRevision]);
+
+  useEffect(() => {
     detailController.current?.abort();
     if (!selectedId) { drawer.current?.close(); return; }
     const controller = new AbortController();
@@ -169,6 +199,7 @@ export function MemoryAssetsPanel({ api, onOpenSettings, configurationRevision }
         }
         setNotice('记忆已删除');
       }
+      setProfileRevision(value => value + 1);
       await loadRef.current(offsetRef.current);
     } catch (failure) {
       if (mounted.current) {
@@ -215,6 +246,7 @@ export function MemoryAssetsPanel({ api, onOpenSettings, configurationRevision }
   };
 
   const refresh = () => {
+    setProfileRevision(value => value + 1);
     void load(offset);
     if (selectedId) setDetailRevision(value => value + 1);
   };
@@ -241,6 +273,32 @@ export function MemoryAssetsPanel({ api, onOpenSettings, configurationRevision }
       <p className="memory-scope">这些记忆仅用于当前账号，可在不同工作区的相关任务中使用。</p>
       {engineNote && <p className="memory-note memory-note-warning">{engineNote}</p>}
       {exportError && <p className="memory-error" role="alert">{exportError}</p>}
+      {mode === 'enabled' && profile && <section className="memory-profile" aria-labelledby="memory-profile-title" aria-busy={profileLoading}>
+        <header><div><span className="memory-profile-kicker">ACCOUNT MEMORY</span><h3 id="memory-profile-title">记忆画像</h3>
+          <p>{profile.portrait}</p><p className="memory-profile-footnote">{profilePartial ? '部分记忆概览 · ' : ''}包含停用条目 · {profileLoading ? '正在更新…' : '当前账号'}</p></div><div className="memory-profile-total"><strong>{profile.total}</strong><span>条记忆 · {profile.enabled} 条可使用</span></div></header>
+        <div className="memory-profile-grid">
+          <div className="memory-layer-overview" aria-label="记忆层级分布">
+            {([['l1', '原子记忆', '具体偏好与事实'], ['l2', '场景经验', '反复出现的经验'], ['l3', '用户画像', '稳定的个人特征']] as const).map(([key, label, note]) => <div className="memory-layer-stat" key={key}>
+              <span className="memory-layer-badge" data-layer={key}>{key.toUpperCase()}</span><strong>{profile.layers[key]}</strong><span>{label}</span><small>{note}</small>
+            </div>)}
+          </div>
+          <div className="memory-topic-overview"><h4>主要内容</h4>{profile.topics.length ? profile.topics.slice(0, 5).map(topic => <div className="memory-topic-row" key={topic.label}>
+            <span>{topic.label}</span><span className="memory-topic-track"><i style={{ width: `${Math.max(4, topic.count / Math.max(...profile.topics.map(item => item.count)) * 100)}%` }} /></span><strong>{topic.count}</strong>
+          </div>) : <p>暂无主题数据</p>}</div>
+        </div>
+        {profile.highlights.length > 0 && <div className="memory-profile-highlights" aria-label="已记住的内容摘要">
+          {profile.highlights.map(asset => <button type="button" key={asset.memoryId} onClick={() => { setDetail(null); setSelectedId(asset.memoryId); }}>
+            <span className="memory-highlight-label"><span className="memory-layer-badge" data-layer={asset.layer}>{asset.layer.toUpperCase()} {LAYER_NAMES[asset.layer]}</span><span>{asset.enabled ? '可使用' : '已停用'}</span></span>
+            <strong>{asset.title && asset.title !== asset.type ? asset.title : typeName(asset.type)}</strong>
+            <span className="memory-highlight-preview">{markdownPreview(asset.preview, 180)}</span><span className="memory-highlight-link">查看原文 →</span>
+          </button>)}
+        </div>}
+        <p className="memory-profile-footnote">主题根据已保存的标题与摘要归类，一条记忆可涉及多个主题。以上摘要保留原文含义，可打开核对。</p>
+        <div className="memory-profile-types"><span>信息类型</span>{profile.types.slice(0, 5).map(item => <span key={item.label}>{item.label} <strong>{item.count}</strong></span>)}</div>
+        {profilePartial && <p className="memory-profile-footnote">记忆超过统计上限或读取期间发生变化，上述为部分内容，请刷新重试。</p>}
+      </section>}
+      {mode === 'enabled' && !profile && profileLoading && <p className="memory-note" role="status">正在整理记忆画像…</p>}
+      {mode === 'enabled' && !profile && profileError && <p className="memory-error" role="alert">记忆画像读取失败：{profileError} <button type="button" className="ghost-button" onClick={() => setProfileRevision(value => value + 1)}>重试画像</button></p>}
       <div className="memory-assets">
         <h4 className="sr-only">已保存的记忆</h4>
         <div className="memory-toolbar">

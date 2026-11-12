@@ -153,22 +153,25 @@ export class SqliteTaskStateFactsReader implements TaskStateFactsPort {
   }
 
   private readReceipts(taskId: string, generationId: string | null, revision: number | null): TaskRawReceiptFact[] {
-    return (this.deps.db.prepare(`SELECT attempt_id, subtask_id, terminal_state, failure_json, completed_at,
+    return (this.deps.db.prepare(`SELECT attempt_id, subtask_id, terminal_state, failure_json, error_detail, completed_at,
         EXISTS (SELECT 1 FROM task_state_changes c WHERE c.task_id = r.task_id
           AND c.operation_key = 'accept_result:' || r.attempt_id || ':' ||
             COALESCE(json_extract(r.parsing_json, '$.resultObjects.safeProjectionId'), '')) AS accepted
       FROM executor_attempt_receipts r WHERE task_id = ? AND generation_id = ? AND graph_revision = ?
       ORDER BY completed_at, rowid`).all(taskId, generationId, revision) as Array<{
       attempt_id: string; subtask_id: string; terminal_state: ExecutorAttemptTerminalState;
-      failure_json: string | null; completed_at: string; accepted: number;
+      failure_json: string | null; error_detail: string | null; completed_at: string; accepted: number;
     }>).map(row => {
       let failureCode: string | null = null;
       let failureKind: string | null = null;
+      let failureSummary: string | null = null;
       if (row.failure_json) {
         try {
-          const failure = JSON.parse(row.failure_json) as { code?: unknown; kind?: unknown };
+          const failure = JSON.parse(row.failure_json) as { code?: unknown; kind?: unknown; summary?: unknown; detail?: unknown };
           failureCode = typeof failure.code === 'string' ? failure.code : null;
           failureKind = typeof failure.kind === 'string' ? failure.kind : null;
+          failureSummary = typeof failure.summary === 'string' ? failure.summary
+            : typeof failure.detail === 'string' ? failure.detail : null;
         } catch {
           failureCode = null;
         }
@@ -179,6 +182,7 @@ export class SqliteTaskStateFactsReader implements TaskStateFactsPort {
         terminalState: row.terminal_state,
         failureCode: failureCode ?? failureKind,
         failureKind,
+        failureSummary: failureSummary ?? row.error_detail ?? null,
         completedAt: row.completed_at,
         accepted: row.accepted === 1,
       };

@@ -1,5 +1,18 @@
 # MetaWork Planning Agent And Work Unit Context
 
+Web recovery review (2026-11-12): `/task retry` links the existing successor and
+reports its actual state; it does not restart a terminal successor. Manual
+recovery validates Task ownership and the interrupted operation's postcondition
+before allowing retry. Required-service verification is serialized per Task and
+waits for active repair attempts; the immutable completion answer is created only
+after required service success. Service manifest provenance compares canonical
+checkout paths (including macOS `/tmp` aliases), and project-local manifests
+normalize their directory before revision checks. A new Task changing an existing
+service contract uses the explicit prepare/update/start path. Final service
+answers include Runtime-observed status, address and working status/stop commands.
+See [review and acceptance record](docs/plans/2026-11-12-web-recovery-review.md);
+full-suite failures and historical missing journal bytes remain open.
+
 Current convergence status (2026-11-10, ADR-0055; review R-01–R-45): the
 Kernel event inbox and decision/application ledger are removed. Task admission
 uses proposal/admission-result owners directly. `TaskControlWorkflow` runs

@@ -2117,6 +2117,12 @@ export class ConversationSession {
     if (result.type === 'error') {
       throw commandError(result.code, result.content);
     }
+    if ('relatedTaskId' in result && result.relatedTaskId) {
+      this.setCurrentTaskId(result.relatedTaskId);
+      this.appendTrace({ phase: 'execution', actor: 'runtime', kind: 'remaining_work_linked',
+        title: '关联续做任务', summary: result.content, taskId: result.relatedTaskId,
+        eventKey: `remaining_work_linked:${result.relatedTaskId}`, details: {} });
+    }
     if (!(result.type === 'directive' && result.directive.kind === 'resume-task')) {
       this.appendOutput(result.content);
     }
@@ -2245,8 +2251,13 @@ export class ConversationSession {
       const detail = diagnosis
         ? ` -> ${diagnosis.family}/${diagnosis.verdict}: ${diagnosis.reason}`
         : '';
+      const action = diagnosis?.verdict === 'retry_safe'
+        ? `\n  可安全重试：/task recover ${taskId} ${item.id} retry`
+        : diagnosis?.verdict === 'applied'
+          ? `\n  已核实完成，可结清：/task recover ${taskId} ${item.id} assume-applied`
+          : '\n  请先核对实际结果；当前没有证明可安全重试的事实。';
       return `- ${item.id} [application/${item.status}] ${item.decision.action.type}: `
-        + `${item.errorSummary ?? 'no error summary'}${detail}`;
+        + `${item.errorSummary ?? 'no error summary'}${detail}${action}`;
     });
     const effects = port.queries.listRecoveryEffects(taskId).map(item =>
       `- ${item.id} [effect/${item.status}] ${item.effectType}: ${item.errorSummary ?? 'no error summary'}`
@@ -2255,6 +2266,7 @@ export class ConversationSession {
     if (items.length === 0) {
       const emptyRecovery = formatEmptyTaskRecovery(taskId, {
         status: task?.status,
+        canResume: port.queries.listSubtasks(taskId).some(subtask => ['ready', 'blocked'].includes(subtask.status)),
         blockerReason: task?.dependencies
           .filter(dependency => dependency.status === 'waiting')
           .map(dependency => dependency.description)
@@ -2264,8 +2276,8 @@ export class ConversationSession {
       if (emptyRecovery) return emptyRecovery;
     }
     return items.length > 0
-      ? `Task #${taskId} recovery items:\n${items.join('\n')}`
-      : `Task #${taskId} has no uncertain or failed recovery items.`;
+      ? `任务 #${taskId} 的恢复项：\n${items.join('\n')}`
+      : `任务 #${taskId} 没有待处理的恢复项。`;
   }
 
   private buildRecoverySnapshot(
@@ -2280,9 +2292,11 @@ export class ConversationSession {
       schemaVersion: 5,
       type: 'recovery',
       task: task ? { id: task.id, status: task.status } : null,
-      item: application
-        ? { id: application.id, kind: 'application', status: application.status as 'uncertain' | 'failed', retrySafe: true }
-        : effect && (effect.status === 'uncertain' || effect.status === 'failed')
+      item: application && 'taskId' in application.decision.action && application.decision.action.taskId === taskId
+        && ['pending', 'retry_authorized'].includes(application.status)
+        ? { id: application.id, kind: 'application', status: application.status as 'pending' | 'retry_authorized',
+            retrySafe: port.queries.diagnoseRecoveryApplication(application.decisionId)?.verdict === 'retry_safe' }
+        : effect && effect.taskId === taskId && (effect.status === 'uncertain' || effect.status === 'failed')
           ? { id: effect.id, kind: 'effect', status: effect.status, retrySafe: false }
           : null,
     };
@@ -2298,7 +2312,9 @@ export class ConversationSession {
     const effect = port.queries.findRecoveryEffect(input.recoveryItemId);
     // The recovery item pins the configuration it was applied with; the effect
     // row carries no revision and there is no ledger row to consult.
-    const configurationRevision = application?.decision.configurationRevision ?? null;
+    const configurationRevision = application?.decision.configurationRevision
+      ?? (effect?.taskId === input.taskId
+        ? port.queries.findActiveWorkGraphRevision(input.taskId)?.configurationRevision : null);
     if (!configurationRevision) {
       throw new Error(`recovery item has no persisted configuration revision: ${input.recoveryItemId}`);
     }
@@ -2860,7 +2876,7 @@ function commandError(code: string, message: string): Error & { code: string } {
 function shouldStartInteractionTrace(userInput: string): boolean {
   if (!userInput) return false;
   if (!userInput.startsWith('/')) return true;
-  return /^\/task\s+(?:resume|unblock|recover)\b/iu.test(userInput);
+  return /^\/task\s+(?:resume|unblock|recover|retry)\b/iu.test(userInput);
 }
 
 function plannerOutcome(

@@ -8,7 +8,7 @@ import { ConfigurationActivationGate } from '../../src/configuration/configurati
 import { ConfigurationService } from '../../src/configuration/configuration-service.js';
 import { resolvePlannerRuntimeEnvironment } from '../../src/configuration/runtime-private-binding-resolver.js';
 import Database from 'better-sqlite3';
-import { runMigrations } from '../../src/storage/migrations.js';
+import { initializeDatabaseSchema } from '../../src/storage/schema.js';
 import { ensureActiveConfigurationRevision } from '../../src/storage/active-configuration-revision.js';
 
 function snapshot(revisionId: string, config: Record<string, unknown>) {
@@ -472,7 +472,7 @@ describe('ConfigurationRuntimeCoordinator', () => {
     const before = snapshot('revision-1', {});
     const after = snapshot('revision-2', {});
     const db = new Database(':memory:');
-    runMigrations(db);
+    initializeDatabaseSchema(db);
     ensureActiveConfigurationRevision(db, {
       revisionId: before.revisionId,
       contentHash: before.contentHash,

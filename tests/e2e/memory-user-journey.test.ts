@@ -14,7 +14,7 @@ import { seedAuthoritativeTurn } from '../support/conversation-turn-fixture.js';
 
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import Database from 'better-sqlite3';
-import { runMigrations } from '../../src/storage/migrations.js';
+import { initializeDatabaseSchema } from '../../src/storage/schema.js';
 import { MemoryService } from '../../src/memory/memory-service.js';
 import { TdaiMemoryAdapter } from '../../src/memory/tdai-memory-adapter.js';
 import { MemoryBindingsRepo } from '../../src/storage/memory-bindings-repo.js';
@@ -50,7 +50,7 @@ describeEngine('long-term memory user journey', () => {
 
     db = new Database(':memory:');
     db.pragma('foreign_keys = ON');
-    runMigrations(db);
+    initializeDatabaseSchema(db);
     for (const taskId of ['task-session-1', 'task-session-2']) {
       db.prepare(`INSERT INTO tasks
         (id, title, goal, status, created_at, updated_at, account_id, conversation_id, workspace_id)

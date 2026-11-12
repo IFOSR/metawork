@@ -6,7 +6,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { readFile } from 'node:fs/promises';
 import { UserArtifactPublicationService } from '../../src/delivery/user-artifact-publication-service.js';
 import { ArtifactVersionRepo } from '../../src/storage/artifact-version-repo.js';
-import { runMigrations } from '../../src/storage/migrations.js';
+import { initializeDatabaseSchema } from '../../src/storage/schema.js';
 import { TaskArtifactRepo } from '../../src/storage/task-artifact-repo.js';
 
 let workspace: string;
@@ -19,7 +19,7 @@ beforeEach(async () => {
   await mkdir(join(workspace, 'out'), { recursive: true });
   await writeFile(join(workspace, 'out', 'deck.pptx'), 'pptx-v1');
   db = new Database(':memory:');
-  runMigrations(db);
+  initializeDatabaseSchema(db);
   db.prepare(`
     INSERT INTO tasks (id, title, goal, status, summary, snapshot_json, resources_json,
       artifacts_json, dependencies_json, priority_json,

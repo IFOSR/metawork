@@ -7,7 +7,7 @@ import { UserArtifactPublicationService } from '../../src/delivery/user-artifact
 import { USER_ARTIFACTS_DIRECTORY } from '../../src/delivery/user-artifact-types.js';
 import { SubtaskRepo } from '../../src/storage/subtask-repo.js';
 import { TaskArtifactRepo } from '../../src/storage/task-artifact-repo.js';
-import { runMigrations } from '../../src/storage/migrations.js';
+import { initializeDatabaseSchema } from '../../src/storage/schema.js';
 import { TaskRepo } from '../../src/storage/task-repo.js';
 import { TaskEngine } from '../../src/task/task-engine.js';
 import { OrchestrationEngine } from '../../src/guidance/orchestration.js';
@@ -48,7 +48,7 @@ describe('Planner-declared delivery end-to-end', () => {
     const userRoot = join(root, 'delivered');
     mkdirSync(userRoot, { recursive: true });
     const db = new Database(join(root, 'delivery.sqlite'));
-    runMigrations(db);
+    initializeDatabaseSchema(db);
     const taskRepo = new TaskRepo(db);
     const taskEngine = new TaskEngine(taskRepo, join(root, 'tasks'));
     let actualWorkspace = '';

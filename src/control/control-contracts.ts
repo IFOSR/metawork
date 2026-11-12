@@ -496,7 +496,7 @@ export type ControlSnapshot = { productionAuthorization?: ProductionAuthorizatio
       item: {
         id: string;
         kind: 'application' | 'effect';
-        status: 'uncertain' | 'failed';
+        status: 'pending' | 'retry_authorized' | 'uncertain' | 'failed';
         retrySafe: boolean;
       } | null;
     }

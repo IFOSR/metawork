@@ -47,6 +47,16 @@ export const ObservedConversationView = memo(function ObservedConversationView({
   const [error, setError] = useState<string | null>(null);
   const [initialLoadAttempt, setInitialLoadAttempt] = useState(0);
   const [pinned, setPinned] = useState<ReadonlySet<string>>(new Set());
+  const [showBackgroundPreparation, setShowBackgroundPreparation] = useState(false);
+  const hasTurns = window.ids.length > 0;
+  useEffect(() => {
+    setShowBackgroundPreparation(false);
+    if (window.status !== 'preparing' || !hasTurns) return;
+    // Freshness is independent of Task completion. A brief projection lag is
+    // background synchronization, not a new loading phase for the report.
+    const timer = setTimeout(() => setShowBackgroundPreparation(true), 1_500);
+    return () => clearTimeout(timer);
+  }, [conversationId, window.status, hasTurns]);
   const initialLocated = useRef<string | null>(null);
   const anchor = useRef<Anchor | null>(memory.anchors.get(conversationId) ?? null);
   const followLatest = useRef(anchor.current?.bottom !== false);
@@ -389,12 +399,16 @@ export const ObservedConversationView = memo(function ObservedConversationView({
   }, [initialTurnId, initialTaskId, window.cursor?.epoch]);
 
   const statusMessage = error ?? window.error ?? {
-      loading: '正在读取会话…', preparing: '正在整理历史，已有内容可先浏览。', disconnected: '连接已断开，正在重连…', error: '会话暂时不可用。', ready: '',
+      loading: '正在读取会话…', preparing: hasTurns ? '正在同步会话，已有内容可继续浏览。' : '正在整理历史…', disconnected: '连接已断开，正在重连…', error: '会话暂时不可用。', ready: '',
     }[window.status];
+  const showStatus = Boolean(error || window.error || (window.status !== 'ready'
+    && (window.status !== 'preparing' || !hasTurns || showBackgroundPreparation)));
   return <div className="conversation-view" ref={root} style={{ overflowAnchor: 'none' }}>
-    {(window.status !== 'ready' || error) && <div className="conversation-state" role={error ? 'alert' : 'status'}>
-      <p>{statusMessage}</p>
-      {error && <button type="button" onClick={() => setInitialLoadAttempt(value => value + 1)}>重新加载</button>}
+    {showStatus && <div className={hasTurns ? 'conversation-status-overlay' : undefined}>
+      <div className="conversation-state" role={error || window.error ? 'alert' : 'status'}>
+        <p>{statusMessage}</p>
+        {error && <button type="button" onClick={() => setInitialLoadAttempt(value => value + 1)}>重新加载</button>}
+      </div>
     </div>}
     {window.olderCursor && <button disabled={loading} onClick={() => void loadOlder()}>{loading ? '正在加载…' : '加载更早的对话'}</button>}
     {!window.atLatest && <button type="button" onClick={() => { anchor.current = null; ws.observations.latest(conversationId); }}>返回最新对话</button>}

@@ -1,7 +1,7 @@
 import Database from 'better-sqlite3';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import type { Dependency } from '../../src/core/types.js';
-import { runMigrations } from '../../src/storage/migrations.js';
+import { initializeDatabaseSchema } from '../../src/storage/schema.js';
 import { TaskRepo } from '../../src/storage/task-repo.js';
 
 let db: Database.Database;
@@ -19,7 +19,7 @@ const dependencies: Dependency[] = [{
 beforeEach(() => {
   queries = [];
   db = new Database(':memory:', { verbose: sql => queries.push(String(sql)) });
-  runMigrations(db);
+  initializeDatabaseSchema(db);
   repo = new TaskRepo(db);
   const insert = db.prepare(`INSERT INTO tasks (id, title, status, account_id, dependencies_json, snapshot_json, resources_json,
      artifacts_json, priority_json, created_at, updated_at) VALUES (?, ?, 'needs_action', ?, ?, ?, ?, ?, ?, 'now', 'now')`);

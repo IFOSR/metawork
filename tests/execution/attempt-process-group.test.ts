@@ -5,7 +5,7 @@ import Database from 'better-sqlite3';
 import { afterEach, describe, expect, it } from 'vitest';
 import { SpawnLocalCliChildProcessRunner } from '../../src/executor/local-cli-executor-adapter.js';
 import { NativeAttemptExecutionBackend } from '../../src/execution/native-attempt-execution-backend.js';
-import { runMigrations } from '../../src/storage/migrations.js';
+import { initializeDatabaseSchema } from '../../src/storage/schema.js';
 
 const posix = process.platform !== 'win32';
 const cleanups: Array<() => Promise<void>> = [];
@@ -72,7 +72,7 @@ describe('Attempt process-group ownership', () => {
     const root = await mkdtemp(join(tmpdir(), 'metawork-backend-group-'));
     cleanups.push(async () => rm(root, { recursive: true, force: true }));
     const db = new Database(join(root, 'state.db'));
-    runMigrations(db);
+    initializeDatabaseSchema(db);
     cleanups.push(async () => db.close());
     const backend = new NativeAttemptExecutionBackend();
 

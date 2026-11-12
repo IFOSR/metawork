@@ -9,8 +9,8 @@ import {
   mergeReplanAssumeAppliedRecoveryEvent,
   mergeRepairReplanRecoveryEvent,
   type ApplicationPostconditionFacts,
-} from '../../src/execution/kernel-application-recovery.js';
-import type { KernelDecisionApplicationRecord } from '../../src/kernel/kernel-workflow.js';
+} from '../../src/execution/control-application-recovery.js';
+import type { RecoveryApplicationFact } from '../../src/execution/control-application-recovery.js';
 import type {
   GenerationReplanRequestRecord,
   GenerationReplanRequestStatus,
@@ -45,7 +45,7 @@ function binding() {
   };
 }
 
-function application(): KernelDecisionApplicationRecord {
+function application(): RecoveryApplicationFact {
   return {
     id: 'application-request-merge-replan',
     decisionId: 'decision-request-merge-replan',
@@ -193,7 +193,7 @@ describe('durable replan scheduling recovery', () => {
     action: { type: 'schedule_replan'; taskId: string; generationId: string; sourceRevision: number; replanJobId: string }
       | { type: 'request_replan'; taskId: string; generationId: string; sourceRevision: number },
     decisionId: string,
-  ): KernelDecisionApplicationRecord {
+  ): RecoveryApplicationFact {
     return {
       id: `application-${decisionId}`,
       decisionId,
@@ -276,10 +276,10 @@ describe('durable replan scheduling recovery', () => {
 
 describe('application postcondition inspection', () => {
   function app(
-    action: KernelDecisionApplicationRecord['decision']['action'],
+    action: RecoveryApplicationFact['decision']['action'],
     decisionId = 'decision-1',
     applyAttempts = 1,
-  ): KernelDecisionApplicationRecord {
+  ): RecoveryApplicationFact {
     return {
       id: `application-${decisionId}`,
       decisionId,
@@ -443,7 +443,7 @@ describe('application postcondition inspection', () => {
       workGraphRevision: {
         revision: 2,
         generationId: 'generation-1',
-        authorizedDecisionId: 'decision-1',
+        authorizedOperationId: 'decision-1',
         status: 'active',
       },
     }))).toMatchObject({ family: 'plan_activation', verdict: 'applied' });
@@ -452,7 +452,7 @@ describe('application postcondition inspection', () => {
       workGraphRevision: {
         revision: 2,
         generationId: 'generation-1',
-        authorizedDecisionId: 'other-decision',
+        authorizedOperationId: 'other-decision',
         status: 'active',
       },
     }))).toMatchObject({ family: 'plan_activation', verdict: 'unresolved' });
@@ -461,7 +461,7 @@ describe('application postcondition inspection', () => {
       workGraphRevision: {
         revision: 2,
         generationId: 'generation-1',
-        authorizedDecisionId: null,
+        authorizedOperationId: null,
         status: 'active',
       },
     }))).toMatchObject({ family: 'plan_activation', verdict: 'applied' });
@@ -714,7 +714,7 @@ describe('application postcondition inspection', () => {
     });
     expect(inspectApplicationPostcondition(facts({
       application,
-      workGraphRevision: { revision: 2, generationId: 'generation-1', authorizedDecisionId: 'decision-1' },
+      workGraphRevision: { revision: 2, generationId: 'generation-1', authorizedOperationId: 'decision-1' },
     }))).toMatchObject({ family: 'plan_activation', verdict: 'applied' });
     // A replan revision cannot be re-applied blindly.
     expect(inspectApplicationPostcondition(facts({ application })))
@@ -723,9 +723,9 @@ describe('application postcondition inspection', () => {
 
   it('leaves dedicated reconciler families untouched', () => {
     for (const action of [
-      { type: 'cancel_task' as const, taskId, generationId: 'generation-1' },
+      { type: 'authorize_task_control' as const, taskId, control: 'cancel' as const },
       { type: 'request_merge_replan' as const, taskId, subtaskId: 'subtask-a', publicationId: 'pub-1', conflictChainId: 'chain-1' },
-      { type: 'deliver_direct_reply' as const, response: 'hi', taskId: null },
+      { type: 'resolve_recovery' as const, taskId, recoveryItemId: 'recovery', resolution: 'assume_applied' as const },
     ]) {
       expect(inspectApplicationPostcondition(facts({ application: app(action) })))
         .toMatchObject({ verdict: 'not_managed' });
@@ -776,9 +776,9 @@ describe('application postcondition inspection', () => {
 describe('Kernel application settlement recovery', () => {
   const taskId = 'task-service';
   function settledApplication(
-    action: KernelDecisionApplicationRecord['decision']['action'],
+    action: RecoveryApplicationFact['decision']['action'],
     errorSummary: string,
-  ): KernelDecisionApplicationRecord {
+  ): RecoveryApplicationFact {
     return {
       id: 'application-settled',
       decisionId: 'decision-settled',
@@ -813,7 +813,7 @@ describe('Kernel application settlement recovery', () => {
       priority: null,
     },
   };
-  function facts(application: KernelDecisionApplicationRecord): ApplicationPostconditionFacts {
+  function facts(application: RecoveryApplicationFact): ApplicationPostconditionFacts {
     return {
       application,
       task: { id: taskId, status: 'cancelled', dependencies: [] },

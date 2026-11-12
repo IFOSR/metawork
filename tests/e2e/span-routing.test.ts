@@ -1,6 +1,6 @@
 import Database from 'better-sqlite3';
 import { describe, expect, it, vi } from 'vitest';
-import { runMigrations } from '../../src/storage/migrations.js';
+import { initializeDatabaseSchema } from '../../src/storage/schema.js';
 import { KernelWorkflowRepo } from '../../src/storage/kernel-workflow-repo.js';
 import { DurableKernelWorkflow } from '../../src/kernel/kernel-workflow.js';
 import {
@@ -178,7 +178,7 @@ describe('Span routing end-to-end (mock advisor + real SQLite)', () => {
     expect(evaluator.evaluate.mock.calls[0]?.[0].requests[0]?.request.model).toBe(selectedModel);
     expect(enriched.spanRouting?.model).toBe(selectedModel);
 
-    const db = new Database(':memory:'); runMigrations(db); seedConfigurationRevision(db);
+    const db = new Database(':memory:'); initializeDatabaseSchema(db); seedConfigurationRevision(db);
     try {
       const applied: KernelDecision[] = [];
       const store = new KernelWorkflowRepo(db);
@@ -208,7 +208,7 @@ describe('Span routing end-to-end (mock advisor + real SQLite)', () => {
     ['research', 'Compare parser algorithms and document evidence and tradeoffs', false],
     ['single', 'Fix one comment using the only eligible binding', true],
   ] as const)('compares representative workload %s and replays durable observations', async (name, goal, single) => {
-    const db = new Database(':memory:'); runMigrations(db); seedConfigurationRevision(db);
+    const db = new Database(':memory:'); initializeDatabaseSchema(db); seedConfigurationRevision(db);
     try {
       const configuration = structuredClone(kernelConfiguration);
       configuration.models['model-fast']!.modelId = 'gpt-5-mini';
@@ -273,7 +273,7 @@ describe('Span routing end-to-end (mock advisor + real SQLite)', () => {
 
   it('persists the observation, authorizes the advised order, and replays without a second API call', async () => {
     const db = new Database(':memory:');
-    runMigrations(db);
+    initializeDatabaseSchema(db);
     seedConfigurationRevision(db);
     const store = new KernelWorkflowRepo(db);
     const evaluator = advisingEvaluator('pi-general');
@@ -324,7 +324,7 @@ describe('Span routing end-to-end (mock advisor + real SQLite)', () => {
 
   it('keeps the deterministic binding order when the advisor fails closed', async () => {
     const db = new Database(':memory:');
-    runMigrations(db);
+    initializeDatabaseSchema(db);
     seedConfigurationRevision(db);
     const store = new KernelWorkflowRepo(db);
     const failing: SpanRoutingEvaluator = {

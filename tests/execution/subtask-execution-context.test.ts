@@ -4,7 +4,7 @@ import { mkdtempSync, rmSync, writeFileSync, readFileSync, existsSync } from 'no
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { runMigrations } from '../../src/storage/migrations.js';
+import { initializeDatabaseSchema } from '../../src/storage/schema.js';
 import { SubtaskRepo } from '../../src/storage/subtask-repo.js';
 import { SubtaskHandoffRepo } from '../../src/storage/subtask-handoff-repo.js';
 import { SubtaskExecutionContextBuilder } from '../../src/execution/subtask-execution-context.js';
@@ -31,7 +31,7 @@ function node(id: string, title: string, dependencies: Subtask['dependencies'] =
 describe('SubtaskExecutionContextBuilder', () => {
   it('injects only direct immutable result references and exposes siblings by identity, not goal', () => {
     const db = new Database(':memory:');
-    runMigrations(db);
+    initializeDatabaseSchema(db);
     db.prepare(`
       INSERT INTO tasks (
         id, title, goal, status, summary, snapshot_json, resources_json, artifacts_json,
@@ -137,7 +137,7 @@ describe('SubtaskExecutionContextBuilder', () => {
 
   it('fails closed with a structured diagnostic when a handoff points to a missing Result Object', () => {
     const db = new Database(':memory:');
-    runMigrations(db);
+    initializeDatabaseSchema(db);
     db.prepare(`
       INSERT INTO tasks (
         id, title, goal, status, summary, snapshot_json, resources_json, artifacts_json,
@@ -255,7 +255,7 @@ describe('SubtaskExecutionContextBuilder', () => {
 
   it('does not decode binary task resources into text evidence', () => {
     const db = new Database(':memory:');
-    runMigrations(db);
+    initializeDatabaseSchema(db);
     db.prepare(`
       INSERT INTO tasks (
         id, title, goal, status, summary, snapshot_json, resources_json, artifacts_json,
@@ -320,7 +320,7 @@ describe('SubtaskExecutionContextBuilder', () => {
 
   it('materializes a Planner-selected historical artifact into the attempt input directory', () => {
     const db = new Database(':memory:');
-    runMigrations(db);
+    initializeDatabaseSchema(db);
     const sourceRoot = mkdtempSync(join(tmpdir(), 'metawork-artifact-source-'));
     const inputRoot = mkdtempSync(join(tmpdir(), 'metawork-artifact-input-'));
     const sourcePath = join(sourceRoot, 'generated-image.jpg');
@@ -398,7 +398,7 @@ describe('SubtaskExecutionContextBuilder', () => {
 
   it('materializes a Planner-selected attachment after validating task ownership and content hash', async () => {
     const db = new Database(':memory:');
-    runMigrations(db);
+    initializeDatabaseSchema(db);
     const root = mkdtempSync(join(tmpdir(), 'metawork-attachment-context-'));
     const attachmentStore = new FileAttachmentStore(join(root, 'attachments'), {
       accountId: 'account_attachment',
@@ -458,7 +458,7 @@ describe('SubtaskExecutionContextBuilder', () => {
 
   it('rejects a selected attachment owned by another workspace', async () => {
     const db = new Database(':memory:');
-    runMigrations(db);
+    initializeDatabaseSchema(db);
     const root = mkdtempSync(join(tmpdir(), 'metawork-attachment-ownership-'));
     const attachmentStore = new FileAttachmentStore(join(root, 'attachments'), {
       accountId: 'account_attachment',
@@ -542,7 +542,7 @@ describe('previous round diagnosis', () => {
 
   it('hands the failed round in the same Conversation and Workspace to the Executor', () => {
     const db = new Database(':memory:');
-    runMigrations(db);
+    initializeDatabaseSchema(db);
     sqlTask(db, {
       id: 'task_previous',
       conversationId: 'conversation_ctx',
@@ -617,7 +617,7 @@ describe('previous round diagnosis', () => {
 
   it('does not borrow a failure from another Conversation or Workspace', () => {
     const db = new Database(':memory:');
-    runMigrations(db);
+    initializeDatabaseSchema(db);
     sqlTask(db, {
       id: 'task_other_conversation',
       conversationId: 'conversation_other',
@@ -778,7 +778,7 @@ describe('previous round relation gates', () => {
 
   it('does not inject a failed round into an explicit retry Task', () => {
     const db = new Database(':memory:');
-    runMigrations(db);
+    initializeDatabaseSchema(db);
     sqlTask(db, {
       id: 'task_failed',
       conversationId: 'conversation_ctx',
@@ -800,7 +800,7 @@ describe('previous round relation gates', () => {
 
   it('does not inject a failed round once unrelated work came after it', () => {
     const db = new Database(':memory:');
-    runMigrations(db);
+    initializeDatabaseSchema(db);
     sqlTask(db, {
       id: 'task_failed',
       conversationId: 'conversation_ctx',
@@ -827,7 +827,7 @@ describe('previous round relation gates', () => {
 
   it('injects the immediately preceding failed round', () => {
     const db = new Database(':memory:');
-    runMigrations(db);
+    initializeDatabaseSchema(db);
     sqlTask(db, {
       id: 'task_older',
       conversationId: 'conversation_ctx',
@@ -857,7 +857,7 @@ describe('previous round relation gates', () => {
 
   it('ignores newer work from another Workspace when finding the previous round', () => {
     const db = new Database(':memory:');
-    runMigrations(db);
+    initializeDatabaseSchema(db);
     sqlTask(db, {
       id: 'task_failed',
       conversationId: 'conversation_ctx',

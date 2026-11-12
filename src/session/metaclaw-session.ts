@@ -2359,6 +2359,7 @@ export class MetaclawSession {
       await this.executorRecoveryRefreshService.refresh({ trigger: 'task_recovery' });
     }
     const result = await this.commandCatalog.execute(userInput, this.getCommandContext());
+    if ('relatedTaskId' in result && result.relatedTaskId) this.setCurrentTaskId(result.relatedTaskId);
     this.appendOutput(result.content);
     if (/^\/executor\s+(register|unregister)\b/iu.test(userInput)) {
       await this.executorRecoveryRefreshService.refresh({ trigger: 'executor_changed' });
@@ -2584,53 +2585,57 @@ export class MetaclawSession {
     return this.lifecycle ??= this.taskLifecyclePort;
   }
 
+  private diagnoseRecoveryApplication(item: import('../execution/control-application-recovery.js').RecoveryApplicationFact) {
+    return inspectApplicationAgainstSources(item, {
+      findTask: id => {
+        const record = this.taskRuntimeService.findTask(id);
+        return record
+          ? {
+              id: record.id,
+              status: record.status,
+              dependencies: record.dependencies.map(dependency => ({
+                type: dependency.type,
+                status: dependency.status,
+              })),
+            }
+          : null;
+      },
+      listSubtasks: id => this.subtaskRepo.listByTask(id)
+        .map(subtask => ({ id: subtask.id, status: subtask.status })),
+      listDispatchItems: id => this.dispatchItemRepo.listByTask(id).map(dispatch => ({
+        attemptId: dispatch.attemptId,
+        decisionId: dispatch.decisionId,
+        causationId: null,
+        subtaskId: dispatch.subtaskId,
+        generationId: dispatch.generationId,
+        attemptKind: dispatch.attemptKind,
+        bindingFingerprint: dispatch.bindingFingerprint,
+        configurationRevision: dispatch.configurationRevision,
+        sourceAttemptId: dispatch.sourceAttemptId,
+        status: dispatch.status,
+      })),
+      findWorkGraphRevision: (id, revision) => {
+        const record = this.workGraphRevisionRepo.find(id, revision);
+        return record
+          ? {
+              revision: record.revision,
+              generationId: record.generationId,
+              authorizedOperationId: record.authorizedOperationId,
+              status: record.status,
+            }
+          : null;
+      },
+      findReplanRequest: (id, generationId, sourceRevision) => (
+        this.generationReplanRepo.findByGeneration(id, generationId, sourceRevision)
+      ),
+      findReplanRequestById: id => this.generationReplanRepo.find(id),
+    });
+  }
+
   private formatTaskRecovery(taskId: string): string {
     const task = this.findLocalTask(taskId);
     const applications = this.recoveryItems.listRecoveryItems(taskId).map(item => {
-      const diagnosis = inspectApplicationAgainstSources(item, {
-        findTask: id => {
-          const record = this.taskRuntimeService.findTask(id);
-          return record
-            ? {
-                id: record.id,
-                status: record.status,
-                dependencies: record.dependencies.map(dependency => ({
-                  type: dependency.type,
-                  status: dependency.status,
-                })),
-              }
-            : null;
-        },
-        listSubtasks: id => this.subtaskRepo.listByTask(id)
-          .map(subtask => ({ id: subtask.id, status: subtask.status })),
-        listDispatchItems: id => this.dispatchItemRepo.listByTask(id).map(dispatch => ({
-          attemptId: dispatch.attemptId,
-          decisionId: dispatch.decisionId,
-          causationId: null,
-          subtaskId: dispatch.subtaskId,
-          generationId: dispatch.generationId,
-          attemptKind: dispatch.attemptKind,
-          bindingFingerprint: dispatch.bindingFingerprint,
-          configurationRevision: dispatch.configurationRevision,
-          sourceAttemptId: dispatch.sourceAttemptId,
-          status: dispatch.status,
-        })),
-        findWorkGraphRevision: (id, revision) => {
-          const record = this.workGraphRevisionRepo.find(id, revision);
-          return record
-            ? {
-                revision: record.revision,
-                generationId: record.generationId,
-                authorizedOperationId: record.authorizedOperationId,
-                status: record.status,
-              }
-            : null;
-        },
-        findReplanRequest: (id, generationId, sourceRevision) => (
-          this.generationReplanRepo.findByGeneration(id, generationId, sourceRevision)
-        ),
-        findReplanRequestById: id => this.generationReplanRepo.find(id),
-      });
+      const diagnosis = this.diagnoseRecoveryApplication(item);
       return `- ${item.id} [application/${item.status}] ${item.decision.action.type}: `
         + `${item.errorSummary ?? 'no error summary'}`
         + ` -> ${diagnosis.family}/${diagnosis.verdict}: ${diagnosis.reason}`;
@@ -2642,6 +2647,7 @@ export class MetaclawSession {
     if (items.length === 0) {
       const emptyRecovery = formatEmptyTaskRecovery(taskId, {
         status: task?.status,
+        canResume: this.subtaskRepo.listActiveByTask(taskId).some(subtask => ['ready', 'blocked'].includes(subtask.status)),
         blockerReason: task?.dependencies
           .filter(dependency => dependency.status === 'waiting')
           .map(dependency => dependency.description)
@@ -2745,9 +2751,11 @@ export class MetaclawSession {
       schemaVersion: 5,
       type: 'recovery',
       task: task ? { id: task.id, status: task.status } : null,
-      item: application
-        ? { id: application.id, kind: 'application', status: application.status as 'uncertain' | 'failed', retrySafe: true }
-        : effect && (effect.status === 'uncertain' || effect.status === 'failed')
+      item: application && 'taskId' in application.decision.action && application.decision.action.taskId === taskId
+        && ['pending', 'retry_authorized'].includes(application.status)
+        ? { id: application.id, kind: 'application', status: application.status as 'pending' | 'retry_authorized',
+            retrySafe: this.diagnoseRecoveryApplication(application).verdict === 'retry_safe' }
+        : effect && effect.taskId === taskId && (effect.status === 'uncertain' || effect.status === 'failed')
           ? { id: effect.id, kind: 'effect', status: effect.status, retrySafe: false }
           : null,
     };

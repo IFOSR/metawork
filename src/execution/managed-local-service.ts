@@ -457,7 +457,12 @@ export class ManagedLocalServices {
     }
     const bound = manifest && typeof manifest === 'object' && !Array.isArray(manifest)
       ? { taskId, ...manifest, origin: 'manifest' as const } : manifest;
-    const spec = validateLocalServiceSpecification(bound);
+    const validated = validateLocalServiceSpecification(bound);
+    const projectPath = relative(root, dirname(path)).split(sep).join('/');
+    // Normalize before comparing authorized revisions. Otherwise a project
+    // manifest without directory starts once, then appears modified on reread.
+    const spec = validated.directory === undefined && projectPath !== ''
+      ? { ...validated, directory: projectPath } : validated;
     if (spec.taskId !== taskId) {
       // A merged Workspace keeps the manifest a previous Task wrote. That
       // file is not foreign code when this Workspace already registered the

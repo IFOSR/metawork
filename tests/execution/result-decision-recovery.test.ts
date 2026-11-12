@@ -4,7 +4,7 @@ import { ControlKernel, type KernelEvent, type KernelSnapshot } from '../../src/
 import { KernelExecutionRuntime } from '../../src/execution/kernel-execution-runtime.js';
 import { KernelWorkflowRepo } from '../../src/storage/kernel-workflow-repo.js';
 import { KernelEffectOutboxRepo } from '../../src/storage/kernel-effect-outbox-repo.js';
-import { runMigrations } from '../../src/storage/migrations.js';
+import { initializeDatabaseSchema } from '../../src/storage/schema.js';
 
 const expected = { taskId: 'task', subtaskId: 'final', generationId: 'generation',
   graphRevision: 1, attemptId: 'primary', resultId: 'primary_safe' };
@@ -16,7 +16,7 @@ describe('result decision recovery', () => {
   it.each(['retry', 'accept', 'accept_replay'] as const)(
     'settles an old implicit acceptance without effects, then admits explicit %s', async mode => {
     const db = new Database(':memory:');
-    runMigrations(db);
+    initializeDatabaseSchema(db);
     db.prepare("INSERT INTO configuration_revisions (revision_id, content_hash, source_kind, imported_at) VALUES ('revision', 'hash', 'native', 'now')").run();
     try {
       const store = new KernelWorkflowRepo(db);

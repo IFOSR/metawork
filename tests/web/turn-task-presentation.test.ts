@@ -41,6 +41,18 @@ const { renderToStaticMarkup } = requireFromWeb('react-dom/server') as {
 };
 
 describe('Turn Task presentation', () => {
+  it('renders delivery-only retry graphs without dereferencing a missing node', () => {
+    const turn = { id: 'turn', taskId: 'retry', status: 'failed', userInput: '/task retry source',
+      traceEvents: [], artifacts: [] } as unknown as ConversationTurnProjection;
+    const html = renderToStaticMarkup(createElement(TaskDagPanel, { turn, workGraph: dagFromTurn(turn) }));
+    expect(html).toContain('没有新的执行子任务');
+  });
+
+  it.each(['completed', 'failed', 'running'] as const)('never announces Manager planning for a %s command', status => {
+    const turn = { id: 'turn', taskId: null, status, userInput: '/task recovery source',
+      traceEvents: [], artifacts: [] } as unknown as ConversationTurnProjection;
+    expect(renderToStaticMarkup(createElement(TaskDagPanel, { turn, workGraph: null }))).toBe('');
+  });
   it('does not announce an Executor start before an attempt exists', () => {
     const cards = collectExecutionCards([], { taskId: 't', title: 'Invoices', status: 'running', stages: [
       { phase: 'execution', status: 'running', subtasks: [

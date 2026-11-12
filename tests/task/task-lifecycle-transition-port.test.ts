@@ -5,7 +5,7 @@ import { TaskRepo } from '../../src/storage/task-repo.js';
 import { TaskStateChangeRepo, TaskStateProjectionOutbox } from '../../src/storage/task-state-change-repo.js';
 import { SubtaskRepo } from '../../src/storage/subtask-repo.js';
 import { WorkGraphRevisionRepo } from '../../src/storage/work-graph-revision-repo.js';
-import { runMigrations } from '../../src/storage/migrations.js';
+import { initializeDatabaseSchema } from '../../src/storage/schema.js';
 import {
   createSqliteTaskLifecyclePort,
   createSqliteTaskStateTransaction,
@@ -36,7 +36,7 @@ function fixture() {
   const db = new Database(':memory:');
   databases.push(db);
   db.pragma('foreign_keys = ON');
-  runMigrations(db);
+  initializeDatabaseSchema(db);
   const taskRepo = new TaskRepo(db);
   const subtaskRepo = new SubtaskRepo(db);
   const workGraphRevisionRepo = new WorkGraphRevisionRepo(db);

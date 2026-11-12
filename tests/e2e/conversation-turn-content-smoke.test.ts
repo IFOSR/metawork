@@ -1,7 +1,7 @@
 import Database from 'better-sqlite3';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { resolve } from 'node:path';
-import { runMigrations } from '../../src/storage/migrations.js';
+import { initializeDatabaseSchema } from '../../src/storage/schema.js';
 import { SqliteConversationTurnStore } from '../../src/storage/conversation-turn-repo.js';
 import { SqliteMemoryTurnSource } from '../../src/storage/memory-turn-source.js';
 import { TdaiMemoryAdapter } from '../../src/memory/tdai-memory-adapter.js';
@@ -21,7 +21,7 @@ describe.skipIf(!engineRoot)('Turn content smoke with real memory engine', () =>
   beforeAll(async () => {
     llm = await startMockLlm();
     engine = await startMemoryEngine({ engineRoot: engineRoot!, llmBaseUrl: llm.baseUrl });
-    db = new Database(':memory:'); db.pragma('foreign_keys = ON'); runMigrations(db);
+    db = new Database(':memory:'); db.pragma('foreign_keys = ON'); initializeDatabaseSchema(db);
     adapter = new TdaiMemoryAdapter({ baseUrl: `http://127.0.0.1:${engine.port}`, serviceId: 'metawork', kernelAuthToken: engine.kernelAuthToken, timeoutMs: 20_000, retries: 0 });
   }, 180_000);
   afterAll(async () => { await engine?.stop(); await llm?.close(); db?.close(); });

@@ -6,7 +6,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 import { FileEventJournal } from '../../src/gateway/file-event-journal.js';
 import { SegmentedEventJournal } from '../../src/gateway/segmented-event-journal.js';
 import { SqliteEventJournalSegmentIndex } from '../../src/storage/event-journal-segment-index-repo.js';
-import { runMigrations } from '../../src/storage/migrations.js';
+import { initializeDatabaseSchema } from '../../src/storage/schema.js';
 import type { EventJournal } from '../../src/gateway/event-journal.js';
 import type { GatewayEventEnvelope } from '../../src/gateway/client-events.js';
 
@@ -51,7 +51,7 @@ async function fileFixture(): Promise<FileEventJournal> {
 async function segmentedFixture() {
   const root = await mkdtemp(join(tmpdir(), 'trace-page-segmented-'));
   const db = new Database(join(root, 'index.db'));
-  runMigrations(db);
+  initializeDatabaseSchema(db);
   const index = new SqliteEventJournalSegmentIndex(db);
   const legacy = new FileEventJournal(root);
   const journal = new SegmentedEventJournal(root, index, legacy);
@@ -109,7 +109,7 @@ describe('trace page cursors', () => {
     await journal.append(traceDelta(1));
     db.exec(`DROP TABLE gateway_trace_read_events; DROP TABLE gateway_trace_read_heads;
       DROP VIEW IF EXISTS conversation_memory_turns; UPDATE schema_version SET version = 46;`);
-    runMigrations(db);
+    initializeDatabaseSchema(db);
     const initial = await journal.readTracePage('local-default', 'conv_trace', 'turn_trace');
     expect(initial.events).toEqual([]);
     expect(initial.preparing).toBe(true);

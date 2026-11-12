@@ -1,3 +1,4 @@
+import { DEFAULT_AGENT_ROLES } from '../configuration/default-agent-roles.js';
 import { prepareStandardAgentConfiguration } from '../configuration/standard-agent-configuration.js';
 import { prepareVerifiedModelCapabilities } from '../configuration/model-capability-catalog.js';
 import { randomUUID } from 'node:crypto';
@@ -109,7 +110,7 @@ export class SourceNativeInstaller {
       configurationRevision,
     );
     await Promise.all(launcherPaths.map(path => assertLauncherAvailable(path)));
-    const config = buildConfiguration(input);
+    const config = buildSourceInstallConfiguration(input);
 
     const switched: string[] = [];
     const installedLaunchers: string[] = [];
@@ -261,7 +262,8 @@ async function assertReleaseRootReplaceable(
   await removeImmutablePath(releaseRoot);
 }
 
-function buildConfiguration(
+/** Pure initial configuration, shared by installation and onboarding acceptance. */
+export function buildSourceInstallConfiguration(
   input: SourceNativeInstallInput,
 ): AnyFusionConfigurationV2 {
   const modelRef = 'default-model';
@@ -325,6 +327,7 @@ function buildConfiguration(
     },
     agentClasses: {
       planner: {
+        ...DEFAULT_AGENT_ROLES.planner,
         kind: 'planner',
         harnessRef: 'anyfusion-planner',
         modelPolicy: { mode: 'fixed', modelRef },
@@ -339,6 +342,7 @@ function buildConfiguration(
         enabled: true,
       },
       'pi-engineering': {
+        ...DEFAULT_AGENT_ROLES['pi-engineering'],
         kind: 'executor',
         harnessRef: 'pi-engineering-cli',
         modelPolicy: { mode: 'fixed', modelRef },
@@ -354,6 +358,7 @@ function buildConfiguration(
         enabled: true,
       },
       'pi-research': {
+        ...DEFAULT_AGENT_ROLES['pi-research'],
         kind: 'executor',
         harnessRef: 'pi-cli',
         modelPolicy: { mode: 'fixed', modelRef },

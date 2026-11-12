@@ -18,7 +18,7 @@ import { seedAuthoritativeTurn } from '../support/conversation-turn-fixture.js';
 
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import Database from 'better-sqlite3';
-import { runMigrations } from '../../src/storage/migrations.js';
+import { initializeDatabaseSchema } from '../../src/storage/schema.js';
 import { MemoryRuntimeController } from '../../src/memory/memory-runtime-controller.js';
 import { MEMORY_KERNEL_AUTH_SECRET_REFERENCE } from '../../src/memory/memory-runtime.js';
 import { classifyConfigurationDiff } from '../../src/configuration/configuration-diff.js';
@@ -99,7 +99,7 @@ describeActivation('memory settings activation (review P1-1)', () => {
     engine = await startMemoryEngine({ engineRoot: engineRoot!, llmBaseUrl: llm.baseUrl });
     db = new Database(':memory:');
     db.pragma('foreign_keys = ON');
-    runMigrations(db);
+    initializeDatabaseSchema(db);
     secretStore = new MemorySecretStore();
     // The settings transaction stores the Provider credential in the SecretStore.
     await secretStore.put(PROVIDER_API_KEY_REF as SecretReference, 'user-provider-key');

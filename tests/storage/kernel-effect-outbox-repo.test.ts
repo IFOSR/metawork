@@ -1,12 +1,12 @@
 import Database from 'better-sqlite3';
 import { describe, expect, it, vi } from 'vitest';
-import { runMigrations } from '../../src/storage/migrations.js';
+import { initializeDatabaseSchema } from '../../src/storage/schema.js';
 import { KernelEffectOutboxRepo } from '../../src/storage/kernel-effect-outbox-repo.js';
 
 describe('KernelEffectOutboxRepo', () => {
   it('does not automatically resend an effect whose provider result is unknown', async () => {
     const db = new Database(':memory:');
-    runMigrations(db);
+    initializeDatabaseSchema(db);
     seedDecision(db);
     const repo = new KernelEffectOutboxRepo(db);
     const now = '2026-07-21T00:00:00.000Z';
@@ -23,7 +23,7 @@ describe('KernelEffectOutboxRepo', () => {
 
   it('marks an in-flight effect uncertain during startup reconcile', () => {
     const db = new Database(':memory:');
-    runMigrations(db);
+    initializeDatabaseSchema(db);
     seedDecision(db);
     const repo = new KernelEffectOutboxRepo(db);
     const now = '2026-07-21T00:00:00.000Z';

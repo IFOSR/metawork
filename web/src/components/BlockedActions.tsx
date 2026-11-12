@@ -87,6 +87,7 @@ export function BlockedActions({ ws, http, conversationId, taskId, fallbackStatu
   const canResume = Boolean(taskId) && !pendingDecision && !canAcceptCandidate && needsAction
     && lifecycle?.nextAuthorizedAction === 'explicit_resume_required';
   const canRetryRemaining = Boolean(taskId) && !pendingDecision && failed
+    && !lifecycle?.retryOfTaskId
     && ['delivery_failed', 'service_start_failed', 'service_health_timeout', 'port_in_use'].includes(lifecycle?.reason?.code ?? '')
     && (!lifecycle?.cleanup || lifecycle.cleanup.state === 'none') && !lifecycle?.blockingResidue?.length;
   const canResolveRecovery = Boolean(taskId) && (Boolean(recoveryAction) || Boolean(legacy?.recoveryDiagnosis));
@@ -101,7 +102,9 @@ export function BlockedActions({ ws, http, conversationId, taskId, fallbackStatu
     canRetryRemaining,
     canResolveRecovery,
   });
-  const recommendation = recommendationFor(primaryAction);
+  const recommendation = primaryAction === 'accept_candidate' && !candidateAction?.publicationId
+    ? '下一步：检查已有结果后，点「接受部分结果并继续」。'
+    : recommendationFor(primaryAction);
 
   const resolvePermission = async (resolution: 'approve' | 'deny'): Promise<void> => {
     if (!permission?.requestRevision || !permission.generationId) {

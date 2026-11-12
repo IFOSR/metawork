@@ -5,12 +5,12 @@ import {
   getDefaultPlannerProcessSupervisor,
   PlannerProcessSupervisor,
 } from '../../src/planning/planner-process-supervisor.js';
-import { runMigrations } from '../../src/storage/migrations.js';
+import { initializeDatabaseSchema } from '../../src/storage/schema.js';
 
 describe('buildAccountPlannerServices', () => {
   it('composes an unconfigured production account without a model or credentials', () => {
     vi.stubEnv('NODE_ENV', 'production');
-    const db = new Database(':memory:'); runMigrations(db);
+    const db = new Database(':memory:'); initializeDatabaseSchema(db);
     try {
       const supervisor = new PlannerProcessSupervisor({ resolvePlannerBinding: () => {
         throw new Error('Planner is not configured');
@@ -27,7 +27,7 @@ describe('buildAccountPlannerServices', () => {
     const previousNodeEnv = process.env.NODE_ENV;
     process.env.NODE_ENV = 'production';
     const db = new Database(':memory:');
-    runMigrations(db);
+    initializeDatabaseSchema(db);
 
     try {
       expect(() => buildAccountPlannerServices({
@@ -55,7 +55,7 @@ describe('buildAccountPlannerServices', () => {
     const previousNodeEnv = process.env.NODE_ENV;
     process.env.NODE_ENV = 'production';
     const db = new Database(':memory:');
-    runMigrations(db);
+    initializeDatabaseSchema(db);
 
     try {
       expect(() => buildAccountPlannerServices({
@@ -84,7 +84,7 @@ describe('buildAccountPlannerServices', () => {
     const previousNodeEnv = process.env.NODE_ENV;
     process.env.NODE_ENV = 'production';
     const db = new Database(':memory:');
-    runMigrations(db);
+    initializeDatabaseSchema(db);
     const plannerSupervisor = new PlannerProcessSupervisor({
       configurationRevision: 'revision-deepseek',
       bindingFingerprint: 'sha256:planner',
@@ -127,7 +127,7 @@ describe('buildAccountPlannerServices', () => {
     const previousNodeEnv = process.env.NODE_ENV;
     process.env.NODE_ENV = 'production';
     const db = new Database(':memory:');
-    runMigrations(db);
+    initializeDatabaseSchema(db);
     const plannerSupervisor = new PlannerProcessSupervisor({
       configurationRevision: 'revision-deepseek',
       bindingFingerprint: 'sha256:planner',
@@ -164,7 +164,7 @@ describe('buildAccountPlannerServices', () => {
     const previousNodeEnv = process.env.NODE_ENV;
     process.env.NODE_ENV = 'production';
     const db = new Database(':memory:');
-    runMigrations(db);
+    initializeDatabaseSchema(db);
     const plannerSupervisor = new PlannerProcessSupervisor({
       configurationRevision: 'revision-deepseek',
       bindingFingerprint: 'sha256:planner',

@@ -10,6 +10,7 @@ import { ArtifactLink } from './ArtifactLink';
 import { ExecutionNotice, type TurnFailureFacts } from './ExecutionNotice';
 import { conversationOutput } from '../conversation-output';
 import { turnExecutionPresentation } from '../turn-execution-presentation';
+import { CopyIcon } from './CopyIcon';
 
 function formatAttachmentSize(size: number): string {
   if (size < 1024) return `${size} B`;
@@ -46,12 +47,17 @@ function deliveryFailed(turn: ConversationTurnProjection): boolean {
  * blocked or failed Turn shows what actually went wrong and where.
  */
 function turnFailureFacts(turn: ConversationTurnProjection): TurnFailureFacts | null {
+  const plannerFailure = [...turn.traceEvents].reverse().find(event => (
+    event.kind === 'planner_failed'
+    || event.kind === 'submission_failed'
+    || (event.phase === 'planning' && /(?:required|invalid|failed|error|拒绝|失败)/iu.test(event.summary))
+  ));
   for (const event of [...turn.traceEvents].reverse()) {
     if (event.kind === 'execution_resumed') return null;
     const details = event.details as Record<string, unknown> | undefined;
     // The Turn's own status is the surviving liveness fact: events carry none.
     if (!turn.taskId && (turn.status === 'failed' || turn.status === 'blocked')
-      && (event.phase === 'planning' || event.kind === 'submission_failed')) {
+      && event === plannerFailure) {
       return {
         code: event.kind,
         label: '规划未完成',
@@ -116,7 +122,7 @@ function turnFailureFacts(turn: ConversationTurnProjection): TurnFailureFacts | 
   }
   return !turn.taskId && (turn.status === 'failed' || turn.status === 'blocked') ? {
     label: '规划未完成',
-    summary: '本轮未能完成规划，请查看完整轨迹确认原因。',
+    summary: '本轮未记录可用的原始错误信息，请查看完整轨迹确认原因。',
     stage: 'planning',
     userAction: '本轮未创建执行任务。处理原因后，请重新发送消息。',
   } : null;
@@ -164,7 +170,7 @@ export function ConversationTurnView({
   return (
     <article className="conversation-turn" data-turn-id={turn.id}>
       <section className="user-message">
-        <span>YOU</span>
+        <div className="user-message-heading"><span>YOU</span><CopyIcon text={turn.userInput} label="复制问题" /></div>
         <p>{turn.userInput}</p>
         {attachments.length > 0 && (
           <div className="message-attachments" aria-label={`附件 ${attachments.length} 个`}>
@@ -237,6 +243,7 @@ export function ConversationTurnView({
         const notes = parseSystemOutput(queue.remainder);
         return (
           <section className="system-command-result">
+            <div className="message-copy-actions"><CopyIcon text={turn.finalAnswer} label="复制回答" /></div>
             {guidance.block && <GuidanceCard block={guidance.block} />}
             {queue.block && <TaskQueueCard block={queue.block} />}
             {notes.structured ? (
@@ -259,6 +266,7 @@ export function ConversationTurnView({
       })()}
       {!isSystemCommand && output.body && (
         <section className="final-answer">
+          <div className="message-copy-actions"><CopyIcon text={output.body} label="复制回答" /></div>
           <ArtifactAwareMarkdownContent
             value={output.body}
             artifacts={artifacts}

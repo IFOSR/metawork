@@ -124,6 +124,7 @@ import {
   type RuntimeConfigurationView,
 } from '../configuration/index.js';
 import {
+  inspectApplicationAgainstSources,
   isSupersededMergeReplanApplication,
   isRetrySafeLegacySystemBindingReplan,
   isRetrySafeMergeRepairReplan,
@@ -720,6 +721,7 @@ export interface TaskControlDecision {
 
 /** Runtime handler set for Kernel decisions. It applies one authorized action and reports one fact. */
 export class ControlExecutionRuntime {
+  private readonly serviceVerifications = new Set<string>();
   private readonly taskEvents: TaskEventRecorder;
   private readonly attemptSupervisor: AttemptSupervisor;
   private readonly cancellationRetryTimers = new Map<string, ReturnType<typeof setTimeout>>();
@@ -2403,7 +2405,9 @@ export class ControlExecutionRuntime {
     });
     if (action.type === 'resolve_recovery') {
       const item = this.deps.recoveryItems.findRecoveryItem(action.recoveryItemId);
-      if (!item) return null;
+      if (!item || !('taskId' in item.decision.action)
+        || item.decision.action.taskId !== action.taskId
+        || !['pending', 'retry_authorized'].includes(item.status)) return null;
       this.deps.recoveryItems.resolveRecoveryItem(
         action.recoveryItemId,
         action.resolution,
@@ -3997,8 +4001,19 @@ export class ControlExecutionRuntime {
           task: { id: task.id, status: task.status },
           item: (() => {
             const item = this.deps.recoveryItems.findRecoveryItem(event.recoveryItemId);
-            return item
-              ? { id: item.id, kind: 'application' as const, status: 'uncertain' as const, retrySafe: true }
+            return item && 'taskId' in item.decision.action && item.decision.action.taskId === task.id
+              && (item.status === 'pending' || item.status === 'retry_authorized')
+              ? { id: item.id, kind: 'application' as const, status: item.status,
+                  retrySafe: inspectApplicationAgainstSources(item, {
+                    findTask: id => this.deps.taskRuntimeService.findTask(id),
+                    listSubtasks: id => this.deps.subtaskRepo.listByTask(id),
+                    listDispatchItems: id => this.deps.dispatchItemRepo.listByTask(id)
+                      .map(dispatch => ({ ...dispatch, causationId: null })),
+                    findWorkGraphRevision: (id, revision) => this.deps.workGraphRevisionRepo.find(id, revision),
+                    findReplanRequest: (id, generationId, revision) => this.deps.generationReplanRepo.findByGeneration(id, generationId, revision),
+                    findReplanRequestById: id => this.deps.generationReplanRepo.find(id),
+                    findRetryWake: (_id, decisionId) => this.deps.retryWakeRepo.findByDecision(decisionId),
+                  }).verdict === 'retry_safe' }
               : null;
           })(),
         }
@@ -4358,6 +4373,23 @@ export class ControlExecutionRuntime {
     taskId: string,
     workflow?: ControlWorkflow,
   ): Promise<void> {
+    // Recovery and attempt settlement can both reach this boundary. The active
+    // verifier owns its repair/drain/recheck sequence; a reentrant pass must not
+    // see the running repair as "no completed producer" and fail the Task.
+    if (this.serviceVerifications.has(taskId)) return;
+    if (this.deps.subtaskRepo.listActiveByTask(taskId).some(subtask => subtask.status !== 'done')) return;
+    this.serviceVerifications.add(taskId);
+    try {
+      await this.verifyAndStartRequestedPublishedService(taskId, workflow);
+    } finally {
+      this.serviceVerifications.delete(taskId);
+    }
+  }
+
+  private async verifyAndStartRequestedPublishedService(
+    taskId: string,
+    workflow?: ControlWorkflow,
+  ): Promise<void> {
     const task = this.deps.taskRuntimeService.findTask(taskId);
     const manager = this.deps.managedLocalServices;
     if (!task?.startServiceAfterPublish) return;
@@ -4464,6 +4496,9 @@ export class ControlExecutionRuntime {
       revisionDrifted = true;
     }
     const workspaceId = await manager.resolveServiceWorkspaceId(resourceTaskId);
+    const registered = resolveRegisteredService(manager, workspaceId, spec.serviceId);
+    revisionDrifted ||= Boolean(registered
+      && registered.specificationRevision !== localServiceSpecificationRevision(spec));
     if (revisionDrifted) {
       // Preparation must finish while the old service is still available.
       // A repair Attempt receives this diagnostic and prepares the pinned root.
@@ -5590,6 +5625,11 @@ export class ControlExecutionRuntime {
     finishExecution(lines: string[]): Promise<void>;
   }): Promise<void> {
     const task = this.deps.taskRuntimeService.findTask(input.taskId)!;
+    // A drain can reach completion before the required service verifier has
+    // settled. Do not freeze the immutable final answer with pre-start facts;
+    // the verifier's success will re-drive this same completion boundary.
+    if (task.startServiceAfterPublish && !this.deps.taskOperationResults.listByTask(task.id)
+      .some(result => result.operationKind === 'service' && result.outcome === 'success')) return;
     const artifacts = [...new Set(input.subtasks.flatMap(subtask => subtask.artifacts))];
     const warnings = input.subtasks.flatMap(subtask => subtask.verification.warnings.map(warning => `${subtask.id}: ${warning}`));
     const persistedSummary = input.subtasks.map(subtask => {
@@ -5659,6 +5699,18 @@ export class ControlExecutionRuntime {
           accountId: task.accountId, taskId: task.id, generationId: graph.generationId,
           resultId, subtasks: input.subtasks, receipts: this.deps.attemptReceiptRepo,
           results: this.deps.resultObjectRepo, acceptedAttemptIds,
+          ...(task.startServiceAfterPublish ? {
+            serviceStatus: this.deps.managedLocalServices?.forTask(task.retryOfTaskId ?? task.id)
+              .filter(record => isServiceReadyState(record.state))
+              .map(record => {
+                const spec = record.specification;
+                const address = spec.port === null ? ''
+                  : `http://${spec.host === '::1' ? '[::1]' : spec.host}:${spec.port}`;
+                return `平台服务 ${spec.serviceId}：${record.state === 'healthy' ? '已通过健康检查' : '进程已启动，未声明健康检查'}。`
+                  + (address ? `\n访问地址：${address}` : '')
+                  + `\n查询状态：\`/service status ${spec.serviceId}\`\n停止服务：\`/service stop ${spec.serviceId}\``;
+              }).join('\n\n'),
+          } : {}),
           ...(summary ? { summary } : {}),
         });
         if (!completionDelivery) throw new Error('workspace_completion_result_unavailable');

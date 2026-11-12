@@ -3,7 +3,7 @@ import { describe, expect, it, vi } from 'vitest';
 import { RetryWakeWorker } from '../../src/account/retry-wake-worker.js';
 import { RetryWakeRepo, type RetryWakeRecord } from '../../src/storage/retry-wake-repo.js';
 import { KernelWorkflowRepo } from '../../src/storage/kernel-workflow-repo.js';
-import { runMigrations } from '../../src/storage/migrations.js';
+import { initializeDatabaseSchema } from '../../src/storage/schema.js';
 import type { AuthorizedExecutorBinding } from '../../src/core/authorized-executor-binding.js';
 import { TaskRepo } from '../../src/storage/task-repo.js';
 import { TaskEngine } from '../../src/task/task-engine.js';
@@ -43,7 +43,7 @@ describe('RetryWakeWorker', () => {
   it('delivers one deterministic timer and replays a fired wake after a crash', async () => {
     const db = new Database(':memory:');
     try {
-      runMigrations(db);
+      initializeDatabaseSchema(db);
       new ConfigurationRevisionRepo(db).ensure({
         revisionId: 'revision-1',
         contentHash: 'sha256:test',
@@ -122,7 +122,7 @@ describe('RetryWakeWorker', () => {
   it('fails closed when the source Decision has no resolvable session', async () => {
     const db = new Database(':memory:');
     try {
-      runMigrations(db);
+      initializeDatabaseSchema(db);
       new ConfigurationRevisionRepo(db).ensure({
         revisionId: 'revision-1',
         contentHash: 'sha256:test',

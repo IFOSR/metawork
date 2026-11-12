@@ -4,7 +4,7 @@ import { writeSync } from 'node:fs';
 import { readFile, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import type { ConversationMetadata } from '../../src/session/conversation-store.js';
-import { runMigrations } from '../../src/storage/migrations.js';
+import { initializeDatabaseSchema } from '../../src/storage/schema.js';
 import { SqliteWorkspaceDirectoryProjectionRepo } from '../../src/storage/workspace-directory-projection-repo.js';
 import { WorkspaceDirectoryProjector } from '../../src/workspace/workspace-directory-projector.js';
 import type { WorkspaceConversationSummary } from '../../src/workspace/workspace-conversation-projector.js';
@@ -151,7 +151,7 @@ async function diskState() {
 
 async function main(): Promise<void> {
   if (action === 'seed') {
-    runMigrations(db);
+    initializeDatabaseSchema(db);
     const source = [
       { ...metadata('conv_unbound'), workspaceBinding: null },
       metadata('conv_foreign', otherAccountId),

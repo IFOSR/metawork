@@ -4,12 +4,12 @@ import { NotificationRoutingService, NotificationDestinationRevoked, notificatio
 import { SqliteNotificationRoutingStore } from '../../src/storage/notification-routing-repo.js';
 import { SqliteConversationReadModel } from '../../src/storage/conversation-read-model-repo.js';
 import { ConversationReadProjector } from '../../src/session/conversation-read-projector.js';
-import { runMigrations } from '../../src/storage/migrations.js';
+import { initializeDatabaseSchema } from '../../src/storage/schema.js';
 
 const dbs: Database.Database[] = [];
 afterEach(() => { dbs.splice(0).forEach(db => db.close()); });
 function fixture() {
-  const db = new Database(':memory:'); dbs.push(db); runMigrations(db);
+  const db = new Database(':memory:'); dbs.push(db); initializeDatabaseSchema(db);
   const store = new SqliteNotificationRoutingStore(db);
   let now = 100_000;
   const deliver = vi.fn(async (_job: NotificationJob) => undefined);

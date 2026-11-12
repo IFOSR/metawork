@@ -3,7 +3,7 @@ import Database from 'better-sqlite3';
 import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { runMigrations } from '../../src/storage/migrations.js';
+import { initializeDatabaseSchema } from '../../src/storage/schema.js';
 import { SubtaskRepo } from '../../src/storage/subtask-repo.js';
 import { SubtaskHandoffRepo } from '../../src/storage/subtask-handoff-repo.js';
 import { ResultObjectRepo } from '../../src/storage/result-object-repo.js';
@@ -69,7 +69,7 @@ function repairDeps() {
 beforeEach(() => {
   db = new Database(':memory:');
   db.pragma('foreign_keys = ON');
-  runMigrations(db);
+  initializeDatabaseSchema(db);
   db.prepare(`
     INSERT INTO tasks (id, title, goal, status, summary, snapshot_json, resources_json,
       artifacts_json, dependencies_json, priority_json, last_scheduling_reason,

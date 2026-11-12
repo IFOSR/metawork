@@ -29,7 +29,7 @@ import { WorkGraphRevisionRepo } from '../../src/storage/work-graph-revision-rep
 import { WorkspacePublicationRepo } from '../../src/storage/workspace-publication-repo.js';
 import { WorkUnitRepo } from '../../src/storage/work-unit-repo.js';
 import { ConversationTaskSchedulerRepo } from '../../src/storage/conversation-task-scheduler-repo.js';
-import { runMigrations } from '../../src/storage/migrations.js';
+import { initializeDatabaseSchema } from '../../src/storage/schema.js';
 import { TaskResidueReader } from '../../src/execution/task-residue-reader.js';
 import { TaskEngine } from '../../src/task/task-engine.js';
 import { FakeAttemptExecutionBackend } from '../support/fake-attempt-execution-backend.js';
@@ -935,7 +935,7 @@ function createFixture(
   );
   const db = new Database(':memory:');
   db.pragma('foreign_keys = ON');
-  runMigrations(db);
+  initializeDatabaseSchema(db);
   const taskEngine = new TaskEngine(new TaskRepo(db), join(root, 'snapshots'));
   const backend = new FakeAttemptExecutionBackend();
   const staged = buildStagedLegacyConfiguration({ testMode: true });

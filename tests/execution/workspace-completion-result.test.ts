@@ -36,6 +36,25 @@ function fixture(completeness: 'complete' | 'partial' = 'complete') {
 }
 
 describe('Workspace completion answer', () => {
+  it('does not freeze a final answer while required service preparation is pending', async () => {
+    const results = { putObject: vi.fn(), findObject: vi.fn() };
+    const runtime = new ControlExecutionRuntime({
+      taskRuntimeService: { findTask: () => ({ id: 'task', startServiceAfterPublish: true }) },
+      taskOperationResults: { listByTask: () => [{ operationKind: 'service', outcome: 'repair_pending' }] },
+      resultObjectRepo: results,
+    } as never);
+    await runtime['completeTask']({ taskId: 'task' } as never);
+    expect(results.findObject).not.toHaveBeenCalled();
+    expect(results.putObject).not.toHaveBeenCalled();
+  });
+  it('persists platform service facts before the earlier Executor report', () => {
+    const f = fixture();
+    const serviceStatus = '平台服务 mini：已通过健康检查。\n停止服务：`/service stop mini`';
+    const result = workspaceCompletionResult({ accountId: 'local-default', taskId: 'task', generationId: 'gen',
+      resultId: 'completion', subtasks: f.subtasks, receipts: f.receipts as never, results: f.results, serviceStatus });
+    expect(result?.content).toContain(`${serviceStatus}\n\n执行阶段记录：`);
+    expect(f.results.readRange('completion', 0, 10000).content).toBe(result?.content);
+  });
   it.each(['certified', 'uncertified', 'wrong-source', 'wrong-generation'])
     ('uses immutable partial source bytes only after identity-bound correction certification: %s', mode => {
       const f = fixture('partial');

@@ -1,6 +1,6 @@
 import Database from 'better-sqlite3';
 import { afterEach, describe, expect, it } from 'vitest';
-import { runMigrations } from '../../src/storage/migrations.js';
+import { initializeDatabaseSchema } from '../../src/storage/schema.js';
 import { readPendingTaskResults } from '../../src/storage/pending-task-result.js';
 
 const TASK = 'task_pending';
@@ -46,7 +46,7 @@ function insertReceipt(input: {
 
 function fixture(): void {
   db = new Database(':memory:');
-  runMigrations(db);
+  initializeDatabaseSchema(db);
   db.prepare(`INSERT INTO configuration_revisions (revision_id, content_hash, source_kind, imported_at)
     VALUES ('revision_1', 'hash', 'native', 'now')`).run();
   db.prepare(`INSERT INTO work_units (id, agent_class_name, agent_class_kind, created_at, updated_at)

@@ -1,6 +1,6 @@
 import Database from 'better-sqlite3';
 import { describe, expect, it } from 'vitest';
-import { runMigrations } from '../../src/storage/migrations.js';
+import { initializeDatabaseSchema } from '../../src/storage/schema.js';
 import { SubtaskRepo } from '../../src/storage/subtask-repo.js';
 import { TaskRepo } from '../../src/storage/task-repo.js';
 import { WorkspacePublicationRepo } from '../../src/storage/workspace-publication-repo.js';
@@ -11,7 +11,7 @@ describe('WorkspacePublicationRepo integrated result query', () => {
   it('returns only integrated publications for selected Tasks in stable completion order', () => {
     const db = new Database(':memory:');
     db.pragma('foreign_keys = ON');
-    runMigrations(db);
+    initializeDatabaseSchema(db);
     const tasks = new TaskEngine(new TaskRepo(db), '/tmp/publication-result-query');
     const subtasks = new SubtaskRepo(db);
     const publications = new WorkspacePublicationRepo(db);

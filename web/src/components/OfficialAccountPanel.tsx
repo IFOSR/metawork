@@ -76,7 +76,11 @@ export function OfficialAccountPanel({ onStatus }: { onStatus: (status: Official
   const orderKeys = useRef(new Map<string, string>());
   const reopenCount = useRef(0);
   const refresh = useCallback(async () => {
-    try { const value = await request<OfficialStatus>('status'); setStatus(value); onStatus(value); }
+    try {
+      const value = await request<OfficialStatus>('status');
+      setStatus(previous => JSON.stringify(previous) === JSON.stringify(value) ? previous : value);
+      onStatus(value);
+    }
     catch { setStatus(null); onStatus(null); }
   }, [onStatus]);
   useEffect(() => {

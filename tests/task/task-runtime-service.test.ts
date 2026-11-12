@@ -2,7 +2,7 @@ import { beforeEach, describe, expect, it } from 'vitest';
 import Database from 'better-sqlite3';
 import { resolve } from 'node:path';
 import { tmpdir } from 'node:os';
-import { runMigrations } from '../../src/storage/migrations.js';
+import { initializeDatabaseSchema } from '../../src/storage/schema.js';
 import { TaskRepo } from '../../src/storage/task-repo.js';
 import { TaskEngine } from '../../src/task/task-engine.js';
 import { TaskRuntimeService } from '../../src/task/task-runtime-service.js';
@@ -21,7 +21,7 @@ describe('TaskRuntimeService Task Domain facade', () => {
   beforeEach(() => {
     db = new Database(':memory:');
     db.pragma('foreign_keys = ON');
-    runMigrations(db);
+    initializeDatabaseSchema(db);
     repo = new TaskRepo(db);
     const stateChanges = new TaskStateChangeRepo(db);
     const taskEngine = new TaskEngine({

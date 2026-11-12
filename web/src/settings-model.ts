@@ -1,3 +1,4 @@
+import { DEFAULT_AGENT_ROLES } from '../../src/configuration/default-agent-roles';
 import type { ProviderProtocol } from '../../src/configuration/types';
 export type ConfigurationFieldState =
   | '已自动发现'
@@ -117,6 +118,7 @@ export interface AgentClassRoutingFacts {
 }
 
 export const DEFAULT_AGENT_DISPLAY_NAMES: Readonly<Record<string, string>> = {
+  ...Object.fromEntries(Object.entries(DEFAULT_AGENT_ROLES).map(([ref, role]) => [ref, role.displayName])),
   'pi-agent': '智能体 1',
 };
 

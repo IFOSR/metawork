@@ -1,6 +1,6 @@
 import Database from 'better-sqlite3';
 import { describe, expect, it } from 'vitest';
-import { runMigrations } from '../../src/storage/migrations.js';
+import { initializeDatabaseSchema } from '../../src/storage/schema.js';
 import { KernelDispatchItemRepo } from '../../src/storage/kernel-dispatch-item-repo.js';
 import type { AuthorizedExecutorBinding } from '../../src/core/authorized-executor-binding.js';
 
@@ -16,7 +16,7 @@ const binding: AuthorizedExecutorBinding = {
 function setup(): { db: Database.Database; repo: KernelDispatchItemRepo } {
   const db = new Database(':memory:');
   db.pragma('foreign_keys = ON');
-  runMigrations(db);
+  initializeDatabaseSchema(db);
   const now = '2026-09-03T15:30:28.000Z';
   db.prepare(`
     INSERT INTO tasks (

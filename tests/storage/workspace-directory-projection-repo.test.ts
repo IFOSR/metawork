@@ -3,7 +3,7 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
-import { runMigrations } from '../../src/storage/migrations.js';
+import { initializeDatabaseSchema } from '../../src/storage/schema.js';
 import { SqliteWorkspaceDirectoryProjectionRepo } from '../../src/storage/workspace-directory-projection-repo.js';
 import type { WorkspaceConversationSummary } from '../../src/workspace/workspace-conversation-projector.js';
 
@@ -17,7 +17,7 @@ afterEach(() => {
 function fixture() {
   const db = new Database(':memory:');
   databases.push(db);
-  runMigrations(db);
+  initializeDatabaseSchema(db);
   return { db, repo: new SqliteWorkspaceDirectoryProjectionRepo(db, 'local-default') };
 }
 
@@ -194,7 +194,7 @@ describe('Workspace directory durable projection', () => {
     const path = join(directory, 'projection.sqlite');
     const firstDb = new Database(path);
     databases.push(firstDb);
-    runMigrations(firstDb);
+    initializeDatabaseSchema(firstDb);
     const first = new SqliteWorkspaceDirectoryProjectionRepo(firstDb, 'local-default');
     first.upsert(row('conv_missing'));
     let token = begin(first, 'source');

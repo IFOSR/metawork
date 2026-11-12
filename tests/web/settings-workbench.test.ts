@@ -475,7 +475,8 @@ describe('Settings workbench model semantics', () => {
     expect(panel).toContain('buildProviderCards');
     expect(panel).not.toContain('for (const [providerRef, completed] of Object.entries(completionProviders))');
     expect(panel).toContain('draftValidationIssues.length > 0');
-    expect(routing).toContain('当前没有可用模型，请重新选择');
+    expect(routing).toContain('请选择你自己的模型完成绑定');
+    expect(routing).toContain('请先在“模型服务”添加你自己的 Provider 和模型');
     expect(routing).toContain('职责');
     expect(routing).not.toContain('为什么这样路由');
     expect(panel).not.toContain('运行 {runningRevisionId');

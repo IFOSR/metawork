@@ -11,7 +11,7 @@ import {
 } from '../../src/account/account-kernel-coordinator.js';
 import { ACCOUNT_KERNEL_ACCEPTED_ACTIONS } from '../../src/account/account-runtime-composition.js';
 import { KernelWorkflowRepo } from '../../src/storage/kernel-workflow-repo.js';
-import { runMigrations } from '../../src/storage/migrations.js';
+import { initializeDatabaseSchema } from '../../src/storage/schema.js';
 
 const CONFIGURATION_REVISION = 'revision_coordinator';
 
@@ -102,7 +102,7 @@ describe('AccountKernelCoordinator', () => {
 
 function makeStore(): { repo: KernelWorkflowRepo; applied: string[] } {
   const db = new Database(':memory:');
-  runMigrations(db);
+  initializeDatabaseSchema(db);
   seedConfigurationRevision(db);
   const repo = new KernelWorkflowRepo(db);
   return { repo, applied: [] };

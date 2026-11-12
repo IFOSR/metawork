@@ -6,7 +6,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 import { ManagedLocalServices } from '../../src/execution/managed-local-service.js';
 import { localServiceSpecificationRevision } from '../../src/core/local-service-revision.js';
 import { ManagedLocalServiceRepo } from '../../src/storage/managed-local-service-repo.js';
-import { runMigrations } from '../../src/storage/migrations.js';
+import { initializeDatabaseSchema } from '../../src/storage/schema.js';
 
 const cleanups: Array<() => Promise<void>> = [];
 afterEach(async () => {
@@ -43,7 +43,7 @@ http.createServer((request, response) => { response.end('ok'); })
   .listen(Number(process.env.PORT), process.env.HOST);`);
 
   const db = new Database(join(root, 'state.db'));
-  runMigrations(db);
+  initializeDatabaseSchema(db);
   cleanups.push(async () => db.close());
   const insertTask = db.prepare(
     "INSERT INTO tasks (id,title,goal,status,created_at,updated_at) VALUES (?, ?, ?, 'succeeded', 'now', 'now')",
@@ -221,6 +221,10 @@ describe('follow-up run target resolution', () => {
     });
     expect(started.error).toBeNull();
     expect(started.result?.state).toBe('healthy');
+    // Rereading the same project-local manifest must keep its normalized
+    // directory in the revision, including after an authorization was stored.
+    const reread = await manager.resolveServiceSpecification({ taskId: 'task_new' });
+    expect(reread.specification).toEqual(resolved.specification);
   });
 
   it('reports a broken project manifest and still finds the launch from the project', async () => {
