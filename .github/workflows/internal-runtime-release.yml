@@ -23,6 +23,8 @@ jobs:
   build:
     name: ${{ matrix.target }}
     runs-on: ${{ matrix.runner }}
+    env:
+      METAWORK_PI_COMMAND: ${{ github.workspace }}/.tmp/pi-build-host/bin/pi
     strategy:
       fail-fast: false
       matrix:
@@ -69,6 +71,8 @@ jobs:
       # repository's own toolchain (esbuild), so install dependencies first.
       - name: Install dependencies
         run: npm ci
+      - name: Prepare isolated upstream Pi build host
+        run: node scripts/prepare-pi-build-host.mjs
       - name: Prepare pinned memory engine
         run: node scripts/prepare-memory-engine.mjs
       - name: Verify memory engine (FTS5 gate)
