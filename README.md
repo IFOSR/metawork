@@ -25,15 +25,15 @@ executing, recovering, and delivering agent work.
 
 - **Durable work:** Tasks, Work Graphs, results, recovery facts, and audit
   history persist across process restarts.
-- **Governed execution:** the Planner proposes work, the ControlKernel
-  authorizes state changes, and Executors run only concrete approved attempts.
-- **Multiple clients, one runtime:** Desktop, Web, TUI, and Feishu clients
+- **Governed execution:** the Planner (Manager) proposes work, MetaWork validates
+  the proposal, and Executors run only concrete approved attempts.
+- **Multiple clients, one runtime:** Desktop, Web, and Feishu clients
   share the same versioned Gateway command and event plane. Server owns the
   Runtime and remains alive when Clients exit.
-- **Unified multi-client observation:** Web, Feishu, and the native TUI can
-  follow the same Tasks and Conversations. Switching sessions reads a bounded
-  client read model instead of replaying an entire historical session, while
-  the TUI task dashboard shows running, queued, and needs-attention work together.
+- **Unified multi-client observation:** Web and Feishu can follow the same Tasks
+  and Conversations. Switching sessions reads a bounded client read model instead
+  of replaying an entire historical session, and running, queued and
+  needs-attention work is visible from every client.
 - **Explainable routing:** every authorized attempt is pinned to a configuration
   revision and a complete Provider, Model, AgentClass, Harness, and Permission
   Profile binding.
@@ -51,7 +51,7 @@ executing, recovering, and delivering agent work.
   The optional watchdog expires only when the Harness is genuinely idle and is
   paused while an authoritative operation is active.
 - **Explicit recovery:** retry, fallback, continuation, merge repair,
-  cancellation, and resume remain ControlKernel decisions.
+  cancellation, and resume are owned by MetaWork's durable control contracts.
 
 ```text
 Plan -> Authorize -> Dispatch -> Execute -> Verify -> Publish -> Deliver
@@ -63,10 +63,11 @@ MetaWork is the canonical product represented by this repository. It is a
 proprietary commercial system.
 
 [AnyFusion](https://github.com/IFOSR) is a separate open-source project.
-MetaWork may reuse or adapt attributed AnyFusion components and contracts. In
-particular, the vendored `planner/AnyFusion-Pi` fork remains the isolated
-Planner component, and durable/protocol compatibility identifiers retain their
-existing names where changing them would break installations.
+MetaWork may reuse or adapt attributed AnyFusion components and contracts, and
+`MetaClaw`/`anyfusion` identifiers retain their historical names where changing
+them would break existing installations. The packaged Manager and Executor run
+the pinned upstream Pi (ADR-0055 D6); the vendored `planner/AnyFusion-Pi` fork is
+removed and is not part of this repository or its releases.
 
 ## Release
 
@@ -97,34 +98,37 @@ use Web or Feishu with the Server package.
 
 [Latest macOS/Linux Release and archives](https://github.com/IFOSR/metawork/releases/latest) ·
 [v0.1.27 release notes](docs/releases/v0.1.27.md).
-All **15 assets** are published: nine Runtime/Memory/Pi archives (three per
-platform), three signed manifests, `install.sh`, the Pi build-time pin and the
-Desktop DMG. The links above follow GitHub's latest Release. The installer selects
-the matching architecture and verifies the Runtime, Memory and Pi archives against
-the signed manifest's SHA-256 hashes and byte sizes.
+All **15 assets** are the same build (`0.1.27-build-ffca58f`, revision
+`ffca58f`): nine Runtime/Memory/Pi archives (three per platform), three signed
+manifests, `install.sh`, the Pi build-time pin and the one Desktop DMG. The
+installer selects the matching architecture and verifies the Runtime, Memory and
+Pi archives against the signed manifest's SHA-256 hashes and byte sizes.
 
-This release does not include an Intel Mac DMG, Linux Desktop package, native
-Windows package, Linux arm64 archives or container images. Windows-specific
-source work is on the
+Only macOS Apple Silicon ships as a Desktop DMG
+(`MetaWork-darwin-arm64.dmg`, 345,085,425 bytes, SHA-256
+`b6053c22b1e816a64c80c63cdd45da4a77a6f2a29ebe806ba789fe2b128812c1`).
+macOS Intel and Linux x64 are Server packages used through the Web client; there
+is no Intel DMG, no Linux Desktop package and no Linux arm64 archive. This
+release contains **no Windows artifacts** at all (`install.ps1` is not
+published): Windows source work is unmaintained and kept only on the
 [`fix/windows-native-web`](https://github.com/IFOSR/metawork/tree/fix/windows-native-web) branch.
 Validation results and outstanding full-suite CI failures are documented in the
 release notes.
 
 The Desktop DMG uses an internal ad-hoc signature and
 is not notarized with an Apple Developer ID. It currently supports macOS Apple
-Silicon (`arm64`) only. The Server/Web/TUI installer supports Linux x64,
+Silicon (`arm64`) only. The Server/Web installer supports Linux x64,
 macOS arm64 and macOS x64.
 
 ## Installation
 
-Desktop, browser, TUI and Feishu share one Server and the selected installation's
+Desktop, browser and Feishu share one Server and the selected installation's
 account data. Web is included in the Server package and does not require Desktop.
 
 | Preferred interface | Install | Open |
 | --- | --- | --- |
 | macOS Apple Silicon Desktop | Desktop DMG | MetaWork.app |
-| Browser | Native Server package | Start Server, then `metawork web` |
-| Terminal UI | Same Server package | Start Server, then `metawork tui` |
+| Browser | Native Server package | Start Server, then `metawork web` (bare `metawork` opens Web too) |
 | Feishu | Same Server package and Feishu app configuration | `metawork server setup-feishu` |
 | Source development | Source instructions below | CLI or isolated Desktop |
 
@@ -148,17 +152,19 @@ account data. Web is included in the Server package and does not require Desktop
 6. After the one-time Runtime update, MetaWork opens the Web workspace. Configure
    models later in Settings, then complete the first login and choose a Workspace.
 
-Desktop bundles Node, Pi Executor, Server/Web and Planner. macOS Command Line Tools
-provide the system Git used for repository operations; Codex is optional. The default installation
-is `~/.metawork`. Existing model settings, conversations and work data are
-preserved; do not delete this directory to add Desktop. **Install Terminal Command…** optionally
-adds `metawork`, allowing Web/TUI to connect to the same Server. Quitting Desktop
-leaves Server and background work running.
+Desktop bundles Node, Pi Executor, Server/Web and Memory; there is no packaged
+Planner fork. macOS Command Line Tools provide the system Git used for repository
+operations; Codex is optional. The default installation is `~/.metawork`. Existing
+model settings, conversations and work data are preserved; do not delete this
+directory to add Desktop. **Install Terminal Command…** optionally adds
+`metawork`, allowing Web to connect to the same Server. Quitting Desktop leaves
+Server and background work running.
 
 To use the browser later, start Desktop (or start the installed Server), then run
-`metawork web` after installing the terminal command. To use the native TUI, run
-`metawork tui` in the same installation. Both clients use the Server and account
-data created by Desktop; do not create a second installation for them.
+`metawork web` after installing the terminal command; a bare `metawork` opens the
+same Web client. The TUI that earlier versions documented is removed and is no
+longer a supported client. Web uses the Server and account data created by
+Desktop; do not create a second installation for it.
 
 To update, download/mount the latest DMG, quit MetaWork, and replace
 `MetaWork.app` in Applications. On the next launch, if the Desktop and local
@@ -166,7 +172,7 @@ Runtime identities differ, choose **完成更新并重启** once and wait for th
 progress indicator. There is no separate file-installation menu. Do not delete
 `~/.metawork` or the application support directory.
 
-### Server with Web / TUI / Feishu
+### Server with Web / Feishu
 
 Prerequisites: **Node.js 22.x, at least 22.19.0**, Git, your model provider's API
 URL/model ID/API key, and at least one supported Executor CLI (Pi Agent or Codex)
@@ -198,8 +204,7 @@ metawork server start
 In another terminal, choose your client:
 
 ```bash
-metawork web                    # opens the local Web workspace
-metawork tui                    # native terminal UI
+metawork web                    # opens the local Web workspace (bare `metawork` does the same)
 metawork server setup-feishu    # optional Feishu app setup
 ```
 
@@ -236,7 +241,6 @@ For Desktop development from a checkout:
 npm ci
 npm ci --prefix web --ignore-scripts
 npm ci --prefix apps/desktop
-npm ci --prefix planner/AnyFusion-Pi --ignore-scripts
 npm run dev:desktop
 ```
 
@@ -270,23 +274,28 @@ macOS and Linux use this layout and connect local Clients to a Unix socket:
 
 ~/.metawork/
 ├── app/
-│   ├── current
+│   ├── current -> releases/<releaseId>
 │   └── releases/
 ├── data/
 │   ├── gateway.sock
 │   └── runtime.lock
+├── credentials.json
 ├── accounts/local-default/
+│   ├── account.json
 │   ├── config/
-│   ├── secrets/
+│   │   ├── active -> revisions/<revisionId>
+│   │   └── revisions/
+│   ├── manager/
+│   ├── conversations/
 │   ├── generated/
 │   ├── data/
 │   │   ├── anyfusion.db
 │   │   ├── database-revisions/
 │   │   ├── backups/
 │   │   └── results/
-│   ├── planner/sessions/
-│   ├── conversations/
+│   ├── workspace-catalog/
 │   ├── workspace-store/
+│   ├── workspace-git/
 │   ├── attempts/
 │   └── gateway/
 └── upgrade-journals/
@@ -303,19 +312,15 @@ Three steps from a fresh install to your first delivered task:
 #    background deployment)
 metawork server start
 
-# 2. In a second terminal, launch the single MetaWork TUI from your project
-#    directory
-cd /path/to/your/project
-metawork
-
-# Or use the Web Client
+# 2. In a second terminal, open the Web client (bare `metawork` does the same).
+#    TUI support was removed; Web is the terminal-free interface.
 metawork web            # opens http://127.0.0.1:8788 in your browser
 ```
 
-3. Describe the task in natural language. The Planner interprets the request
-and proposes a Work Graph, the ControlKernel authorizes it, and an Executor
-completes approved attempts in managed Git worktrees. Results are verified,
-published through the Git publication gate, and delivered back to the
+3. Describe the task in natural language. The Planner (Manager) interprets the
+request and proposes a Work Graph, MetaWork validates and authorizes it, and an
+Executor completes approved attempts in managed Git worktrees. Results are
+verified, published through the Git publication gate, and delivered back to the
 Conversation.
 
 Prefer working inside Feishu? Run `metawork server setup-feishu` after
@@ -469,10 +474,10 @@ Profile** operation uses the same semantic compilation path to:
 4. derive read-only labels and a structured routing projection.
 
 The final manual is the semantic source used by Planner. The routing projection
-is its machine-readable view used by Planner validation and ControlKernel model
+is its machine-readable view used by Planner validation and MetaWork's model
 selection. User guidance takes precedence over conflicting generated
 positioning, but it cannot authorize an unconfigured Model, widen permissions,
-or bypass Kernel authorization. Removing a Model automatically removes the
+or bypass MetaWork's admission checks. Removing a Model automatically removes the
 capabilities it was the only evidence for after the profile is refreshed.
 
 ## License
