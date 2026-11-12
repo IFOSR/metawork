@@ -144,13 +144,16 @@ account data. Web is included in the Server package and does not require Desktop
    Finder, right-click **MetaWork.app** and choose **Open**, then confirm **Open**.
    If macOS still blocks it, open **System Settings → Privacy & Security**, scroll
    to the security message, and choose **Open Anyway**; then repeat step 3.
-5. The first launch does not ask for model credentials. If the installed Desktop
-   and local Runtime have different release identities, it shows **完成更新并重启**.
-   Click it once and wait; the page shows update progress and tells you not to
-   click again or reopen the app. Existing credentials, conversations and work
-   data are preserved.
-6. After the one-time Runtime update, MetaWork opens the Web workspace. Configure
-   models later in Settings, then complete the first login and choose a Workspace.
+5. The first launch does not ask for model credentials. It installs the Runtime
+   bundled with the app into `~/.metawork` automatically and restarts the
+   background service; progress and the final state are shown in the window, and
+   no manual confirmation is needed. If a previous update was interrupted, the app
+   isolates the incompatible installation, installs the bundled version cleanly,
+   and restores the previous installation if that clean install fails. Existing
+   credentials, conversations and work data are preserved.
+6. When the background service is ready, MetaWork opens the Web workspace.
+   Configure models later in Settings, then complete the first login and choose a
+   Workspace.
 
 Desktop bundles Node, Pi Executor, Server/Web and Memory; there is no packaged
 Planner fork. macOS Command Line Tools provide the system Git used for repository
@@ -167,9 +170,9 @@ longer a supported client. Web uses the Server and account data created by
 Desktop; do not create a second installation for it.
 
 To update, download/mount the latest DMG, quit MetaWork, and replace
-`MetaWork.app` in Applications. On the next launch, if the Desktop and local
-Runtime identities differ, choose **完成更新并重启** once and wait for the
-progress indicator. There is no separate file-installation menu. Do not delete
+`MetaWork.app` in Applications. The next launch adopts the bundled Runtime and
+restarts the background service automatically, showing progress instead of asking
+for a manual step. There is no separate file-installation menu. Do not delete
 `~/.metawork` or the application support directory.
 
 ### Server with Web / Feishu
