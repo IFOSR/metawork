@@ -2,7 +2,7 @@
 
 - 计划/本批交付日期：2026-11-12。
 - 状态：本批修复和 8788 用户旅程已验证；整体升级验收未关闭。
-- Closing commit：无。按仓库要求仅本地修改，未提交、未推送。
+- Closing commit：`9c321a3d`（2026-11-12）。用户追加授权后提交至 `feature/no-kernel-convergence`，并纳入本地主干合并；未推送远端。整体升级验收的未关闭项保留如下。
 - 依据：ADR-0055、ADR-0020、2026-11-08 continuation record、2026-11-10 全盘 review、2026-11-11 Web 与完成收尾记录。
 - 用户约束：所有真实 Web 验证使用现有 8788，未另外部署验收 Web。
 
@@ -58,7 +58,7 @@
 
 ## 同日追加：快捷复制与完成会话刷新稳定性
 
-- 本批交付日期：2026-11-12；状态：复制和已确认的刷新缺陷完成本地修复。用户报告的“任何完成会话整页持续闪动”未稳定复现，不能以以下抽样结果断言全部原因已消除。Closing commit：无，按要求未提交/推送。
+- 本批交付日期：2026-11-12；状态：复制和已确认的刷新缺陷完成本地修复。此阶段用户报告的“任何完成会话整页持续闪动”未稳定复现，不能以以下抽样结果断言全部原因已消除；最终定位见文末追加记录。Closing commit：`9c321a3d`。
 - 问题和回答增加无文字、无边框的复制图标，保留键盘可操作语义、复制成功/失败反馈。普通回答复制完整可见 Markdown 正文，系统命令复制完整返回文本；HTTP/Clipboard API 不可用时使用兼容复制，恢复焦点、选区，避免滚动跳动。两种方式均失败时明确报告失败。
 - 已证实的刷新缺陷：`MarkdownContent` 原来按附件数组对象身份重建渲染插槽。内容相同的新数组也会卸载图表、图片和附件控件，重置图表展开/图例状态，并可能改变布局。现改为按附件内容判断；真实回答变化仍正常更新。
 - 公共刷新优化：官方账号状态每 5 秒刷新时，状态未改变则保留原 React state，避免无必要的整页及账号区域重新渲染；不停止权益检查或任务状态更新。
@@ -86,7 +86,8 @@ Validation: focused Executor, Router, and Web failure tests pass (36 tests),
 ### Completed conversation periodic layout shift — confirmed and fixed (2026-11-12)
 
 Status: implemented and validated locally on 8788; completion date 2026-11-12.
-Closing commit: none, per the user's no-commit/no-push instruction.
+Closing commit: `9c321a3d`, committed after the user explicitly authorized local
+commit and integration into main. No remote push was requested or performed.
 This finding supersedes the earlier inconclusive completed-page flicker sample.
 
 - Reproduced in the user's “收集上海做小红书 GEO” conversation
