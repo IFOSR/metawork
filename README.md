@@ -70,38 +70,38 @@ existing names where changing them would break installations.
 
 ## Release
 
-The current release is **v0.1.26 (Internal)**, published on **2026-11-06**.
-It restores the Executor's extension tools and keeps the previous Desktop
-upgrade and recovery fixes:
+The current release is **v0.1.27 (Internal)**, published on **2026-11-12**.
+It retires the kernel control axis in favour of the `src/control` contracts and
+keeps the execution recovery fixes:
 
-- Executing Attempts receive Pi's complete tool registry again. The `pi --tools`
-  flag is a global allowlist that also covers extension tools, so deriving it
-  from the Executor affordance projection had removed `web_search`, `web_fetch`,
-  `evidence_*`, `result_reference_list/get` and the `pdf_*` tools from every
-  Attempt since 2026-10-28. Affordances now decide only what gets materialized.
-- Dependent Subtasks read authorized upstream results directly again instead of
-  working around a missing tool with shell scanning.
-- The response-only completion correction runs with no tools and no session; its
-  contract is one completion trailer and no action.
+- The packaged Manager and Executor run the pinned upstream Pi; the vendored
+  Planner fork is gone. Planning facts carry the execution write fact instead of
+  rendering the Manager's read-only tool surface as a Workspace property.
+- Recoverable blocked Subtasks stay resumable, Tasks left `executing` without live
+  work are parked for an explicit resume, orphan replans of terminal Tasks are
+  cancelled, and an accepted receipt counts as a completion source.
+- A Desktop launch that finds an interrupted update whose restore stage failed
+  isolates the incompatible installation and installs the current version cleanly,
+  restoring the previous installation if that clean install fails.
 
 The same Release contains Server packages for **macOS arm64, macOS x64 and
 Linux x64**, plus a **macOS arm64 Desktop DMG**. Intel Mac and Linux users can
-use Web, TUI or Feishu with the Server package.
+use Web or Feishu with the Server package.
 
 | Platform | Latest available version | Download / install |
 | --- | --- | --- |
-| macOS Apple Silicon (`arm64`) Desktop | 0.1.26 | [Latest DMG](https://github.com/IFOSR/metawork/releases/latest/download/MetaWork-darwin-arm64.dmg) |
-| macOS Apple Silicon (`arm64`) Server | 0.1.26 | [Latest installer](https://github.com/IFOSR/metawork/releases/latest/download/install.sh) · [Signed manifest](https://github.com/IFOSR/metawork/releases/latest/download/manifest.darwin-arm64.json) |
-| macOS Intel (`x64`) Server | 0.1.26 | [Latest installer](https://github.com/IFOSR/metawork/releases/latest/download/install.sh) · [Signed manifest](https://github.com/IFOSR/metawork/releases/latest/download/manifest.darwin-x64.json) |
-| Linux / WSL2 (`x64`) Server | 0.1.26 | [Latest installer](https://github.com/IFOSR/metawork/releases/latest/download/install.sh) · [Signed manifest](https://github.com/IFOSR/metawork/releases/latest/download/manifest.linux-x64.json) |
+| macOS Apple Silicon (`arm64`) Desktop | 0.1.27 | [Latest DMG](https://github.com/IFOSR/metawork/releases/latest/download/MetaWork-darwin-arm64.dmg) |
+| macOS Apple Silicon (`arm64`) Server | 0.1.27 | [Latest installer](https://github.com/IFOSR/metawork/releases/latest/download/install.sh) · [Signed manifest](https://github.com/IFOSR/metawork/releases/latest/download/manifest.darwin-arm64.json) |
+| macOS Intel (`x64`) Server | 0.1.27 | [Latest installer](https://github.com/IFOSR/metawork/releases/latest/download/install.sh) · [Signed manifest](https://github.com/IFOSR/metawork/releases/latest/download/manifest.darwin-x64.json) |
+| Linux / WSL2 (`x64`) Server | 0.1.27 | [Latest installer](https://github.com/IFOSR/metawork/releases/latest/download/install.sh) · [Signed manifest](https://github.com/IFOSR/metawork/releases/latest/download/manifest.linux-x64.json) |
 
 [Latest macOS/Linux Release and archives](https://github.com/IFOSR/metawork/releases/latest) ·
-[v0.1.26 release notes](docs/releases/v0.1.26.md).
-All **14 assets** are published: nine Runtime/Planner/Memory archives (three per
-platform), three signed manifests, `install.sh`, and the Desktop DMG. The links
-above follow GitHub's latest Release. The installer selects the matching
-architecture and verifies the Runtime, Planner and Memory archives against the
-signed manifest's SHA-256 hashes and byte sizes.
+[v0.1.27 release notes](docs/releases/v0.1.27.md).
+All **15 assets** are published: nine Runtime/Memory/Pi archives (three per
+platform), three signed manifests, `install.sh`, the Pi build-time pin and the
+Desktop DMG. The links above follow GitHub's latest Release. The installer selects
+the matching architecture and verifies the Runtime, Memory and Pi archives against
+the signed manifest's SHA-256 hashes and byte sizes.
 
 This release does not include an Intel Mac DMG, Linux Desktop package, native
 Windows package, Linux arm64 archives or container images. Windows-specific
