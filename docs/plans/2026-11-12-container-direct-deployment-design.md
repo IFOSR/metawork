@@ -108,3 +108,27 @@
 镜像 anyfusion-runtime 0.1.25.9 已推送（digest
 sha256:228575cdfcbea9431312176cbc11391286c0e304d6c422c5cd047c4be9353fcd）；
 回归用例覆盖"无 systemManaged 标记的 .6/.7 播种卷必须被自愈"；测试 6/6、lint 干净。
+
+### 补丁（0.1.27.0）：镜像引擎统一为上游固定版本 Pi
+
+主线 v0.1.27 删除了 vendored planner fork 与 docker/ 构建线（Pi 引擎改为
+tools/pi-runtime 清单锁定的上游 @earendil-works/pi-coding-agent 精确版本）。
+本分支的托管实例镜像仍依赖两者——本次对齐主线的"上游固定版本"路线：
+
+- Dockerfile.runtime：planner-builder 阶段（fork 全量构建，~30 分钟大头）
+  替换为 pi-installer 阶段（npm ci 固定清单 + bin 包装，秒级）；planner 与
+  执行器统一用上游 Pi 1.5.0；镜像瘦身 3.05GB → 2.38GB
+- kimi 兼容不再依赖 fork 源码补丁：上游 1.5.0 支持
+  `model.compat.supportsDeveloperRole` 按模型覆盖；运行时渲染器对
+  api.kimi.com / api.moonshot.* 端点注入 supportsDeveloperRole:false
+  （上游 isNonStandard 名单漏了 api.kimi.com，本注入压过它）；
+  planner 与 pi-home 两份 models.json 共用同一渲染函数，一处注入全链路生效
+- main 删除 docker/ 支持文件（entrypoint/pi-config/planner-pi-config 等）
+  时被自动合并顺带删除——已从合并前提交恢复
+- 新增迁移守卫测试改对 main 的 prepareDatabaseSchema 版本拒绝语义
+
+镜像 anyfusion-runtime 0.1.27.0 已推送（digest
+sha256:8169339dcdb3addf05ac9cf958bfe8653e97a0e27646380cab62b5700130a2a3）；
+远端验证：imagetools inspect + --pull=always 拉取运行——pi --version = 1.5.0、
+引导/自愈/兼容注入/mkdir 路由/前端新建目录全部在镜像内。守卫/引导/限根/暂存
+测试 29+ 通过；lint 与 web 构建干净。

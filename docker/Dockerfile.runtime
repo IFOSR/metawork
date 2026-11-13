@@ -11,9 +11,9 @@ WORKDIR /build
 COPY tools/pi-runtime/package.json tools/pi-runtime/package-lock.json ./
 # 国内源：npm 走 npmmirror（构建环境在中国大陆，直连 registry.npmjs.org 不稳定）。
 RUN npm ci --ignore-scripts --registry=https://registry.npmmirror.com \
-  && mkdir -p /opt/pi \
+  && mkdir -p /opt/pi/bin \
   && cp -a package.json package-lock.json node_modules /opt/pi/ \
-  && printf '%s\n' '#!/bin/sh' 'exec /usr/local/bin/node /opt/pi/node_modules/@earendil-works/pi-coding-agent/dist/cli.js "$@"' > /opt/pi/bin/pi \
+  && printf '%s\n' '#!/bin/sh' 'exec /usr/local/bin/node /opt/pi/node_modules/@earendil-works/pi-coding-agent/dist/bundle/cli.js "$@"' > /opt/pi/bin/pi \
   && chmod +x /opt/pi/bin/pi
 
 FROM docker:27-cli AS docker-cli
