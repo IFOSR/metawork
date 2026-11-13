@@ -960,3 +960,18 @@ sha256:dbd4532903db4433305d5e5ca2e80f8a2c0c62cd68b0dab4333e9b66740271e3）。
 
 镜像 anyfusion-runtime 0.1.27.1 已推送（digest
 sha256:233a6a3a1d23c71808ca9d69e2650eb1ec0c78f7bf5d998fabe01bfdfc1b183b）。
+
+### 首启种子对齐 main 原生惰性形状（2026-11-13，0.1.27.2）
+
+容器引导种子对齐 main 安装器"无 Provider 安装"的原生形状：providers/models 为空、
+角色（总管/助理/分析师）预置但 enabled: false、modelPolicy 指向尚未存在的
+default-model——schema 对禁用角色豁免交叉校验，运行时带着惰性角色直接启动。
+设置页的默认角色与模型绑定引导（isDefaultAgentSetupPending）识别该状态并接管
+后续绑定；占位模型/Provider 不再播种（此前占位方案与 main 的绑定引导 UX 分叉，
+且占位模型不可选会造成"没有模型可绑"的困惑）。harness 三套对齐 main 安装器
+（anyfusion-planner/release:pi、pi-engineering-cli、pi-cli）。
+
+镜像 anyfusion-runtime 0.1.27.2 已推送（digest
+sha256:e978563a949020814b0402f230a793a2fe37d7e55dc6c473174b38f797eb6632）；
+远端验证：--pull=always 拉取运行——pi 1.5.0、引导/自愈/kimi 兼容注入/
+exchange Web 会话修复/mkdir 路由/前端新建目录全部在镜像内。
