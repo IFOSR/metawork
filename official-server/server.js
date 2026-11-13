@@ -163,9 +163,12 @@ const runtimeEnv = {
   image: env.RUNTIME_IMAGE || '',
   port: Number(env.RUNTIME_PORT ?? 8788) || 8788,
   tlsSecret: env.RUNTIME_TLS_SECRET || 'metawork-nexusfusionai-com-tls',
-  storageClass: env.RUNTIME_STORAGE_CLASS || 'cloud-nas-cnfs',
+  // 存储类默认 ESSD 云盘（alicloud-disk-essd，最小 20Gi）：块存储单路延迟
+  // ~1ms，替代 NAS（CNFS）的 ~46ms/事务——SQLite/git 的小笔写入密集，
+  // NAS 的 fsync 网络往返是实例卡顿的主因。已存在的 NAS PVC 不受影响。
+  storageClass: env.RUNTIME_STORAGE_CLASS || 'alicloud-disk-essd',
   recycleDays: Number(env.RUNTIME_RECYCLE_DAYS ?? 30) || 30,
-  pvcSize: env.RUNTIME_PVC_SIZE || '10Gi',
+  pvcSize: env.RUNTIME_PVC_SIZE || '20Gi',
   readyPollMs: Number(env.RUNTIME_READY_POLL_MS ?? 2000) || 2000,
   // 就绪等待上限：覆盖镜像拉取 + 容器启动的完整窗口；就绪判定按镜像匹配
   // （detectServiceReady），超时后由查询/维护 sweep 继续收敛，状态不会卡死。
