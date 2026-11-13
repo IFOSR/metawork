@@ -2,24 +2,20 @@
 //
 // 容器直接运行镜像内代码，不再经过 install-cli；全新 PVC 上没有任何 active 配置，
 // server 启动会因 `active configuration is missing` 失败。本模块只在
-// METAWORK_CONTAINER_BOOTSTRAP=1 且配置缺失时播种一份最小配置——形状与 install-cli
-// 非交互安装（未配置 Provider）完全一致：providers/models 为空，planner/codex/pi
-// 三套 harness 与 AgentClass 骨架。用户随后在设置页完成登录与模型配置。
+// METAWORK_CONTAINER_BOOTSTRAP=1 且配置缺失时播种最小配置——形状与 main 安装器
+// "无 Provider 安装"一致：providers/models 为空，角色（总管/助理/分析师）预置为
+// enabled: false + 未绑定（schema 对禁用角色豁免交叉校验），设置页的默认角色与
+// 模型绑定引导接管后续绑定。用户随后在设置页完成登录与模型配置。
 //
 // 原生 macOS 路径没有该环境变量，保持原有"提示先运行 install"行为不变。
 import { ConfigurationService } from './configuration-service.js';
+import { DEFAULT_AGENT_ROLES } from './default-agent-roles.js';
 import type { AnyFusionConfigurationV2 } from './types.js';
 
 export interface ContainerBootstrapResult {
   readonly revisionId: string;
 }
 
-export interface ContainerBootstrapOptions {
-  /** 占位 Provider 端点；缺省回退到 OPENAI_BASE_URL（租户模板恒注入）。 */
-  readonly baseUrl?: string;
-  /** 占位模型 ID；缺省 deepseek-chat。用户随后在设置页换成真实模型。 */
-  readonly modelId?: string;
-}
 
 /** 容器首启是否应播种配置：显式环境开关，原生路径永不触发。 */
 export function containerBootstrapRequested(env: NodeJS.ProcessEnv = process.env): boolean {
@@ -38,9 +34,8 @@ export function containerBootstrapRequested(env: NodeJS.ProcessEnv = process.env
  */
 export async function bootstrapContainerConfiguration(
   service: ConfigurationService,
-  options: ContainerBootstrapOptions = {},
 ): Promise<ContainerBootstrapResult> {
-  const draft = service.createDraft(containerSeedConfiguration(options), null);
+  const draft = service.createDraft(containerSeedConfiguration(), null);
   const validation = service.validateDraft(draft.revisionId);
   if (!validation.ok) {
     throw new Error(
@@ -65,50 +60,39 @@ export async function bootstrapContainerConfiguration(
 }
 
 /**
- * 与 install-cli（配置了 Provider）生成的配置同形。
+ * 与 main 安装器"无 Provider 安装"的形状一致（ADR-0056）：
+ * providers/models 为空，三套 harness 与角色（总管/助理/分析师）预置但
+ * enabled: false、modelPolicy 指向尚未存在的 default-model 引用——schema
+ * 对禁用角色豁免交叉校验，运行时带着惰性角色直接启动。
  *
- * 校验规则要求 AgentClass 的 modelRef 必须指向存在且启用的模型，因此种子带一个
- * 占位 Provider + 启用模型：端点取自 OPENAI_BASE_URL（租户模板恒注入占位值），
- * 凭据引用留空槽位。用户随后在设置页换成真实 Provider 与模型。
+ * 用户在设置页添加 Provider 与模型并绑定角色后，走正常的"暂存 → 校验 →
+ * 激活"流程；默认角色与模型绑定引导（isDefaultAgentSetupPending）负责
+ * 识别这个未绑定状态并展示指引。
  */
-export function containerSeedConfiguration(
-  options: ContainerBootstrapOptions = {},
-): AnyFusionConfigurationV2 {
+export function containerSeedConfiguration(): AnyFusionConfigurationV2 {
   const modelRef = 'default-model';
-  const providerRef = 'default-provider';
-  const baseUrl = (options.baseUrl ?? process.env.OPENAI_BASE_URL ?? 'https://api.deepseek.com')
-    .trim().replace(/\/+$/u, '');
-  const modelId = options.modelId?.trim() || process.env.METAWORK_PROVIDER_MODEL?.trim() || 'deepseek-chat';
   return {
     schemaVersion: 2,
-    providers: {
-      [providerRef]: {
-        displayName: '初始占位 Provider',
-        protocol: 'openai-compatible',
-        baseUrl,
-        apiKeyRef: `file-secret:anyfusion/providers/${providerRef}`,
-        region: 'international',
-        systemManaged: true,
-        enabled: true,
-      },
-    },
-    models: {
-      [modelRef]: {
-        providerRef,
-        modelId,
-        systemManaged: true,
-        capabilities: ['coding', 'long-context', 'planning', 'structured-output', 'tools'],
-        reasoning: 'high',
-        enabled: true,
-      },
-    },
+    providers: {},
+    models: {},
     harnesses: {
       'anyfusion-planner': {
         kind: 'planner',
         transport: 'local-process',
-        commandRef: 'release:planner',
+        commandRef: 'release:pi',
         args: [],
         driverId: 'anyfusion-planner-host-v2',
+        supportsProbe: true,
+        supportsAbort: true,
+        supportsContinuation: true,
+        enabled: true,
+      },
+      'pi-engineering-cli': {
+        kind: 'executor',
+        transport: 'local-cli',
+        command: 'pi',
+        args: [],
+        driverId: 'pi-cli',
         supportsProbe: true,
         supportsAbort: true,
         supportsContinuation: true,
@@ -128,6 +112,7 @@ export function containerSeedConfiguration(
     },
     agentClasses: {
       planner: {
+        ...DEFAULT_AGENT_ROLES.planner,
         kind: 'planner',
         harnessRef: 'anyfusion-planner',
         modelPolicy: { mode: 'fixed', modelRef },
@@ -139,9 +124,26 @@ export function containerSeedConfiguration(
         mcpServers: ['metaclaw-planner'],
         plugins: [],
         generatedRuntimeRef: 'planner',
-        enabled: true,
+        enabled: false,
+      },
+      'pi-engineering': {
+        ...DEFAULT_AGENT_ROLES['pi-engineering'],
+        kind: 'executor',
+        harnessRef: 'pi-cli',
+        modelPolicy: { mode: 'fixed', modelRef },
+        permissionProfileRef: 'workspace-engineering',
+        routingCapabilities: ['workspace-engineering', 'document-processing'],
+        primaryUseCases: ['repository implementation', 'tests', 'engineering documentation', 'image generation', 'image editing'],
+        avoidUseCases: ['current public-web research requiring source-backed delivery'],
+        plannerAffordances: ['workspace-read-write', 'workspace-command-validation'],
+        skills: [],
+        mcpServers: [],
+        plugins: [],
+        generatedRuntimeRef: 'pi-engineering',
+        enabled: false,
       },
       'pi-research': {
+        ...DEFAULT_AGENT_ROLES['pi-research'],
         kind: 'executor',
         harnessRef: 'pi-cli',
         modelPolicy: { mode: 'fixed', modelRef },
@@ -154,7 +156,7 @@ export function containerSeedConfiguration(
         mcpServers: [],
         plugins: [],
         generatedRuntimeRef: 'pi-research',
-        enabled: true,
+        enabled: false,
       },
     },
     permissionProfiles: {

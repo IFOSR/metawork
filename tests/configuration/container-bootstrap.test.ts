@@ -45,88 +45,75 @@ describe('containerBootstrapRequested', () => {
 });
 
 describe('bootstrapContainerConfiguration', () => {
-  it('seeds and activates a minimal configuration on an empty volume', async () => {
+  it('seeds the inert default-role preset on an empty volume', async () => {
     const { repository, service } = await serviceFixture();
     expect((await repository.recover()).status).toBe('empty');
 
-    const result = await bootstrapContainerConfiguration(service, {
-      baseUrl: 'https://api.placeholder.example/v1',
-      modelId: 'placeholder-model',
-    });
+    const result = await bootstrapContainerConfiguration(service);
     expect(result.revisionId).toMatch(/^bootstrap-/u);
 
     const snapshot = await repository.getActiveSnapshot();
     expect(snapshot.revisionId).toBe(result.revisionId);
     expect(snapshot.config.schemaVersion).toBe(2);
-    // 校验规则要求 modelRef 指向存在且启用的模型：种子带占位 Provider + 启用模型，
-    // 用户随后在设置页换成真实 Provider 与模型。
-    const provider = snapshot.config.providers['default-provider'];
-    expect(provider?.enabled).toBe(true);
-    expect(provider?.baseUrl).toBe('https://api.placeholder.example/v1');
-    const model = snapshot.config.models['default-model'];
-    expect(model?.enabled).toBe(true);
-    expect(model?.modelId).toBe('placeholder-model');
+    // 与 main 安装器"无 Provider 安装"同形：无 Provider/模型，三套 harness 与
+    // 角色预置但全部 enabled: false（惰性），等用户绑定后激活。
+    expect(snapshot.config.providers).toEqual({});
+    expect(snapshot.config.models).toEqual({});
+    expect(Object.keys(snapshot.config.harnesses).sort()).toEqual([
+      'anyfusion-planner', 'pi-cli', 'pi-engineering-cli',
+    ]);
     expect(Object.keys(snapshot.config.agentClasses).sort()).toEqual([
-      'pi-research', 'planner',
+      'pi-engineering', 'pi-research', 'planner',
     ]);
+    for (const agent of Object.values(snapshot.config.agentClasses)) {
+      expect(agent.enabled).toBe(false);
+    }
   });
 
-  it('seed shape matches the install-cli configured-provider skeleton', () => {
-    const seed = containerSeedConfiguration({ baseUrl: 'https://x.example/v1', modelId: 'm' });
-    expect(Object.keys(seed.harnesses).sort()).toEqual([
-      'anyfusion-planner', 'pi-cli',
-    ]);
-    expect(seed.agentClasses.planner.harnessRef).toBe('anyfusion-planner');
-    expect(seed.permissionProfiles['workspace-engineering']).toBeTruthy();
-    expect(seed.permissionProfiles['public-web-research']).toBeTruthy();
-    // 占位 Provider/Model 标记 systemManaged：启动自愈只补写这类凭据，
-    // 且设置页能把它们与用户自己配置的 Provider 区分开。
-    expect(seed.providers['default-provider']?.systemManaged).toBe(true);
-    expect(seed.models['default-model']?.systemManaged).toBe(true);
+  it('reports the seeded revision id for the console revision list', async () => {
+    const { service } = await serviceFixture();
+    const result = await bootstrapContainerConfiguration(service);
+    expect(result.revisionId).toContain('bootstrap-');
+  });
+});
+
+describe('ensureBootstrapProviderCredentials', () => {
+  const config = {
+    providers: {
+      kimi: { enabled: true, apiKeyRef: 'file-secret:anyfusion/providers/kimi' },
+      idle: { enabled: false, apiKeyRef: 'file-secret:anyfusion/providers/idle' },
+    },
+    models: {},
+  };
+  const secretStoreFor = (stored: Map<string, string>) => ({
+    get: async (reference: string) => {
+      const value = stored.get(reference);
+      if (value === undefined) throw new Error('missing');
+      return value;
+    },
+    put: async (reference: string, value: string) => { stored.set(reference, value); },
   });
 
-  it('self-heals the placeholder credential when it is missing', async () => {
-    const seed = containerSeedConfiguration({});
+  it('heals any enabled provider that is missing its credential', async () => {
     const stored = new Map<string, string>();
+    const healed = await ensureBootstrapProviderCredentials({ config, secretStore: secretStoreFor(stored) });
+    expect(healed).toEqual(['kimi']);
+    expect(stored.get('file-secret:anyfusion/providers/kimi')).toBe(BOOTSTRAP_PLACEHOLDER_CREDENTIAL);
+    expect(stored.has('file-secret:anyfusion/providers/idle')).toBe(false);
+  });
+
+  it('never overwrites an existing non-empty credential', async () => {
+    let puts = 0;
+    const stored = new Map<string, string>([['file-secret:anyfusion/providers/kimi', 'sk-user-key']]);
     const secretStore = {
       get: async (reference: string) => {
         const value = stored.get(reference);
         if (value === undefined) throw new Error('missing');
         return value;
       },
-      put: async (reference: string, value: string) => { stored.set(reference, value); },
+      put: async (reference: string, value: string) => { stored.set(reference, value); puts += 1; },
     };
-    const healed = await ensureBootstrapProviderCredentials({ config: seed, secretStore });
-    expect(healed).toEqual(['default-provider']);
-    expect(stored.get(seed.providers['default-provider']!.apiKeyRef))
-      .toBe(BOOTSTRAP_PLACEHOLDER_CREDENTIAL);
-  });
-
-  it('heals seeded volumes whose providers predate the systemManaged marker', async () => {
-    // 旧种子播种的 Provider 没有 systemManaged 标记：按标记圈范围会让存量卷
-    // 永远修不好，判定必须是"enabled 且凭据缺失"。
-    const seed = containerSeedConfiguration({});
-    delete (seed.providers['default-provider'] as Record<string, unknown>).systemManaged;
-    delete (seed.models['default-model'] as Record<string, unknown>).systemManaged;
-    const stored = new Map<string, string>();
-    const secretStore = {
-      get: async () => { throw new Error('missing'); },
-      put: async (reference: string, value: string) => { stored.set(reference, value); },
-    };
-    const healed = await ensureBootstrapProviderCredentials({ config: seed, secretStore });
-    expect(healed).toEqual(['default-provider']);
-    expect(stored.get(seed.providers['default-provider']!.apiKeyRef))
-      .toBe(BOOTSTRAP_PLACEHOLDER_CREDENTIAL);
-  });
-
-  it('leaves an existing non-empty credential alone', async () => {
-    const seed = containerSeedConfiguration({});
-    let puts = 0;
-    const secretStore = {
-      get: async () => 'sk-user-configured-key',
-      put: async () => { puts += 1; },
-    };
-    const healed = await ensureBootstrapProviderCredentials({ config: seed, secretStore });
+    const healed = await ensureBootstrapProviderCredentials({ config, secretStore });
     expect(healed).toEqual([]);
     expect(puts).toBe(0);
   });
