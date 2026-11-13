@@ -323,12 +323,11 @@ function renderRoutePolicyPanel(input: {
       ) : (
         <div className="route-field">
           <span className="field-label">固定模型</span>
-          {selectedSystemModel ? (
+          {selectedSystemModel && (
             <div className="route-system-managed" role="status">
-              系统默认模型：<strong>{selectedSystemModel.modelId}</strong>（由 MetaWork 管理）
+              当前绑定系统默认模型：<strong>{selectedSystemModel.modelId}</strong>（由 MetaWork 管理）——可在下方改为自己的模型。
             </div>
-          ) : (
-          <>
+          )}
           {!fixedModelAvailable && (
             <div className="route-invalid">
               {enabledModels.length ? '请选择你自己的模型完成绑定。' : '请先在“模型服务”添加你自己的 Provider 和模型，再回到此处绑定。'}
@@ -362,8 +361,6 @@ function renderRoutePolicyPanel(input: {
               );
             })}
           </select>
-          </>
-          )}
         </div>
       )}
 
