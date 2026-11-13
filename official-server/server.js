@@ -951,6 +951,9 @@ function sandboxDeploymentManifest(row, name) {
               // 监听地址（ADR-0056 后主线的 env 契约）：0.0.0.0 才能让 kubelet
               // 探针从 Pod 外打进 8788；缺省 loopback 会让实例永远卡"部署中"。
               { name: 'METAWORK_SERVER_HOST', value: '0.0.0.0' },
+              // 非 loopback 绑定的安全门（ADR-0055 D10）：显式声明本实例唯一
+              // 可达 origin（用户浏览器经 Ingress 访问的域名）。
+              { name: 'METAWORK_SERVER_ALLOWED_ORIGINS', value: `https://${row.domain}` },
               // 旧名保留给 ≤0.1.25.9 镜像线；0.1.27+ 只读 METAWORK_SERVER_HOST。
               { name: 'METAWORK_WEB_HOST', value: '0.0.0.0' },
               { name: 'METAWORK_WEB_PORT', value: String(runtimeEnv.port) },
