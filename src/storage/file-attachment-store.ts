@@ -3,6 +3,8 @@ import { readFileSync, readdirSync } from 'node:fs';
 import { mkdir, open, readdir, rename, rm, writeFile } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 import { MAX_ATTACHMENT_BYTES } from '../gateway/attachment-store-port.js';
+import { isPathInsideDirectory } from '../utils/paths.js';
+import { renameReplacingTarget } from '../utils/directory-pointer.js';
 import {
   AttachmentInputError,
   AttachmentTypeError,
@@ -244,7 +246,7 @@ export class FileAttachmentStore {
         `${JSON.stringify(metadata, null, 2)}\n`,
         { encoding: 'utf8', mode: 0o600, flag: 'wx' },
       );
-      await rename(temporaryPath, targetPath);
+      await renameReplacingTarget(temporaryPath, targetPath);
       dataPublished = true;
       await rename(temporaryMetadataPath, metadataPath);
       return metadata;
@@ -400,7 +402,7 @@ export class FileAttachmentStore {
 
   private conversationDirectory(conversationId: string): string {
     const path = resolve(this.rootDir, conversationId);
-    if (!path.startsWith(`${this.rootDir}/`)) {
+    if (!isPathInsideDirectory(path, this.rootDir)) {
       throw new Error(`Invalid conversation ID: ${conversationId}`);
     }
     return path;

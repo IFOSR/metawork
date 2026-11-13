@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto';
-import { cp, mkdir, rename, rm, symlink, writeFile } from 'node:fs/promises';
+import { cp, mkdir, rm, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
+import { createDirectorySymlink, renameOverPointer } from '../utils/directory-pointer.js';
 import { desktopInventory, type DesktopRelease } from './desktop-release.js';
 import { readReleaseIdentity } from './release-identity.js';
 import { acquireRuntimeUpdateLock } from './runtime-update-lock.js';
@@ -43,8 +44,13 @@ export async function restoreManagedTools(resources: string, root: string, relea
       throw new Error('Managed tools integrity mismatch');
     }
     const next = `${pointer}.${randomUUID()}.tmp`;
-    await symlink(candidate, next);
-    await rename(next, pointer);
+    await createDirectorySymlink(candidate, next);
+    try {
+      await renameOverPointer(next, pointer);
+    } catch (error) {
+      await rm(next, { force: true });
+      throw error;
+    }
     temporary = undefined; // Activated tree is immutable; do not edit the original release.
   } finally {
     if (temporary) await rm(temporary, { recursive: true, force: true });

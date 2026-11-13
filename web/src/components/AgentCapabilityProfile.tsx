@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import type { HttpClient } from '../api/http';
 import type { AgentCapabilityDescription } from '../api/types';
 import type { AgentClassRoutingFacts, SettingsModelEntry } from '../settings-model';
-import { AiActionStatus, type AiActionFeedback, sameAiText, aiActionError } from './AiActionStatus';
+import { AiActionStatus, type AiActionFeedback, sameAiText, aiActionError, degradationNotice } from './AiActionStatus';
 
 export function AgentCapabilityProfile({ http, facts, models }: {
   http?: HttpClient | null;
@@ -16,6 +16,9 @@ export function AgentCapabilityProfile({ http, facts, models }: {
       modelRef: model.ref, modelId: model.modelId, capabilities: model.capabilities,
       description: model.description, routingNotes: model.routingNotes,
       publicFacts: model.publicFacts, contextLimit: model.contextLimit,
+      // 编辑态的模型尚未进入已激活配置，服务端无法从 modelRef 反查 Provider；
+      // 这里只传引用，服务端据此解析端点与凭据。
+      providerRef: model.providerRef,
     })),
   });
   const [request, setRequest] = useState<{ key: string; sequence: number }>({ key: '', sequence: 0 });
@@ -48,6 +51,8 @@ export function AgentCapabilityProfile({ http, facts, models }: {
   const description = result?.key === inputKey ? result.description : undefined;
   const currentFeedback = feedback?.key === inputKey ? feedback : undefined;
   const loading = currentFeedback?.status === 'loading';
+  // 用户指定的模型未生效时如实告知：本次结果由官方内置 AI 生成。
+  const degradation = degradationNotice(description?.degraded);
   return (
     <section className="executor-auto-capabilities agent-capability-profile" aria-label="智能体能力" aria-busy={loading}>
       <div className="capability-profile-heading">
@@ -70,7 +75,8 @@ export function AgentCapabilityProfile({ http, facts, models }: {
             detail={loading ? (description ? '正在调用 AI 检查与整理；下方仍为更新前说明。' : '正在调用 AI 整理当前智能体能力，完成后将在下方显示。')
               : currentFeedback.status === 'error' ? `${currentFeedback.message} ${description ? '下方保留更新前说明。' : '尚未生成能力说明。'} 可点击“能力更新”重试。`
                 : currentFeedback.status === 'unchanged' ? '本次返回内容与更新前一致，无需替换；下方保留原有说明。'
-                  : currentFeedback.initial ? '下方已显示当前选择对应的能力说明。' : '下方已显示更新后说明。'} />}
+                  : currentFeedback.initial ? '下方已显示当前选择对应的能力说明。' : '下方已显示更新后说明。'}
+            {...(degradation ? { note: degradation } : {})} />}
           {!http && <p className="field-help">能力整理服务暂不可用。</p>}
           {description && <>
             <p className="agent-capability-summary">{description.summary}</p>

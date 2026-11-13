@@ -1,0 +1,160 @@
+# MetaWork 主服务（沙盒/远程）k8s 部署清单
+#
+# 镜像: 192.168.0.184/metafusion/anyfusion-runtime:0.1.25
+# 访问: NodePort 30878 → 容器 8788
+#   1. kubectl apply -f docker/metawork-server-k8s.yaml
+#   2. kubectl -n metawork-sandbox rollout status deploy/metawork-server
+#   3. kubectl -n metawork-sandbox logs deploy/metawork-server | grep -i "token"
+#      （启动日志会打印 Web 访问 token 行）
+#   4. 浏览器打开: http://<任一节点IP>:30878/?token=<第 3 步的 token>
+#
+# 约束:
+#   - SQLite 单写者: replicas 固定 1、更新策略 Recreate、卷必须 RWO。
+#   - METAWORK_WEB_HOST=0.0.0.0 是本次新增的远程监听开关；不设置时默认仅 127.0.0.1。
+#   - OPENAI_BASE_URL 仅用于渲染 Planner/Executor 配置模板的占位入口，
+#     真实 Provider/模型在 Web 设置页配置；不设置时容器启动即退出。
+#
+# 私有仓库拉取（集群节点未登录 Harbor 时执行一次，替换 <用户>/<密码>）:
+#   kubectl -n metawork-sandbox create secret docker-registry harbor-pull \
+#     --docker-server=192.168.0.184 --docker-username=<用户> --docker-password=<密码>
+# 然后取消下方 imagePullSecrets 注释。
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: metawork-sandbox
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: metawork-data
+  namespace: metawork-sandbox
+spec:
+  storageClassName: nfs-storage
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 10Gi
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: metawork-server
+  namespace: metawork-sandbox
+  labels:
+    app: metawork-server
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: metawork-server
+  template:
+    metadata:
+      labels:
+        app: metawork-server
+    spec:
+      # imagePullSecrets:
+      #   - name: harbor-pull
+      containers:
+        - name: server
+          image: 192.168.0.184/metafusion/anyfusion-runtime:0.1.25.2
+          imagePullPolicy: IfNotPresent
+          # 容器默认 CMD 是 TUI（需要 TTY）。启动守卫：目标 release 已激活则
+          # 跳过安装；已有其他安装走事务化 update（保留账户/配置数据）；
+          # 全新卷走 install。之后前台启动服务。
+          command: ["/bin/sh", "-c"]
+          args:
+            - >-
+              WANT=container-0.1.25.2;
+              CUR=$(cat /data/anyfusion/app/current/release-identity.json 2>/dev/null | tr -d '\n' | sed 's/.*"releaseId"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/');
+              if [ "$CUR" = "$WANT" ]; then
+              echo "release $WANT already active, skipping install";
+              elif [ -d /data/anyfusion/app/current ]; then
+              node /app/dist/install-cli.js update "$WANT" --source-root /app --planner-root /opt/anyfusion-planner/app;
+              else
+              node /app/dist/install-cli.js install "$WANT" --source-root /app --planner-root /opt/anyfusion-planner/app;
+              fi;
+              exec node /app/dist/index.js server start
+          env:
+            - name: METAWORK_WEB_HOST
+              value: "0.0.0.0"
+            - name: METAWORK_WEB_PORT
+              value: "8788"
+            # 非 macOS 原生安装的强制要求：凭据走文件 SecretStore。
+            # 官方服务地址使用镜像烘焙默认（发布渠道原地址）；如需指向其他
+            # 官方服务，在此追加：
+            #   - name: METAWORK_OFFICIAL_SERVER_URL
+            #     value: "https://<官方服务地址>"
+            # 渲染 Planner/Codex/Pi 配置模板必须非空；占位即可。
+            - name: OPENAI_BASE_URL
+              value: "https://api.deepseek.com"
+          ports:
+            - name: web
+              containerPort: 8788
+          volumeMounts:
+            - name: data
+              mountPath: /data
+          readinessProbe:
+            # GET / 未鉴权返回 Web 首页（index.html）；/api/auth/launch-context
+            # 是 POST 且有消费副作用，不能用作探针。
+            httpGet:
+              path: /
+              port: web
+            initialDelaySeconds: 10
+            periodSeconds: 10
+          resources:
+            requests:
+              cpu: "500m"
+              memory: 1Gi
+            limits:
+              cpu: "2"
+              memory: 4Gi
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: metawork-data
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: metawork-web
+  namespace: metawork-sandbox
+spec:
+  # NodePort 作为无 Ingress 环境的直连兜底；有 Ingress 时走下方域名。
+  type: NodePort
+  selector:
+    app: metawork-server
+  ports:
+    - name: web
+      port: 8788
+      targetPort: web
+      nodePort: 30878
+---
+# Ingress（nginx）。host 按实际 DNS/内网 hosts 调整；集群无 nginx ingress
+# controller 时删除本段，直接用上面的 NodePort（http://<节点IP>:30878）。
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: metawork-web
+  namespace: metawork-sandbox
+  annotations:
+    # Web 工作台依赖 WebSocket 长连接：抬高读写超时并关闭缓冲。
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "3600"
+    nginx.ingress.kubernetes.io/proxy-send-timeout: "3600"
+    nginx.ingress.kubernetes.io/proxy-buffering: "off"
+spec:
+  ingressClassName: nginx
+  rules:
+    - host: metawork-sandbox.nexusfusionai.com
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: metawork-web
+                port:
+                  number: 8788

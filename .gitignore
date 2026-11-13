@@ -32,3 +32,6 @@ memory/tdai/
 # Local release verification artifacts (large binaries, never committed)
 dist-release-local/
 *.dmg
+.idea/
+.zcode/
+tmp_gold/

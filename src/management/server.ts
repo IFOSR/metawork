@@ -38,6 +38,10 @@ import type { AgentReadiness } from './agent-installation-readiness-service.js';
 import type { WebAuthService } from './web-auth.js';
 import type { WebLaunchContextService } from './web-launch-context.js';
 import type { WorkspaceDirectoryBrowser } from './workspace-directory-browser.js';
+import {
+  createWorkspaceDirectory,
+  WorkspaceDirectoryCreateError,
+} from '../workspace/workspace-directory-creator.js';
 import type { ManagementWebSessionRuntime } from './web-session-runtime-types.js';
 import type { LocalAuthorizationService } from '../authorization/local-authorization-service.js';
 import type { MemoryManagementQuery } from './memory-management.js';
@@ -171,7 +175,7 @@ export interface ConfigQuery {
     description: string;
   }>;
   describeAgentCapabilities?(input: AgentCapabilityDescriptionInput, refresh: boolean): Promise<AgentCapabilityDescription>;
-  summarizeModelInformation?(catalogModelId: string): Promise<{
+  summarizeModelInformation?(catalogModelId: string, preferredModel?: { providerRef: string; modelId: string; baseUrl?: string }): Promise<{
     catalogModelId: string;
     routingNotes: import('../configuration/types.js').ModelRoutingNotes;
   }>;
@@ -274,6 +278,8 @@ export interface ManagementServerDeps {
   artifactQuery?: ArtifactPreviewService;
   /** 只读目录列举；仅对浏览器 cookie 会话开放。 */
   workspaceDirectoryBrowser: WorkspaceDirectoryBrowser;
+  /** 配置的工作目录根；null 表示不限制。 */
+  workspaceRoot?: string | null;
   executionQuery: ExecutionQuery;
   configQuery: ConfigQuery;
   configurationRuntime?: ConfigurationRuntimeStatusSource;
@@ -287,6 +293,8 @@ export interface ManagementServerDeps {
   };
   /** Official account authorization is owned by the Server and projected to clients. */
   officialAuthorization?: LocalAuthorizationService;
+  /** 沙盒免密：一次性 et → 官方服务代签发的登录形状会话（official-server 签发，Runtime 采纳）。 */
+  sandboxSessionExchange?: (et: string) => Promise<Parameters<LocalAuthorizationService['adoptSession']>[0]>;
   /** Long-term memory management view (optional capability). */
   memoryQuery?: MemoryManagementQuery;
   tokenUsageQuery?: TokenUsageManagementQuery;
@@ -401,6 +409,7 @@ export class ManagementServer {
   }
 
   get address(): string {
+    const host = this.deps.host?.includes(':') ? `[${this.deps.host}]` : this.deps.host ?? '127.0.0.1';
     const address = this.server?.address();
     if (address && typeof address !== 'string') {
       return describeBindingAddress(this.binding, address.port);
@@ -705,6 +714,27 @@ export class ManagementServer {
     // Compiled Web assets are public, including modules requested from the
     // opaque-origin document sandbox. Keep this exception outside /api/ so
     // account data still requires both an allowed origin and authentication.
+    // 沙盒免密：钥匙链接的最后一步——用一次性 et 向官方服务兑换正式会话并采纳，
+    // 完成后跳转工作台。et 即凭据，免 Bearer；失败时如实提示从 MetaWork 重新进入。
+    if (request.method === 'GET' && url.pathname === '/_sandbox/exchange') {
+      const authorization = this.deps.officialAuthorization;
+      const exchange = this.deps.sandboxSessionExchange;
+      response.setHeader('Cache-Control', 'no-store');
+      const et = (url.searchParams.get('et') ?? '').trim();
+      try {
+        if (!authorization || !exchange || !et) throw new Error('sandbox login unavailable');
+        await authorization.adoptSession(await exchange(et));
+        // v0.1.27 的 UI 登录态按浏览器 Web 会话 cookie 判定：采纳官方会话后
+        // 必须同时给浏览器种 Web 会话，否则跳转后 UI 显示"未登录官方账号"。
+        const webSession = this.deps.webAuth.createSession();
+        response.setHeader('Set-Cookie', this.deps.webAuth.sessionCookie(webSession.sessionToken));
+        response.writeHead(302, { Location: '/' });
+        response.end();
+      } catch {
+        this.sendJson(response, 502, { error: 'sandbox_login_unavailable' });
+      }
+      return;
+    }
     if (!url.pathname.startsWith('/api/')
       && (request.method === 'GET' || request.method === 'HEAD')) {
       await this.handleStatic(response, url.pathname, request.method === 'HEAD');
@@ -724,6 +754,7 @@ export class ManagementServer {
       response.end(JSON.stringify({ error: 'origin_not_allowed' }));
       return;
     }
+
 
     if (url.pathname.startsWith('/api/')) {
       await this.handleApi(request, response, url);
@@ -1097,6 +1128,37 @@ export class ManagementServer {
         const status = code === 'browse_path_forbidden'
           ? 403
           : code === 'browse_path_not_found' ? 404 : 400;
+        this.sendJson(response, status, { error: code });
+      }
+      return;
+    }
+
+    if (request.method === 'POST' && url.pathname === '/api/workspaces/mkdir') {
+      // 新建目录与浏览共用同一边界：只对浏览器 cookie 会话开放，且必须落在
+      // 配置的工作目录根内（未配置根时不限）。
+      if (!authSession) {
+        this.sendJson(response, 403, { error: 'cookie_session_required' });
+        return;
+      }
+      const body = await readRequestBody(request);
+      if (typeof body.parentPath !== 'string' || !body.parentPath.trim()
+        || typeof body.name !== 'string' || !body.name.trim()) {
+        this.sendJson(response, 400, { error: 'workspace directory parent and name are required' });
+        return;
+      }
+      try {
+        const created = await createWorkspaceDirectory({
+          parentPath: body.parentPath,
+          name: body.name,
+        }, { workspaceRoot: this.deps.workspaceRoot ?? null });
+        this.sendJson(response, 201, { directory: created });
+      } catch (error) {
+        const code = error instanceof WorkspaceDirectoryCreateError
+          ? error.code
+          : 'workspace_directory_create_failed';
+        const status = code === 'workspace_outside_root' ? 403
+          : code === 'directory_exists' ? 409
+            : code === 'directory_parent_not_found' ? 404 : 400;
         this.sendJson(response, status, { error: code });
       }
       return;
@@ -1480,7 +1542,23 @@ export class ManagementServer {
         this.sendJson(response, 400, { error: 'catalogModelId is required' });
         return;
       }
-      this.sendJson(response, 200, await this.deps.configQuery.summarizeModelInformation(catalogModelId));
+      // 只接受“引用”：Provider 与模型由本机配置解析，客户端提供的
+      // baseUrl、凭证或其它事实一律不参与本机决策。
+      const providerRef = typeof payload.providerRef === 'string' ? payload.providerRef.trim() : '';
+      const modelId = typeof payload.modelId === 'string' ? payload.modelId.trim() : '';
+      const baseUrl = typeof payload.baseUrl === 'string' ? payload.baseUrl.trim() : '';
+      if (providerRef.length > 128 || modelId.length > 256 || baseUrl.length > 512) {
+        this.sendJson(response, 400, { error: 'providerRef or modelId is invalid' });
+        return;
+      }
+      if (Boolean(providerRef) !== Boolean(modelId)) {
+        this.sendJson(response, 400, { error: 'providerRef and modelId must be provided together' });
+        return;
+      }
+      const preferredModel = providerRef && modelId
+        ? { providerRef, modelId, ...(baseUrl ? { baseUrl } : {}) }
+        : undefined;
+      this.sendJson(response, 200, await this.deps.configQuery.summarizeModelInformation(catalogModelId, preferredModel));
       return;
     }
 
@@ -1789,12 +1867,26 @@ export class ManagementServer {
         this.sendJson(response, 200, await authorization.getPlans());
         return;
       }
+      if (request.method === 'POST' && url.pathname === '/api/official-auth/email/code') {
+        const body = await readRequestBody(request);
+        const email = typeof body.email === 'string' ? body.email.trim() : '';
+        if (!email) {
+          this.sendJson(response, 400, { error: 'email is required' });
+          return;
+        }
+        this.sendJson(response, 200, await authorization.sendEmailCode(email));
+        return;
+      }
       if (request.method === 'POST' && url.pathname === '/api/official-auth/register') {
         const body = await readRequestBody(request);
-        if (typeof body.email !== 'string' || typeof body.password !== 'string') {
-          this.sendJson(response, 400, { error: 'invalid_account' }); return;
+        const email = typeof body.email === 'string' ? body.email.trim() : '';
+        const password = typeof body.password === 'string' ? body.password : '';
+        const code = typeof body.code === 'string' ? body.code.trim() : '';
+        if (!email || !password || !code) {
+          this.sendJson(response, 400, { error: 'email, password and code are required' });
+          return;
         }
-        await authorization.register(body.email, body.password);
+        await authorization.register(email, password, code);
         this.sendJson(response, 201, { registered: true }); return;
       }
       if (request.method === 'POST' && url.pathname === '/api/official-auth/login') {
@@ -1846,12 +1938,13 @@ export class ManagementServer {
         return;
       }
     } catch (error) {
-      const code = (error as { code?: string }).code;
+      const authError = error instanceof OfficialAuthorizationError ? error : null;
+      const code = authError?.code ?? (error as { code?: string }).code;
       const status = code === 'already_logged_in' ? 409
-        : code === 'entitlement_inactive' ? 402
-          : code === 'session_invalid' ? 401
+        : code === 'invalid_credentials' || code === 'session_invalid' ? 401
+          : code === 'entitlement_inactive' ? 402
             : code === 'verification_unavailable' || code === 'payment_unavailable' ? 503 : 400;
-      this.sendJson(response, status, { error: code ?? 'official_authorization_failed', message: error instanceof OfficialAuthorizationError ? error.message : '官方账号操作失败，请重试。' });
+      this.sendJson(response, status, { error: code ?? 'official_authorization_failed', message: authError ? authError.message : '官方账号操作失败，请重试。' });
       return;
     }
     this.sendJson(response, 404, { error: 'not_found' });
@@ -2085,6 +2178,8 @@ interface RequestBody {
   password?: string;
   baseRevisionId?: string;
   sourceText?: string;
+  parentPath?: string;
+  name?: string;
   config?: unknown;
   targetRevisionId?: string;
   providerRef?: string;
@@ -2099,6 +2194,8 @@ interface RequestBody {
   /** Long-term memory management. */
   memoryId?: string;
   enabled?: boolean;
+  /** 注册邮箱验证码。 */
+  code?: string;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

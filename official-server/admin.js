@@ -55,6 +55,15 @@ if (command === 'incidents') {
   const [orderId] = rest;
   if (!orderId) throw new Error('Usage: node admin.js close-order <order-id>');
   console.log(JSON.stringify(await call('/v1/admin/orders/close', { orderId }), null, 2));
+} else if (command === 'runtimes') {
+  const sub = rest[0];
+  if (sub === 'close') {
+    const sandboxId = rest[1];
+    if (!sandboxId) throw new Error('Usage: node admin.js runtimes close <sandbox-id>');
+    console.log(JSON.stringify(await call('/v1/admin/runtimes/close', { sandboxId }), null, 2));
+  } else {
+    console.log(JSON.stringify(await call('/v1/admin/runtimes', {}), null, 2));
+  }
 } else if (['grant-perpetual', 'revoke', 'disable'].includes(command)) {
   const [email] = rest;
   if (!email) throw new Error(`Usage: node admin.js ${command} <registered-email>`);
@@ -66,5 +75,5 @@ if (command === 'incidents') {
   await call(grant ? '/v1/admin/licenses' : '/v1/admin/revoke', { accountId: account.id, ...(grant ? { plan: 'internal_perpetual' } : { disable: command === 'disable' }) });
   console.log(grant ? 'Internal perpetual entitlement granted. Refresh entitlement in MetaWork.' : 'Sessions and entitlements revoked.');
 } else {
-  throw new Error('Usage: node admin.js <grant-perpetual|revoke|disable|orders|refund|refund-status|close-order|incidents> ...');
+  throw new Error('Usage: node admin.js <grant-perpetual|revoke|disable|orders|refund|refund-status|close-order|incidents|runtimes [close <sandbox-id>]> ...');
 }

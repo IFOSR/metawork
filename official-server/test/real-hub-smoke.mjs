@@ -81,7 +81,7 @@ const port = await new Promise(resolve => {
 const child = spawn(process.execPath, [fileURLToPath(new URL('../server.js', import.meta.url))], {
   cwd: root,
   env: {
-    ...env, PORT: String(port), HOST: '127.0.0.1', DATABASE_PATH: join(root, 'smoke.sqlite'),
+    ...env, NODE_ENV: 'test', PORT: String(port), HOST: '127.0.0.1', DATABASE_PATH: join(root, 'smoke.sqlite'),
     ADMIN_TOKEN: adminToken,
     PAYMENT_HUB_BASE_URL: env.PAYMENT_HUB_BASE_URL, PAYMENT_HUB_CLIENT_ID: env.PAYMENT_HUB_CLIENT_ID,
     PAYMENT_HUB_CLIENT_SECRET: env.PAYMENT_HUB_CLIENT_SECRET, PAYMENT_NOTIFY_URL: env.PAYMENT_NOTIFY_URL || '',
@@ -100,9 +100,11 @@ const call = async (path, { method = 'GET', token, body } = {}) => {
   return { status: response.status, body: await response.json().catch(() => null) };
 };
 try {
-  await call('/v1/auth/register', { method: 'POST', body: { email: 'hub-smoke@example.com', password: 'smoke-password-12345' } });
-  const login = await call('/v1/auth/login', { method: 'POST', body: { email: 'hub-smoke@example.com', password: 'smoke-password-12345' } });
-  const token = login.body.sessionToken;
+  // Test-only provisioning seam (NODE_ENV=test above): creates the account and issues a session directly.
+  const openId = `op_${randomBytes(32).toString('base64url').slice(0, 43)}`;
+  const provisioned = await call('/v1/admin/accounts', { method: 'POST', token: adminToken, body: { openId, displayName: 'Hub Smoke' } });
+  if (provisioned.status !== 201) { console.log(`FAIL bootstrap seam HTTP ${provisioned.status}`); process.exitCode = 1; }
+  const token = provisioned.body?.sessionToken;
   const order = await call('/v1/orders', { method: 'POST', token, body: { plan: 'monthly', idempotencyKey: `smoke-order-${Date.now()}` } });
   const orderId = order.body.orderId;
   const pay = await step('B1 server-pay-real-qr', () => call(`/v1/orders/${orderId}/pay`, { method: 'POST', token, body: {} }));

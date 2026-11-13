@@ -72,17 +72,22 @@ describe('single settings activation boundary', () => {
 });
 
 describe('official account local authentication boundary', () => {
+  const fact = { status: 'active' as const, plan: 'internal_perpetual' as const, effectiveAt: new Date().toISOString(), expiresAt: null, revision: 1, serverTime: new Date().toISOString() };
+  function officialClient(overrides: Partial<ConstructorParameters<typeof LocalAuthorizationService>[0]['client']> = {}) {
+    return {
+      sendEmailCode: async () => ({ sent: true, expiresIn: 900 }),
+      login: async () => ({ sessionToken: 'private-official-session', account: { accountId: 'a', email: 'a@example.com' }, entitlement: fact }),
+      logout: async () => {}, register: async () => {}, verifyEntitlement: async () => fact,
+      getPlans: async () => ({ plans: [] }), createOrder: async () => ({}),
+      ai: async () => ({ operation: 'model_summary' as const, result: {}, entitlement: fact }),
+      ...overrides,
+    };
+  }
   it('requires local authentication, rejects foreign origins, and never returns an official token', async () => {
     const port = await reservePort();
     const origin = `http://127.0.0.1:${port}`;
     let logins = 0;
-    const fact = { status: 'active' as const, plan: 'internal_perpetual' as const, effectiveAt: new Date().toISOString(), expiresAt: null, revision: 1, serverTime: new Date().toISOString() };
-    const auth = new LocalAuthorizationService({ client: {
-      login: async () => { logins++; return { sessionToken: 'private-official-session', account: { accountId: 'a', email: 'a@example.com' }, entitlement: fact }; },
-      logout: async () => {}, register: async () => {}, verifyEntitlement: async () => fact,
-      getPlans: async () => ({ plans: [] }), createOrder: async () => ({}),
-      ai: async () => ({ operation: 'model_summary' as const, result: {}, entitlement: fact }),
-    } });
+    const auth = new LocalAuthorizationService({ client: officialClient({ login: async () => { logins++; return { sessionToken: 'private-official-session', account: { accountId: 'a', email: 'a@example.com' }, entitlement: fact }; } }) });
     const server = createManagementServer(port, { officialAuthorization: auth });
     await server.start();
     try {
@@ -96,20 +101,67 @@ describe('official account local authentication boundary', () => {
       expect(result.status).toBe(200);
       const projection = await result.text();
       expect(projection).toContain('active'); expect(projection).not.toContain('private-official-session'); expect(projection).not.toContain('private-password');
+      // 手机号 OTP 入口随 OpenID 方案终止一并移除。
+      expect((await fetch(`${origin}/api/official-auth/otp/send`, { method: 'POST', headers: { ...headers, origin }, body: JSON.stringify({ phone: '13800138000' }) })).status).toBe(404);
+      expect((await fetch(`${origin}/api/official-auth/otp/login`, { method: 'POST', headers: { ...headers, origin }, body: JSON.stringify({ challengeId: 'chal-00000001', code: '123456' }) })).status).toBe(404);
+    } finally { await server.stop(); await auth.dispose(); }
+  });
+
+  it('refreshes the entitlement online after login and on every client page entry', async () => {
+    const port = await reservePort();
+    const origin = `http://127.0.0.1:${port}`;
+    let verifications = 0;
+    const auth = new LocalAuthorizationService({ client: officialClient({
+      verifyEntitlement: async () => { verifications++; return fact; },
+    }) });
+    const server = createManagementServer(port, { officialAuthorization: auth });
+    await server.start();
+    try {
+      const headers = { authorization: 'Bearer manual-token', 'content-type': 'application/json', origin };
+      const login = await fetch(`${origin}/api/official-auth/login`, {
+        method: 'POST', headers, body: JSON.stringify({ email: 'a@example.com', password: 'private-password' }),
+      });
+      expect(login.status).toBe(200);
+      // 登录成功后立即在线核验权益，登录响应的权益不再是最终事实。
+      expect(verifications).toBe(1);
+      // 每次进入客户端页面（已登录）都触发一次在线核验。
+      expect((await fetch(`${origin}/api/official-auth/verify`, { method: 'POST', headers })).status).toBe(200);
+      expect(verifications).toBe(2);
+    } finally { await server.stop(); await auth.dispose(); }
+  });
+
+  it('exposes the email verification code route behind the same local boundary', async () => {
+    const port = await reservePort();
+    const origin = `http://127.0.0.1:${port}`;
+    let sends = 0;
+    const auth = new LocalAuthorizationService({ client: officialClient({ sendEmailCode: async () => {
+      sends++;
+      if (sends > 1) throw new OfficialAuthorizationError('注册功能暂时不可用，请联系客服', 'verification_unavailable');
+      return { sent: true, expiresIn: 900 };
+    } }) });
+    const server = createManagementServer(port, { officialAuthorization: auth });
+    await server.start();
+    try {
+      const headers = { authorization: 'Bearer manual-token', 'content-type': 'application/json', origin };
+      expect((await fetch(`${origin}/api/official-auth/email/code`, { method: 'POST', headers, body: '{}' })).status).toBe(400);
+      const first = await fetch(`${origin}/api/official-auth/email/code`, { method: 'POST', headers, body: JSON.stringify({ email: 'a@example.com' }) });
+      expect(first.status).toBe(200);
+      await expect(first.json()).resolves.toMatchObject({ sent: true, expiresIn: 900 });
+      const failed = await fetch(`${origin}/api/official-auth/email/code`, { method: 'POST', headers, body: JSON.stringify({ email: 'a@example.com' }) });
+      expect(failed.status).toBe(503);
+      await expect(failed.json()).resolves.toMatchObject({ error: 'verification_unavailable' });
+      // 注册带验证码：未发码/错码走客户端错误映射后的同一拒绝路径
+      expect((await fetch(`${origin}/api/official-auth/register`, { method: 'POST', headers, body: JSON.stringify({ email: 'a@example.com', password: 'private-password' }) })).status).toBe(400);
     } finally { await server.stop(); await auth.dispose(); }
   });
 
   it('exposes the payment passthrough routes behind the same local boundary and error mapping', async () => {
     const port = await reservePort();
     const origin = `http://127.0.0.1:${port}`;
-    const fact = { status: 'active' as const, plan: 'internal_perpetual' as const, effectiveAt: new Date().toISOString(), expiresAt: null, revision: 1, serverTime: new Date().toISOString() };
     const payment = { hubOrderNo: 'a'.repeat(32), attempt: 1, status: 'pending' as const, amountCents: 990, qrCodeUrl: 'weixin://wxpay/bizpayurl?pr=test', expiresAt: null, paidAt: null, channelOrderNo: null };
     const order = { orderId: 'ord_1', plan: 'monthly' as const, amountCny: '9.90', currency: 'CNY', status: 'pending_payment', createdAt: new Date().toISOString(), payment };
     let pays = 0;
-    const auth = new LocalAuthorizationService({ client: {
-      login: async () => ({ sessionToken: 'private-official-session', account: { accountId: 'a', email: 'a@example.com' }, entitlement: fact }),
-      logout: async () => {}, register: async () => {}, verifyEntitlement: async () => fact,
-      getPlans: async () => ({ plans: [] }), createOrder: async () => ({}),
+    const auth = new LocalAuthorizationService({ client: officialClient({
       payOrder: async () => {
         pays++;
         if (pays > 1) throw new OfficialAuthorizationError('支付服务暂时不可用，请稍后重试。', 'payment_unavailable');
@@ -117,8 +169,7 @@ describe('official account local authentication boundary', () => {
       },
       getOrder: async () => ({ order, payment }),
       listOrders: async () => ({ orders: [order] }),
-      ai: async () => ({ operation: 'model_summary' as const, result: {}, entitlement: fact }),
-    } });
+    }) });
     const server = createManagementServer(port, { officialAuthorization: auth });
     await server.start();
     try {
@@ -197,10 +248,10 @@ describe('executor management API', () => {
 
   it('summarizes only the authenticated selected catalog model, ignoring client-supplied facts', async () => {
     const port = await reservePort();
-    const calls: string[] = [];
+    const calls: Array<{ catalogModelId: string; preferredModel?: { providerRef: string; modelId: string; baseUrl?: string } }> = [];
     const server = createManagementServer(port, { configQuery: {
-      summarizeModelInformation: async catalogModelId => {
-        calls.push(catalogModelId);
+      summarizeModelInformation: async (catalogModelId, preferredModel) => {
+        calls.push({ catalogModelId, ...(preferredModel ? { preferredModel } : {}) });
         return { catalogModelId, routingNotes: { summary: '代码实现', preferredTaskTypes: ['回归测试'] } };
       },
     } });
@@ -215,7 +266,21 @@ describe('executor management API', () => {
       }) });
       expect(response.status).toBe(200);
       expect(await response.json()).toMatchObject({ routingNotes: { preferredTaskTypes: ['回归测试'] } });
-      expect(calls).toEqual(['openai/gpt-6-sol']);
+      // 客户端只提供引用；未指定用户模型时不转发任何端点。
+      expect(calls[0]).toEqual({ catalogModelId: 'openai/gpt-6-sol' });
+      // providerRef 与 modelId 必须成对出现。
+      expect((await fetch(url, { method: 'POST', headers, body: JSON.stringify({
+        catalogModelId: 'openai/gpt-6-sol', providerRef: 'custom-model-2',
+      }) })).status).toBe(400);
+      const preferred = await fetch(url, { method: 'POST', headers, body: JSON.stringify({
+        catalogModelId: 'openai/gpt-6-sol', providerRef: 'custom-model-2', modelId: 'kimi-for-coding',
+        baseUrl: 'https://api.kimi.com/coding/v1', apiKey: 'untrusted-key',
+      }) });
+      expect(preferred.status).toBe(200);
+      expect(calls[1]).toEqual({
+        catalogModelId: 'openai/gpt-6-sol',
+        preferredModel: { providerRef: 'custom-model-2', modelId: 'kimi-for-coding', baseUrl: 'https://api.kimi.com/coding/v1' },
+      });
     } finally { await server.stop(); }
   });
 

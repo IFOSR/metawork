@@ -26,7 +26,9 @@ import Database from 'better-sqlite3';
 import { FileAccountRepository } from '../account/file-account-repository.js';
 import { LOCAL_DEFAULT_ACCOUNT_ID } from '../account/account-id.js';
 import { resolveAccountPaths } from '../account/account-paths.js';
+import { createFilePointer } from '../utils/directory-pointer.js';
 import type { AnyFusionPaths } from './paths.js';
+import { renameReplacingTarget } from '../utils/directory-pointer.js';
 
 const LAYOUT_MANIFEST_NAME = 'account-layout-manifest.json';
 const JOURNAL_SCHEMA_VERSION = 1;
@@ -220,7 +222,7 @@ export class AccountLayoutMigrator {
     if (await this.pathExists(paths.database)) {
       await this.backupSqliteDatabase(paths.database, stagedDatabase);
       this.assertSqliteIntegrity(stagedDatabase);
-      await symlink(join('database-revisions', basename(stagedDatabase)), accountPaths.database.replace(accountPaths.root, stageRoot));
+      await createFilePointer(join('database-revisions', basename(stagedDatabase)), accountPaths.database.replace(accountPaths.root, stageRoot));
     }
 
     await this.copyDirectoryIfExists(
@@ -288,6 +290,10 @@ export class AccountLayoutMigrator {
     }
     const targetActive = join(targetConfigRoot, 'active');
     await rm(targetActive, { recursive: true, force: true });
+    // The migration manifest seals symlink target strings verbatim, so this
+    // pointer must stay a relative symlink: a junction's absolute target would
+    // dangle after the staging tree is renamed into its final location and
+    // fail manifest verification there.
     await symlink(join('revisions', basename(target)), targetActive, 'dir');
   }
 
@@ -475,7 +481,7 @@ async function writeAtomicJson(path: string, value: unknown): Promise<void> {
       await handle.close();
     }
   }
-  await rename(temporary, path);
+  await renameReplacingTarget(temporary, path);
   if (process.platform !== 'win32') {
     const directory = await open(parent, 'r');
     try {

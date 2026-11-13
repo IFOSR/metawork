@@ -3,6 +3,7 @@ import { dirname, resolve } from 'node:path';
 import { isValidAccountId } from '../account/account-id.js';
 import type { CommandReceipt } from './command-admission.js';
 import type { GatewayCommand, GatewayScope } from './client-protocol.js';
+import { renameReplacingTarget } from '../utils/directory-pointer.js';
 
 export type CommandAdmissionState = 'pending' | 'submitted' | 'terminal' | 'uncertain';
 
@@ -425,7 +426,7 @@ export class FileCommandAdmissionStore implements CommandAdmissionStore {
       `${JSON.stringify(file, null, 2)}\n`,
       { encoding: 'utf8', mode: 0o600 },
     );
-    await rename(temporaryPath, path);
+    await renameReplacingTarget(temporaryPath, path);
   }
 }
 

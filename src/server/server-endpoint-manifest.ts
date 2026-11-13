@@ -2,6 +2,7 @@ import { mkdir, open, readFile, rename, unlink } from 'node:fs/promises';
 import { dirname } from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { isNamedPipePath } from '../platform/local-endpoint.js';
+import { renameReplacingTarget } from '../utils/directory-pointer.js';
 
 export const ENDPOINT_MANIFEST_VERSION = 1 as const;
 
@@ -67,7 +68,7 @@ export async function writeEndpointManifest(
   } finally {
     await handle.close();
   }
-  await rename(temporaryPath, path);
+  await renameReplacingTarget(temporaryPath, path);
 }
 
 export async function readEndpointManifest(path: string): Promise<EndpointManifest | null> {

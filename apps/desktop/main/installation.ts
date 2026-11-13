@@ -5,6 +5,7 @@ import { verifyDesktopRelease, type DesktopRelease } from '../../../src/installa
 import { readReleaseIdentity } from '../../../src/installation/release-identity.js';
 import { desktopSupportRoot } from '../../../src/installation/desktop-support.js';
 import { recoveredToolsPath, verifyManagedPi } from '../../../src/installation/managed-pi-recovery.js';
+import { createDirectorySymlink } from '../../../src/utils/directory-pointer.js';
 
 /** Installation transport only: database/configuration/activation remain in the native helper. */
 export class DesktopInstallation {
@@ -43,7 +44,7 @@ export class DesktopInstallation {
     const expected = join(this.root, 'app/releases', releaseId);
     const expectedIdentity = (await readReleaseIdentity(join(expected, 'release-identity.json')))?.releaseId === releaseId;
     await rm(current);
-    if (expectedIdentity) await symlink(join('releases', releaseId), current);
+    if (expectedIdentity) await createDirectorySymlink(join('releases', releaseId), current);
   }
   async needsUpgrade(): Promise<boolean> {
     const release = await this.verify();

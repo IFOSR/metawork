@@ -8,6 +8,7 @@
 import { mkdir, readFile, rename, writeFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import { isValidAccountId } from './account-id.js';
+import { renameReplacingTarget } from '../utils/directory-pointer.js';
 
 export interface AccountRecord {
   readonly accountId: string;
@@ -61,6 +62,6 @@ export class FileAccountRepository {
       }, null, 2)}\n`,
       { encoding: 'utf8', mode: 0o600 },
     );
-    await rename(temporaryPath, path);
+    await renameReplacingTarget(temporaryPath, path);
   }
 }

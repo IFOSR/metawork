@@ -2,8 +2,6 @@ import { DEFAULT_AGENT_ROLES, isUnboundDefaultAgentRole, isDefaultAgentSetupPend
 import { ProviderProtocolSelect } from './ProviderProtocolSelect';
 import { ModelCapabilityDetails } from './ModelCapabilityDetails';
 import { ExecutorTools } from './ExecutorTools';
-import { sameAiText, aiActionError, type ResponsibilityRewriteFeedback } from './AiActionStatus';
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { HttpClient } from '../api/http';
 import type {
   ActivateResult,
@@ -1003,6 +1001,9 @@ export function SettingsPanel({
       const stale = !entry || !latest.catalog || requestRevision !== latest.revisionId
         || inputKey !== responsibilityRequestKey(entry, latest.catalog);
       const unchanged = sameAiText(before, suggestion.suggestedText);
+      // 服务端改用官方内置 AI 时如实告知：用户指定的模型尚未保存激活。
+      const degraded = degradationNotice(suggestion.degraded);
+      if (degraded) setLoadError(degraded);
       if (!stale && !unchanged) {
         setDraft(current => current && current[agentClassRef] ? {
           ...current, [agentClassRef]: {
@@ -1014,6 +1015,7 @@ export function SettingsPanel({
       setResponsibilityFeedback(current => ({ ...current, [agentClassRef]: {
         status: stale ? 'stale' : unchanged ? 'unchanged' : 'updated', before,
         after: unchanged ? before : suggestion.suggestedText, startedAt, completedAt: Date.now(),
+        ...(degraded ? { note: degraded } : {}),
       } }));
     } catch (error) {
       if (responsibilityRequests.current.get(agentClassRef) !== requestId) return;
@@ -1185,13 +1187,28 @@ export function SettingsPanel({
     [...new Set(capabilityCatalog[modelId] ?? [])].sort()
   );
 
-  const summarizeRoutingProfile = async (catalogModelId?: string): Promise<{
-    routingNotes?: ModelDraft['routingNotes']; routingError?: string;
+  const summarizeRoutingProfile = async (
+    catalogModelId?: string,
+    providerRef?: string,
+    modelId?: string,
+    baseUrl?: string,
+  ): Promise<{
+    routingNotes?: ModelDraft['routingNotes']; routingError?: string; routingDegraded?: string;
   }> => {
     if (!http || !catalogModelId) return {};
     try {
-      const result = await http.summarizeModelInformation(catalogModelId);
-      return { routingNotes: result.routingNotes };
+      // 用户已配置该模型时，优先用用户自己的 Provider 提炼资料；
+      // 服务端按引用解析凭证，客户端不传任何密钥。
+      const result = await http.summarizeModelInformation(
+        catalogModelId,
+        providerRef && modelId
+          ? { providerRef, modelId, ...(baseUrl ? { baseUrl } : {}) }
+          : undefined,
+      );
+      // 服务端改用官方内置 AI 时如实告知：模型尚未保存激活。
+      const routingDegraded = degradationNotice(result.degraded);
+      if (routingDegraded) setLoadError(routingDegraded);
+      return { routingNotes: result.routingNotes, ...(routingDegraded ? { routingDegraded } : {}) };
     } catch (error) {
       const routingError = `公开信息已获取，但能力描述整理失败：${(error as Error).message}`;
       setLoadError(routingError);
@@ -1218,7 +1235,9 @@ export function SettingsPanel({
       ? cachedBest.modelId : undefined;
     if (!forceRefresh && cachedMatchedId) {
       return {
-        ...(await summarizeRoutingProfile(cachedMatchedId)),
+        ...(await summarizeRoutingProfile(
+          cachedMatchedId, providerRef, modelId, catalog?.providers[providerRef]?.baseUrl,
+        )),
         matchedId: cachedMatchedId,
         candidates: cachedCandidates,
         capabilities: cached.capabilities?.[cachedMatchedId] ?? [],
@@ -1265,7 +1284,9 @@ export function SettingsPanel({
       }));
       return {
         ...(matchedId ? { matchedId } : {}),
-        ...(await summarizeRoutingProfile(matchedId)),
+        ...(await summarizeRoutingProfile(
+          matchedId, providerRef, modelId, catalog?.providers[providerRef]?.baseUrl,
+        )),
         candidates,
         capabilities: result.capabilities[matchedId ?? modelId] ?? [],
         metadata: result.metadata?.[matchedId ?? modelId],
@@ -1405,7 +1426,10 @@ export function SettingsPanel({
     const capabilities = discovery.capabilities?.[candidateId] ?? [];
     if (!metadata && capabilities.length === 0) return;
     setModelInfoLoading(modelRef);
-    const profile = await summarizeRoutingProfile(candidateId);
+    // 与「获取模型信息」一致：带上用户已配置的 Provider 引用，优先走用户自己的模型。
+    const profile = await summarizeRoutingProfile(
+      candidateId, model.providerRef, model.modelId, catalog?.providers[model.providerRef]?.baseUrl,
+    );
     setModelInfoLoading(null);
     setCatalog(current => {
       const currentModel = current?.models[modelRef];
@@ -2433,3 +2457,6 @@ export function SettingsPanel({
     </div>
   );
 }
+
+import { sameAiText, aiActionError, degradationNotice, type ResponsibilityRewriteFeedback } from './AiActionStatus';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';

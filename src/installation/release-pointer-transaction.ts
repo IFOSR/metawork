@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import {
+  lstat,
   mkdir,
   open,
   readFile,
@@ -11,6 +12,7 @@ import {
   writeFile,
 } from 'node:fs/promises';
 import { dirname } from 'node:path';
+import { renameOverPointer } from '../utils/directory-pointer.js';
 
 export type ReleasePointerName =
   | 'database'
@@ -220,9 +222,15 @@ async function replaceSymlink(path: string, target: string): Promise<void> {
   const parent = dirname(path);
   await mkdir(parent, { recursive: true, mode: 0o700 });
   const temporary = `${path}.next-${randomUUID()}`;
-  await symlink(target, temporary);
+  // Pointer targets and journal comparisons are platform-neutral relative
+  // forms, so this transaction keeps plain symlinks (junction conversion is
+  // deferred until the recovery tests are platform-parameterized); only the
+  // EPERM rename retry below is Windows-specific.
+  const targetInfo = await lstat(target).catch(() => null);
+  if (targetInfo?.isDirectory()) await symlink(target, temporary, 'dir');
+  else await symlink(target, temporary);
   try {
-    await rename(temporary, path);
+    await renameOverPointer(temporary, path);
     await syncDirectory(parent);
   } catch (error) {
     await rm(temporary, { force: true });

@@ -1,8 +1,8 @@
 import { randomUUID } from 'node:crypto';
 import type { OfficialServiceClient } from './official-service-client.js';
-import { OfficialAuthorizationError, type OfficialAuthorizationProjection, type OfficialEntitlement, type OfficialOrderListItem, type OfficialOrderPaymentResult } from './types.js';
+import { OfficialAuthorizationError, type OfficialAccount, type OfficialAuthorizationProjection, type OfficialEntitlement, type OfficialOrderListItem, type OfficialOrderPaymentResult } from './types.js';
 
-type Client = Pick<OfficialServiceClient, 'login' | 'logout' | 'verifyEntitlement' | 'ai' | 'createOrder' | 'getPlans' | 'register' | 'payOrder' | 'closeOrder' | 'getOrder' | 'listOrders'>;
+type Client = Pick<OfficialServiceClient, 'login' | 'logout' | 'verifyEntitlement' | 'ai' | 'createOrder' | 'getPlans' | 'register' | 'sendEmailCode' | 'payOrder' | 'closeOrder' | 'getOrder' | 'listOrders'>;
 export interface LocalAuthorizationServiceOptions {
   readonly client: Client;
   readonly clock?: () => number;
@@ -89,15 +89,41 @@ export class LocalAuthorizationService {
       // Login response includes an authoritative online entitlement query.
       this.accept(result.entitlement);
       this.schedule();
+      // 登录响应只带登录瞬间的权益快照；登录成功后立即在线核验一次，
+      // 登录后的权益状态一律以在线核验结果为准。
+      await this.verifyForProduction();
       return this.getStatus();
     } finally {
       if (generation === this.generation) this.loginPending = false;
     }
   }
 
-  async register(email: string, password: string): Promise<void> {
+  async register(email: string, password: string, code: string): Promise<void> {
     if (this.token || this.loginPending) throw new OfficialAuthorizationError('请先退出当前账号。', 'already_logged_in');
-    await this.options.client.register(email, password);
+    await this.options.client.register(email, password, code);
+  }
+
+  /** 沙盒免密：采纳官方服务代签发的会话（et 兑换结果）。语义同登录但无需密码。 */
+  async adoptSession(input: { sessionToken: string; account: OfficialAccount; entitlement: OfficialEntitlement }): Promise<OfficialAuthorizationProjection> {
+    if (this.disposed) throw new OfficialAuthorizationError('Server 已停止', 'session_invalid');
+    if (this.loginPending) throw new OfficialAuthorizationError('正在登录，请稍后再试', 'already_logged_in');
+    if (this.token && this.lastAccountId && this.lastAccountId !== input.account.accountId) {
+      throw new OfficialAuthorizationError('请先退出当前账号，再登录沙盒对应的账号。', 'already_logged_in');
+    }
+    const generation = ++this.generation;
+    this.lastAccountId = input.account.accountId;
+    this.token = input.sessionToken;
+    this.state = { ...empty(), account: input.account };
+    // 采纳响应自带登录瞬间的权益快照；随后立即在线核验一次并以核验结果为准。
+    this.accept(input.entitlement);
+    this.schedule();
+    await this.verifyForProduction();
+    return this.getStatus();
+  }
+
+  /** 注册前先向邮箱发送验证码；不需要也不检查本机会话。 */
+  sendEmailCode(email: string): Promise<{ sent: boolean; expiresIn: number }> {
+    return this.options.client.sendEmailCode(email);
   }
 
   async logout(): Promise<void> {

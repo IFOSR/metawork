@@ -7,12 +7,14 @@ import { resolveMetaclawDir } from '../utils/paths.js';
 import { WebClientLauncher } from './web-client-launcher.js';
 
 export function openBrowser(url: string): void {
-  const command = process.platform === 'darwin'
-    ? 'open'
+  // `start` is a cmd.exe builtin and cannot be spawned directly; rundll32 is
+  // the shell-free Windows equivalent of `open`/`xdg-open`.
+  const [command, args] = process.platform === 'darwin'
+    ? ['open', [url]]
     : process.platform === 'win32'
-      ? 'start'
-      : 'xdg-open';
-  spawn(command, [url], { stdio: 'ignore', detached: true }).unref();
+      ? ['rundll32', ['url.dll,FileProtocolHandler', url]]
+      : ['xdg-open', [url]];
+  spawn(command, args, { stdio: 'ignore', detached: true }).unref();
 }
 
 export async function runClientCommand(command: Extract<CliCommand, { kind: 'web' }>): Promise<void> {

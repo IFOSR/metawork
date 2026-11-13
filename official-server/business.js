@@ -1,3 +1,5 @@
+import { createHmac } from 'node:crypto';
+
 /** UTC calendar periods, clamped to the last day of the target month. */
 export function addCalendarMonths(value, months) {
   const date = new Date(value);

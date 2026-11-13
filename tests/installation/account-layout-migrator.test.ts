@@ -4,6 +4,7 @@ import {
   readFile,
   readdir,
   readlink,
+  realpath,
   symlink,
   writeFile,
 } from 'node:fs/promises';
@@ -58,6 +59,10 @@ describe('account layout migration', () => {
 
     await new AccountLayoutMigrator({ paths }).migrate();
 
+    // The real invariant: the pointer resolves to the account-scoped revision
+    // directory (archiveLegacyState removes the legacy copy during migration).
+    expect(await realpath(accountPaths.configActive))
+      .toBe(await realpath(join(accountPaths.configRevisions, 'revision-1')));
     expect(await readlink(accountPaths.configActive)).toBe(join('revisions', 'revision-1'));
   });
 

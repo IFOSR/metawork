@@ -1,4 +1,5 @@
 import { createHash } from 'node:crypto';
+import { createConnection } from 'node:net';
 import { resolve } from 'node:path';
 
 export type LocalEndpointKind = 'unix' | 'named-pipe';
@@ -24,4 +25,23 @@ export function resolveLocalEndpointPath(
 
 export function isNamedPipePath(path: string): boolean {
   return path.startsWith('\\\\.\\pipe\\');
+}
+
+/** A named pipe has no filesystem listing and a unix socket path may be a
+ *  stale file, so endpoint readiness is only meaningful as a successful
+ *  connection. */
+export function probeLocalEndpoint(socketPath: string, timeoutMs: number): Promise<boolean> {
+  return new Promise(resolvePromise => {
+    const socket = createConnection(socketPath);
+    let settled = false;
+    const settle = (ready: boolean) => {
+      if (settled) return;
+      settled = true;
+      socket.destroy();
+      resolvePromise(ready);
+    };
+    socket.once('connect', () => settle(true));
+    socket.once('error', () => settle(false));
+    setTimeout(() => settle(false), timeoutMs).unref();
+  });
 }

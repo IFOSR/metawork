@@ -21,9 +21,28 @@ describe('official HTTPS contract', () => {
   });
   it('distinguishes bad passwords, revoked sessions, business refusal and provider outage', async () => {
     await expect(client({ code: 'invalid_credentials' }, 401).api.login('a@example.com', 'bad')).rejects.toMatchObject({ code: 'invalid_credentials' });
+    await expect(client({ code: 'email_code_expired' }, 400).api.register('a@example.com', 'password-12345', '000000')).rejects.toMatchObject({ code: 'request_rejected' });
     await expect(client({}, 401).api.verifyEntitlement('token')).rejects.toMatchObject({ code: 'session_invalid' });
     await expect(client({ code: 'trial_already_used' }, 409).api.createOrder('token', 'trial', 'key')).rejects.toMatchObject({ code: 'request_rejected' });
     await expect(client({ code: 'official_ai_unavailable' }, 503).api.ai({ operation: 'model_summary', input: {}, requestId: 'request' }, 'token')).rejects.toMatchObject({ code: 'official_ai_unavailable' });
+  });
+  it('sends the email verification code and registers with it', async () => {
+    const challenge = client({ code: 'OK', sent: true, expiresIn: 900 }, 200);
+    await expect(challenge.api.sendEmailCode('a@example.com')).resolves.toMatchObject({ sent: true, expiresIn: 900 });
+    await expect(challenge.fetchImpl.mock.calls[0]?.[0]).toContain('/v1/auth/email/code');
+    await expect(client({ code: 'OK', sent: 'yes' }, 200).api.sendEmailCode('a@example.com')).rejects.toMatchObject({ code: 'official_protocol_error' });
+    const ok = client({ code: 'OK' }, 201);
+    await expect(ok.api.register('a@example.com', 'password-12345', '123456')).resolves.toBeUndefined();
+    const body = JSON.parse(String(ok.fetchImpl.mock.calls[0]?.[1]?.body));
+    expect(body).toEqual({ email: 'a@example.com', password: 'password-12345', code: '123456' });
+  });
+  it('completes the login with a bounded session and a normalized account projection', async () => {
+    const ok = client({ code: 'OK', sessionToken: 's'.repeat(40), account: { accountId: 'acct_1', email: 'a@example.com', displayName: 'A' }, entitlement: fact });
+    const result = await ok.api.login('a@example.com', 'password-12345', { version: '0.1.18' });
+    expect(result).toMatchObject({ sessionToken: 's'.repeat(40), account: { accountId: 'acct_1' } });
+    const body = JSON.parse(String(ok.fetchImpl.mock.calls[0]?.[1]?.body));
+    expect(body).toEqual({ email: 'a@example.com', password: 'password-12345', client: { version: '0.1.18' } });
+    await expect(client({ code: 'OK', sessionToken: 'short', account: { accountId: 'acct_1', email: 'a@example.com' }, entitlement: fact }).api.login('a@example.com', 'password-12345')).rejects.toMatchObject({ code: 'official_protocol_error' });
   });
   it('bounds response size without passing arbitrary upstream text into errors', async () => {
     await expect(client({ entitlement: fact, raw: 'x'.repeat(140000) }).api.verifyEntitlement('token')).rejects.toMatchObject({ code: 'official_protocol_error' });

@@ -12,6 +12,7 @@ import { encodeJsonLine } from '../../src/gateway/jsonl.js';
 import type { GatewayServerMessage } from '../../src/gateway/protocol.js';
 import { MetaclawGatewayServer } from '../../src/gateway/server.js';
 import { workspaceEventStreamId } from '../../src/gateway/workspace-event-stream.js';
+import { resolveLocalEndpointPath } from '../../src/platform/local-endpoint.js';
 
 const roots: string[] = [];
 
@@ -163,7 +164,8 @@ describe('independent client lifecycle integration', () => {
 async function createFixture() {
   const root = await mkdtemp(join(tmpdir(), 'metawork-independent-clients-'));
   roots.push(root);
-  const socketPath = join(root, 'gateway.sock');
+  // The Gateway listens on a Unix socket on POSIX and a named pipe on Windows.
+  const socketPath = resolveLocalEndpointPath(root, 'gateway.sock');
   const journal = new FileEventJournal(join(root, 'events'));
   const subscriptions = new GatewaySubscriptions();
   const attached: string[] = [];

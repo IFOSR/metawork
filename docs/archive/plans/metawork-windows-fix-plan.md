@@ -73,6 +73,7 @@ MetaWork 的 `install-cli.js` 及其依赖模块按 Linux/macOS 语义编写，�
 | 17 | git ref 路径超长（360 字符）> Windows MAX_PATH | 执行器 | 阻断（`update-ref` 失败） | 5.16 |
 | 18 | 官方授权内存态，重启 Server 即需重新登录 | 运维 | 中 | 5.17 |
 | 19 | 给 `.cmd` shim 用 `shell:true` → cmd.exe 截断长参数（提示词被打碎） | 执行器 | **严重**（任务 done 但产物错） | 5.18 |
+| 20 | Server 未带 `METACLAW_PLANNER_COMMAND` 启动 → planner 命令退化为裸名 | Planner | 阻断（`spawn anyfusion-planner ENOENT`） | 5.19 |
 
 ---
 
@@ -385,6 +386,19 @@ node -e "const {execFile}=require('child_process');const {promisify}=require('ut
 - 问题：为绕过“Windows 不能直接 spawn `.cmd`”，临时方案给 `.cmd` shim 加了 `shell: true`（走 cmd.exe）。**cmd.exe 命令行有 ~8191 字符上限，且会破坏换行/特殊字符** → pi 收到被打碎的提示词（只看到 `[MetaClaw`、`Subtask`、`Execution`、`Context`、`v1]` 这类碎片），任务显示 `done` 但**产物错误**（执行器反过来问用户要任务内容）。
 - 正确修复：`.cmd` shim 如果是 **npm 生成的**（内容形如 `"%dp0%\node_modules\<pkg>\...\cli.js" %*`），就解析出 node 入口脚本，改用 `spawn(process.execPath, [entry, ...args])` **直接启动（不走 shell）**，参数原样传递；非 npm shim 才回退 `shell: true`。
 - 验证：`spawn('pi', ['--version'])` 不再经 cmd.exe；用长提示词跑任务时 pi 能收到完整文本。
+
+### 5.19 【Planner】`Planner unavailable: spawn anyfusion-planner ENOENT`：planner 命令退化为裸名
+- 位置：`src/planning/planner-process-supervisor.ts` 的 `resolveCommand()` / `resolveLaunch()`
+- 现象：Web 里发消息，PLANNING 卡片直接失败：`Planner unavailable: spawn anyfusion-planner ENOENT`（`anyfusion-planning-agent.ts` 把底层错误包成这句话）。
+- 原因：planner 命令解析链是 `deps.command ?? METACLAW_PLANNER_COMMAND ?? METACLAW_PLANNER_TUI_COMMAND ?? findVendoredPlannerCommand() ?? 'anyfusion-planner'`。当 Server **不是经托管启动器启动**（例如手工 `node app/current/dist/index.js server start`）时，前三项都为空；而 `findVendoredPlannerCommand()` 只认**源码树**布局 `planner/AnyFusion-Pi/packages/coding-agent/dist/cli.js`，**安装后的发布包**布局是 `app/current/planner/packages/coding-agent/dist/cli.js`，因此也解析不到 → 退化成裸名 `anyfusion-planner` → 该名字不在 PATH → `spawn` 直接 `ENOENT`。
+- 规避（即时）：用托管启动器启动 Server（`%LOCALAPPDATA%\MetaWork\bin\metawork.cmd server start`），它会固定 `METACLAW_PLANNER_COMMAND` / `METACLAW_PLANNER_TUI_COMMAND` / `METACLAW_PLANNER_SCHEMA_PATH`。
+- 修复（源码）：`resolveCommand()` 改为调用可注入的 `resolvePlannerCommand()`：
+  1. 显式命令优先（`deps.command` → `METACLAW_PLANNER_COMMAND` → `METACLAW_PLANNER_TUI_COMMAND`）；
+  2. 否则按**安装根/源码树两种布局**解析 vendored Planner：安装布局 `<install root>/app/current/planner/packages/coding-agent/dist/cli.js`，源码布局 `planner/AnyFusion-Pi/packages/coding-agent/dist/cli.js`；设了 `METAWORK_INSTALL_ROOT` / `ANYFUSION_INSTALL_ROOT` 时以安装布局优先；
+  3. 都解析不到就**fail closed**，抛 `AnyFusion Planner command is unavailable: set METACLAW_PLANNER_COMMAND ...`，不再退化成裸名（裸名只会在 PATH 查找失败时给出不可诊断的 ENOENT）。
+  4. 同一文件里 `ANYFUSION_PLANNER_SCHEMA_PATH` 也补上从 `app/current/dist/planning-agent-plan-v8.schema.json` 的解析：`submit_planning_proposal` 强依赖该 schema，缺它会在提交提案时二次失败。
+  5. `scripts/run-installed-cli.mjs`（`npm run server:start` / `server:restart` 的正式入口）导出与托管启动器一致的 planner 环境变量。
+- 验证：`tests/planning/planner-process-supervisor.test.ts` 覆盖安装布局解析、安装根优先于源码树、解析不到时 fail closed。
 
 ---
 

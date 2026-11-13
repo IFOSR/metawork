@@ -6,6 +6,7 @@ import { dirname, join, relative, resolve, sep } from 'node:path';
 import { promisify } from 'node:util';
 import type { WorkspaceHandle, WorkspaceIdentity, WorkspaceStore } from './workspace-store.js';
 import { boundedPathSegment } from '../utils/bounded-path-segment.js';
+import { restoreWriteAccess } from '../utils/directory-pointer.js';
 
 const execFileAsync = promisify(execFile);
 const PLAIN_SOURCE_EXCLUDED_TOP_LEVEL = new Set([
@@ -434,7 +435,9 @@ export class ManagedGitWorkspaceService {
       const materialsPath = join(input.candidateWorkspace.filesPath, '.metaclaw', 'merge-repair');
       // Prior repair attempts intentionally make these inputs read-only. A hard
       // reset leaves the untracked directory behind, so rebuild it atomically
-      // instead of attempting to overwrite 0444 files.
+      // instead of attempting to overwrite 0444 files. Windows fails to remove
+      // read-only trees with EPERM, so restore write access first.
+      await restoreWriteAccess(materialsPath).catch(() => undefined);
       await rm(materialsPath, { recursive: true, force: true });
       for (const path of conflictPaths) {
         for (const [stage, suffix] of [['1', 'base'], ['2', 'ours'], ['3', 'theirs']] as const) {
@@ -734,9 +737,13 @@ async function listTemporaryIndexConflicts(
 function withSafeDirectory(args: string[]): string[] {
   const directoryIndex = args.indexOf('-C');
   const directory = directoryIndex >= 0 ? args[directoryIndex + 1] : null;
+  // Managed generation refs embed event-hashed identities and exceed the
+  // 260-character Windows path cap as loose refs. Git for Windows ignores the
+  // OS LongPathsEnabled flag unless core.longpaths is set per invocation;
+  // POSIX Git treats the key as inert.
   return directory
-    ? ['-c', `safe.directory=${resolve(directory)}`, ...args]
-    : args;
+    ? ['-c', 'core.longpaths=true', '-c', `safe.directory=${resolve(directory)}`, ...args]
+    : ['-c', 'core.longpaths=true', ...args];
 }
 
 function splitLines(value: string): string[] {

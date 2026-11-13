@@ -17,6 +17,7 @@ import {
 import { dirname, join, relative, resolve, sep } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { boundedPathSegment } from '../utils/bounded-path-segment.js';
+import { renameReplacingTarget } from '../utils/directory-pointer.js';
 
 export type WorkspaceKind = 'git' | 'in_place' | 'conversation_git';
 export type CheckpointReason = 'attempt_start' | 'explicit' | 'permission_suspended' | 'success' | 'failure' | 'cancelled';
@@ -287,7 +288,7 @@ export class WorkspaceStore {
     const manifestPath = join(workspace.checkpointsPath, `${id}.json`);
     const temporaryPath = `${manifestPath}.${randomUUID()}.tmp`;
     await writeFile(temporaryPath, bytes, { flag: 'wx' });
-    await rename(temporaryPath, manifestPath);
+    await renameReplacingTarget(temporaryPath, manifestPath);
     return {
       id,
       workspaceId: workspace.id,
@@ -386,7 +387,7 @@ export class WorkspaceStore {
       await copyFile(sourcePath, temporary);
       const copied = await sha256File(temporary);
       if (copied.hash !== hash || copied.size !== size) throw new Error(`CAS staging integrity failure: ${hash}`);
-      await rename(temporary, destination);
+      await renameReplacingTarget(temporary, destination);
     } catch (error) {
       await rm(temporary, { force: true }).catch(() => undefined);
       if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error;

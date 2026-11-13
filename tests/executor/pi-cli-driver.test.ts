@@ -26,7 +26,9 @@ describe('PiCliDriver', () => {
       const driver = new PiCliDriver({ pdfExtensionRoot, probeCommand });
       const home = await driver.materializeHome({ attemptId: 'pdf-attempt', revisionId: 'r', agentClassId: 'pi',
         bindingFingerprint: 'f', attemptsRoot: join(root, 'attempts'), environment: {} });
-      expect(await readFile(join(home.homePath, '.pi/agent/extensions/pi-pdf.ts'), 'utf8')).toContain(join(pdfExtensionRoot, 'index.ts'));
+      // The extension source embeds the path via JSON.stringify, so the raw
+      // assertion must compare against the same encoding (Windows escapes `\`).
+      expect(await readFile(join(home.homePath, '.pi/agent/extensions/pi-pdf.ts'), 'utf8')).toContain(JSON.stringify(join(pdfExtensionRoot, 'index.ts')));
       await expect(stat(join(home.homePath, '.pi/agent/auth.json'))).rejects.toThrow();
       expect((await driver.probe()).available).toBe(true);
       expect(probeCommand).toHaveBeenCalledTimes(1);
@@ -102,6 +104,7 @@ describe('PiCliDriver', () => {
   });
 
   it('launches with independent HOME and Pi directories', () => {
+    vi.stubEnv('METACLAW_PLANNER_SCHEMA_PATH', 'C:/schema/planning-agent-plan-v8.schema.json');
     const driver = new PiCliDriver({
       probeCommand: vi.fn(),
       piCommand: { command: 'pi', args: [] },
@@ -114,15 +117,13 @@ describe('PiCliDriver', () => {
       modelId: 'deepseek-v4-pro',
     });
 
+    // The vendored Planner CLI denies `--provider`/`--model` client flags;
+    // model selection flows through the seeded home settings.json instead.
     expect(launch).toEqual({
       command: 'pi',
       args: [
         '--mode',
         'json',
-        '--provider',
-        'deepseek',
-        '--model',
-        'deepseek-v4-pro',
         'research current information',
       ],
       cwd: '/workspace/task',
@@ -131,14 +132,55 @@ describe('PiCliDriver', () => {
         PYTHONDONTWRITEBYTECODE: '1',
         PI_CODING_AGENT_DIR: '/attempt/home/.pi/agent',
         PI_CODING_AGENT_SESSION_DIR: '/attempt/home/.pi/agent/sessions',
+        ANYFUSION_PLANNER_HOME: '/attempt/home/.pi/agent',
+        ANYFUSION_PLANNER_SESSION_DIR: '/attempt/home/.pi/agent/sessions',
+        ANYFUSION_PLANNER_WORKSPACE: '/workspace/task',
+        ANYFUSION_PLANNER_SCHEMA_PATH: 'C:/schema/planning-agent-plan-v8.schema.json',
         // The stall guard and the MetaWork host share one window and one fact
-        // channel, so both are pinned on the launch environment.
-        METACLAW_TOOL_STALL_FACTS: '/attempt/home/.metaclaw-tool-stall.jsonl',
+        // channel, so both are pinned on the launch environment. The fact path
+        // is produced with node:path join, which normalizes to the host
+        // separator (the POSIX-looking inputs stay literal otherwise).
+        METACLAW_TOOL_STALL_FACTS: join('/attempt/home', '.metaclaw-tool-stall.jsonl'),
         METACLAW_TOOL_STALL_WINDOW_MS: '300000',
         METACLAW_TOOL_STALL_SAMPLE_MS: '15000',
       },
     });
     expect(JSON.stringify(launch)).not.toContain('~/.pi');
+    vi.unstubAllEnvs();
+  });
+
+  it('seeds the attempt model binding into the copied home settings', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'pi-cli-driver-'));
+    const templateDir = join(root, 'template');
+    const templateAgent = join(templateDir, '.pi', 'agent');
+    await mkdir(templateAgent, { recursive: true });
+    await writeFile(join(templateAgent, 'models.json'), `${JSON.stringify({ providers: {} })}\n`);
+    await writeFile(
+      join(templateAgent, 'settings.json'),
+      `${JSON.stringify({ defaultProvider: 'template-provider', defaultModel: 'template-model' })}\n`,
+    );
+    const driver = new PiCliDriver({
+      probeCommand: vi.fn(),
+      piCommand: { command: 'pi', args: [] },
+      homeTemplateDir: templateDir,
+    });
+
+    const home = await driver.materializeHome({
+      attemptId: 'attempt-seed-1',
+      revisionId: 'rev-seed-1',
+      agentClassId: 'pi-research',
+      bindingFingerprint: 'fp-seed-1',
+      attemptsRoot: join(root, 'attempts'),
+      environment: {},
+      providerRef: 'custom-model-2',
+      modelId: 'kimi-for-coding',
+    });
+
+    const settings = JSON.parse(
+      await readFile(join(home.homePath, '.pi', 'agent', 'settings.json'), 'utf8'),
+    ) as { defaultProvider?: string; defaultModel?: string };
+    expect(settings.defaultProvider).toBe('custom-model-2');
+    expect(settings.defaultModel).toBe('kimi-for-coding');
   });
 
   it('does not let Planner workspace intent remove the Executor shell or editor tools', () => {
@@ -151,20 +193,18 @@ describe('PiCliDriver', () => {
     expect(launch.args).not.toContain('--no-session');
   });
 
-  it('never narrows a normal Attempt to a tool allowlist, so extension tools stay registered', () => {
+  it('never passes Planner-denied tool flags regardless of affordances', () => {
     const driver = new PiCliDriver({ probeCommand: vi.fn(), piCommand: { command: 'pi', args: [] } });
     const launch = driver.buildLaunch({
       prompt: 'run hello.py', cwd: '/workspace', runtimeHomePath: '/attempt/home',
       workspaceAccess: 'read',
-      executorAffordances: ['workspace-read-write', 'workspace-command-validation'],
-      evidenceToolsAvailable: true,
+      executorAffordances: ['workspace-command-validation'],
     });
-    // Pi's --tools is a global allowlist that also covers extension and custom
-    // tools; passing it would silently drop web_fetch, result_reference_get and
-    // the pdf tools the Executor materialized for this Attempt.
-    expect(launch.args).not.toContain('--tools');
-    expect(launch.args).not.toContain('--no-tools');
-    expect(launch.args).not.toContain('--no-session');
+    // The vendored Planner CLI denies --provider/--model/--tools from any client;
+    // the Executor's tool surface is managed by the seeded home settings and the
+    // env-gated inline tools instead of CLI flags.
+    expect(launch.args).toEqual(['--mode', 'json', 'run hello.py']);
+    expect(JSON.stringify(launch.args)).not.toContain('--tools');
   });
 
   it('keeps image capabilities out of the standard Pi CLI launch', () => {
@@ -184,10 +224,6 @@ describe('PiCliDriver', () => {
     expect(launch.args).toEqual([
       '--mode',
       'json',
-      '--provider',
-      'code-cli',
-      '--model',
-      'gpt-image-2',
       '生成一张黄金上涨主题宣传图',
     ]);
   });
@@ -219,7 +255,7 @@ describe('PiCliDriver', () => {
     }
   });
 
-  it('builds the response-only correction launch with no tools and no durable session', () => {
+  it('builds a response-only launch without a durable session and without denied flags', () => {
     const driver = new PiCliDriver({
       probeCommand: vi.fn(),
       piCommand: { command: 'pi', args: [] },
@@ -234,15 +270,12 @@ describe('PiCliDriver', () => {
     });
 
     expect(driver.supportsResponseOnly).toBe(true);
+    // `--tools`/`--provider`/`--model` are denied by the vendored Planner CLI;
+    // model selection flows through the seeded home settings.json instead.
     expect(launch.args).toEqual([
       '--mode',
       'json',
       '--no-session',
-      '--no-tools',
-      '--provider',
-      'deepseek',
-      '--model',
-      'deepseek-v4-pro',
       'return completion metadata only',
     ]);
   });

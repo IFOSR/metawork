@@ -5,6 +5,8 @@ export interface AiActionFeedback {
   startedAt: number;
   completedAt?: number;
   message?: string;
+  /** 附加告知（如"你指定的模型未生效，本次由官方内置 AI 生成"）。 */
+  note?: string;
 }
 
 export interface ResponsibilityRewriteFeedback extends AiActionFeedback {
@@ -12,10 +14,12 @@ export interface ResponsibilityRewriteFeedback extends AiActionFeedback {
   after?: string;
 }
 
-export function AiActionStatus({ feedback, title, detail }: {
+export function AiActionStatus({ feedback, title, detail, note }: {
   feedback: AiActionFeedback;
   title: string;
   detail: string;
+  /** 附加告知（如"你指定的模型未生效，本次由官方内置 AI 生成"）。 */
+  note?: string;
 }) {
   const [now, setNow] = useState(Date.now());
   useEffect(() => {
@@ -33,6 +37,7 @@ export function AiActionStatus({ feedback, title, detail }: {
       <div role={feedback.status === 'error' ? 'alert' : 'status'} aria-live="polite">
         <strong>{title}</strong>
         <p>{detail}</p>
+        {note && <p className="ai-action-status-note">{note}</p>}
       </div>
       <span className="ai-action-time" aria-hidden={feedback.status === 'loading' ? true : undefined}>
         {feedback.status === 'loading'
@@ -47,6 +52,17 @@ export function AiActionStatus({ feedback, title, detail }: {
 
 export function sameAiText(left: string, right: string): boolean {
   return left.trim().replace(/\s+/gu, ' ') === right.trim().replace(/\s+/gu, ' ');
+}
+
+/**
+ * 用户指定的模型未生效时的统一告知。
+ *
+ * 服务端改用官方内置 AI 完成生成时必须如实说明——否则用户会以为结果出自
+ * 自己的模型。降级原因由服务端给出（可操作文案）。
+ */
+export function degradationNotice(degraded?: { modelId: string; reason: string }): string {
+  if (!degraded) return '';
+  return `你指定的模型（${degraded.modelId}）尚未保存激活，本次结果由官方内置 AI 生成。${degraded.reason}`;
 }
 
 export function aiActionError(error: unknown): string {

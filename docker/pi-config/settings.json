@@ -1,0 +1,10 @@
+{
+  "defaultProvider": "anyint",
+  "defaultModel": "gpt-5.6-terra",
+  "quietStartup": true,
+  "defaultProjectTrust": "always",
+  "defaultThinkingLevel": "high",
+  "enabledModels": [
+    "anyint/gpt-5.6-terra"
+  ]
+}

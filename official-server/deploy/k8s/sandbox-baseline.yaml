@@ -1,0 +1,67 @@
+# 实例 namespace 基线（与官方服务同住 nexusfusionai，三条共存纪律）。
+# 方案：docs/plans/2026-11-09-official-runtime-provisioning-design.md §4/§8。
+#
+# 1) 不设 namespace 级 ResourceQuota：配额过紧会让官方服务自身重启调度失败；
+#    仅用 LimitRange 兜底未声明 resources 的容器默认值。
+# 2) NetworkPolicy 必须用 pod 标签选择器只选中实例 Pod
+#    （metawork-official-server 打在实例资源上的 part-of 标签）：
+#    default-deny 其入流量，仅放行 ingress-controller；绝不能 namespace 级 default-deny。
+#    CNI 已核对为 Terway（terway-eniip），NetworkPolicy 生效。
+# 3) 部署后首个实例必须验证 kubelet 的 readinessProbe（GET /）不被入站策略拦截——
+#    探针源是节点而非 Pod，个别 policy agent 会拦；若被拦，为探针来源放行一条 ingress 规则。
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: metawork-sandbox-isolation
+  namespace: nexusfusionai
+spec:
+  # 只圈实例 Pod；官方服务自身（deployment/metawork-official）不带该标签，不受影响。
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/part-of: metawork-sandbox
+  policyTypes: ["Ingress", "Egress"]
+  ingress:
+    # 公网入口：nginx ingress controller（ACK 位于 kube-system；pod 标签按实际部署核对）。
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+          podSelector:
+            matchLabels:
+              app: ingress-nginx
+  egress:
+    # DNS 解析（CoreDNS 在 kube-system）。
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+    # 模型/官方服务等 HTTPS 出网。
+    - to:
+        - ipBlock:
+            cidr: 0.0.0.0/0
+            except:
+              - 169.254.169.254/32
+      ports:
+        - protocol: TCP
+          port: 443
+---
+# LimitRange 是核心组 API（不是 limits.k8s.io）。
+apiVersion: v1
+kind: LimitRange
+metadata:
+  name: metawork-sandbox-defaults
+  namespace: nexusfusionai
+spec:
+  limits:
+    - type: Container
+      default:
+        cpu: "1"
+        memory: 1Gi
+      defaultRequest:
+        cpu: 250m
+        memory: 512Mi

@@ -8,6 +8,7 @@
 
 import { mkdir, readFile, rename, writeFile } from 'node:fs/promises';
 import { dirname } from 'node:path';
+import { renameReplacingTarget } from '../utils/directory-pointer.js';
 
 export interface ConversationBindingRecord {
   readonly accountId: string;
@@ -117,7 +118,7 @@ export class ConversationBindingRepository {
       `${JSON.stringify(bindings, null, 2)}\n`,
       { encoding: 'utf8', mode: 0o600 },
     );
-    await rename(temporaryPath, this.bindingsPath);
+    await renameReplacingTarget(temporaryPath, this.bindingsPath);
   }
 
   private async mutate<T>(operation: () => Promise<T>): Promise<T> {

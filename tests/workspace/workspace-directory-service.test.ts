@@ -287,4 +287,26 @@ describe('WorkspaceDirectoryService', () => {
       'feishu:tenant:user',
     )).resolves.toBeNull();
   });
+
+  it('refuses a workspace outside the configured root', async () => {
+    const value = await fixture();
+    // 未配置根时不受限（历史行为）。
+    await expect(value.service.selectByPath(value.repo, 'local')).resolves.toBeTruthy();
+
+    const outside = join(value.repo, '..', 'outside-workspace');
+    await mkdir(outside, { recursive: true });
+    const restricted = new WorkspaceDirectoryService({
+      accountId: 'local-default',
+      workspaceCatalog: value.workspaceCatalog,
+      conversationStore: value.conversationStore,
+      authorize: () => true,
+      workspaceRoot: await realpath(value.repo),
+      createWorkspaceId: () => 'workspace_restricted',
+      createConversationId: () => 'conv_restricted',
+      now: () => '2026-08-27T00:00:00.000Z',
+    });
+    await expect(restricted.selectByPath(outside, 'local'))
+      .rejects.toThrow('workspace_outside_root');
+    await expect(restricted.selectByPath(value.repo, 'local')).resolves.toBeTruthy();
+  });
 });

@@ -46,8 +46,13 @@ describe('FileWorkspaceCatalogStore', () => {
       version: WORKSPACE_CATALOG_VERSION,
       workspaces: [],
     });
-    expect((await stat(join(root, 'workspace-catalog'))).mode & 0o777).toBe(0o700);
-    expect((await stat(join(root, 'workspace-catalog', 'catalog.json'))).mode & 0o777).toBe(0o600);
+    // The private-mode contract belongs to POSIX files and directories.
+    // Windows has no POSIX permission bits, so the tree inherits the
+    // directory's ACL instead.
+    if (process.platform !== 'win32') {
+      expect((await stat(join(root, 'workspace-catalog'))).mode & 0o777).toBe(0o700);
+      expect((await stat(join(root, 'workspace-catalog', 'catalog.json'))).mode & 0o777).toBe(0o600);
+    }
   });
 
   it('atomically round-trips available and unavailable records', async () => {

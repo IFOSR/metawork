@@ -29,6 +29,7 @@ import {
   tracePosition,
 } from './trace-page-cursor.js';
 import { measureNavigationStage } from '../utils/navigation-diagnostics.js';
+import { renameReplacingTarget } from '../utils/directory-pointer.js';
 
 interface JournalFile {
   readonly version: 2;
@@ -263,7 +264,7 @@ export class FileEventJournal implements EventJournal {
       `${JSON.stringify(file, null, 2)}\n`,
       { encoding: 'utf8', mode: 0o600 },
     );
-    await rename(temporaryPath, path);
+    await renameReplacingTarget(temporaryPath, path);
   }
 }
 

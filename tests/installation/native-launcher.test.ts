@@ -15,6 +15,15 @@ describe('renderNativeLauncher', () => {
 
     expect(launcher).toContain('REM MetaWork managed launcher');
     expect(launcher).toContain('node "%METAWORK_INSTALL_ROOT%\\app\\current\\dist\\index.js" %*');
+    expect(launcher).toContain(
+      'if not defined METACLAW_PLANNER_COMMAND set "METACLAW_PLANNER_COMMAND=%ANYFUSION_PI_SOURCE_ROOT%\\packages\\coding-agent\\dist\\cli.js"',
+    );
+    expect(launcher).toContain(
+      'if not defined METACLAW_PLANNER_TUI_COMMAND set "METACLAW_PLANNER_TUI_COMMAND=%METACLAW_PLANNER_COMMAND%"',
+    );
+    expect(launcher).toContain(
+      'if not defined METAWORK_MANAGED_PI set "METAWORK_MANAGED_PI=%ANYFUSION_PI_SOURCE_ROOT%\\packages\\coding-agent\\dist\\pi.exe"',
+    );
     expect(launcher).not.toContain('export ');
     expect(launcher).not.toContain('#!/usr/bin/env bash');
   });
@@ -35,6 +44,17 @@ describe('renderNativeLauncher', () => {
     expect(launcher).toContain(
       'METACLAW_PLANNER_SESSION_DIR="$METAWORK_INSTALL_ROOT/data/planner-sessions"',
     );
+    expect(launcher).toContain(
+      ': "${METACLAW_PLANNER_COMMAND:=$ANYFUSION_PI_SOURCE_ROOT/packages/coding-agent/dist/cli.js}"',
+    );
+    expect(launcher).toContain('export METACLAW_PLANNER_COMMAND');
+    expect(launcher).toContain(
+      ': "${METACLAW_PLANNER_TUI_COMMAND:=$METACLAW_PLANNER_COMMAND}"',
+    );
+    expect(launcher).toContain(
+      ': "${METAWORK_MANAGED_PI:=$ANYFUSION_PI_SOURCE_ROOT/packages/coding-agent/dist/pi}"',
+    );
+    expect(launcher).toContain('export METAWORK_MANAGED_PI');
     expect(launcher).not.toContain('ANYFUSION_WEB_USERNAME');
     expect(launcher).not.toContain('ANYFUSION_WEB_PASSWORD');
     expect(launcher).toContain(

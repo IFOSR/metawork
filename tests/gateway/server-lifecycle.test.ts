@@ -3,6 +3,7 @@ import { mkdtemp, rm, stat } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { resolveLocalEndpointPath } from '../../src/platform/local-endpoint.js';
 import type { ClientGateway } from '../../src/gateway/client-gateway.js';
 import type { GatewayCommandEnvelope } from '../../src/gateway/client-protocol.js';
 import type { GatewayEventEnvelope, GatewayReplay } from '../../src/gateway/client-events.js';
@@ -533,7 +534,11 @@ describe('MetaclawGatewayServer lifecycle', () => {
       },
     });
     await fixture.server.start();
-    const socketMode = (await stat(fixture.socketPath)).mode & 0o777;
+    // The mode-0600 contract belongs to a POSIX socket file. Windows listens on
+    // a named pipe whose access is governed by the platform ACL instead.
+    const socketMode = process.platform === 'win32'
+      ? null
+      : (await stat(fixture.socketPath)).mode & 0o777;
     const client = await connect(fixture.socketPath);
 
     client.socket.write(encodeJsonLine({
@@ -548,7 +553,7 @@ describe('MetaclawGatewayServer lifecycle', () => {
         token: 'opaque-token',
         expiresAt: '2026-08-27T08:01:00.000Z',
       });
-    expect(socketMode).toBe(0o600);
+    if (socketMode !== null) expect(socketMode).toBe(0o600);
     expect(registrations).toEqual([{
       workspaceHint: '/repo-a',
       conversationId: 'conv_1',
@@ -580,7 +585,7 @@ async function createFixture(options: {
 } = {}) {
   const root = await mkdtemp(join(tmpdir(), 'anyfusion-gateway-server-'));
   roots.push(root);
-  const socketPath = join(root, 'gateway.sock');
+  const socketPath = resolveLocalEndpointPath(root, 'gateway.sock');
   const journal = options.journal ?? new FileEventJournal(join(root, 'journal'));
   const subscriptions = new GatewaySubscriptions();
   const gateway = {

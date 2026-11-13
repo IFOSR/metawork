@@ -1,9 +1,14 @@
 import { z } from 'zod';
-import { InternalLlmService } from './internal-llm-service.js';
+import { InternalLlmService, type DegradationNotice } from './internal-llm-service.js';
 
 const ModelFactSchema = z.object({
   modelRef: z.string().min(1).max(200),
   modelId: z.string().min(1).max(200),
+  /**
+   * 该模型所属的 Provider 引用。编辑态的模型尚未进入已激活配置，无法从
+   * modelRef 反查 Provider；客户端只传引用，服务端据此解析端点与凭据。
+   */
+  providerRef: z.string().min(1).max(200).optional(),
   capabilities: z.array(z.string().max(100)).max(50),
   description: z.string().max(20_000).optional(),
   contextLimit: z.number().finite().positive().optional(),
@@ -37,30 +42,52 @@ const DescriptionSchema = z.object({
 }).strict();
 export type AgentCapabilityDescription = z.infer<typeof DescriptionSchema>;
 
+/** 说明正文 + 可能的降级告知（用户指定的模型未生效，改由官方内置 AI 生成）。 */
+export interface AgentCapabilityDescriptionResult {
+  readonly description: AgentCapabilityDescription;
+  readonly degraded?: DegradationNotice;
+}
+
+interface CachedDescription {
+  promise: Promise<AgentCapabilityDescription>;
+  /** 生成完成后写入；缓存命中时同样可读。 */
+  degraded?: DegradationNotice;
+}
+
 /** Read-only explanation; never writes routing capabilities, duties or permissions. */
 export class AgentCapabilityDescriptionService {
-  private readonly descriptions = new Map<string, Promise<AgentCapabilityDescription>>();
+  private readonly descriptions = new Map<string, CachedDescription>();
   constructor(private readonly llm: InternalLlmService) {}
 
-  async describe(input: AgentCapabilityDescriptionInput, refresh = false): Promise<AgentCapabilityDescription> {
+  async describe(input: AgentCapabilityDescriptionInput, refresh = false): Promise<AgentCapabilityDescriptionResult> {
     const data = AgentCapabilityDescriptionInputSchema.parse(input);
     const key = JSON.stringify(data);
-    if (!refresh && this.descriptions.has(key)) return this.descriptions.get(key)!;
-    const pending = this.generate(data);
-    this.descriptions.set(key, pending);
+    const cached = refresh ? undefined : this.descriptions.get(key);
+    if (cached) {
+      return { description: await cached.promise, ...(cached.degraded ? { degraded: cached.degraded } : {}) };
+    }
+    const entry: CachedDescription = { promise: undefined as unknown as Promise<AgentCapabilityDescription> };
+    entry.promise = this.generate(data, notice => { entry.degraded = notice; });
+    this.descriptions.set(key, entry);
     if (this.descriptions.size > 64) this.descriptions.delete(this.descriptions.keys().next().value!);
-    try { return await pending; }
-    catch (error) {
-      if (this.descriptions.get(key) === pending) this.descriptions.delete(key);
+    try {
+      const description = await entry.promise;
+      return { description, ...(entry.degraded ? { degraded: entry.degraded } : {}) };
+    } catch (error) {
+      if (this.descriptions.get(key) === entry) this.descriptions.delete(key);
       throw error;
     }
   }
 
-  private async generate(data: AgentCapabilityDescriptionInput): Promise<AgentCapabilityDescription> {
+  private async generate(
+    data: AgentCapabilityDescriptionInput,
+    onDegraded: (notice: DegradationNotice) => void,
+  ): Promise<AgentCapabilityDescription> {
     const response = await this.llm.generate({
       action: '智能体能力整理',
       operation: 'capability_explanation',
       data,
+      onDegraded,
     });
     try {
       const choice = (response as { choices?: Array<{ finish_reason?: string; message?: { content?: string } }> })?.choices?.[0];

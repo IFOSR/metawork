@@ -178,6 +178,8 @@ export class LocalCliExecutorAdapter implements ExecutorAdapter {
         attemptsRoot: this.attemptsRoot,
         environment: this.runtimeBinding.environment ?? {},
         evidenceToolsAvailable: Boolean(input.context.evidenceTools.binding),
+        providerRef: this.authorizedBinding.providerRef,
+        modelId: this.modelId,
         ...(this.executorAffordances
           ? { executorAffordances: this.executorAffordances }
           : {}),
@@ -464,6 +466,8 @@ export class LocalCliExecutorAdapter implements ExecutorAdapter {
         bindingFingerprint: this.runtimeBinding.bindingFingerprint,
         attemptsRoot: this.attemptsRoot,
         environment: this.runtimeBinding.environment ?? {},
+        providerRef: this.authorizedBinding.providerRef,
+        modelId: this.modelId,
       });
       const launch = this.driver.buildLaunch({
         prompt: input.prompt,
