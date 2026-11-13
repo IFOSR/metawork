@@ -986,3 +986,22 @@ GET/HEAD 一律进 handleStatic），我们的 `/_sandbox/exchange` 路由检查
 
 修复：把该路由移到静态兜底之前（紧随 URL 解析）。与 §14 的 Web 会话 cookie
 注入组合后，免密链路在 0.1.27.x 上完整可用。
+
+### 存储与 SQLite 写入提速（2026-11-13，0.1.27.3 + 1.5.17）
+
+生产实测（租户数据盘 CNFS NAS）：SQLite 单事务写入 46ms（每笔提交强制
+fsync 走一次网络往返）；会话创建叠加几十次此类写入 → 秒级卡顿。顺序
+大块吞吐正常（dd 120MB/s 级）——NAS 的小笔 fsync 延迟才是瓶颈。
+
+- 运行时 SQLite `synchronous = NORMAL`（WAL 官方建议组合）：提交只追加
+  WAL 不逐次强制刷盘，应用崩溃不丢数据；断电可能回退最后几笔事务。
+  对慢存储通常提速 10~50 倍。
+- 官方服务租户 PVC 默认存储类 `cloud-nas-cnfs` → `alicloud-disk-essd`
+  （块存储单路延迟低一个量级）；ESSD 最小 20Gi，pvcSize 默认 10Gi → 20Gi。
+  已存在的 NAS PVC 不受影响，新实例生效。
+
+镜像：anyfusion-runtime 0.1.27.3（digest
+sha256:5aa3e7a99d65f625c71603189f134a2dcd2fc67ddc99c6263ebad5594be93d74）、
+official-server 1.5.17（digest
+sha256:e14466c83b8f3c627d4c7a2b981ef25caeafb48db13852bc77d0f829f315a232）
+均已推送并远端验证。SQLite pragma 确认在镜像 storage chunk 内。
