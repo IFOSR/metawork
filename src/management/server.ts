@@ -714,26 +714,6 @@ export class ManagementServer {
     // Compiled Web assets are public, including modules requested from the
     // opaque-origin document sandbox. Keep this exception outside /api/ so
     // account data still requires both an allowed origin and authentication.
-    if (!url.pathname.startsWith('/api/')
-      && (request.method === 'GET' || request.method === 'HEAD')) {
-      await this.handleStatic(response, url.pathname, request.method === 'HEAD');
-      return;
-    }
-    if (url.pathname === '/api/ws/diagnostics') {
-      // This endpoint exists to explain an origin rejection to the operator, so
-      // it must be reachable from the mismatched origin. It is authenticated
-      // and read-only.
-      await this.handleApi(request, response, url);
-      return;
-    }
-    // Browser requests must come from an allowed origin; CLI/Desktop/tests send
-    // no Origin header and are authorized by their own credentials instead.
-    if (!isOriginAllowed(request.headers.origin, this.binding, request.headers.host)) {
-      response.writeHead(403, { 'content-type': 'application/json; charset=utf-8' });
-      response.end(JSON.stringify({ error: 'origin_not_allowed' }));
-      return;
-    }
-
     // 沙盒免密：钥匙链接的最后一步——用一次性 et 向官方服务兑换正式会话并采纳，
     // 完成后跳转工作台。et 即凭据，免 Bearer；失败时如实提示从 MetaWork 重新进入。
     if (request.method === 'GET' && url.pathname === '/_sandbox/exchange') {
@@ -755,6 +735,26 @@ export class ManagementServer {
       }
       return;
     }
+    if (!url.pathname.startsWith('/api/')
+      && (request.method === 'GET' || request.method === 'HEAD')) {
+      await this.handleStatic(response, url.pathname, request.method === 'HEAD');
+      return;
+    }
+    if (url.pathname === '/api/ws/diagnostics') {
+      // This endpoint exists to explain an origin rejection to the operator, so
+      // it must be reachable from the mismatched origin. It is authenticated
+      // and read-only.
+      await this.handleApi(request, response, url);
+      return;
+    }
+    // Browser requests must come from an allowed origin; CLI/Desktop/tests send
+    // no Origin header and are authorized by their own credentials instead.
+    if (!isOriginAllowed(request.headers.origin, this.binding, request.headers.host)) {
+      response.writeHead(403, { 'content-type': 'application/json; charset=utf-8' });
+      response.end(JSON.stringify({ error: 'origin_not_allowed' }));
+      return;
+    }
+
 
     if (url.pathname.startsWith('/api/')) {
       await this.handleApi(request, response, url);
