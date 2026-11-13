@@ -1037,3 +1037,27 @@ target)` 在、旧改写签名为 0。
 sha256:fe7ceb32c0ffdc22fa216d02e10ed820a8e8df2bde0eed709ad7dbd4689318db）
 已推送并远端验证（imagetools digest 一致 + `--pull=always` 拉起运行，
 node v22.19.0 / `/opt/pi/bin/pi` 可执行 / 修复标记在）。
+
+### 记忆引擎入镜像（2026-11-13，方案 A 已确认待打包）
+
+生产暴露：实例设置页「记忆服务」报橙色横幅「记忆引擎没有随当前发布包
+安装到本机（缺少 memory/tdai）」。原因：镜像线 `.dockerignore` 有意排除
+整个 `memory/tdai`（其 node_modules 达 513M/196 包），runtime 阶段也无
+该目录——托管实例的长期记忆整理/召回整体缺失，属容器直跑镜像的功能
+缺口（非误报）。
+
+修复（用户确认方案 A）：Dockerfile 新增 `memory-engine` 层——
+`npm ci --omit=dev --ignore-scripts`（npmmirror；postinstall 为 OpenClaw
+便利补丁，跳过安全）+ 引擎树（8.2M，自带编译网关
+`dist/gateway/server.js`）经 `COPY --from` 落位 `/app/memory/tdai`（容器
+内 appCurrent 软链指向 /app，与 `resolveMemorySidecarCommand` 的
+`<installRoot>/memory/tdai` 约定一致）。`.dockerignore` 放行
+`memory/tdai` 仅排除其 node_modules。BM25 语料统计按语言按需加载，网关
+默认仅建 zh 编码器（`bm25.language` 可配，实例设置界面无该开关），英文
+语料统计 192M 在同一 RUN 内裁剪（层快照在 RUN 结束时拍，rm 与 npm ci
+必须同 RUN，否则 registry 层仍带该文件）。引擎层净增 ~243M。
+
+验证（WSL）：`docker build --target memory-engine` 构建成功；容器内
+`data/` 仅剩 `bm25_zh_default.json` + `stopwords.txt`；`/engine` 243M；
+`import("./dist/gateway/server.js")` 冒烟 `GATEWAY_LOAD_OK`。镜像
+0.1.28.3 待打包（节奏：先完成 0.1.28.2 执行器修复的实例验证）。
