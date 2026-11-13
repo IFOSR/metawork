@@ -44,7 +44,7 @@ spec:
         fsGroup: 1000
       containers:
         - name: official-server
-          image: registry.cn-shanghai.aliyuncs.com/metafusion/official-server:1.5.15
+          image: registry.cn-shanghai.aliyuncs.com/metafusion/official-server:1.5.16
           imagePullPolicy: IfNotPresent
           ports:
             - containerPort: 8780
