@@ -73,7 +73,10 @@ export async function withWorkspaceGitLock<T>(repositoryPath: string, name: stri
         if (current?.token === previous.token && !await ownerAlive(current)) {
           // Git children may outlive the parent: their index/ref locks prohibit takeover.
           if (await gitLocked(repositoryPath)) throw new Error('workspace_git_orphan_child_requires_recovery');
-          await rm(path, { recursive: true });
+          // force+maxRetries：锁目录在 NFS 上删除时可能撞 silly-rename/并发重建的
+          // ENOTEMPTY，内建重试把这类瞬态竞态吸收掉（接管失败会让合并恢复一直
+          // "deferred"，执行器永远起不来）。
+          await rm(path, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
         }
       } catch (error) {
         if ((error as NodeJS.ErrnoException).code === 'EEXIST') await reclaimStale(reclaim);
@@ -88,5 +91,6 @@ export async function withWorkspaceGitLock<T>(repositoryPath: string, name: stri
     if ((await owner(path))?.token !== token) throw new Error('workspace_git_owner_changed');
   };
   try { return await action(verify); }
-  finally { if ((await owner(path))?.token === token) await rm(path, { recursive: true }); }
+  // 释放同样加固：NFS 上删目录可撞 ENOTEMPTY，重试吸收瞬态竞态。
+  finally { if ((await owner(path))?.token === token) await rm(path, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }); }
 }
