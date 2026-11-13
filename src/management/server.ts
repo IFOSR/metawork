@@ -744,6 +744,10 @@ export class ManagementServer {
       try {
         if (!authorization || !exchange || !et) throw new Error('sandbox login unavailable');
         await authorization.adoptSession(await exchange(et));
+        // v0.1.27 的 UI 登录态按浏览器 Web 会话 cookie 判定：采纳官方会话后
+        // 必须同时给浏览器种 Web 会话，否则跳转后 UI 显示"未登录官方账号"。
+        const webSession = this.deps.webAuth.createSession();
+        response.setHeader('Set-Cookie', this.deps.webAuth.sessionCookie(webSession.sessionToken));
         response.writeHead(302, { Location: '/' });
         response.end();
       } catch {
