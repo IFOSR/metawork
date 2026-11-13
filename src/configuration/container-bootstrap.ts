@@ -189,6 +189,17 @@ export const BOOTSTRAP_PLACEHOLDER_CREDENTIAL = 'bootstrap-placeholder-unset';
  * 补进去的是明确的占位值：针对它的调用会得到供应商 401（设置页可见、可替换），
  * 而不是把实例锁死在崩溃循环里。绝不覆盖已存在的非空凭据。
  */
+
+/**
+ * 自愈/晋升启用 Provider 的凭据（ADR-0056）：
+ *  - 正式槽位（providers/<ref>）已有非空凭据 → 不动（绝不覆盖用户密钥）；
+ *  - 正式槽位是我们自己写过的占位值（bootstrap-placeholder-unset）且
+ *    pending/<ref> 有用户真实密钥 → 晋升覆盖（占位值只会导致 401，
+ *    晋升后任务即可用）；
+ *  - 正式槽位缺失 → 有 pending 先晋升，否则补占位值（保实例不进崩溃循环）。
+ *
+ * pending 槽位的值只会来自用户在设置页显式输入的密钥，因此晋升是安全的。
+ */
 export async function ensureBootstrapProviderCredentials(input: {
   config: AnyFusionConfigurationV2;
   secretStore: {
@@ -199,16 +210,22 @@ export async function ensureBootstrapProviderCredentials(input: {
   const healed: string[] = [];
   for (const [providerRef, provider] of Object.entries(input.config.providers)) {
     if (!provider.enabled) continue;
-    let missing = false;
-    try {
-      const value = await input.secretStore.get(provider.apiKeyRef);
-      missing = value.trim().length === 0;
-    } catch {
-      missing = true;
+    const activeRef = provider.apiKeyRef;
+    const pendingRef = activeRef.replace('/providers/', '/pending/');
+    let active = null;
+    try { active = await input.secretStore.get(activeRef); } catch { /* missing */ }
+    if (active !== null && active.trim().length > 0 && active !== BOOTSTRAP_PLACEHOLDER_CREDENTIAL) continue;
+    let pendingValue = null;
+    try { pendingValue = await input.secretStore.get(pendingRef); } catch { /* missing */ }
+    if (pendingValue !== null && pendingValue.trim().length > 0) {
+      await input.secretStore.put(activeRef, pendingValue.trim());
+      healed.push(providerRef);
+      continue;
     }
-    if (!missing) continue;
-    await input.secretStore.put(provider.apiKeyRef, BOOTSTRAP_PLACEHOLDER_CREDENTIAL);
-    healed.push(providerRef);
+    if (active === null || active.trim().length === 0) {
+      await input.secretStore.put(activeRef, BOOTSTRAP_PLACEHOLDER_CREDENTIAL);
+      healed.push(providerRef);
+    }
   }
   return healed;
 }

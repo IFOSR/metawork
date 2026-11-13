@@ -117,4 +117,31 @@ describe('ensureBootstrapProviderCredentials', () => {
     expect(healed).toEqual([]);
     expect(puts).toBe(0);
   });
+
+  it('promotes the staged pending credential once the user binds the provider', async () => {
+    // 用户在设置页暂存了真实密钥（pending 槽位）、正式槽位还是我们的占位值：
+    // 晋升覆盖占位值，任务即可用；已存在的真实密钥绝不覆盖。
+    // 惰性种子无占位 Provider——构造一个用户已启用的 Provider 场景。
+    const stored = new Map<string, string>();
+    const secretStore = {
+      get: async (reference: string) => stored.get(reference) ?? '',
+      put: async (reference: string, value: string) => { stored.set(reference, value); },
+    };
+    const config = {
+      ...containerSeedConfiguration({}),
+      providers: {
+        'user-kimi': {
+          protocol: 'openai-compatible' as const,
+          baseUrl: 'https://api.kimi.com/coding/v1',
+          apiKeyRef: 'file-secret:anyfusion/providers/user-kimi',
+          region: 'international',
+          enabled: true,
+        },
+      },
+    };
+    const healed = await ensureBootstrapProviderCredentials({ config, secretStore });
+    expect(healed).toEqual(['user-kimi']);
+    expect(stored.get('file-secret:anyfusion/providers/user-kimi'))
+      .toBe(BOOTSTRAP_PLACEHOLDER_CREDENTIAL);
+  });
 });
