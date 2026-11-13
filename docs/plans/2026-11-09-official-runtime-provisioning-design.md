@@ -942,3 +942,21 @@ WebSocket same-origin 校验随之通过。
 
 镜像 official-server 1.5.15 已推送（digest
 sha256:dbd4532903db4433305d5e5ca2e80f8a2c0c62cd68b0dab4333e9b66740271e3）。
+
+### 免密采纳后种浏览器 Web 会话（2026-11-13，0.1.27.1）
+
+生产实机暴露（0.1.27.0 合入主线 UI 后）：免密链接走完 exchange、官方会话已采纳、
+302 到工作台，但 UI 顶栏显示"未登录官方账号"。
+
+根因：main v0.1.27 的 UI 登录态改为按**浏览器 Web 会话 cookie** 判定
+（webAuth.getSession(cookie)）。exchange 原实现只在服务端采纳官方会话、不给
+浏览器任何会话凭据——浏览器没有 cookie，UI 按未登录渲染。
+
+修复：exchange 处理器在采纳官方会话后 createSession + Set-Cookie（与
+/api/auth/login 的 cookie 语义一致）；浏览器带着 Web 会话进入工作台，
+官方账号身份由已采纳的会话投影。同时 0.1.27.0 引入的监听地址 env 契约变化
+（METAWORK_WEB_HOST → METAWORK_SERVER_HOST + METAWORK_SERVER_ALLOWED_ORIGINS）
+一并在租户模板补齐。
+
+镜像 anyfusion-runtime 0.1.27.1 已推送（digest
+sha256:233a6a3a1d23c71808ca9d69e2650eb1ec0c78f7bf5d998fabe01bfdfc1b183b）。
