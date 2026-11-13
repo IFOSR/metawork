@@ -16,4 +16,5 @@ metaclaw-tasks
 *.db
 *.log
 docker/*.env
-memory/tdai
+# 记忆引擎需要进镜像（runtime 阶段 COPY memory-engine 层），只排除其本地依赖目录。
+memory/tdai/node_modules

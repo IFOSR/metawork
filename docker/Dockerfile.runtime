@@ -40,6 +40,23 @@ ENV PI_PDF_ASSET_MIRROR=https://gh-proxy.com/
 ENV PIP_INDEX_URL=https://mirrors.aliyun.com/pypi/simple/
 RUN npm run build
 
+# 记忆引擎（memory/tdai）单独成层：仓库里它是 gitignore 的 vendored 树，
+# 自带编译网关 dist/gateway/server.js；运行只需生产依赖（undici/ai/
+# @ai-sdk/openai/tcvdb-text/yaml 等纯 JS + @node-rs/jieba、sqlite-vec 预编译
+# 二进制）。postinstall 只是 OpenClaw 便利补丁，对 sidecar 无关，跳过安全。
+# .dockerignore 同步放行 memory/tdai（仅排除其 node_modules）。
+FROM node:22.19.0-bookworm-slim AS memory-engine
+
+WORKDIR /engine
+COPY memory/tdai/package.json memory/tdai/package-lock.json ./
+# BM25 语料统计按语言按需加载，网关默认只建 zh 编码器（bm25.language 可配）；
+# 英文语料统计 192M 在实例镜像内省略。rm 必须与 npm ci 同一 RUN——层快照在
+# 命令结束时拍，否则 registry 层里仍带着该文件。后续 COPY 不含 node_modules，
+# 不会把它带回来。postinstall 只是 OpenClaw 便利补丁，对 sidecar 无关。
+RUN npm ci --omit=dev --ignore-scripts --registry=https://registry.npmmirror.com \
+  && rm -f node_modules/@tencentdb-agent-memory/tcvdb-text/data/bm25_en_default.json
+COPY memory/tdai/ ./
+
 FROM node:22.19.0-bookworm-slim AS runtime
 
 WORKDIR /app
@@ -87,6 +104,9 @@ COPY --from=builder /app/package.json ./package.json
 COPY --from=builder /app/dist/pi-attempt-tools.ts /opt/metaclaw/pi-attempt-tools.ts
 COPY --from=docker-cli /usr/local/bin/docker /usr/local/bin/docker
 COPY --from=pi-installer /opt/pi /opt/pi
+# 记忆引擎落在 <appRoot>/memory/tdai：容器内 appCurrent 软链指向 /app，
+# resolveMemorySidecarCommand 按 <installRoot>/memory/tdai 命中。
+COPY --from=memory-engine /engine /app/memory/tdai
 COPY docker/entrypoint.sh /opt/metaclaw/entrypoint.sh
 COPY docker/persist-ssh-environment.sh /opt/metaclaw/persist-ssh-environment.sh
 COPY docker/codex-config/executor /opt/metaclaw/codex-config/executor
