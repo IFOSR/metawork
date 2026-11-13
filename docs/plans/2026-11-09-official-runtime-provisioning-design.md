@@ -1059,5 +1059,5 @@ node v22.19.0 / `/opt/pi/bin/pi` 可执行 / 修复标记在）。
 
 验证（WSL）：`docker build --target memory-engine` 构建成功；容器内
 `data/` 仅剩 `bm25_zh_default.json` + `stopwords.txt`；`/engine` 243M；
-`import("./dist/gateway/server.js")` 冒烟 `GATEWAY_LOAD_OK`。镜像
-0.1.28.3 待打包（节奏：先完成 0.1.28.2 执行器修复的实例验证）。
+`import("./dist/gateway/server.js")` 冒烟 `GATEWAY_LOAD_OK`。镜像 0.1.28.3（digest
+sha256:cfccb2313e04d8de019a3df1e908beff5f23b8b7c816845b1833ecabd876d938）已推送并远端验证（imagetools digest 一致 + --pull=always 拉起运行：node v22.19.0 / /opt/pi/bin/pi 可执行 / ENGINE_OK / 执行器修复标记在 / 旧改写签名 0）。
