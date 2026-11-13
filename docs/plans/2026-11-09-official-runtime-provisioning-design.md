@@ -931,3 +931,14 @@ sha256:8169339dcdb3addf05ac9cf958bfe8653e97a0e27646380cab62b5700130a2a3）；
 引导/自愈/兼容注入/mkdir 路由/前端新建目录全部在镜像内。守卫/引导/限根/暂存
 测试 29+ 通过；lint 与 web 构建干净。
 
+
+### 允许来源注入（2026-11-13，1.5.15）
+
+主线新架构的安全门（ADR-0055 D10）：非 loopback 绑定必须显式声明允许的来源，
+否则启动即拒绝（`refusing to listen on 0.0.0.0 without allowed origins`）。
+租户模板补注入 `METAWORK_SERVER_ALLOWED_ORIGINS=https://<实例域名>`
+（row.domain 逐实例生成）——浏览器经 Ingress 访问的 Origin 与之一致，
+WebSocket same-origin 校验随之通过。
+
+镜像 official-server 1.5.15 已推送（digest
+sha256:dbd4532903db4433305d5e5ca2e80f8a2c0c62cd68b0dab4333e9b66740271e3）。
