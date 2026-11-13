@@ -3,6 +3,7 @@
 - 方案日期：2026-11-09
 - 状态：基础能力已实施并部署（1.4.5 + anyfusion-runtime 0.1.25.3）；免密登录与自动登录方案 2026-11-11 确认（§9，门票 Cookie 长期有效与密码登录体验对齐），待实施（需 Runtime 0.1.25.4）。集群部署验收、ADR 与 `CONTEXT.md`/technical-overview 更新在上线验收时补记。
 - 确认依据：用户 2026-11-09 确认六项决策——工作负载镜像已备好；每实例需要 PVC 持久化；一个账号一个实例，30 天无访问标记回收后人工处理；两个接口放在官方服务内；接口与资源命名 `/v1/runtimes` 采纳；访问域名为 `*.metawork.nexusfusionai.com`；集群为阿里云 ACK，已安装 VPA 组件（`ack-vertical-pod-autoscaler`）。2026-11-10 确认：**免密线一期整体不做**（域名开放访问，后续另立项）；HTTPS 证书使用**指定通配证书**（覆盖 `*.metawork.nexusfusionai.com`，TLS Secret `metawork-nexusfusionai-com-tls`）；资源与 Secret 命名由方案提出、最终待定；查询接口增加**步骤级 `steps` 进度字段**；文档与产品措辞统一为**"实例"**（接口路径、表名、配置键沿用 runtime 命名）；实例资源落在**已存在的 namespace `nexusfusionai`**（与官方服务同 namespace，不新建独立 namespace）。集群核对全部完成：CNI Terway（`terway-eniip` 7/7）、VPA CRD 存在、通配 DNS 已添加。
+- 2026-11-12 起本方案扩展覆盖三个专项：工作目录根限制与目录新建（§12）、未激活模型的 AI 辅助可用性（§13）、容器直跑镜像与引擎统一（§14，[ADR-0056](../adr/0056-container-image-direct-deployment.md)）；三份独立设计文档已并入本文。
 - 文档定稿日期：2026-11-10
 - 实施完成日期：2026-11-10（服务端接口、K8s 客户端、六步管线、回收标记、部署清单、admin 台账与单元测试已交付；集群部署与真实域名验收待执行）
 - 交付验证：`official-server` `npm test` 34 项全部通过（含本地 K8s 桩：创建/幂等重放/一账号一实例 409/402 权益/六步 running 轮转、失败步骤记录与逆序回滚、中断续跑只补建缺失资源、30 天回收标记、admin 台账与 close 逆序删除含 PVC、`RUNTIME_IMAGE` 缺失 503）；宿主机连跑 4 轮全绿；根仓库 `npm run lint` 通过。Docker 套件本机不可用（无 docker），留待部署环境执行。
@@ -518,3 +519,415 @@ Pod 启动时容器内不可能有别的 Server 进程，此刻的锁必然是�
 
 镜像 official-server 1.5.12 已推送（digest sha256:32a651878aedf404557bfcd792f85549071b909a7811f2d53e4c20ce045a3bda）；
 远端验证通过；单测 51/51（注入用例新增清锁断言）。
+
+---
+
+## 12. 工作目录根限制与目录新建（2026-11-12 确认实施）
+
+### 背景
+
+托管实例（Runtime）的用户可以在 Web 端浏览并选择任意本机目录作为 Workspace。
+托管环境下这带来两个问题：
+
+1. **可能选到不该选的目录**。实例容器里 `/root` 是 HOME，安装期 `npm install -g`
+   留下的 npm 缓存（数万个碎文件）就在 `/root/.npm/_cacache`。
+2. **选中大目录后运行极慢且失败**。Workspace 每次使用前都要把源目录"拍照存档"
+   （git baseline capture），对 `/root` 这样的目录意味着遍历并哈希几万个文件；
+   期间目录还在变化（Pi 执行器与自身状态在写），于是抛出
+   `source_changing: Workspace changed during incremental capture`，
+   启动阶段的异常经 `launchFailureEvent` 归类为 `infrastructure`，
+   表现为"上游执行暂时不可用"并每 30 秒重试一次。
+
+因此需要给"用户可选工作目录"一个明确的根。
+
+### 决策
+
+用户 2026-11-12 确认：
+
+1. **根目录由部署配置指定**，通过环境变量注入到实例容器。
+2. **未配置时不限制**，与历史行为完全一致（浏览起点回到 `homedir()`）。
+3. **持久化方案 B**：`/workspace` 挂在实例已有 PVC 的 `workspace` 子路径上
+   （`subPath`），不额外申请存储。
+4. **根目录不存在时实例启动失败**（不是自动创建）。
+
+### 契约
+
+#### 环境变量
+
+| 变量 | 位置 | 语义 |
+| --- | --- | --- |
+| `METAWORK_WORKSPACE_ROOT` | 实例容器（Runtime） | 用户可选工作目录的根；未设置 = 不限制。兼容名 `ANYFUSION_WORKSPACE_ROOT`（走 `PRODUCT_ENVIRONMENT` 惯例）。 |
+| `RUNTIME_WORKSPACE_ROOT` | 官方服务 | 官方服务配置；设置后注入到租户 Deployment 的 `METAWORK_WORKSPACE_ROOT`。 |
+
+官方服务的 `RUNTIME_*` 变量全部是"留空 = 该能力关闭"的形状，
+`RUNTIME_WORKSPACE_ROOT` 沿用同一形状。
+
+#### 边界判定
+
+根在**启动期**解析一次并 `realpath` 规范化，此后所有判定都基于规范路径比较：
+
+- `isWithinWorkspaceRoot(root, candidate)`：`candidate === root` 或以 `root + sep` 开头。
+  分隔符用平台原生 `sep`——生产路径全部来自 `realpath()`，与平台一致。
+- 判定一律发生在 `realpath` **之后**：符号链接别名与 `..` 拼写无法把候选路径挪出根外。
+
+三处服务端边界（前端隐藏只是辅助，不是授权）：
+
+| 接口 | 越界行为 |
+| --- | --- |
+| `GET /api/workspaces/browse` | 403 `browse_path_forbidden`；根位置 `parent` 为 null |
+| `POST /api/workspaces/select` | 抛 `workspace_outside_root`（400） |
+| `POST /api/workspaces/mkdir` | 403 `workspace_outside_root` |
+
+#### 新建目录
+
+`POST /api/workspaces/mkdir`，与浏览同门槛（仅浏览器 cookie 会话）。
+
+```
+Body: { parentPath: string, name: string }
+→ 201 { directory: { name, path } }
+```
+
+约束：
+
+- `name` 必须是**单级**合法目录名：非空、≤128 字符、不含路径分隔符、
+  不为 `.`/`..`、不含控制字符与 Windows 保留字符。
+- `parentPath` 必须存在、是目录，且位于根内。
+- `mkdir(recursive: false)`——一次调用只产生一个目录，父目录必须已存在。
+- 重名 → 409 `directory_exists`。
+
+#### 启动期失败
+
+Runtime 在 Server 模式下启动前校验根：不存在 / 不是目录 / 不是绝对路径 → 启动失败，
+日志写明原因。`server status` / `stop` / `doctor` 与客户端启动不受影响——
+运维命令必须始终可用。
+
+### 部署侧
+
+`/workspace` 走实例已有 PVC 的 `workspace` 子路径。K8s 的 `subPath` 挂载要求子目录
+**在卷上已存在**，否则 kubelet `FailedMount`、Pod 卡在 CrashLoopBackOff。
+因此 Deployment 带一个 initContainer：挂整卷（不带 `subPath`）先
+`mkdir -p /workspace && chmod 700 /workspace`，主容器再以 `subPath: workspace` 挂载。
+
+`initContainers` 与 `volumeMounts` 都在 `sandboxDeploymentManifest` 里生成，
+因此**创建**与**升级**两条路径都会带上：
+
+- 新实例：直接带上。
+- 存量实例：Deployment 未变时继续按旧行为运行（env 未变，也没有 `/workspace`）；
+  升级时 `patchDeploymentTemplate` 会一并补上 initContainer 与挂载，
+  initContainer 先建目录，主容器随后挂载成功。
+
+官方服务一旦配置 `RUNTIME_WORKSPACE_ROOT`，存量实例在下一次**重建**（升级/回收重建）
+时才会获得 `/workspace`；在此之前它们保持原样，不会因为 env 变化而启动失败——
+env 只在 Pod 创建时注入。
+
+### 前端
+
+`WorkspaceCreator`（ADD WORKSPACE 弹窗）承担浏览与新建：
+
+- 面包屑来自服务端 `crumbs`；根限制下从根开始，不出现文件系统根。
+- ".. 上级目录"来自服务端 `parent`，根位置服务端返回 `null`，前端自然不渲染。
+- 新增"+ 新建目录"行：点击后在列表顶部展开输入行（回车提交、Esc 取消），
+  成功后**自动进入新目录**并刷新列表。
+
+### 验证
+
+- `tests/workspace/workspace-root.test.ts`（16 项）：根解析与失败模式、边界判定、
+  浏览起点/越界/符号链接逃逸、新建目录的合法名与越界。
+- `tests/workspace/workspace-directory-service.test.ts`：新增"根外目录被拒绝"用例。
+- `official-server/test/service.test.js`（48 项）：新增 `RUNTIME_WORKSPACE_ROOT`
+  注入用例（initContainer / subPath 挂载 / env）与未配置时的对照用例。
+- `tests/management/server.test.ts`（71 项）通过。
+
+### 未决 / 后续
+
+- 存量实例的 `/workspace` 迁移需要一次升级或重建，没有自动 patch。
+- 根限制只约束"用户可选目录"；Planner 的授权根（`ANYFUSION_PLANNER_WORKSPACE`）
+  是另一套语义，未合并。
+
+
+---
+
+## 13. 未激活模型的 AI 辅助可用性（2026-11-12 确认实施）
+
+### 背景
+
+设置页新增 Provider 或模型后，**不点"保存并激活"**时，这些事实只存在于浏览器内存：
+
+| 事实 | 位置 | 服务端可见？ |
+| --- | --- | --- |
+| Provider 端点与协议 | 浏览器内存 | ❌ |
+| API Key | 浏览器输入框 | ❌ |
+| 已激活配置 | — | ❌ |
+
+"保存"与"激活"是**同一个原子动作**（`POST /api/config/activate` 同时提交 config 与
+secrets），凭据只在激活时入库（`stageSecrets`，`server-composition.ts`）。没有
+"只存草稿"的中间态。
+
+于是需要调用模型的辅助功能拿不到任何可用通道：
+
+| 调用点 | 解析路径 | 未激活时 |
+| --- | --- | --- |
+| 更新模型能力/信息<br>`model-routing-profile` | 前端传 `preferredModel` → 查已激活配置 | **必然失败** |
+| 更新智能体能力<br>`agent-capabilities` | `capability_explanation` 分支 → 从已激活配置找模型 | **必然失败** |
+| 更新智能体介绍<br>`agent-responsibility` | 无 preferredModel → 官方内置 AI | 官方 AI 不可用才失败 |
+
+失败的直接原因是 `resolvePreferredModel` 只认可"已激活配置里的 Provider"或
+"官方公开预设"（kimi / deepseek / code-cli），且解析失败抛 `PreferredModelError`
+后**不回退**官方内置 AI——这是刻意设计（*"解析不到就如实呈现，不静默回退官方
+内置 AI 掩盖配置缺失"*）。
+
+### 两个不能破坏的约束
+
+1. **SSRF 边界**：客户端提交的 `baseUrl` 不得成为任意代理目标。Runtime 主进程的
+   出网不受 egress proxy 管控（代理只覆盖 attempt 容器）。
+2. **不掩盖配置缺失**：不得悄悄换一个模型给出看似正常的结果。
+
+### 关键事实：降级不会造成张冠李戴
+
+三条调用点的"事实依据"都不来自"用哪个模型生成"：
+
+| 调用点 | 事实依据来源 |
+| --- | --- |
+| 更新模型能力/信息 | OpenRouter 公开模型目录 |
+| 更新智能体能力 | 前端传入的模型事实 |
+| 更新智能体介绍 | 前端传入的模型事实 |
+
+生成的是描述文本，事实依据准确即可；谁来写这段文字不影响结论正确性。
+
+### 实施
+
+#### 一、降级而不是阻断（最小方案）
+
+`InternalLlmService.generate`：`PreferredModelError` 不再直接抛出，改为
+
+- 有官方内置 AI → 用官方 AI 完成本次生成，并通过 `onDegraded` 回调把
+  { modelId, reason, usedBy } 交回调用方；
+- 无官方内置 AI → 保留原始可操作错误（没有任何通道能完成请求）。
+
+降级信息沿调用链透出到三个接口的响应体（`degraded` 字段），前端如实显示：
+"你指定的模型（X）尚未保存激活，本次结果由官方内置 AI 生成。"
+
+#### 二、错误文案指向"尚未保存激活"
+
+原文案"缺少 API Key""端点未在已激活配置中找到"会让用户误以为自己漏填 Key、
+反复重填。改为：
+
+- `用户配置模型（X）尚未保存激活，其端点既不在已激活配置中，也不是官方公开预设：…`
+- `用户配置模型（X）的 Kimi 的 API Key 尚未保存：…`
+- `固定模型（X）尚不可用：请在模型设置中保存并激活对应 Provider…`
+
+#### 三、待激活 Provider 暂存区（方案 3）
+
+新增 `src/configuration/pending-provider-store.ts`，落盘位置
+`<account config>/pending-providers.json`：
+
+- 内容：`providerRef → { baseUrl, protocol, apiKeyRef, savedAt }`；
+  API Key 本体仍写进凭据库，暂存区只留引用。
+- **写入时机**：`discoverProviderModels` **发现成功之后**（连接测试通过即证明
+  该密钥可用），且本次带明文 API Key（即用户在设置页刚填的）。已激活
+  Provider 的重新发现不带明文 Key，不写暂存。
+- **读取时机**：`resolvePreferredProviders` 合并"已激活 ∪ 待激活"，**已激活优先**。
+- **清理时机**：Provider 成功激活后从暂存区移除，避免两处事实长期分叉。
+
+**边界保持**：端点来自本机落盘数据，不是客户端任意输入，因此不放松 SSRF 约束；
+密钥始终走凭据库，不新增明文通道。
+
+##### 密钥必须落在独立的 pending 命名空间
+
+待激活密钥写 `file-secret:anyfusion/pending/<providerRef>`，**不写**
+`file-secret:anyfusion/providers/<providerRef>`。凭据库因此多一个 `pending`
+命名空间，与 `providers`、`internal` 物理隔离。
+
+原因：用户**编辑已激活的 Provider** 并填入无效密钥、尚未保存激活时，若写入
+正式引用就会直接覆盖正在生效的密钥——原本可用的模型立刻失效，所有使用它的
+任务一起坏掉。独立命名空间让这条路径不存在。
+
+合并时"已激活优先"同样重要：编辑未保存的新密钥不参与解析，AI 辅助仍用已激活
+的那份有效密钥；只有**全新 Provider**（不在已激活配置里）才使用待激活密钥。
+
+#### 四、能力说明路径能查到编辑态的 Provider
+
+编辑态的模型不在已激活配置里，服务端无法从 `modelRef` 反查 `providerRef`。
+`ModelFactSchema` 增加可选 `providerRef` 字段，前端在构造模型事实时带上
+（客户端只传引用，不传密钥）。
+
+### 用户流程
+
+**不变**：填模型 → 点"保存并激活"。没有新按钮、没有新步骤。
+
+用户能感知的差别：填完模型点一次"连接测试"后，"添加模型""更新智能体能力"
+"更新智能体介绍"等 AI 辅助功能立即可用，不必先激活整个配置。
+
+### 验证
+
+- `tests/configuration/internal-llm-service.test.ts`：降级走官方 AI 且原因如实上报；
+  无官方通道时保留原始错误。
+- `tests/configuration/agent-capability-description.test.ts`：能力说明返回降级信息。
+- `tests/configuration/preferred-model-resolver.test.ts`：文案指向"尚未保存激活"。
+- `tests/configuration/pending-provider-store.test.ts`：暂存区读写与清理（5 项）。
+- `tests/configuration/credentials-file-secret-store.test.ts`（9 项）：待激活密钥与
+  已激活密钥**互不覆盖**——这是"填了无效 key 却弄坏原本可用模型"的直接防线。
+- `tests/management/server.test.ts`（71 项）与 `tests/configuration/` 全量通过，
+  剩余 5 项失败为既有的 Windows POSIX 权限断言（改动前后一致）。
+
+### 已知边界
+
+- 用户填了密钥但最终未保存激活时，待激活密钥留在凭据库的 `pending` 槽位。
+  它不参与任何活跃路径（不参与 Planner 路由、Executor 执行），但会留在磁盘上。
+  清理策略（按时间过期）尚未实现。
+- 用户从配置中删除某个 Provider 时，它在 `pending` 命名空间里的同名暂存密钥
+  不会被自动清除；只有同名 Provider 再次激活时才会被清掉。
+
+### 实施记录
+
+- 镜像 anyfusion-runtime 0.1.25.5（本次改动全部在 Runtime 侧）、official-server 1.5.8
+  （租户 Deployment 模板：initContainer + subPath 挂载 + `METAWORK_WORKSPACE_ROOT` 注入）。
+- official-server 1.5.8：digest sha256:76fb124d281950b6f47dff5bfc7a4854f4845b130bbd31979a948a970a79e586，
+  远端验证 `imagetools inspect` + `--pull=always` 拉取运行冒烟通过（healthz / 控制台 v1.5.8 /
+  `/_auth/redeem` 别名路由仍返回 401 `sandbox_access_invalid`）。
+- official-server 单测 48/48；仓库 `npm run lint` 干净。
+- anyfusion-runtime 0.1.25.5：digest sha256:4470ae5f6dc5bca38dc51a1b2a33b7a1dc287c4eb21c11bdb798a022aaee113a。
+  远端验证：`imagetools inspect` 确认 tag 落地；`--pull=always` 拉取后核查镜像内容——
+  dist 含 `anyfusion/pending` 凭据命名空间、`METAWORK_WORKSPACE_ROOT`、`workspaces/mkdir`
+  端点与 `onDegraded` 降级标记；web/dist 含"新建目录"与"尚未保存激活"文案；
+  容器启动走到预期的 `active configuration is missing`（镜像内未装 release，
+  托管实例由 startScript 先跑 install-cli）。
+
+
+---
+
+## 14. 容器直跑镜像与引擎统一（2026-11-12 确认实施，ADR-0056）
+
+对应决议：[ADR-0056](../adr/0056-container-image-direct-deployment.md)。
+
+### 改动清单
+
+#### Runtime（anyfusion-runtime 0.1.25.6）
+
+1. **迁移守卫 + 迁移前备份**（`src/storage/database.ts`）：
+   - `readSchemaVersion` 结果高于 `CURRENT_SCHEMA_VERSION` → 明确报错拒绝启动
+     （现状是落到 `unsupported pre-release SQLite schema (N)` 的晦涩报错）。
+   - 低于当前版本（即将执行迁移）→ 先 `PRAGMA wal_checkpoint(TRUNCATE)`，整库拷贝
+     到数据库同目录 `backups/<name>.pre-migration-<from>-<timestamp>`，再迁移。
+2. **首启配置引导**（新模块 `src/configuration/container-bootstrap.ts`）：
+   - 仅当 `METAWORK_CONTAINER_BOOTSTRAP=1` 且 active 配置缺失时执行；形状与
+     `install-cli` 非交互安装一致（`buildConfiguration` 骨架：providers/models 为空、
+     planner/codex/pi 三套 harness 与 AgentClass、permissionProfiles）。
+   - 原生路径无该环境变量，保持原"提示先运行 install"行为。
+3. 容器宿主 env 注入 `METAWORK_CONTAINER_BOOTSTRAP=1`（由 official-server 模板注入）。
+
+#### official-server（1.5.13）
+
+1. 租户 startScript 简化为：
+
+   ```sh
+   rm -f /data/anyfusion/data/runtime.lock;
+   mkdir -p /data/anyfusion/app && ln -sfn /app /data/anyfusion/app/current;
+   exec node /app/dist/index.js server start
+   ```
+
+   - 清运行锁保留（1.5.12 的修复，锁仍在 PVC 上跨容器存活）。
+   - `app/current → /app` 兼容层让所有 `appCurrent/dist/...` 查找（schema、扩展）
+     原样工作。
+2. 租户 env 注入 `METAWORK_CONTAINER_BOOTSTRAP=1`；移除 `RUNTIME_RELEASE_ID`
+   （容器路径不再使用；install-cli 保留在镜像内，回退到旧 official-server 即恢复
+   旧启动路径，回退安全）。
+3. `runtimeEnv.releaseId` 与官方服务清单里的 `RUNTIME_RELEASE_ID` secretKeyRef 一并
+   移除；`.env.example` 同步。
+
+#### 不动的部分
+
+- `install-cli` 与原生 macOS 安装路径（ADR-0056 明确分叉）。
+- 官方服务的 `applied_image` / `service_ready` / 漂移检测：镜像 tag 即版本，语义
+  不变反而更简单。
+- 工作目录根限制、initContainer、`/workspace` subPath 挂载全部保留。
+
+### 存量实例迁移
+
+- 无数据迁移：卷上配置/数据库/工作区原地保留；`releases/` 旧拷贝成为死重（可后续
+  手工清理）。
+- 部署节奏：官方服务升 1.5.13 → startScript 变化触发漂移检测 → 实例页「重建实例」
+  → 重建即切换（无 30 分钟拷贝）。
+
+### 验收
+
+1. 全新实例（空 PVC）创建 → 就绪 ≤2 分钟，配置自动播种。
+2. 存量实例重建 → 数据保留，快速就绪；`app/current` 兼容层下 plan schema / 扩展正常。
+3. 版本更新 → ≤3 分钟生效。
+4. 降级守卫：被新版本迁移过的卷用旧镜像启动 → 明确报错。
+5. 原生 install-cli 路径回归（未改动，单测全绿）。
+
+### 实施记录（2026-11-12）
+
+- 镜像：anyfusion-runtime 0.1.25.6（digest sha256:cc37f85f64f19d5f56e713dd0e7173eb9cbb07686f4fab9ce5323f1abb6b5e95）、
+  official-server 1.5.13（digest sha256:1ae3280fa1c46bcb354ad8ac03e1d1af3b53d1e115bb794ecb3f60b2a52d6c1d）均已推送；
+  `imagetools inspect` + `--pull=always` 拉取验证通过（dist 含引导与迁移守卫代码，
+  official-server startScript 为直跑形态）。
+- 实施中发现的一处设计修正：`activateDraft` 强制要求先 probe，而占位 Provider 无有效
+  凭据、真探测必然失败——引导分支的 ConfigurationService 注入**直通 probe** 实现，
+  正常激活路径不受影响。
+- 测试：迁移守卫 3 项、首启引导 3 项（含降级拒绝、迁移前备份落盘、直跑断言）；
+  official-server 51/51；`npm run lint` 干净；storage+configuration 全量
+  636/641（5 项失败为既有 Windows POSIX 权限断言，改动前后一致）。
+
+#### 补丁（0.1.25.7）：新建目录表单死锁
+
+`creating` 同时被当作"表单展开"与"请求在途"使用：点开表单的瞬间 busy 为真，
+把输入框、创建、取消全部禁用——无法输入、无法取消。拆分为 `creating`（表单展开）
+与 `submitting`（请求在途），busy 只含后者；表单内控件仅在 submitting 时禁用。
+
+#### 补丁（0.1.25.8）：占位凭据自愈
+
+生产实机暴露（新用户全新实例崩溃循环）：首启引导播种的占位 Provider 是 enabled
+的，而启动期凭据解析**失败关断**——0.1.25.6/0.1.25.7 只播种了配置、没播种凭据：
+
+  Provider credential could not be resolved: default-provider
+
+修复：
+
+- 占位 Provider/Model 标记 `systemManaged: true`（系统 owned）
+- 新增 `ensureBootstrapProviderCredentials`：每次容器启动补写缺失的 systemManaged
+  占位凭据（首启覆盖 + 已坏存量卷重启即自愈），发生在 Planner 绑定解析凭据之前；
+  **绝不触碰用户自己的 Provider 凭据**
+- 镜像 anyfusion-runtime 0.1.25.8 已推送（digest
+  sha256:be0ca59ce7dac15600fc76716f92d1fc4579ce421f17dcecdfae421074ebebe6）；
+  引导测试扩至 6 项（自愈/不碰用户凭据/不覆盖已有凭据/systemManaged 断言）
+
+#### 补丁（0.1.25.9）：自愈放宽为"enabled 且凭据缺失"
+
+生产实机暴露：0.1.25.6/.7 播种的卷，其 Provider 没有 systemManaged 标记（该标记
+0.1.25.8 才加入种子），0.1.25.8 的自愈按标记圈范围把它们跳过——新用户实例继续
+崩溃循环（`Provider credential could not be resolved: default-provider`）。
+
+修复：自愈判定改为"enabled 且凭据缺失"——任何 enabled Provider 缺凭据都补占位值。
+托管实例里凭据缺失必然是引导产物（激活/暂存流程都会写钥匙）；补进去的占位值让调用
+得到供应商 401（设置页可见、可替换），好过实例被锁死在崩溃循环里。
+
+镜像 anyfusion-runtime 0.1.25.9 已推送（digest
+sha256:228575cdfcbea9431312176cbc11391286c0e304d6c422c5cd047c4be9353fcd）；
+回归用例覆盖"无 systemManaged 标记的 .6/.7 播种卷必须被自愈"；测试 6/6、lint 干净。
+
+#### 补丁（0.1.27.0）：镜像引擎统一为上游固定版本 Pi
+
+主线 v0.1.27 删除了 vendored planner fork 与 docker/ 构建线（Pi 引擎改为
+tools/pi-runtime 清单锁定的上游 @earendil-works/pi-coding-agent 精确版本）。
+本分支的托管实例镜像仍依赖两者——本次对齐主线的"上游固定版本"路线：
+
+- Dockerfile.runtime：planner-builder 阶段（fork 全量构建，~30 分钟大头）
+  替换为 pi-installer 阶段（npm ci 固定清单 + bin 包装，秒级）；planner 与
+  执行器统一用上游 Pi 1.5.0；镜像瘦身 3.05GB → 2.38GB
+- kimi 兼容不再依赖 fork 源码补丁：上游 1.5.0 支持
+  `model.compat.supportsDeveloperRole` 按模型覆盖；运行时渲染器对
+  api.kimi.com / api.moonshot.* 端点注入 supportsDeveloperRole:false
+  （上游 isNonStandard 名单漏了 api.kimi.com，本注入压过它）；
+  planner 与 pi-home 两份 models.json 共用同一渲染函数，一处注入全链路生效
+- main 删除 docker/ 支持文件（entrypoint/pi-config/planner-pi-config 等）
+  时被自动合并顺带删除——已从合并前提交恢复
+- 新增迁移守卫测试改对 main 的 prepareDatabaseSchema 版本拒绝语义
+
+镜像 anyfusion-runtime 0.1.27.0 已推送（digest
+sha256:8169339dcdb3addf05ac9cf958bfe8653e97a0e27646380cab62b5700130a2a3）；
+远端验证：imagetools inspect + --pull=always 拉取运行——pi --version = 1.5.0、
+引导/自愈/兼容注入/mkdir 路由/前端新建目录全部在镜像内。守卫/引导/限根/暂存
+测试 29+ 通过；lint 与 web 构建干净。
+

@@ -9,17 +9,8 @@
 
 ## 现行架构与契约（本轮收敛）
 
-- [2026-11-12 容器直跑镜像改动方案](plans/2026-11-12-container-direct-deployment-design.md)
-  —— 容器直跑镜像内代码（ADR-0056），迁移守卫与迁移前备份、容器首启引导与占位凭据自愈；镜像 official-server 1.5.13 / anyfusion-runtime 0.1.25.9 已推送。
-
-- [2026-11-12 工作目录根限制与目录新建](plans/2026-11-12-workspace-root-limitation-design.md)
-  —— 实例容器 `METAWORK_WORKSPACE_ROOT` 限根（browse/select/mkdir 三接口同边界，realpath 后判定），弹窗内新建目录；`/workspace` 走实例 PVC 的 workspace 子路径 + initContainer。
-
-- [2026-11-12 未激活模型的 AI 辅助可用性](plans/2026-11-12-unactivated-model-ai-assist-design.md)
-  —— 未保存激活时 AI 辅助降级由官方内置 AI 生成并如实告知（degraded）；待激活 Provider 暂存区与凭据独立 pending 命名空间。
-
 - [官方服务实例创建与查询方案（一期）](plans/2026-11-09-official-runtime-provisioning-design.md)
-  —— `POST/GET /v1/runtimes` 六步创建管线、一账号一实例、免密登录；官方控制台；实例升级就绪语义/模板漂移检测/存量自愈（1.5.6–1.5.13 逐批记录见文档 §11）。
+  —— `POST/GET /v1/runtimes` 六步创建管线、一账号一实例、免密登录；官方控制台；实例升级就绪语义/模板漂移检测/存量自愈（1.5.6–1.5.13 逐批记录见文档 §11）。2026-11-12 起扩展覆盖三个专项（§12–§14）：**工作目录根限制与目录新建**（`METAWORK_WORKSPACE_ROOT` 限根、页内新建目录）、**未激活模型的 AI 辅助可用性**（官方内置 AI 兜底 + degraded 如实告知 + 待激活 Provider 暂存区）、**容器直跑镜像与引擎统一**（镜像即版本、上游固定版本 Pi 1.5.0 + kimi 兼容注入，ADR-0056）。镜像线：official-server 1.5.13 / anyfusion-runtime 0.1.27.0。
 
 - [结果恢复与停止状态闭环](plans/2026-11-04-result-recovery-deadlock-fix.md)
   —— 2026-11-05 已发布 v0.1.25，真实浏览器及安装升级验收通过。

@@ -2,7 +2,7 @@
 
 - 状态：已接受并实施
 - 日期：2026-11-12
-- 相关：[容器直跑镜像改动方案](../plans/2026-11-12-container-direct-deployment-design.md)、[官方服务实例创建与查询方案](../plans/2026-11-09-official-runtime-provisioning-design.md)
+- 相关：[官方服务实例创建与查询方案（含 §14 容器直跑镜像与引擎统一）](../plans/2026-11-09-official-runtime-provisioning-design.md)
 
 ## 决策
 
