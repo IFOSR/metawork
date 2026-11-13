@@ -74,7 +74,7 @@ spec:
             - name: RUNTIME_IMAGE
               valueFrom:
                 secretKeyRef: { name: metawork-official-secrets, key: RUNTIME_IMAGE, optional: true }
-            # 实例直跑镜像内代码（见 ADR-0055）：版本即镜像 tag，RUNTIME_RELEASE_ID 不再
+            # 实例直跑镜像内代码（见 ADR-0056）：版本即镜像 tag，RUNTIME_RELEASE_ID 不再
             # 被容器路径使用（Secret 里遗留的 key 留着无害）。
             - name: RUNTIME_ACCESS_SECRET
               valueFrom:

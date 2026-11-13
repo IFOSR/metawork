@@ -905,7 +905,7 @@ function sandboxPvcManifest(row, name) {
 
 function sandboxDeploymentManifest(row, name) {
   const labels = { app: name, ...sandboxLabels(row.id) };
-  // 容器直跑镜像（见 ADR-0055）：镜像即版本，PVC 只放数据。启动脚本只做三件事——
+  // 容器直跑镜像（见 ADR-0056）：镜像即版本，PVC 只放数据。启动脚本只做三件事——
   // 清遗留运行锁、建 app/current 兼容层（Runtime 多处按
   // appCurrent/dist 查找 schema 与扩展，指向 /app 即可零改动工作）、前台启动。
   // 不再拷贝 release：创建/升级从 5-30+ 分钟降到拉镜像 + 起进程的分钟级。
@@ -959,7 +959,7 @@ function sandboxDeploymentManifest(row, name) {
               { name: 'OPENAI_BASE_URL', value: env.RUNTIME_OPENAI_BASE_URL || 'https://api.deepseek.com' },
               // 用户可选工作目录的根：限制在它之下选择/新建工作目录（未配置则不限制）。
               ...(workspaceRoot ? [{ name: 'METAWORK_WORKSPACE_ROOT', value: workspaceRoot }] : []),
-              // 容器直跑镜像（ADR-0055）：全新 PVC 无 active 配置时，server 启动
+              // 容器直跑镜像（见 ADR-0056）：全新 PVC 无 active 配置时，server 启动
               // 自动播种最小配置（占位 Provider + 三套 harness/AgentClass 骨架）。
               { name: 'METAWORK_CONTAINER_BOOTSTRAP', value: '1' },
             ],

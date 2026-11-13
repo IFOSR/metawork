@@ -136,6 +136,15 @@ function isZaiCompatibleBaseUrl(baseUrl: string): boolean {
   return normalized.includes('api.z.ai') || normalized.includes('open.bigmodel.cn');
 }
 
+/** Kimi For Coding (api.kimi.com) shares Moonshot's strict request format: it
+ *  rejects the OpenAI-authored `developer` role with 400. Upstream Pi handles
+ *  api.moonshot.* but not api.kimi.com, so the compat override is injected
+ *  here for every model on that endpoint. */
+function isKimiFamilyBaseUrl(baseUrl: string): boolean {
+  const normalized = baseUrl.trim().toLowerCase();
+  return normalized.includes('api.kimi.com') || normalized.includes('api.moonshot.');
+}
+
 function buildPlannerModelEntry(
   provider: AnyFusionConfigurationV2['providers'][string],
   model: AnyFusionConfigurationV2['models'][string],
@@ -148,9 +157,14 @@ function buildPlannerModelEntry(
   // Pi auto-detects Z.ai/GLM's `thinking` protocol from the endpoint. An
   // explicit OpenAI `reasoning_effort` override breaks GLM tool-call turns.
   if (provider.protocol === 'openai-compatible' && !isZaiCompatibleBaseUrl(provider.baseUrl)) {
-    entry.compat = {
+    const compat: Record<string, unknown> = {
       supportsReasoningEffort: model.reasoning === 'high' || model.reasoning === 'medium',
     };
+    // Kimi 端点拒绝 `developer` 角色：显式关掉，压过上游的"按端点猜测"。
+    if (isKimiFamilyBaseUrl(provider.baseUrl)) {
+      compat.supportsDeveloperRole = false;
+    }
+    entry.compat = compat;
   }
   return entry;
 }

@@ -6,7 +6,6 @@ import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { promisify } from 'node:util';
 import { resolveMetaWorkPaths } from '../installation/paths.js';
-import { buildPlannerMcpLaunchEnv } from '../planning/planner-mcp-launch-env.js';
 import {
   resolveCurrentRuntimeHome,
   resolveRevisionRuntimeHome,

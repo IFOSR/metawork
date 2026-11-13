@@ -67,14 +67,14 @@ describe('bootstrapContainerConfiguration', () => {
     expect(model?.enabled).toBe(true);
     expect(model?.modelId).toBe('placeholder-model');
     expect(Object.keys(snapshot.config.agentClasses).sort()).toEqual([
-      'codex-engineering', 'pi-research', 'planner',
+      'pi-research', 'planner',
     ]);
   });
 
   it('seed shape matches the install-cli configured-provider skeleton', () => {
     const seed = containerSeedConfiguration({ baseUrl: 'https://x.example/v1', modelId: 'm' });
     expect(Object.keys(seed.harnesses).sort()).toEqual([
-      'anyfusion-planner', 'codex-cli', 'pi-cli',
+      'anyfusion-planner', 'pi-cli',
     ]);
     expect(seed.agentClasses.planner.harnessRef).toBe('anyfusion-planner');
     expect(seed.permissionProfiles['workspace-engineering']).toBeTruthy();

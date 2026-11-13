@@ -1,4 +1,4 @@
-// 容器部署的首启配置引导（ADR-0055）。
+// 容器部署的首启配置引导（ADR-0056）。
 //
 // 容器直接运行镜像内代码，不再经过 install-cli；全新 PVC 上没有任何 active 配置，
 // server 启动会因 `active configuration is missing` 失败。本模块只在
@@ -114,17 +114,6 @@ export function containerSeedConfiguration(
         supportsContinuation: true,
         enabled: true,
       },
-      'codex-cli': {
-        kind: 'executor',
-        transport: 'local-cli',
-        command: 'codex',
-        args: [],
-        driverId: 'codex-cli',
-        supportsProbe: true,
-        supportsAbort: true,
-        supportsContinuation: true,
-        enabled: true,
-      },
       'pi-cli': {
         kind: 'executor',
         transport: 'local-cli',
@@ -150,21 +139,6 @@ export function containerSeedConfiguration(
         mcpServers: ['metaclaw-planner'],
         plugins: [],
         generatedRuntimeRef: 'planner',
-        enabled: true,
-      },
-      'codex-engineering': {
-        kind: 'executor',
-        harnessRef: 'codex-cli',
-        modelPolicy: { mode: 'fixed', modelRef },
-        permissionProfileRef: 'workspace-engineering',
-        routingCapabilities: ['workspace-engineering', 'document-processing'],
-        primaryUseCases: ['repository implementation', 'tests', 'engineering documentation', 'image generation', 'image editing'],
-        avoidUseCases: ['current public-web research requiring source-backed delivery'],
-        plannerAffordances: ['workspace-read-write', 'workspace-command-validation'],
-        skills: [],
-        mcpServers: [],
-        plugins: [],
-        generatedRuntimeRef: 'codex-engineering',
         enabled: true,
       },
       'pi-research': {

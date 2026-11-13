@@ -1,6 +1,6 @@
 # 容器直跑镜像改动方案（2026-11-12）
 
-对应决议：[ADR-0055](../adr/0055-container-image-direct-deployment.md)。
+对应决议：[ADR-0056](../adr/0056-container-image-direct-deployment.md)。
 
 ## 改动清单
 
@@ -39,7 +39,7 @@
 
 ### 不动的部分
 
-- `install-cli` 与原生 macOS 安装路径（ADR-0055 明确分叉）。
+- `install-cli` 与原生 macOS 安装路径（ADR-0056 明确分叉）。
 - 官方服务的 `applied_image` / `service_ready` / 漂移检测：镜像 tag 即版本，语义
   不变反而更简单。
 - 工作目录根限制、initContainer、`/workspace` subPath 挂载全部保留。
