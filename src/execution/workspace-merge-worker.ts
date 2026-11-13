@@ -8,6 +8,10 @@ import { WorkspaceWritebackConflict, WorkspaceWritebackService } from '../delive
 
 export interface WorkspaceConflictAction { path:string;action:'keep_main'|'take_session'|'save_as'|'resolved_file';newPath?:string;content?:Buffer; }
 
+class WorkspaceDeliveryStopped extends Error {
+  constructor() { super('workspace_delivery_task_stopped'); }
+}
+
 /** One FIFO per Workspace; conflicts block delivery, never other sessions' execution. */
 export class WorkspaceMergeWorker {
   private readonly writeback:WorkspaceWritebackService;
@@ -55,8 +59,29 @@ export class WorkspaceMergeWorker {
     const changed: WorkspaceMergeJob[] = [];
     await withWorkspaceGitLock(root.repositoryPath,'integration',async verify=>{
       for(;;){
-        let job=this.repo.head(workspaceId);if(!job||job.state==='conflicted')return;
-        try{job=await this.process(this.repo.root(workspaceId)!,job,verify);}
+        let job=this.repo.head(workspaceId);if(!job)return;
+        try {
+          if (!this.repo.deliveryAllowed(job.taskId) || job.cancelRequested) {
+            job = await this.stopDelivery(this.repo.root(workspaceId)!, job, verify);
+          } else {
+            if (job.state === 'conflicted') return;
+            const taskId = job.taskId;
+            const jobId = job.jobId;
+            const verifyDelivery = async () => {
+              await verify();
+              if (!this.repo.deliveryAllowed(taskId) || this.repo.job(jobId)?.cancelRequested) {
+                throw new WorkspaceDeliveryStopped();
+              }
+            };
+            try {
+              await verifyDelivery();
+              job = await this.process(this.repo.root(workspaceId)!, job, verifyDelivery);
+            } catch (error) {
+              if (!(error instanceof WorkspaceDeliveryStopped)) throw error;
+              job = await this.stopDelivery(this.repo.root(workspaceId)!, this.repo.job(jobId)!, verify);
+            }
+          }
+        }
         catch(error){
           const current=this.repo.job(job.jobId)!;
           job=this.repo.updateJob(job.jobId,error instanceof WorkspaceWritebackConflict?'conflicted':'recovering',{
@@ -67,7 +92,7 @@ export class WorkspaceMergeWorker {
           changed.push(job);return;
         }
         changed.push(job);
-        if(job.state!=='delivered')return;
+        if(job.state!=='delivered' && job.state!=='cancelled')return;
       }
     });
     // Continuations may acquire the integration lock (service repair, another drain).
@@ -84,6 +109,20 @@ export class WorkspaceMergeWorker {
         error instanceof Error ? error.stack ?? '' : '');
       }
     }
+  }
+  private async stopDelivery(root: WorkspaceGitRoot, job: WorkspaceMergeJob, verify: () => Promise<void>): Promise<WorkspaceMergeJob> {
+    // A prepared file may already have been written before a crash. Never
+    // silently discard or accept partial delivery on a Task cancellation.
+    if (this.repo.files(job.jobId).some(file => file.state !== 'pending')) {
+      throw new Error('partial_writeback_requires_user_decision');
+    }
+    const preserved = await this.git.ref(root.repositoryPath, 'refs/metawork/delivered');
+    const operationId = `cancel_${job.jobId}`;
+    this.repo.operation({ operationId, workspaceId: root.workspaceId, kind: 'merge_cancel',
+      targetCommit: preserved, payload: { jobId: job.jobId } });
+    await this.finishCancellation(root, job, operationId, preserved, verify);
+    this.repo.operationState(job.operationId, 'applied');
+    return this.repo.job(job.jobId)!;
   }
   private async process(root:WorkspaceGitRoot,job:WorkspaceMergeJob,verify:()=>Promise<void>):Promise<WorkspaceMergeJob>{
     const opRef=`refs/metawork/operations/${job.operationId}`;

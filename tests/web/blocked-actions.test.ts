@@ -7,6 +7,26 @@ const { renderToStaticMarkup } = createRequire(new URL('../../web/package.json',
 const ws = { control: vi.fn(), sendCommand: vi.fn() } as never;
 
 describe('inline blocked actions', () => {
+  it('does not offer delivery-only retry on a failed successor with no reusable execution graph', () => {
+    const html = renderToStaticMarkup(createElement(BlockedActions, {
+      ws, http: {} as never, conversationId: 'conv', taskId: 'retry',
+      lifecycle: { status: 'failed', retryOfTaskId: 'source',
+        reason: { code: 'service_start_failed', message: '服务尚未准备', evidenceRefs: [] },
+        cleanup: { state: 'none', objects: [], reason: '' }, blockingResidue: [] },
+    }));
+    expect(html).not.toContain('重试未完成部分');
+    expect(html).toContain('直接在下方说明');
+  });
+  it.each(['execution_failed', 'delivery_failed'] as const)('offers remaining-work retry only for reusable delivery: %s', code => {
+    const html = renderToStaticMarkup(createElement(BlockedActions, {
+      ws, http: {} as never, conversationId: 'conv', taskId: 'task',
+      lifecycle: { status: 'failed', reason: { code, message: '真实失败原因', evidenceRefs: [] },
+        cleanup: { state: 'none', objects: [], reason: '' }, blockingResidue: [], executionGeneration: 'gen' },
+    }));
+    expect(html).toContain('真实失败原因');
+    expect(html.includes('重试未完成部分')).toBe(code === 'delivery_failed');
+    expect(html).not.toContain('取消任务');
+  });
   it('offers authorization right where the Turn is blocked', () => {
     const html = renderToStaticMarkup(createElement(BlockedActions, {
       ws,

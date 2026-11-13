@@ -78,7 +78,7 @@ export class SessionPresentationService {
     ];
   }
 
-  formatKernelRejection(reason: string): string {
+  formatControlRejection(reason: string): string {
     const missingTask = /^task not found: (.+)$/.exec(reason);
     if (missingTask) {
       return `未找到任务 #${missingTask[1]}，请检查任务编号或先查看任务状态。`;

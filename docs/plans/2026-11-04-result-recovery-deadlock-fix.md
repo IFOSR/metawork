@@ -5,7 +5,7 @@
 - 依据：ADR-0023、TaskStateAuthority 与持久化结果身份契约
 - 完成日期：2026-11-04（实现及本地验证）
 - 实现 closing commit：`4af1201c`（fix: close result recovery and stale running state loops）
-- 发布源码：`a22f9e1`；发布及 CI 记录见 [v0.1.25 发布记录](2026-11-05-v0.1.25-release.md)
+- 发布源码：`a22f9e1`；发布及 CI 记录见 [v0.1.25 发布记录](../archive/plans/2026-11-05-v0.1.25-release.md)
 
 ## 2026-11-05 实时运行态遗漏修复
 

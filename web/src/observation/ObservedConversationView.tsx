@@ -11,9 +11,10 @@ import { turnProjection } from './turn-projection';
 import { ConversationTurnView } from '../components/ConversationTurn';
 import { useCompleteContent } from './use-complete-content';
 import { useTurnPresentation } from './use-turn-presentation';
-import { LiveExecutionPanel } from '../components/LiveExecutionPanel';
+import { TaskDagPanel } from '../components/TaskDagPanel';
 import { TurnExecutionRecap } from '../components/TurnExecutionRecap';
 import { LivePlanningPanel, plannerActivity } from '../components/LivePlanningPanel';
+import { PlanningDetailPanel } from '../components/PlanningDetailPanel';
 import type { ArtifactProjection, ConversationTurnProjection } from '../api/session-types';
 import { desktopBridge, reportPersistenceError } from '../platform/services';
 
@@ -27,11 +28,11 @@ export interface ConversationViewportMemory {
 const FOLLOW_LATEST_THRESHOLD = 64;
 
 /** Visible rows subscribe individually; the list only observes membership and freshness. */
-export const ObservedConversationView = memo(function ObservedConversationView({ conversationId, ws, http, memory, initialTurnId, initialTaskId, onOpenTrajectory, onOpenBilling, onOpenArtifact, onOpenAttachment, onOpenSubtaskDetail }: {
+export const ObservedConversationView = memo(function ObservedConversationView({ conversationId, ws, http, memory, initialTurnId, initialTaskId, onOpenTrajectory, onOpenArtifact, onOpenAttachment, onOpenSubtaskDetail }: {
   conversationId: string; ws: WsClient; http: HttpClient; memory: ConversationViewportMemory;
   initialTurnId?: string;
   initialTaskId?: string;
-  onOpenTrajectory(turnId: string): void; onOpenBilling(turnId: string): void;
+  onOpenTrajectory(turnId: string): void;
   onOpenArtifact(artifact: ArtifactProjection): void;
   onOpenAttachment?: (conversationId: string, attachment: import('../api/session-types').ConversationAttachment) => void;
   onOpenSubtaskDetail(turn: ConversationTurnProjection, subtaskId: string, title: string): void;
@@ -46,6 +47,16 @@ export const ObservedConversationView = memo(function ObservedConversationView({
   const [error, setError] = useState<string | null>(null);
   const [initialLoadAttempt, setInitialLoadAttempt] = useState(0);
   const [pinned, setPinned] = useState<ReadonlySet<string>>(new Set());
+  const [showBackgroundPreparation, setShowBackgroundPreparation] = useState(false);
+  const hasTurns = window.ids.length > 0;
+  useEffect(() => {
+    setShowBackgroundPreparation(false);
+    if (window.status !== 'preparing' || !hasTurns) return;
+    // Freshness is independent of Task completion. A brief projection lag is
+    // background synchronization, not a new loading phase for the report.
+    const timer = setTimeout(() => setShowBackgroundPreparation(true), 1_500);
+    return () => clearTimeout(timer);
+  }, [conversationId, window.status, hasTurns]);
   const initialLocated = useRef<string | null>(null);
   const anchor = useRef<Anchor | null>(memory.anchors.get(conversationId) ?? null);
   const followLatest = useRef(anchor.current?.bottom !== false);
@@ -388,12 +399,16 @@ export const ObservedConversationView = memo(function ObservedConversationView({
   }, [initialTurnId, initialTaskId, window.cursor?.epoch]);
 
   const statusMessage = error ?? window.error ?? {
-      loading: '正在读取会话…', preparing: '正在整理历史，已有内容可先浏览。', disconnected: '连接已断开，正在重连…', error: '会话暂时不可用。', ready: '',
+      loading: '正在读取会话…', preparing: hasTurns ? '正在同步会话，已有内容可继续浏览。' : '正在整理历史…', disconnected: '连接已断开，正在重连…', error: '会话暂时不可用。', ready: '',
     }[window.status];
+  const showStatus = Boolean(error || window.error || (window.status !== 'ready'
+    && (window.status !== 'preparing' || !hasTurns || showBackgroundPreparation)));
   return <div className="conversation-view" ref={root} style={{ overflowAnchor: 'none' }}>
-    {(window.status !== 'ready' || error) && <div className="conversation-state" role={error ? 'alert' : 'status'}>
-      <p>{statusMessage}</p>
-      {error && <button type="button" onClick={() => setInitialLoadAttempt(value => value + 1)}>重新加载</button>}
+    {showStatus && <div className={hasTurns ? 'conversation-status-overlay' : undefined}>
+      <div className="conversation-state" role={error || window.error ? 'alert' : 'status'}>
+        <p>{statusMessage}</p>
+        {error && <button type="button" onClick={() => setInitialLoadAttempt(value => value + 1)}>重新加载</button>}
+      </div>
     </div>}
     {window.olderCursor && <button disabled={loading} onClick={() => void loadOlder()}>{loading ? '正在加载…' : '加载更早的对话'}</button>}
     {!window.atLatest && <button type="button" onClick={() => { anchor.current = null; ws.observations.latest(conversationId); }}>返回最新对话</button>}
@@ -403,7 +418,7 @@ export const ObservedConversationView = memo(function ObservedConversationView({
       <div style={{ height: Math.max(0, row.top - (index ? visible[index - 1]!.top + visible[index - 1]!.height : 0)) }} aria-hidden />
       <ObservedTurn id={row.id} conversationId={conversationId} store={store} ws={ws}
         latest={row.id === window.ids.at(-1)}
-        http={http} measure={measure} onOpenTrajectory={onOpenTrajectory} onOpenBilling={onOpenBilling}
+        http={http} measure={measure} onOpenTrajectory={onOpenTrajectory}
         onOpenArtifact={onOpenArtifact} onOpenAttachment={onOpenAttachment} onOpenSubtaskDetail={onOpenSubtaskDetail} />
     </Fragment>)}
     <div style={{ height: Math.max(0, total - (visible.at(-1) ? visible.at(-1)!.top + visible.at(-1)!.height : 0)) }} aria-hidden />
@@ -414,20 +429,21 @@ export const ObservedConversationView = memo(function ObservedConversationView({
   </div>;
 });
 
-const ObservedTurn = memo(function ObservedTurn({ store, conversationId, id, http, ws, latest, measure, onOpenTrajectory, onOpenBilling, onOpenArtifact, onOpenAttachment, onOpenSubtaskDetail }: {
+const ObservedTurn = memo(function ObservedTurn({ store, conversationId, id, http, ws, latest, measure, onOpenTrajectory, onOpenArtifact, onOpenAttachment, onOpenSubtaskDetail }: {
   store: ConversationEntityStore; conversationId: string; id: string; http: HttpClient; ws: WsClient; latest: boolean;
   onOpenArtifact(artifact: ArtifactProjection): void;
   onOpenAttachment?: (conversationId: string, attachment: import('../api/session-types').ConversationAttachment) => void;
   onOpenSubtaskDetail(turn: ConversationTurnProjection, subtaskId: string, title: string): void;
-  measure(id: string, height: number): void; onOpenTrajectory(id: string): void; onOpenBilling(id: string): void;
+  measure(id: string, height: number): void; onOpenTrajectory(id: string): void;
 }) {
   const turn = useConversationTurn(store, conversationId, id);
+  const [planningOpen, setPlanningOpen] = useState(false);
   const root = useRef<HTMLDivElement>(null);
   const answer = useCompleteContent(http, store, conversationId, turn?.answerRef, turn?.answer ?? '');
   const prompt = useCompleteContent(http, store, conversationId, turn?.userInputRef, turn?.userInput ?? '');
   // Trace facts are loaded for the live Turn and for the newest Turn; a settled
   // Turn keeps its record in the recap below instead of a live panel.
-  const showExecution = latest || turn?.status === 'running' || turn?.status === 'blocked';
+  const showExecution = latest || turn?.status === 'running' || turn?.status === 'blocked' || turn?.status === 'failed';
   const turnIsLive = turn?.status === 'running' || turn?.status === 'blocked';
   const details = useTurnPresentation(ws, http, conversationId, turn, showExecution);
   useLayoutEffect(() => {
@@ -445,17 +461,22 @@ const ObservedTurn = memo(function ObservedTurn({ store, conversationId, id, htt
   }, [turn, answer.text, prompt.text, details]);
   if (!turn || !projection) return null;
   return <div ref={root} data-observed-turn={id}>
-    <ConversationTurnView turn={projection} onOpenTrajectory={onOpenTrajectory} onOpenBilling={onOpenBilling}
+    <ConversationTurnView turn={projection} onOpenTrajectory={onOpenTrajectory}
       onOpenArtifact={onOpenArtifact} onOpenAttachment={onOpenAttachment}
-      liveExecutionPanel={showExecution && turnIsLive ? (plannerActivity(projection)
-        ? <LivePlanningPanel turn={projection} />
-        : <LiveExecutionPanel turn={projection} onSelectSubtask={(subtaskId, title) => onOpenSubtaskDetail(projection, subtaskId, title)} />) : undefined}
+      liveExecutionPanel={latest || turnIsLive ? (plannerActivity(projection)
+        ? <>
+          <LivePlanningPanel turn={projection} expanded={planningOpen}
+            onToggle={() => setPlanningOpen(current => !current)} />
+          {planningOpen && <PlanningDetailPanel events={projection.traceEvents} />}
+        </>
+        : <TaskDagPanel turn={projection} http={http}
+          onSelectSubtask={(subtaskId, title) => onOpenSubtaskDetail(projection, subtaskId, title)} />) : undefined}
       blockedActions={<BlockedActions ws={ws} http={http} conversationId={conversationId} taskId={turn.taskId ?? null}
         fallbackStatus={projection.status === 'blocked' || projection.status === 'failed' ? projection.status : null}
         lifecycle={details.taskLifecycle} permission={details.pendingPermission} refresh={details.refresh} />} />
-    {!turnIsLive && turn.taskId && (
-      // A settled Turn keeps its own execution record: the live panel steps
-      // aside, but its DAG and Subtask states remain readable for recall.
+    {!latest && !turnIsLive && turn.taskId && (
+      // A settled Turn keeps its own execution record for recall. The newest
+      // Turn renders the live task DAG above, so its recap would duplicate it.
       <TurnExecutionRecap
         taskId={turn.taskId}
         http={http}

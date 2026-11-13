@@ -12,7 +12,7 @@ import Database from 'better-sqlite3';
 import { ManagedLocalServices, validateLocalServiceSpecification, type LocalServiceSpecification } from '../../src/execution/managed-local-service.js';
 import { localServiceSpecificationRevision } from '../../src/core/local-service-revision.js';
 import { ManagedLocalServiceRepo } from '../../src/storage/managed-local-service-repo.js';
-import { runMigrations } from '../../src/storage/migrations.js';
+import { initializeDatabaseSchema } from '../../src/storage/schema.js';
 
 const cleanups: Array<() => Promise<void>> = [];
 afterEach(async () => { for (const cleanup of cleanups.splice(0).reverse()) await cleanup(); });
@@ -22,7 +22,7 @@ async function fixture(health = '/health') {
   const published = join(root, 'user-workspace', 'metaclaw-tasks', 'backend');
   await mkdir(published, { recursive: true });
   const db = new Database(join(root, 'state.db'));
-  runMigrations(db);
+  initializeDatabaseSchema(db);
   db.prepare("INSERT INTO tasks (id,title,goal,status,created_at,updated_at) VALUES ('task', 'Service', 'Service', 'succeeded', 'now', 'now')").run();
   const port = await new Promise<number>(accept => {
     const probe = createServer(); probe.listen(0, '127.0.0.1', () => {

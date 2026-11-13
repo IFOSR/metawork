@@ -69,7 +69,7 @@ interface KernelWorkflow {
 
 - `kernel_events`：durable inbox，状态 `pending | processing | processed | dead_letter`，含 `available_at`。
 - `kernel_decision_applications`：状态 `pending | applying | applied | uncertain | failed`，保存唯一幂等键、apply 次数、observation 和安全错误。
-- `kernel_effect_outbox`：外部消息/附件的可靠投递与 uncertain 处理。
+- `effect_outbox`：外部消息/附件的可靠投递与 uncertain 处理。
 - `executor_attempt_runtime`：continuation token、workspace baseline/delta、进度和来源 attempt。
 - `work_graph_revisions`：Task、revision、generation、授权 Decision及 active/superseded/completed 状态。
 

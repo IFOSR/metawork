@@ -4,9 +4,9 @@ import { describe, expect, it } from 'vitest';
 const root = new URL('../../web/src/components/', import.meta.url);
 
 describe('Detailed conversation view', () => {
-  it('renders safe detailed Planner, Kernel, Executor, verification, and final answer sections', async () => {
+  it('renders safe Manager, Router, Executor and final answer sections', async () => {
     const [view, turn, narrative, step, styles] = await Promise.all([
-      readFile(new URL('ConversationView.tsx', root), 'utf8'),
+      readFile(new URL('../observation/ObservedConversationView.tsx', root), 'utf8'),
       readFile(new URL('ConversationTurn.tsx', root), 'utf8'),
       readFile(new URL('ExecutionNarrative.tsx', root), 'utf8'),
       readFile(new URL('ExecutionStep.tsx', root), 'utf8'),
@@ -15,9 +15,10 @@ describe('Detailed conversation view', () => {
 
     expect(view).toContain('ConversationTurnView');
     expect(view).toContain('liveExecutionPanel');
+    expect(view).toContain('<TaskDagPanel');
     expect(view).toContain("closest<HTMLElement>('.workspace-canvas')");
     expect(view).toContain('canvas.scrollTo');
-    expect(turn).toContain("turn.status !== 'running'");
+    expect(turn).toContain("turn.status === 'completed'");
     expect(turn).toContain('liveExecutionPanel');
     expect(turn).toContain('MarkdownContent');
     expect(turn).toContain('system-command-result');
@@ -29,7 +30,7 @@ describe('Detailed conversation view', () => {
     expect(turn).toContain('查看完整轨迹');
     expect(view).toContain('onOpenTrajectory');
     expect(turn).not.toContain('<strong>最终答案</strong>');
-    expect(narrative).toContain('Planner');
+    expect(narrative).toContain('Manager');
     expect(narrative).toContain('授权与路由');
     expect(narrative).toContain('执行');
     expect(narrative).toContain('验证与交付');
@@ -52,7 +53,7 @@ describe('Detailed conversation view', () => {
 
   it('supports collapsible execution narrative and click-locked auto-scroll', async () => {
     const [view, narrative, styles] = await Promise.all([
-      readFile(new URL('ConversationView.tsx', root), 'utf8'),
+      readFile(new URL('../observation/ObservedConversationView.tsx', root), 'utf8'),
       readFile(new URL('ExecutionNarrative.tsx', root), 'utf8'),
       readFile(new URL('../styles.css', root), 'utf8'),
     ]);
@@ -65,12 +66,11 @@ describe('Detailed conversation view', () => {
     expect(narrative).toContain('展开');
     expect(narrative).toContain('!collapsed');
 
-    // 点击锁定视野；滚回底部/回到最新解锁恢复跟随。
-    expect(view).toContain('locked');
-    expect(view).toContain('lockedRef');
+    // 离开尾部后停在用户正在读的行；回到最新恢复跟随。
+    expect(view).toContain('followingLatest');
+    expect(view).toContain('returnToLatest');
     expect(view).toContain('back-to-latest');
     expect(view).toContain('回到最新');
-    expect(view).toContain('pointerdown');
 
     expect(styles).toContain('.narrative-toggle');
     expect(styles).toContain('.back-to-latest');
@@ -82,8 +82,6 @@ describe('Detailed conversation view', () => {
     expect(app).toContain('selectedTrajectoryTurnId');
     expect(app).toContain("useConversationTurn(observationClient?.conversations, observedId, selectedTrajectoryTurnId ?? '')");
     expect(app).toContain('onOpenTrajectory={openTrajectory}');
-    expect(app).toContain(
-      'useEffect(() => setSelectedTrajectoryTurnId(null), [activeWorkspaceId, currentSessionId])',
-    );
+    expect(app).toContain('setSelectedTrajectoryTurnId(null)');
   });
 });

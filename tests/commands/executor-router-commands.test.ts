@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import Database from 'better-sqlite3';
-import { runMigrations } from '../../src/storage/migrations.js';
+import { initializeDatabaseSchema } from '../../src/storage/schema.js';
 import { createDefaultCommandCatalog } from '../../src/commands/command-tree.js';
 import { seedAgentClasses } from '../support/seed-agent-classes.js';
 import { CommandReadServices } from '../../src/commands/command-read-services.js';
@@ -11,7 +11,7 @@ const REVISION = 'revision-command-health';
 
 function createDb(): Database.Database {
   const db = new Database(':memory:');
-  runMigrations(db);
+  initializeDatabaseSchema(db);
   const insertRevision = db.prepare(`
     INSERT INTO configuration_revisions (
       revision_id, content_hash, source_kind, imported_at

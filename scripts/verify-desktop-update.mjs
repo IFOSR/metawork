@@ -14,6 +14,7 @@ const previousRoot = process.argv[3];
 if (!resources || !previousRoot) {
   throw new Error('Usage: verify-desktop-update.mjs <payload-resources> <previous-install-root>');
 }
-execFileSync(resolve('node_modules/.bin/vite-node'),
+// The repository runner is `tsx`; `vite-node` is not an installed dependency.
+execFileSync(resolve('node_modules/.bin/tsx'),
   [resolve('scripts/desktop-update-gate.ts'), resolve(resources), resolve(previousRoot)],
   { stdio: 'inherit' });

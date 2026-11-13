@@ -88,28 +88,6 @@ export function validateWorkGraph(graph: Pick<WorkGraphProposal, 'subtasks'>): W
     violations.push(violation('dependency_cycle', [], 'subtasks', 'work graph contains a dependency cycle'));
   }
 
-  const children = new Map<string, string[]>();
-  for (const subtask of graph.subtasks) children.set(subtask.id, []);
-  for (const subtask of graph.subtasks) {
-    for (const dependency of subtask.dependencies) {
-      children.get(dependency.fromSubtaskId)?.push(subtask.id);
-    }
-  }
-  for (const [index, downstream] of graph.subtasks.entries()) {
-    if (downstream.dependencies.length !== 1) continue;
-    const upstreamId = downstream.dependencies[0]!.fromSubtaskId;
-    if (children.get(upstreamId)?.length !== 1) continue;
-    const upstream = subtasksById.get(upstreamId);
-    const preferred = upstream?.executorBindings[0]?.agentClassRef;
-    if (!preferred || downstream.executorBindings[0]?.agentClassRef !== preferred) continue;
-    violations.push(violation(
-      'mergeable_same_agent_chain',
-      [upstreamId, downstream.id],
-      `subtasks.${index}.dependencies.0`,
-      `subtasks ${upstreamId} -> ${downstream.id} form a mergeable ${preferred} single chain`,
-    ));
-  }
-
   return violations.sort(compareViolations);
 }
 

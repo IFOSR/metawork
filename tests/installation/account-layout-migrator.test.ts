@@ -17,7 +17,7 @@ import { LOCAL_DEFAULT_ACCOUNT_ID } from '../../src/account/account-id.js';
 import { resolveAccountPaths } from '../../src/account/account-paths.js';
 import { AccountLayoutMigrator } from '../../src/installation/account-layout-migrator.js';
 import { resolveAnyFusionPaths } from '../../src/installation/paths.js';
-import { runMigrations } from '../../src/storage/migrations.js';
+import { initializeDatabaseSchema } from '../../src/storage/schema.js';
 
 const tmpRoots: string[] = [];
 
@@ -35,7 +35,7 @@ async function mkdtempDir(prefix: string): Promise<string> {
 function seedLegacyState(paths: ReturnType<typeof resolveAnyFusionPaths>): void {
   const db = new Database(paths.database);
   try {
-    runMigrations(db);
+    initializeDatabaseSchema(db);
     db.prepare('INSERT INTO configuration_revisions (revision_id, content_hash, source_kind, imported_at) VALUES (?, ?, ?, ?)')
       .run('revision_legacy', 'content', 'native', '2026-08-18T00:00:00.000Z');
   } finally {

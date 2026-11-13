@@ -1,13 +1,12 @@
 import type Database from 'better-sqlite3';
 import type { Subtask, SubtaskStatus } from '../core/types.js';
 import type { AuthorizedExecutorBinding } from '../core/authorized-executor-binding.js';
-import type { KernelEvent } from '../kernel/control-kernel.js';
+import type { ControlEvent } from '../control/control-contracts.js';
 import {
   ExecutorAttemptReceiptRepo,
   type ExecutorAttemptReceiptInsert,
 } from '../storage/executor-attempt-receipt-repo.js';
-import { KernelDispatchItemRepo } from '../storage/kernel-dispatch-item-repo.js';
-import { KernelWorkflowRepo } from '../storage/kernel-workflow-repo.js';
+import { ControlDispatchItemRepo } from '../storage/dispatch-item-repo.js';
 import { WorkspacePublicationRepo } from '../storage/workspace-publication-repo.js';
 import { ExecutorAttemptRuntimeRepo } from '../storage/executor-attempt-runtime-repo.js';
 import { SqliteResourceLeaseRepository } from '../storage/resource-lease-repo.js';
@@ -21,7 +20,7 @@ import {
 
 type AttemptTerminalEvent =
   | (Omit<
-      Extract<KernelEvent, { type: 'execution_outcome' }>,
+      Extract<ControlEvent, { type: 'execution_outcome' }>,
       'configurationRevision' | 'authorizedBinding' | 'bindingFingerprint'
     > & {
       configurationRevision?: string;
@@ -30,7 +29,7 @@ type AttemptTerminalEvent =
       agentClassName?: string;
     })
   | (Omit<
-      Extract<KernelEvent, { type: 'handoff_contract_failed' }>,
+      Extract<ControlEvent, { type: 'handoff_contract_failed' }>,
       'configurationRevision' | 'authorizedBinding' | 'bindingFingerprint'
     > & {
       configurationRevision?: string;
@@ -39,7 +38,7 @@ type AttemptTerminalEvent =
       agentClassName?: string;
     })
   | (Omit<
-      Extract<KernelEvent, { type: 'execution_result_observed' }>,
+      Extract<ControlEvent, { type: 'execution_result_observed' }>,
       'configurationRevision' | 'authorizedBinding' | 'bindingFingerprint'
     > & {
       configurationRevision?: string;
@@ -83,6 +82,12 @@ export interface AttemptTerminalLanding {
 
 export interface AttemptTerminalLandingResult {
   cancellationWon: boolean;
+  /**
+   * The normalized observation for the caller to apply on the Task's own control
+   * loop. It is a return value, not an inbox row: the receipt committed in the
+   * same transaction is the durable fact.
+   */
+  event: ControlEvent;
 }
 
 /**
@@ -92,8 +97,7 @@ export interface AttemptTerminalLandingResult {
  */
 export class AttemptTerminalService {
   private readonly receipts: ExecutorAttemptReceiptRepo;
-  private readonly dispatchItems: KernelDispatchItemRepo;
-  private readonly workflow: KernelWorkflowRepo;
+  private readonly dispatchItems: ControlDispatchItemRepo;
   private readonly publications: WorkspacePublicationRepo;
 
   constructor(
@@ -102,8 +106,7 @@ export class AttemptTerminalService {
     private readonly handoffMaterializer?: EdgeHandoffMaterializerDeps,
   ) {
     this.receipts = new ExecutorAttemptReceiptRepo(db);
-    this.dispatchItems = new KernelDispatchItemRepo(db);
-    this.workflow = new KernelWorkflowRepo(db);
+    this.dispatchItems = new ControlDispatchItemRepo(db);
     this.publications = new WorkspacePublicationRepo(db);
   }
 
@@ -129,12 +132,8 @@ export class AttemptTerminalService {
         || !process?.startedAt || !process.completedAt
         || !Number.isFinite(Date.parse(process.completedAt))
         || (typeof process.exitCode !== 'number' && !process.signal)) return null;
-      const event = this.workflow.findEvent(`event_${attemptId}_execution_outcome`);
-      if (event?.type !== 'execution_outcome' || event.terminalKind !== 'failed' || !event.failure
-        || event.failure.externalSideEffect === true
-        || event.taskId !== dispatch.taskId || event.subtaskId !== dispatch.subtaskId
-        || event.attemptId !== attemptId || event.configurationRevision !== dispatch.configurationRevision
-        || event.bindingFingerprint !== dispatch.bindingFingerprint) return null;
+      // Owner facts only: the process exited and the effect is provably local.
+      if (runtime.externalEffectStatus === 'unknown') return null;
       if (this.db.prepare(`SELECT 1 FROM attempt_sandboxes WHERE attempt_id = ?
         AND status IN ('created', 'running', 'paused') LIMIT 1`).get(attemptId)) return null;
       const owners = this.db.prepare(`SELECT DISTINCT work_unit_id FROM resource_leases
@@ -144,16 +143,23 @@ export class AttemptTerminalService {
       if (dispatch.workUnitId) ownerIds.add(dispatch.workUnitId);
       if (ownerIds.size !== 1) return null;
       const workUnitId = [...ownerIds][0]!;
+      const failure = {
+        kind: 'infrastructure' as const,
+        scope: 'attempt' as const,
+        code: 'process_exit',
+        summary: `execution backend exited without a terminal observation (code=${
+          process.exitCode ?? 'null'}, signal=${process.signal ?? 'null'})`,
+      };
       this.receipts.insert({
         attemptId, taskId: dispatch.taskId, subtaskId: dispatch.subtaskId, workUnitId,
         executionId: `reconciled_${attemptId}`, agentClassName: dispatch.authorizedBinding.agentClassRef,
         startedAt: process.startedAt, completedAt: process.completedAt,
         terminalState: 'executor_failed', rawResponse: '', completionSchemaVersion: null,
-        parsing: { recoveredFromEventId: event.id },
+        parsing: { recoveredFromProcessExit: true },
         verification: { warnings: ['Recovered failed terminal write; no completion certified.'], violations: [] },
-        errorCode: event.failure.code, errorDetail: event.failure.summary, failure: event.failure,
+        errorCode: failure.code, errorDetail: failure.summary, failure,
       });
-      this.dispatchItems.markTerminal(attemptId, event.failure.summary, now);
+      this.dispatchItems.markTerminal(attemptId, failure.summary, now);
       new SqliteResourceLeaseRepository(this.db).releaseReconciledAttempt(attemptId, now);
       return { attemptId, taskId: dispatch.taskId, subtaskId: dispatch.subtaskId, workUnitId };
     }).immediate();
@@ -287,24 +293,22 @@ export class AttemptTerminalService {
       if (!terminalDispatch || !['terminal', 'cancelled'].includes(terminalDispatch.status)) {
         throw new Error(`dispatch item did not become terminal: ${input.receipt.attemptId}`);
       }
+      // The receipt inserted above is the durable outcome fact; the caller
+      // applies the normalized observation on the Task's own control loop.
       const terminalEvent = materializeTerminalEvent(input.event, dispatch);
-      const event = cancellationWon && terminalEvent.type === 'execution_outcome'
+      const event: ControlEvent = cancellationWon && terminalEvent.type === 'execution_outcome'
         ? cancellationOutcome(terminalEvent, dispatch, input.now)
         : terminalEvent;
-      this.workflow.enqueue(event, event.occurredAt);
-      if (!this.workflow.findEvent(event.id)) {
-        throw new Error(`attempt outcome inbox was not persisted: ${event.id}`);
-      }
-      return { cancellationWon };
+      return { cancellationWon, event };
     }).immediate();
   }
 }
 
 function cancellationOutcome(
-  event: Extract<KernelEvent, { type: 'execution_outcome' }>,
-  dispatch: NonNullable<ReturnType<KernelDispatchItemRepo['find']>>,
+  event: Extract<ControlEvent, { type: 'execution_outcome' }>,
+  dispatch: NonNullable<ReturnType<ControlDispatchItemRepo['find']>>,
   now: string,
-): KernelEvent {
+): ControlEvent {
   return {
     schemaVersion: 5,
     configurationRevision: dispatch.configurationRevision,
@@ -333,8 +337,8 @@ function cancellationOutcome(
 
 function materializeTerminalEvent(
   event: AttemptTerminalEvent,
-  dispatch: NonNullable<ReturnType<KernelDispatchItemRepo['find']>>,
-): Extract<KernelEvent, {
+  dispatch: NonNullable<ReturnType<ControlDispatchItemRepo['find']>>,
+): Extract<ControlEvent, {
   type: 'execution_outcome' | 'handoff_contract_failed' | 'execution_result_observed';
 }> {
   const {

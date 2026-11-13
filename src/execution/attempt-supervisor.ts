@@ -1,9 +1,9 @@
-import { allowsProduction, type ProductionAuthorizationFact } from '../kernel/production-authorization.js';
-import type { KernelDecision, KernelEvent } from '../kernel/control-kernel.js';
+import { allowsProduction, type ProductionAuthorizationFact } from '../control/production-authorization.js';
+import type { ControlDecision, ControlEvent } from '../control/control-contracts.js';
 import type {
-  KernelDispatchItemRecord,
-  KernelDispatchItemRepo,
-} from '../storage/kernel-dispatch-item-repo.js';
+  ControlDispatchItemRecord,
+  ControlDispatchItemRepo,
+} from '../storage/dispatch-item-repo.js';
 import type { AuthorizedExecutorBinding } from '../core/authorized-executor-binding.js';
 import { ATTEMPTS_PER_TASK_BUDGET } from '../core/runtime-limits.js';
 
@@ -11,7 +11,7 @@ import { ATTEMPTS_PER_TASK_BUDGET } from '../core/runtime-limits.js';
 export const DEFAULT_ATTEMPTS_PER_TASK = ATTEMPTS_PER_TASK_BUDGET;
 
 type AttemptSupervisorRepository = Pick<
-  KernelDispatchItemRepo,
+  ControlDispatchItemRepo,
   | 'insertBatch'
   | 'reconcileLaunching'
   | 'listPending'
@@ -33,9 +33,9 @@ export interface AttemptSupervisorBindingContext {
 }
 
 export interface AttemptSupervisorContext {
-  run(item: KernelDispatchItemRecord): Promise<KernelEvent>;
-  submit(event: KernelEvent): Promise<unknown>;
-  onLaunchError(item: KernelDispatchItemRecord, error: unknown): Promise<KernelEvent>;
+  run(item: ControlDispatchItemRecord): Promise<ControlEvent>;
+  submit(event: ControlEvent): Promise<unknown>;
+  onLaunchError(item: ControlDispatchItemRecord, error: unknown): Promise<ControlEvent>;
 }
 
 /**
@@ -64,8 +64,8 @@ export class AttemptSupervisor {
   }
 
   enqueue(
-    decision: KernelDecision & {
-      action: Extract<KernelDecision['action'], { type: 'dispatch_batch' }>;
+    decision: ControlDecision & {
+      action: Extract<ControlDecision['action'], { type: 'dispatch_batch' }>;
     },
     bindingContext: AttemptSupervisorBindingContext,
     context: AttemptSupervisorContext,
@@ -149,7 +149,7 @@ export class AttemptSupervisor {
   }
 
   private async launch(
-    item: KernelDispatchItemRecord,
+    item: ControlDispatchItemRecord,
     context: AttemptSupervisorContext,
   ): Promise<void> {
     if (!this.repository.markRunning(item.attemptId, null, new Date().toISOString())) {
@@ -192,13 +192,13 @@ export class AttemptSupervisor {
  * any Executor turn, receipt, progress or sandbox fact existed. They are Kernel
  * scheduling facts, never execution outcomes.
  */
-function isNonExecutionYield(event: KernelEvent): boolean {
+function isNonExecutionYield(event: ControlEvent): boolean {
   return event.type === 'partition_conflict_observed'
     || event.type === 'capacity_signal';
 }
 
 /** A pre-launch failure has no execution duration or external effect. */
-function isNeverStartedOutcome(event: KernelEvent): event is Extract<KernelEvent, { type: 'execution_outcome' }> {
+function isNeverStartedOutcome(event: ControlEvent): event is Extract<ControlEvent, { type: 'execution_outcome' }> {
   return event.type === 'execution_outcome'
     && event.failure?.attemptStarted === false
     && event.failure.externalSideEffect === false;

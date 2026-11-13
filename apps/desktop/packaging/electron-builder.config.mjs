@@ -13,6 +13,10 @@ function run(command, args) {
 }
 export default {
   appId: 'com.metawork.desktop', productName: 'MetaWork', asar: true, npmRebuild: false,
+  // Use the Electron distribution installed by this package's pinned `electron`
+  // dependency. This avoids a second checksum metadata fetch during offline or
+  // unreliable network builds while keeping the packaged Electron version pinned.
+  electronDist: resolve('node_modules/electron/dist'),
   artifactName: 'MetaWork-darwin-${arch}.${ext}',
   directories: { output: 'release' },
   icon: resolve('assets/metawork.icns'),

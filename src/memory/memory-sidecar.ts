@@ -16,6 +16,7 @@
 
 import { spawn, type ChildProcess } from 'node:child_process';
 import type { MemoryEngineHealth } from './memory-types.js';
+import { isTcpEndpointListening, memorySidecarSupervisor } from './memory-sidecar-supervisor.js';
 
 /**
  * Environment variables the sidecar inherits from the Server process.
@@ -82,6 +83,12 @@ export interface MemorySidecarOptions {
   readyTimeoutMs?: number;
   /** Bounded automatic restarts after a crash (design §11). */
   maxRestarts?: number;
+  /**
+   * Engine endpoint. When something already listens there the sidecar refuses to
+   * attach: that process was not started by MetaWork and carries older
+   * configuration, so it must be stopped instead of silently adopted.
+   */
+  preflight?: { host: string; port: number };
   logger?: (message: string) => void;
   /** Injected for tests; defaults to `process.env` for the inherited keys. */
   environment?: NodeJS.ProcessEnv;
@@ -129,6 +136,7 @@ export class MemorySidecar {
   private child: ChildProcess | null = null;
   private restarts = 0;
   private lastHealth: MemoryEngineHealth = { ready: false, ftsAvailable: false };
+  private portConflict: string | null = null;
   private stopping = false;
   /** Pending restart, retained so `stop` can cancel it (review P2-6). */
   private restartTimer: NodeJS.Timeout | null = null;
@@ -153,11 +161,44 @@ export class MemorySidecar {
     if (this.child) return this.status;
     this.stopping = false;
     this.cancelPendingRestart();
-    const child = spawn(this.options.command, [...this.options.args], {
+    this.portConflict = null;
+    if (this.options.preflight
+      && await isTcpEndpointListening(this.options.preflight.host, this.options.preflight.port)) {
+      const endpoint = `${this.options.preflight.host}:${this.options.preflight.port}`;
+      this.portConflict = endpoint;
+      this.lastHealth = {
+        ready: false,
+        ftsAvailable: false,
+        detail: `memory_engine_port_in_use: ${endpoint}`,
+      };
+      this.logger(
+        `memory engine port ${endpoint} is already in use by a process MetaWork does not own; `
+        + 'stop it (or change memory.sidecar.port) instead of attaching to stale configuration',
+      );
+      return this.status;
+    }
+    // Run the engine under the parent-death supervisor so it can never outlive
+    // the Server, including when the shutdown watchdog SIGKILLs the Server.
+    const supervisor = memorySidecarSupervisor({
+      command: this.options.command,
+      args: this.options.args,
+      ...(this.options.cwd ? { cwd: this.options.cwd } : {}),
+    });
+    const child = spawn(supervisor.command, supervisor.args, {
       cwd: this.options.cwd,
       env: buildSidecarEnvironment(this.options.env, this.options.environment ?? process.env),
-      stdio: ['ignore', 'pipe', 'pipe'],
+      // The wrapper owns its group: a forced stop takes the engine down with it.
+      detached: process.platform !== 'win32',
+      stdio: ['pipe', 'pipe', 'pipe'],
     });
+    // The write end stays open for the Server's whole lifetime and is never
+    // written to: EOF is the supervisor's only parent-death signal.
+    child.stdin?.on('error', () => undefined);
+    // The sidecar is intentionally not allowed to stream unredacted memory or
+    // provider diagnostics into the Server log. Drain both pipes so a verbose
+    // extraction cannot block on a full OS pipe buffer.
+    child.stdout?.resume();
+    child.stderr?.resume();
     this.child = child;
     child.on('exit', (code, signal) => {
       this.child = null;
@@ -194,6 +235,9 @@ export class MemorySidecar {
 
   /** Probe the engine health, including the FTS5 gate. */
   async probe(): Promise<MemoryEngineHealth> {
+    // Never talk to an engine we did not start: it would report the health and
+    // configuration of a previous Server instance.
+    if (this.portConflict) return this.lastHealth;
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), this.options.timeoutMs ?? 5_000);
     try {
@@ -247,14 +291,18 @@ export class MemorySidecar {
     const child = this.child;
     this.child = null;
     if (!child) return;
+    const pid = child.pid;
+    const signal = (name: NodeJS.Signals) => {
+      try {
+        if (process.platform !== 'win32' && pid) process.kill(-pid, name);
+        else child.kill(name);
+      } catch { /* already gone */ }
+    };
     await new Promise<void>(resolve => {
-      const timer = setTimeout(() => {
-        try { child.kill('SIGKILL'); } catch { /* already gone */ }
-        resolve();
-      }, 3_000);
+      const timer = setTimeout(() => { signal('SIGKILL'); resolve(); }, 3_000);
       timer.unref?.();
       child.once('exit', () => { clearTimeout(timer); resolve(); });
-      try { child.kill('SIGTERM'); } catch { clearTimeout(timer); resolve(); }
+      signal('SIGTERM');
     });
   }
 }

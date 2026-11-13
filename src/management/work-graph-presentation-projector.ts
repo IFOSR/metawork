@@ -64,7 +64,7 @@ export interface WorkGraphPresentationRouting {
     providerDisplayName: string;
     modelDisplayName: string;
   };
-  estimatedCost?: number;
+
   estimatedLatencyMs?: number;
   rejectedCandidates: Array<{
     providerDisplayName: string;
@@ -220,28 +220,32 @@ function presentationExecutionState(
 }
 
 function routingFor(
-  subtask: WorkGraphSubtask,
+  _subtask: WorkGraphSubtask,
   decision: WorkGraphPresentationDecisionFact | undefined,
   dispatch: WorkGraphPresentationDispatchFact | undefined,
   receipt: WorkGraphPresentationReceiptFact | undefined,
   configuration: ConfigurationSnapshot | RuntimeConfigurationView,
 ): WorkGraphPresentationRouting[] {
   const facts = 'config' in configuration ? configuration.config : configuration;
-  const finalBindings = new Map<string, AuthorizedExecutorBinding>();
-  for (const binding of decision?.authorizedBindings ?? []) finalBindings.set(binding.agentClassRef, binding);
-  if (dispatch) finalBindings.set(dispatch.authorizedBinding.agentClassRef, dispatch.authorizedBinding);
-  if (receipt) finalBindings.set(receipt.authorizedBinding.agentClassRef, receipt.authorizedBinding);
-  return subtask.executorBindings.map(proposed => {
-    const binding = finalBindings.get(proposed.agentClassRef);
-    const audit = decision?.routing?.find(item => item.agentClassRef === proposed.agentClassRef);
-    const policy = proposed.modelSelection.mode === 'fixed-by-agent-class' ? 'fixed' : 'auto';
+  const bindings = receipt ? [receipt.authorizedBinding]
+    : dispatch ? [dispatch.authorizedBinding] : decision?.authorizedBindings ?? [];
+  return bindings.map(binding => {
+    const agentClassRef = binding.agentClassRef;
+    // Persisted decision facts predate the current audit shape; an audit without
+    // a binding cannot describe this binding, so it is ignored instead of
+    // crashing the whole Work Graph projection.
+    const audit = decision?.routing?.find(item => item.agentClassRef === agentClassRef
+      && (item.binding === undefined
+        || (item.binding.providerRef === binding.providerRef
+          && item.binding.modelRef === binding.modelRef)));
+    const policy = facts.agentClasses[agentClassRef]?.modelPolicy.mode ?? 'auto';
     const rejectedCandidates = Array.isArray(audit?.rejectedCandidates)
       ? audit.rejectedCandidates.flatMap(candidate => (
         isRecord(candidate)
           && typeof candidate.providerRef === 'string'
           && typeof candidate.modelRef === 'string'
           && typeof candidate.reason === 'string'
-          ? [publicRejectedCandidate(candidate, binding, proposed.agentClassRef, configuration)]
+          ? [publicRejectedCandidate(candidate, binding, agentClassRef, configuration)]
           : []
       ))
       : [];
@@ -258,10 +262,10 @@ function routingFor(
         candidates: Object.entries(audit.spanRouting.probabilities ?? {})
           .map(([modelRef, probability]) => {
             const candidateIdentity = resolvePublicRoutingIdentity(configuration, {
-              agentClassRef: proposed.agentClassRef,
+              agentClassRef: agentClassRef,
               harnessRef: identityBinding?.harnessRef
-                ?? facts.agentClasses[proposed.agentClassRef]?.harnessRef
-                ?? proposed.agentClassRef,
+                ?? facts.agentClasses[agentClassRef]?.harnessRef
+                ?? agentClassRef,
               providerRef: identityBinding?.providerRef
                 ?? facts.models[modelRef]?.providerRef
                 ?? '',
@@ -279,7 +283,7 @@ function routingFor(
       }
       : undefined;
     return {
-      executorDisplayName: identity?.executorDisplayName ?? proposed.agentClassRef,
+      executorDisplayName: identity?.executorDisplayName ?? agentClassRef,
       harnessDisplayName: identity?.harnessDisplayName ?? '',
       policy,
       ...(identity ? {
@@ -288,7 +292,7 @@ function routingFor(
           modelDisplayName: identity.modelDisplayName,
         },
       } : {}),
-      ...(typeof score?.estimatedCost === 'number' ? { estimatedCost: score.estimatedCost } : {}),
+
       ...(typeof score?.estimatedLatencyMs === 'number' ? { estimatedLatencyMs: score.estimatedLatencyMs } : {}),
       rejectedCandidates,
       ...(spanRouting ? { spanRouting } : {}),
@@ -310,6 +314,7 @@ function decisionModelIdentity(
     ? [routing.modelRef, models[routing.modelRef]] as const
     : Object.entries(models).find(([, model]) => model.modelId === routing.model);
   if (!modelEntry) {
+    if (!routing.model) return {};
     return {
       decisionModel: {
         providerDisplayName: routing.providerRef ? providers[routing.providerRef]?.displayName ?? routing.providerRef : '决策模型',

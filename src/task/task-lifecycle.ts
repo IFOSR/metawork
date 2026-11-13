@@ -15,11 +15,11 @@
 
 import type { SubtaskStatus } from '../core/types.js';
 import type {
-  KernelDispatchItemStatus,
-  KernelSubtaskStatus,
-} from '../kernel/control-kernel.js';
+  ControlDispatchItemStatus,
+  ControlSubtaskStatus,
+} from '../control/control-contracts.js';
 import type { ExecutorAttemptTerminalState } from '../storage/executor-attempt-receipt-repo.js';
-import type { KernelFailure } from '../core/kernel-failure.js';
+import type { ControlFailure } from '../core/kernel-failure.js';
 
 /** Business Subtask node lifecycle. Owned by Work Graph/Task Domain. */
 export const SUBTASK_LIFECYCLE_STATES = [
@@ -52,7 +52,7 @@ export const ATTEMPT_OUTCOMES = [
 ] as const;
 export type AttemptOutcome = (typeof ATTEMPT_OUTCOMES)[number];
 
-const SUBTASK_LIFECYCLE_BY_STATUS: Record<KernelSubtaskStatus | SubtaskStatus, SubtaskLifecycleState> = {
+const SUBTASK_LIFECYCLE_BY_STATUS: Record<ControlSubtaskStatus | SubtaskStatus, SubtaskLifecycleState> = {
   ready: 'pending',
   running: 'executing',
   awaiting_integration: 'awaiting_completion',
@@ -62,7 +62,7 @@ const SUBTASK_LIFECYCLE_BY_STATUS: Record<KernelSubtaskStatus | SubtaskStatus, S
   cancelled: 'cancelled',
 };
 
-const ATTEMPT_LIFECYCLE_BY_DISPATCH: Record<KernelDispatchItemStatus, AttemptLifecycleState> = {
+const ATTEMPT_LIFECYCLE_BY_DISPATCH: Record<ControlDispatchItemStatus, AttemptLifecycleState> = {
   pending_launch: 'authorized',
   launching: 'launched',
   running: 'running',
@@ -73,13 +73,13 @@ const ATTEMPT_LIFECYCLE_BY_DISPATCH: Record<KernelDispatchItemStatus, AttemptLif
 };
 
 export function toSubtaskLifecycleState(
-  status: KernelSubtaskStatus | SubtaskStatus,
+  status: ControlSubtaskStatus | SubtaskStatus,
 ): SubtaskLifecycleState {
   return SUBTASK_LIFECYCLE_BY_STATUS[status] ?? 'pending';
 }
 
 export function toAttemptLifecycleState(
-  status: KernelDispatchItemStatus,
+  status: ControlDispatchItemStatus,
 ): AttemptLifecycleState {
   return ATTEMPT_LIFECYCLE_BY_DISPATCH[status] ?? 'settled';
 }
@@ -90,7 +90,7 @@ export function toAttemptLifecycleState(
  */
 export function toAttemptOutcome(input: {
   terminalState: ExecutorAttemptTerminalState | null;
-  failure: KernelFailure | null;
+  failure: ControlFailure | null;
 }): AttemptOutcome | null {
   if (!input.terminalState) return null;
   if (input.terminalState === 'completed' || input.terminalState === 'uncertified_result') {
@@ -105,7 +105,7 @@ export function toAttemptOutcome(input: {
 }
 
 /** True when a dispatch item still owns execution capacity. */
-export function isActiveDispatchStatus(status: KernelDispatchItemStatus): boolean {
+export function isActiveDispatchStatus(status: ControlDispatchItemStatus): boolean {
   return status === 'pending_launch'
     || status === 'launching'
     || status === 'running'
@@ -113,10 +113,9 @@ export function isActiveDispatchStatus(status: KernelDispatchItemStatus): boolea
 }
 
 /** True when a dispatch item is settled and its facts are immutable. */
-export function isSettledDispatchStatus(status: KernelDispatchItemStatus): boolean {
+export function isSettledDispatchStatus(status: ControlDispatchItemStatus): boolean {
   return status === 'terminal' || status === 'cancelled' || status === 'uncertain';
 }
-
 
 /**
  * Subtask node transitions. Owned by Work Graph/Task Domain. A node may not go

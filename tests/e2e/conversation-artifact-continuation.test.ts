@@ -9,7 +9,7 @@ import { PlanningAgentPlanSchema } from '../../src/planning/planning-agent-plan-
 import { buildEligibleContextRefKeys } from '../../src/work-graph/context-ref-eligibility.js';
 import { SubtaskExecutionContextBuilder } from '../../src/execution/subtask-execution-context.js';
 import { loadInputImages } from '../../src/executor/image-input-loader.js';
-import { runMigrations } from '../../src/storage/migrations.js';
+import { initializeDatabaseSchema } from '../../src/storage/schema.js';
 import { TaskRepo } from '../../src/storage/task-repo.js';
 import { TaskEngine } from '../../src/task/task-engine.js';
 import type { Subtask } from '../../src/core/types.js';
@@ -18,7 +18,7 @@ import { testExecutorBinding } from '../support/seed-work-graph.js';
 describe('Conversation historical artifact continuation', () => {
   it('bridges a prior image result from Planner selection to an attempt-local image input', async () => {
     const db = new Database(':memory:');
-    runMigrations(db);
+    initializeDatabaseSchema(db);
     const root = mkdtempSync(join(tmpdir(), 'metawork-context-bridge-e2e-'));
     const publishedPath = join(root, 'published', 'product.jpg');
     const inputPath = join(root, 'attempt', 'inputs');

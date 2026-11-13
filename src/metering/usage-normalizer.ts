@@ -8,8 +8,9 @@
  * - 缺少 usage 是 `unavailable`，不是 0。
  */
 
-import { isBillingResource, rationalFromDecimalString } from '../billing/pricing.js';
-import { isNegativeRational, isZeroRational, subtractRational, type Rational } from '../billing/money.js';
+import { isUsageResource } from './usage-resource.js';
+import { rationalFromDecimalString } from './quantity.js';
+import { isNegativeRational, isZeroRational, subtractRational, type Rational } from './quantity.js';
 import {
   exactQuantityFromRational,
   isAuthoritativeScope,
@@ -19,7 +20,7 @@ import {
   type UsageObservation,
   type UsageQuality,
 } from './contracts.js';
-import type { Payer } from '../billing/cost-policy.js';
+import type { Payer } from './usage-payer.js';
 
 export const NORMALIZATION_RULE_VERSION = 'usage-normalizer-v1';
 
@@ -43,6 +44,7 @@ export interface RawMissingMetric {
 }
 
 export interface RawUsageEvent {
+  readonly providerResponseId?: string | null;
   readonly sourceId: string;
   readonly sourceEventKey: string;
   readonly sourceScope: SourceScope;
@@ -131,9 +133,8 @@ export function normalizeUsageEvents(input: NormalizationInput): NormalizationRe
       continue;
     }
     seen.add(replayKey);
-    const quality: UsageQuality = event.counters.length > 0 ? 'reported' : 'unavailable';
     for (const counter of event.counters) {
-      if (!isBillingResource(counter.resource)) {
+      if (!isUsageResource(counter.resource)) {
         issues.push({
           code: 'unsupported_resource',
           sourceId: event.sourceId,
@@ -202,7 +203,7 @@ export function normalizeUsageEvents(input: NormalizationInput): NormalizationRe
       observations.push(buildObservation(event, counter, quantity, authoritative, ruleVersion, createObservationId));
     }
     for (const missing of event.missing ?? []) {
-      if (!isBillingResource(missing.resource)) continue;
+      if (!isUsageResource(missing.resource)) continue;
       issues.push({
         code: 'missing_usage',
         sourceId: event.sourceId,

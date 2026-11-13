@@ -1,6 +1,6 @@
 import type { AgentClass } from '../core/types.js';
 import { AgentClassRepo } from '../storage/agent-class-repo.js';
-import { KernelExecutorStatusRepo } from '../storage/kernel-executor-status-repo.js';
+import { ControlExecutorStatusRepo } from '../storage/executor-status-repo.js';
 import { WorkUnitRepo } from '../storage/work-unit-repo.js';
 import {
   stringArg,
@@ -29,7 +29,7 @@ export async function listExecutors(
     return { type: 'text', content: 'No AgentClass records are registered.' };
   }
   const workUnits = new WorkUnitRepo(context.db).findAll();
-  const statuses = new KernelExecutorStatusRepo(context.db);
+  const statuses = new ControlExecutorStatusRepo(context.db);
   const configurationRevision = await context.readServices?.currentConfigurationRevision() ?? null;
   const revisionStatuses = configurationRevision
     ? new Map(statuses.list(configurationRevision).map(status => [status.agentClassName, status]))

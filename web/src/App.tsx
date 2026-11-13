@@ -1,3 +1,6 @@
+import { TokenUsageView } from './components/TokenUsageView';
+import { MemoryAssetsPanel } from './components/MemoryAssetsPanel';
+import { createMemoryApiClient } from './api/memory';
 import { ObservedConversationView } from './observation/ObservedConversationView';
 import { ObservedExecutionDetail, ObservedTurnDetails } from './observation/ObservedTurnDetails';
 import { SettingsPanel } from './components/SettingsPanel';
@@ -9,6 +12,12 @@ import { OfficialAccountPanel, type OfficialStatus } from './components/Official
 
 export function App() {
   const [officialStatus, setOfficialStatus] = useState<OfficialStatus | null>(null);
+  // The account panel polls every five seconds; unchanged status must not
+  // invalidate the entire conversation tree and its inline callbacks.
+  const updateOfficialStatus = useCallback((status: OfficialStatus | null) => {
+    setOfficialStatus(previous => JSON.stringify(previous) === JSON.stringify(status) ? previous : status);
+  }, []);
+  const [memorySettingsRequested, setMemorySettingsRequested] = useState(false);
   const {
     themePreference, setThemePreference, authenticated, authError, connected,
     workspaces, activeWorkspaceId, pendingWorkspaceId, sessions, directoryCursor, directoryLoading,
@@ -19,14 +28,17 @@ export function App() {
     uploadingAttachments,
     previewCollapsed, setPreviewCollapsed, previewMaximized, setPreviewMaximized, previewWidth,
     setPreviewWidth, executionDetail, setExecutionDetail, httpRef, observationClient,
-    viewportMemory, openTrajectory, openBilling, handleSelectWorkspace, handleCreateWorkspace,
+    viewportMemory, openTrajectory, handleSelectWorkspace, handleCreateWorkspace,
     handleOpenArtifact, handleOpenAttachment, handleLoadMoreConversations, handleSelectSession, handleNewSession, handleRefreshAgentReadiness,
     handleOpenAgentSettings, handleDeleteSession, handleFilesSelected, handleClearSessions,
     activeWorkspace, selectedId, selectedMetadata, selectedTrajectoryTurn,
-    selectedBillingTurn, running, requiredBlock, composerDisabled, composerBlockedReason,
+    running, requiredBlock, composerDisabled, composerBlockedReason,
     handleDraftChange, handleSend, handleCancelTurn, executionDetailTurn, executionDetailOpen,
     failedInput, handleRestoreFailedInput,
   } = useWorkspaceController();
+  const http = httpRef.current;
+  const memoryApi = useMemo(() => http
+    ? createMemoryApiClient((path, init) => http.requestMemory(path, init)) : null, [http]);
   useEffect(() => { document.title = activeWorkspace ? `MetaWork · ${activeWorkspace.displayName}` : 'MetaWork'; }, [activeWorkspace]);
   if (authenticated === null) {
     return <div className="session-gate"><div className="session-gate-card">正在连接 MetaWork…</div></div>;
@@ -43,7 +55,7 @@ export function App() {
   }
   return (
     <div className="official-app-frame">
-      <OfficialAccountPanel onStatus={setOfficialStatus} />
+      <OfficialAccountPanel onStatus={updateOfficialStatus} />
       <WorkspaceShell
         sessions={sessions}
         hasMoreConversations={directoryCursor !== null}
@@ -124,7 +136,15 @@ export function App() {
         onRemoveAttachment={handleRemoveAttachment}
       >
         {failedInput && <button onClick={handleRestoreFailedInput}>恢复发送失败的内容</button>}
-        {!selectedId
+        {tab === 'memory'
+          ? memoryApi && <MemoryAssetsPanel api={memoryApi} onOpenSettings={() => {
+            setMemorySettingsRequested(true);
+            setSettingsOpen(true);
+          }}
+              configurationRevision={configurationRuntime?.runtimeRevisionId ?? undefined} />
+          : tab === 'billing'
+          ? http && <TokenUsageView http={http} />
+          : !selectedId
           ? (
             <div className="workspace-home">
               <span className="workspace-home-kicker">WORKSPACE HOME</span>
@@ -157,21 +177,19 @@ export function App() {
               initialTurnId={route?.conversationId === selectedId ? route.turnId : undefined}
               initialTaskId={route?.conversationId === selectedId ? route.taskId : undefined}
               onOpenTrajectory={openTrajectory}
-              onOpenBilling={openBilling}
               onOpenArtifact={handleOpenArtifact}
               onOpenAttachment={handleOpenAttachment}
               onOpenSubtaskDetail={(turn, subtaskId, subtaskTitle) => setExecutionDetail({ turn, turnId: turn.id, subtaskId, subtaskTitle })}
             />
           )
           : (
-            observationClient && httpRef.current && (tab === 'billing' ? selectedBillingTurn : selectedTrajectoryTurn) && <ObservedTurnDetails
-              key={`${selectedId}:${tab}:${(tab === 'billing' ? selectedBillingTurn : selectedTrajectoryTurn)!.id}`}
+            observationClient && httpRef.current && selectedTrajectoryTurn && <ObservedTurnDetails
+              key={`${selectedId}:${tab}:${selectedTrajectoryTurn!.id}`}
               conversationId={selectedId}
-              turnId={(tab === 'billing' ? selectedBillingTurn : selectedTrajectoryTurn)!.id}
+              turnId={selectedTrajectoryTurn!.id}
               ws={observationClient} http={httpRef.current} tab={tab}
               onSelectTurn={setSelectedTrajectoryTurnId}
               onOpenArtifact={handleOpenArtifact}
-              onOpenSubtaskDetail={(turn, subtaskId) => setExecutionDetail({ turn, turnId: turn.id, subtaskId, subtaskTitle: '' })}
             />
           )}
       </WorkspaceShell>
@@ -180,7 +198,8 @@ export function App() {
           http={httpRef.current}
           runtime={configurationRuntime}
           agentReadiness={agentReadiness}
-          onClose={() => setSettingsOpen(false)}
+          initialSection={memorySettingsRequested ? 'memory' : undefined}
+          onClose={() => { setSettingsOpen(false); setMemorySettingsRequested(false); }}
         />
       )}
       {workspaceCreatorOpen && (
@@ -200,4 +219,4 @@ function clampPreviewWidth(width: number): number {
   const max = Math.max(360, Math.min(viewport - 360, 1_200));
   return Math.round(Math.max(320, Math.min(width, max)));
 }
-import { useEffect, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';

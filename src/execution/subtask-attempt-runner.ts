@@ -1,3 +1,4 @@
+import type { UsagePayerResolver } from '../metering/usage-payer.js';
 import { supportsSharedWorkspaceRead } from '../work-graph/workspace-effect.js';
 import { resolveSafeResult, type PendingResultIdentity } from '../task/safe-result-identity.js';
 import { readPendingTaskResult } from '../storage/pending-task-result.js';
@@ -7,8 +8,8 @@ import { workspaceRootClaim } from '../resource/workspace-claim.js';
 import { createHash } from 'node:crypto';
 import { isWithin, isWorkspaceRelativePath } from '../workspace/workspace-path.js';
 import { basename, extname, isAbsolute, join, relative, resolve, sep } from 'node:path';
-import { chmod, copyFile, lstat, mkdir } from 'node:fs/promises';
-import { readFileSync, statSync } from 'node:fs';
+import { chmod, copyFile, lstat, mkdir, readFile } from 'node:fs/promises';
+import { readFileSync, realpathSync, statSync } from 'node:fs';
 import { randomUUID } from 'node:crypto';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import type Database from 'better-sqlite3';
@@ -18,7 +19,7 @@ import { describeAttemptFailure } from './failure-reasons.js';
 import type { ExecutorProgressEvent } from '../executor/adapter.js';
 import type { ExecutorAdapter } from '../executor/adapter.js';
 import type { HarnessUsageEvent } from '../executor/harness-driver.js';
-import type { Payer } from '../billing/cost-policy.js';
+import type { Payer } from '../metering/usage-payer.js';
 import type { MeteringSpanRecord } from '../metering/ports.js';
 import type { RawUsageEvent } from '../metering/usage-normalizer.js';
 import type { AgentClassService } from '../executor/agent-class-service.js';
@@ -43,13 +44,14 @@ import {
   type CompletionAssessment,
   type CompletionContractViolation,
   type CompletionHandoffV3,
+  type CompletionHandoffV4,
 } from './completion-protocol.js';
-import { SubtaskExecutionContextBuilder } from './subtask-execution-context.js';
+import { SubtaskExecutionContextBuilder, TaskResourceReferenceError } from './subtask-execution-context.js';
 import type { GatewayAttachmentStore } from '../gateway/attachment-store-port.js';
 import type { WorkUnitClaimService } from './work-unit-claim-service.js';
 import { generateInteractionId } from '../utils/id.js';
 import { ExecutionEvidenceToolServer } from './execution-evidence-tool-server.js';
-import type { KernelFailure } from '../core/kernel-failure.js';
+import type { ControlFailure } from '../core/kernel-failure.js';
 import type { Subtask, Task } from '../core/types.js';
 import { ExecutorAttemptRuntimeRepo, type ExecutorAttemptRuntimeRecord } from '../storage/executor-attempt-runtime-repo.js';
 import { deriveRecoverySafety } from '../routing/types.js';
@@ -58,10 +60,10 @@ import {
   type SubtaskLifecyclePort,
 } from '../task/task-lifecycle-transition-port.js';
 import type {
-  KernelAttemptKind,
-  KernelAttemptPayload,
-  KernelRecoveryMode,
-} from '../kernel/control-kernel.js';
+  ControlAttemptKind,
+  ControlAttemptPayload,
+  ControlRecoveryMode,
+} from '../control/control-contracts.js';
 import {
   captureWorkspaceState,
   captureWorkspaceStateAtPaths,
@@ -84,13 +86,12 @@ import type { ResourceLeaseService } from './resource-lease-service.js';
 import { RegisteredCapabilityResourceResolver } from './capability-resource-resolver.js';
 import { PermissionWorkflowService } from './permission-workflow-service.js';
 import { CapabilityRequestToolServer } from './capability-request-tool-server.js';
-import type { KernelWorkflowStore } from '../kernel/kernel-workflow.js';
 import type { WorkspaceRepositoryPort } from './repositories.js';
 import { ManagedGitWorkspaceService, type ManagedGitWorkspace } from './managed-git-workspace.js';
 import {
-  KernelDispatchItemRepo,
-  type KernelDispatchItemRecord,
-} from '../storage/kernel-dispatch-item-repo.js';
+  ControlDispatchItemRepo,
+  type ControlDispatchItemRecord,
+} from '../storage/dispatch-item-repo.js';
 import {
   WorkspacePublicationRepo,
 } from '../storage/workspace-publication-repo.js';
@@ -137,7 +138,7 @@ export type SubtaskAttemptOutcome =
       durationMs: number;
       resultId?: string;
     }
-  | { outcome: 'executor_unavailable'; attemptId: string; failure: KernelFailure }
+  | { outcome: 'executor_unavailable'; attemptId: string; failure: ControlFailure }
   | { outcome: 'capacity_unavailable'; attemptId: string; agentClassName: string }
   | {
       outcome: 'contract_failed';
@@ -154,7 +155,7 @@ export type SubtaskAttemptOutcome =
       certification: CompletionAssessment['certification']['status'];
       safety: CompletionAssessment['safety']['status'];
     }
-  | { outcome: 'executor_failed'; attemptId: string; error: string; failure: KernelFailure }
+  | { outcome: 'executor_failed'; attemptId: string; error: string; failure: ControlFailure }
   | { outcome: 'partition_conflict'; attemptId: string; claims: ResourceClaim[]; conflictingLeaseIds: string[] }
   | { outcome: 'cancelled_or_stale'; attemptId: string; reason: string };
 
@@ -177,7 +178,7 @@ export interface SubtaskAttemptRunnerDeps {
   /** `<objectsPath>/artifacts`: content-addressed store for fixed ArtifactVersions. */
   artifactObjectRoot?: string;
   permissionRepository: PermissionRepositoryPort;
-  kernelWorkflowStore: KernelWorkflowStore;
+  managerPermissionJudge?: import('../resource/manager-permission-judge.js').ManagerPermissionJudge;
   workspaceRepository: WorkspaceRepositoryPort;
   sourceRoot: string;
   controlNetwork: string;
@@ -196,12 +197,51 @@ export interface SubtaskAttemptRunnerDeps {
   usageSpanOpener?: (span: MeteringSpanRecord) => void;
   usageSpanCloser?: (spanId: string, state: 'closed' | 'uncertain', closedAt: string) => void;
   usagePayer?: Payer;
+  resolveUsagePayer?: UsagePayerResolver;
   /**
    * Long-term memory delivery. The memory references of the Subtask are
    * materialized into execution evidence before the context is built
    * (design §10).
    */
   memoryEvidence?: import('../memory/memory-evidence-service.js').MemoryEvidencePort;
+}
+
+/**
+ * Converts a declared artifact path into a Workspace-relative one. A Harness may
+ * report a deliverable by its physical path while the Conversation binding keeps
+ * the logical one: on macOS `/var` is a symlink to `/private/var`, so a naive
+ * `relative()` would produce `../../..` for a file that is actually inside the
+ * execution root and the seal would reject it as `invalid_git_path`. Both sides
+ * are therefore resolved before the relative form is taken; a genuinely
+ * escaping path still fails the existing containment validation.
+ */
+function executionRelativePath(executionRoot: string, path: string): string {
+  if (!isAbsolute(path)) return path;
+  const physical = (value: string): string => {
+    try { return realpathSync.native(value); } catch { return value; }
+  };
+  const physicalRelative = relative(physical(executionRoot), physical(path));
+  if (physicalRelative && !physicalRelative.startsWith('..') && !isAbsolute(physicalRelative)) {
+    return physicalRelative.split(sep).join('/');
+  }
+  return relative(executionRoot, path);
+}
+
+/**
+ * Accepted results keep the same durable handoff identity as a certified round:
+ * Workspace-relative paths, never the Executor's physical spelling.
+ */
+function normalizedAcceptedHandoffs(
+  handoffs: readonly CompletionHandoffV4[],
+  executionRoot: string,
+): CompletionHandoffV4[] {
+  return handoffs.map(handoff => ({
+    ...handoff,
+    items: handoff.items.map(item => (item.type === 'text' ? item : {
+      ...item,
+      paths: item.paths.map(path => executionRelativePath(executionRoot, path)),
+    })),
+  }));
 }
 
 /** Owns one Subtask attempt from claim through immutable terminal persistence. */
@@ -229,7 +269,7 @@ export class SubtaskAttemptRunner {
   private readonly handoffRepo: SubtaskHandoffRepo;
   private readonly attemptRuntimeRepo: ExecutorAttemptRuntimeRepo;
   private readonly managedGitWorkspace: ManagedGitWorkspaceService;
-  private readonly dispatchItemRepo: KernelDispatchItemRepo;
+  private readonly dispatchItemRepo: ControlDispatchItemRepo;
   private readonly publicationRepo: WorkspacePublicationRepo;
   private readonly terminalService: AttemptTerminalService;
   private readonly resultObjectRepo: ResultObjectRepo;
@@ -247,7 +287,7 @@ export class SubtaskAttemptRunner {
     this.handoffRepo = new SubtaskHandoffRepo(deps.db);
     this.attemptRuntimeRepo = new ExecutorAttemptRuntimeRepo(deps.db);
     this.managedGitWorkspace = new ManagedGitWorkspaceService(deps.workspaceStore);
-    this.dispatchItemRepo = new KernelDispatchItemRepo(deps.db);
+    this.dispatchItemRepo = new ControlDispatchItemRepo(deps.db);
     this.publicationRepo = new WorkspacePublicationRepo(deps.db);
     this.resultObjectRepo = new ResultObjectRepo(
       deps.db,
@@ -287,6 +327,58 @@ export class SubtaskAttemptRunner {
       agentClassName,
       configurationRevision,
     );
+  }
+
+  /**
+   * Integrity check for accepting a published Conversation Git result.
+   *
+   * The recorded delta is compared with the Attempt's sealed commit pair, not
+   * with the mutable Worktree: the seal commits the change set, so a later dirty
+   * capture can only describe a different baseline. The sealed commit is also
+   * the source of truth for delivery, so a Worktree that diverged after the seal
+   * is reported with its own reason instead of being certified as the result.
+   */
+  private async assertSealedDelta(input: {
+    attemptId: string;
+    workspaceId: string;
+    delta: WorkspaceDelta;
+    rootPath: string;
+  }): Promise<void> {
+    const conversations = this.deps.conversationWorktrees;
+    const repositoryPath = conversations?.repo.root(input.workspaceId)?.repositoryPath;
+    const commits = this.attemptRuntimeRepo.attemptCommits(input.attemptId);
+    if (!conversations || !repositoryPath || !commits?.beforeCommit || !commits.afterCommit) {
+      throw new Error('结果提交身份不可用，无法接受');
+    }
+    const changed = await conversations.git.changedFiles(repositoryPath, commits.beforeCommit, commits.afterCommit);
+    const sealedPaths = new Set(changed.map(change => change.path));
+    const recorded = new Map(input.delta.changed.map(change => [change.path, change.afterHash]));
+    for (const [path, afterHash] of recorded) {
+      if (afterHash === null ? sealedPaths.has(path) : !sealedPaths.has(path)) {
+        throw new Error('结果生成后文件已变化，请重新执行并检查');
+      }
+    }
+    for (const change of changed) {
+      if (!recorded.has(change.path)) throw new Error('结果生成后文件已变化，请重新执行并检查');
+    }
+    // Content identity: the sealed bytes must still hash to the recorded value,
+    // and the Worktree must not have diverged from the accepted result.
+    const entries = new Map((await conversations.git.entries(repositoryPath, commits.afterCommit))
+      .map(entry => [entry.path, entry]));
+    for (const [path, afterHash] of recorded) {
+      if (afterHash === null) continue;
+      const entry = entries.get(path);
+      if (!entry || entry.kind !== 'file') throw new Error('结果生成后文件已变化，请重新执行并检查');
+      const bytes = await conversations.git.blob(repositoryPath, entry.oid);
+      if (createHash('sha256').update(bytes).digest('hex') !== afterHash) {
+        throw new Error('结果生成后文件已变化，请重新执行并检查');
+      }
+      const livePath = join(input.rootPath, ...path.split('/'));
+      const live = await readFile(livePath).catch(() => null);
+      if (live && createHash('sha256').update(live).digest('hex') !== afterHash) {
+        throw new Error('结果工作区在封存后已被修改，请重新确认接受');
+      }
+    }
   }
 
   /** User acceptance substitutes certification only; file/security checks and publication remain mandatory. */
@@ -365,8 +457,18 @@ export class SubtaskAttemptRunner {
       if (!delta) throw new Error('无法确认文件变更，结果尚不能交付');
       const baseline = parseWorkspaceState(sourceRuntime?.workspaceBaseline);
       if (!baseline || delta.baselineTruncated || delta.finalTruncated) throw new Error('文件快照不完整，无法接受');
-      const currentDelta = deriveWorkspaceDelta(baseline, captureWorkspaceState(rootPath));
-      if (JSON.stringify(currentDelta) !== JSON.stringify(delta)) throw new Error('结果生成后文件已变化，请重新执行并检查');
+      if (acceptedBinding) {
+        // The Attempt sealed its change set into an immutable commit pair. After
+        // seal the Worktree is clean at that commit, so re-reading the dirty
+        // state describes a different baseline and rejected every acceptance
+        // (convergence review B-02). Verify the durable record against the
+        // sealed commits instead.
+        await this.assertSealedDelta({ attemptId: pair.resultOwnerAttemptId,
+          workspaceId: acceptedBinding.workspaceId, delta, rootPath });
+      } else {
+        const currentDelta = deriveWorkspaceDelta(baseline, captureWorkspaceState(rootPath));
+        if (JSON.stringify(currentDelta) !== JSON.stringify(delta)) throw new Error('结果生成后文件已变化，请重新执行并检查');
+      }
     }
     const body = this.resultObjectRepo.readRange(pair.object.resultId, 0, pair.object.byteLength).content;
     const subtasks = this.deps.subtaskRepo.listActiveByTask(expected.taskId);
@@ -398,7 +500,8 @@ export class SubtaskAttemptRunner {
       const edgeHandoffs = {
         generationId: subtask.generationId,
         completionSchemaVersion: 4 as const,
-        declaredHandoffs: completion.envelope?.status === 'completed' ? completion.envelope.handoffs : [],
+        declaredHandoffs: completion.envelope?.status === 'completed' ? normalizedAcceptedHandoffs(
+          completion.envelope.handoffs, acceptedBinding.executionRoot) : [],
         safeProjection: safeProjectionForEdgeHandoffs(
           this.resultObjectRepo,
           pair.resultObjectId,
@@ -410,8 +513,28 @@ export class SubtaskAttemptRunner {
         { taskId: expected.taskId, subtaskId: expected.subtaskId },
         edgeHandoffs.safeProjection,
       );
+      // The accepted result's declared files must become downloads exactly like a
+      // certified round: the sealed commit is the immutable source, so the
+      // artifact versions pin the accepted bytes instead of the live file.
+      const acceptedArtifactPaths = completion.normalizedArtifacts
+        .map(path => executionRelativePath(acceptedBinding.executionRoot, path));
+      const acceptedArtifacts = this.deps.userArtifactPublication && acceptedArtifactPaths.length > 0
+        ? await this.deps.userArtifactPublication.prepareGitArtifacts({
+          git: this.deps.conversationWorktrees!.git,
+          repositoryPath: this.deps.conversationWorktrees!.repo.root(acceptedBinding.workspaceId)!.repositoryPath,
+          commit: candidate.commit,
+          accountId: this.deps.accountId ?? 'local-default',
+          workspaceId: acceptedBinding.workspaceId,
+          taskId: expected.taskId,
+          attemptId: expected.attemptId,
+          generationId: subtask.generationId,
+          subtaskId: subtask.id,
+          relativePaths: acceptedArtifactPaths,
+        })
+        : null;
       this.deps.db.transaction(() => {
         assertCurrent();
+        acceptedArtifacts?.commit();
         this.lifecycle.transitionSubtask({
           subtaskId: subtask.id,
           to: 'done',
@@ -531,10 +654,10 @@ export class SubtaskAttemptRunner {
     taskId: string;
     subtaskId: string;
     executionMode: ExecutionMode;
-    attemptKind?: KernelAttemptKind;
-    attemptPayload?: KernelAttemptPayload;
+    attemptKind?: ControlAttemptKind;
+    attemptPayload?: ControlAttemptPayload;
     sourceAttemptId?: string | null;
-    recoveryMode?: KernelRecoveryMode;
+    recoveryMode?: ControlRecoveryMode;
     sourceRoot?: string;
     defaultResourceGrant: ResourceClaim[];
     onProgress?: ProgressCallback;
@@ -580,6 +703,9 @@ export class SubtaskAttemptRunner {
         goal: `Prepare service ${serviceRepair!.serviceId}. Install dependencies and build required runtime outputs in the assigned service worktree. Keep tracked source files unchanged. Do not repeat the original task or its handoffs. Report preparation results.`}
       : originalSubtask;
     if (!conversationBinding) throw new Error('legacy_execution_requires_replan');
+    // The same owner rule the Kernel used for admission decides whether this
+    // Attempt may write; a read-only authorization can never become a write
+    // execution (convergence review B-01).
     const conversationReadOnly = !servicePreparation
       && supportsSharedWorkspaceRead(subtask, this.deps.subtaskRepo.listByTask(task.id).filter(node => node.generationId === subtask.generationId));
     const sourceReceipt = sourceAttemptId
@@ -805,6 +931,17 @@ export class SubtaskAttemptRunner {
         workspace = await this.deps.workspaceStore.bindConversationWorkspace(workspaceIdentity, executionContext.authorizedWorkingDirectory, attemptId);
       }
       if (!workspace) throw new Error('Workspace binding did not produce an execution directory');
+      // One durable workspace record per (Task, generation, Subtask). A retry or
+      // continuation binds a fresh attempt-owned scratch root, but the durable
+      // identity must stay stable: `workspace_records` is keyed by that identity
+      // and Attempt sandbox rows reference it, so a second identity would fail
+      // the foreign key and hide the real execution failure.
+      const durableWorkspace = this.deps.workspaceRepository.findByIdentity(
+        task.id, subtask.generationId, subtask.id,
+      );
+      if (durableWorkspace && durableWorkspace.id !== workspace.id) {
+        workspace = { ...workspace, id: durableWorkspace.id };
+      }
       observationRoot = conversationReadOnly ? conversationBinding.executionRoot : workspace.filesPath;
       if (serviceRepair) {
         // The Kernel authorized exactly one repair round; the Attempt must not
@@ -915,7 +1052,7 @@ export class SubtaskAttemptRunner {
             })
           : null
       ) ?? currentWorkspaceBaseline;
-      const recoveryMode: KernelRecoveryMode = serviceExecution ? 'recovery_packet' : dispatch.recoveryMode === 'native_session' && !sourceRuntime?.continuationToken
+      const recoveryMode: ControlRecoveryMode = serviceExecution ? 'recovery_packet' : dispatch.recoveryMode === 'native_session' && !sourceRuntime?.continuationToken
         ? 'recovery_packet'
         : dispatch.recoveryMode;
       this.attemptRuntimeRepo.start({
@@ -935,9 +1072,7 @@ export class SubtaskAttemptRunner {
         text: '工作区与输入资料已准备，正在生成 Executor 执行上下文',
       }, startedAt);
       const evidenceToolsAvailable = this.deps.executionRuntime.supportsEvidenceTools(dispatch.authorizedBinding);
-      const attemptControlHost = this.deps.attemptExecutionBackend.pathMode === 'native'
-        ? '127.0.0.1'
-        : process.env.METACLAW_CONTROL_HOST ?? 'metaclaw-control';
+      const attemptControlHost = '127.0.0.1';
       await this.materializeMemoryEvidence(task, subtask);
       const built = this.contextBuilder.build({
         executionId: input.executionId,
@@ -1035,11 +1170,12 @@ export class SubtaskAttemptRunner {
         { kind: 'path' as const, mountId: `inputs-${task.id}`, normalizedRelativePath: `resource-${index}` },
       ]));
       const permissionWorkflow = new PermissionWorkflowService({
+        manager: this.deps.managerPermissionJudge,
+        isAttemptCurrent: () => this.isStillCurrent(task.id, subtask.id, attemptId, claim.workUnit.id),
         context: capabilityContext,
         repository: this.deps.permissionRepository,
         resolver: new RegisteredCapabilityResourceResolver(resourceRegistrations),
         executionBackend: this.deps.attemptExecutionBackend,
-        workflowStore: this.deps.kernelWorkflowStore,
         rules: buildPermissionRules({
           permissionProfileId: capabilityContext.permissionProfileId,
           additionalReadPartitions: resourceRegistrations.values(),
@@ -1099,7 +1235,8 @@ export class SubtaskAttemptRunner {
           stage: 'execution',
           reason: (dispatch.attemptKind as string) === 'merge_repair' ? 'merge_repair' : 'primary',
           state: 'started',
-          payer: this.deps.usagePayer ?? 'unknown',
+          payer: this.deps.resolveUsagePayer?.(dispatch.authorizedBinding.providerRef, dispatch.authorizedBinding.configurationRevision)
+            ?? this.deps.usagePayer ?? 'unknown',
           startedAt,
           closedAt: null,
         });
@@ -1430,6 +1567,19 @@ export class SubtaskAttemptRunner {
         };
       }
       const completedEnvelope = completion.envelope;
+      // A Harness may declare a handoff artifact by its physical path. The
+      // durable handoff pins one identity, so store the Workspace-relative
+      // spelling the artifact version was registered under; otherwise the
+      // downstream Attempt rejects the handoff as an identity mismatch.
+      const declaredHandoffs = conversationBinding
+        ? completedEnvelope.handoffs.map(handoff => ({
+          ...handoff,
+          items: handoff.items.map(item => (item.type === 'text' ? item : {
+            ...item,
+            paths: item.paths.map(path => executionRelativePath(conversationBinding.executionRoot, path)),
+          })),
+        }))
+        : completedEnvelope.handoffs;
 
       if (!this.isStillCurrent(task.id, subtask.id, attemptId, claim.workUnit.id)) {
         const detail = 'Task, Subtask, or WorkUnit claim changed before commit';
@@ -1459,7 +1609,7 @@ export class SubtaskAttemptRunner {
       if (serviceExecution) await this.deps.serviceWorktrees!.markPrepared(serviceCheckout!);
       if (conversationReadOnly) await this.deps.conversationWorktrees!.verifyRead(conversationBinding!, attemptId);
       const conversationCommit = conversationExecution && !conversationReadOnly
-        ? await this.deps.conversationWorktrees!.sealAttempt(conversationBinding!, attemptId, [...completion.normalizedArtifacts,...completedEnvelope.handoffs.flatMap(h=>h.items.flatMap(item=>item.type==='text'?[]:item.paths))].map(path=>isAbsolute(path)?relative(conversationBinding!.executionRoot,path):path))
+        ? await this.deps.conversationWorktrees!.sealAttempt(conversationBinding!, attemptId, [...completion.normalizedArtifacts,...completedEnvelope.handoffs.flatMap(h=>h.items.flatMap(item=>item.type==='text'?[]:item.paths))].map(path=>executionRelativePath(conversationBinding!.executionRoot,path)))
         : null;
       const artifactPaths = [...completion.normalizedArtifacts,
         ...completedEnvelope.handoffs.flatMap(h => h.items.flatMap(item => item.type === 'text' ? [] : item.paths))];
@@ -1470,7 +1620,7 @@ export class SubtaskAttemptRunner {
           commit:conversationCommit.commit,accountId:this.deps.accountId??'local-default',workspaceId:conversationBinding.workspaceId,
           taskId:task.id,attemptId,generationId:subtask.generationId,subtaskId:subtask.id,
           relativePaths:artifactPaths
-            .map(path=>isAbsolute(path)?relative(conversationBinding!.executionRoot,path):path),
+            .map(path=>executionRelativePath(conversationBinding!.executionRoot,path)),
         }):null;
       const dispatchItem = this.dispatchItemRepo.find(attemptId);
       if (!dispatchItem) {
@@ -1483,14 +1633,13 @@ export class SubtaskAttemptRunner {
         ? {
             generationId: subtask.generationId,
             completionSchemaVersion: 4 as const,
-            declaredHandoffs: completedEnvelope.handoffs,
+            declaredHandoffs,
             ...(fixedArtifacts && conversationBinding ? {
-              artifactVersions: Object.fromEntries(completedEnvelope.handoffs.flatMap(h => h.items.flatMap(item =>
-                item.type === 'text' ? [] : item.paths.map(path => {
-                  const relativePath = isAbsolute(path) ? relative(conversationBinding.executionRoot, path) : path;
+              artifactVersions: Object.fromEntries(declaredHandoffs.flatMap(h => h.items.flatMap(item =>
+                item.type === 'text' ? [] : item.paths.map(relativePath => {
                   const version = fixedArtifacts.versions.find(v => v.relativePath === relativePath);
-                  if (!version) throw new Error(`handoff_artifact_version_missing:${path}`);
-                  return [path, version.artifactVersionId];
+                  if (!version) throw new Error(`handoff_artifact_version_missing:${relativePath}`);
+                  return [relativePath, version.artifactVersionId];
                 })))),
             } : {}),
             safeProjection: safeProjectionForEdgeHandoffs(
@@ -1651,7 +1800,7 @@ export class SubtaskAttemptRunner {
             code: dependencyFailure.code,
             summary: `${dependencyFailure.summary} (${dependencyFailure.sourceSubtaskId ?? 'unknown'} -> ${dependencyFailure.targetSubtaskId ?? subtask.id})`,
           })
-        : memoryFailure ?? (error instanceof InteractionReferenceError || error instanceof ExecutionEvidenceIdentityError
+        : memoryFailure ?? (error instanceof InteractionReferenceError || error instanceof ExecutionEvidenceIdentityError || error instanceof TaskResourceReferenceError
           ? kernelFailure({
               kind: 'unknown',
               scope: 'task',
@@ -1760,7 +1909,7 @@ export class SubtaskAttemptRunner {
 
   private observeUsage(
     input: { attemptId: string; executionId: string; taskId: string; subtaskId: string; queryId?: string | null },
-    dispatch: KernelDispatchItemRecord,
+    dispatch: ControlDispatchItemRecord,
     usage: HarnessUsageEvent,
   ): void {
     if (!input.queryId || !this.deps.usageObserver) return;
@@ -1769,17 +1918,19 @@ export class SubtaskAttemptRunner {
       sourceId: `harness:${dispatch.authorizedBinding.harnessRef}:${input.attemptId}`,
       sourceEventKey: usage.sourceEventKey,
       sourceScope: 'harness_turn',
-      callId: `${input.attemptId}:harness`,
+      callId: `${input.attemptId}:${usage.callId}`,
       queryId: input.queryId,
       executionSegmentId: `attempt:${input.attemptId}`,
       taskId: input.taskId,
       stage: 'execution',
       reason: (dispatch.attemptKind as string) === 'merge_repair' ? 'merge_repair' : 'primary',
-      payer: this.deps.usagePayer ?? 'unknown',
+      payer: this.deps.resolveUsagePayer?.(usage.providerRef ?? dispatch.authorizedBinding.providerRef, dispatch.authorizedBinding.configurationRevision)
+        ?? this.deps.usagePayer ?? 'unknown',
       agentClassRef: usage.agentClassRef ?? dispatch.authorizedBinding.agentClassRef,
       providerRef: usage.providerRef ?? dispatch.authorizedBinding.providerRef,
       modelId: usage.modelId ?? this.deps.executionRuntime.resolveModelId(dispatch.authorizedBinding),
-      capturedAt: now,
+      capturedAt: usage.occurredAtUtc ?? now,
+      providerResponseId: usage.providerResponseId,
       providerBindingVersion: dispatch.bindingFingerprint,
       evidenceRef: `attempt:${input.attemptId}`,
       counters: usage.counters,
@@ -2201,7 +2352,7 @@ export class SubtaskAttemptRunner {
       taskId: string;
       subtaskId: string;
     } & AuthorizedAttemptIdentity,
-  ): KernelDispatchItemRecord {
+  ): ControlDispatchItemRecord {
     const dispatch = this.dispatchItemRepo.find(input.attemptId);
     if (!dispatch) {
       throw new Error(`authorized dispatch item not found: ${input.attemptId}`);
@@ -2408,7 +2559,7 @@ export class SubtaskAttemptRunner {
     completionSchemaVersion?: number | null;
     errorCode: string;
     errorDetail: string;
-    failure?: KernelFailure | null;
+    failure?: ControlFailure | null;
     resultObjects?: AttemptResultObjects;
   }): void {
     const dispatch = this.dispatchItemRepo.find(input.attemptId);
@@ -2517,7 +2668,7 @@ function summarizeHandoffUsage(handoffs: Array<{ items: PersistedSubtaskHandoffI
 
 function sameReceiptBinding(
   receipt: ExecutorAttemptReceipt | null,
-  dispatch: KernelDispatchItemRecord,
+  dispatch: ControlDispatchItemRecord,
 ): boolean {
   return Boolean(
     receipt
@@ -2592,7 +2743,7 @@ function buildReceipt(input: {
   violations?: CompletionContractViolation[];
   errorCode?: string | null;
   errorDetail?: string | null;
-  failure?: KernelFailure | null;
+  failure?: ControlFailure | null;
   resultObjects?: AttemptResultObjects;
   assessment?: CompletionAssessment;
   completionContract?: unknown;
@@ -2717,7 +2868,7 @@ function extractReferenceId(message: string): string | null {
 function boundedRecoveryPacket(
   receipt: ExecutorAttemptReceipt | null,
   runtime: ExecutorAttemptRuntimeRecord | null,
-  serviceRepair?: Extract<KernelAttemptPayload, { protocol: 'metawork:service-repair:v1' }> | null,
+  serviceRepair?: Extract<ControlAttemptPayload, { protocol: 'metawork:service-repair:v1' }> | null,
 ): Record<string, unknown> {
   const packet = {
     sourceAttemptId: receipt?.attemptId ?? runtime?.attemptId ?? null,

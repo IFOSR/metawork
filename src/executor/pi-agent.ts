@@ -198,8 +198,15 @@ async function searchPublicWeb(query: string, limit: number, signal?: AbortSigna
   const failures: string[] = [];
 
   let html = "";
+  const blockedBackends: string[] = [];
   try {
     html = await request(` + "`https://www.bing.com/search?count=${Math.max(limit, 10)}&mkt=zh-CN`" + `, "q");
+    const blocked = detectBlockedPage(undefined, html);
+    if (blocked) {
+      blockedBackends.push("bing");
+      failures.push("bing: anti-bot verification page");
+      html = "";
+    }
   } catch (error) {
     failures.push(` + "`bing: ${(error as Error).message}`" + `);
   }
@@ -213,6 +220,12 @@ async function searchPublicWeb(query: string, limit: number, signal?: AbortSigna
 
   try {
     html = await request("https://www.baidu.com/s", "wd");
+    const blocked = detectBlockedPage(undefined, html);
+    if (blocked) {
+      blockedBackends.push("baidu");
+      failures.push("baidu: anti-bot verification page");
+      html = "";
+    }
   } catch (error) {
     failures.push(` + "`baidu: ${(error as Error).message}`" + `);
     html = "";
@@ -226,9 +239,39 @@ async function searchPublicWeb(query: string, limit: number, signal?: AbortSigna
   if (html && web.length === 0) failures.push("baidu: no parseable results");
 
   throw new SearchBackendError(
-    "网络不可用：搜索后端（Bing、百度）均无法访问。" + (failures.length > 0 ? " 原因: " + failures.join("; ") : ""),
+    (blockedBackends.length > 0
+      ? "搜索被反爬验证页拦截（" + blockedBackends.join("、") + "）：请换关键词或直接访问官方站点；不要用 curl 硬抓，也不要让用户逐个确认链接。"
+      : "网络不可用：搜索后端（Bing、百度）均无法访问。")
+    + (failures.length > 0 ? " 原因: " + failures.join("; ") : ""),
   );
 }
+
+// Anti-bot/verification pages are not content. Recognizing them keeps a source
+// failure on the retry path instead of turning it into a user decision
+// (2026-11-11: a Baidu verification page was returned as fetched evidence).
+const ANTI_BOT_MARKERS = [
+  "百度安全验证", "安全验证", "请输入验证码", "人机验证", "滑动验证", "访问过于频繁",
+  "网络不给力，请稍后重试", "身份验证", "环境异常", "拒绝访问",
+  "captcha", "verify you are human", "unusual traffic", "access denied",
+  "attention required", "just a moment", "checking your browser",
+  "enable javascript and cookies to continue", "are you a robot", "request blocked",
+];
+
+function detectBlockedPage(title: string | undefined, text: string): string | null {
+  const titleText = (title ?? "").toLowerCase();
+  const body = text.toLowerCase();
+  const marker = ANTI_BOT_MARKERS.find(candidate => {
+    const lower = candidate.toLowerCase();
+    return titleText.includes(lower) || body.includes(lower);
+  });
+  if (!marker) return null;
+  // A long article that merely discusses captchas is not a block page. Require
+  // the marker in the title or a short page that is almost entirely the notice.
+  if (titleText.includes(marker.toLowerCase())) return marker;
+  return text.length <= 2000 ? marker : null;
+}
+
+const BLOCKED_PAGE_GUIDANCE = "该页面是反爬/验证页，不代表真实内容。请更换来源或直接访问官方/一手站点；无法核实时标注为未核实，不要引用本页内容，也不要让用户逐个确认链接。";
 
 const webSearchTool = defineTool({
   name: "web_search",
@@ -298,6 +341,7 @@ const webFetchTool = defineTool({
   promptGuidelines: [
     "Use web_fetch to inspect important search results before citing or relying on them.",
     "Prefer official or primary sources when available.",
+    "A result with blocked=true is an anti-bot or verification page, not content: switch source or go to the official site, mark the claim unverified if you cannot, and never cite it or ask the user to approve individual links.",
   ],
   parameters: Type.Object({
     url: Type.String({ description: "URL to fetch." }),
@@ -322,6 +366,24 @@ const webFetchTool = defineTool({
     ], undefined, signal);
     const title = html.match(new RegExp("<title[^>]*>([\\s\\S]*?)<\\/title>", "i"))?.[1];
     const text = stripHtml(html).slice(0, 12000);
+    const blocked = detectBlockedPage(title ? stripHtml(title) : undefined, text);
+    if (blocked) {
+      return {
+        content: [{
+          type: "text",
+          text: JSON.stringify({
+            success: false,
+            blocked: true,
+            retryable: true,
+            reason: "anti_bot_or_verification_page",
+            matched: blocked,
+            url: rawUrl,
+            guidance: BLOCKED_PAGE_GUIDANCE,
+          }, null, 2),
+        }],
+        details: { provider: "curl", url: rawUrl, blocked: true, matched: blocked },
+      };
+    }
     return {
       content: [{
         type: "text",

@@ -1,6 +1,6 @@
-// Consumes the formal Runtime/Planner archives; never assembles a second Server tree.
+// Consumes the formal Runtime/Pi archives; never assembles a second Server tree.
 import { createHash, sign, verify } from 'node:crypto';
-import { cp, mkdir, open, readFile, readdir, rm, writeFile } from 'node:fs/promises';
+import { cp, mkdir, open, readFile, readdir, rename, rm, writeFile } from 'node:fs/promises';
 import { spawnSync } from 'node:child_process';
 import { basename, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -18,7 +18,6 @@ const artifacts = resolve(required('artifacts'));
 const output = resolve(required('output'));
 const nodeRoot = resolve(required('node-root'));
 const gitRoot = resolve(required('git-root'));
-const executorRoot = resolve(required('executor-root'));
 const trustedKeys = JSON.parse(await readFile(required('trusted-keys'), 'utf8'));
 const privateKey = await readFile(required('signing-key'), 'utf8');
 const keyId = required('key-id');
@@ -26,7 +25,7 @@ const sourceCommit = required('source-commit');
 const development = args.get('development') === 'true';
 const pkg = JSON.parse(await readFile(new URL('../package.json', import.meta.url), 'utf8'));
 function run(cmd, argv, cwd, env) {
-  // Runtime/Planner inventories include full dependency trees and exceed Node's
+  // Runtime/Pi inventories include full dependency trees and exceed Node's
   // default 1 MiB capture limit when tar lists their entries.
   const result = spawnSync(cmd, argv, { cwd, env, encoding: 'utf8', maxBuffer: 64 * 1024 * 1024 });
   if (result.error || result.status !== 0) throw new Error(`Dependency validation failed: ${basename(cmd)}`);
@@ -42,7 +41,7 @@ const { signature: runtimeSignature, ...runtimePayload } = manifest;
 if (!trustedKeys[runtimeSignature.keyId] || !verify(null, Buffer.from(canonical(runtimePayload)),
   trustedKeys[runtimeSignature.keyId], Buffer.from(runtimeSignature.value, 'base64'))) throw new Error('Runtime manifest signature rejected');
 if (manifest.platform !== 'darwin' || manifest.arch !== process.arch || Date.parse(manifest.expiresAt) <= Date.now()
-  || !sourceCommit.startsWith(manifest.metawork.revision) || manifest.planner.revision !== manifest.metawork.revision
+  || !sourceCommit.startsWith(manifest.metawork.revision) || !manifest.pi
   || !manifest.memory || typeof manifest.memory.revision !== 'string'
   || !/^[a-f0-9]{64}$/.test(manifest.memory.sha256 ?? '')) throw new Error('Runtime compatibility matrix mismatch');
 if (!development) {
@@ -74,7 +73,7 @@ async function removePythonBytecode(directory) {
   }
 }
 try {
-  for (const name of ['metawork', 'planner', 'memory']) {
+  for (const name of ['metawork', 'pi', 'memory']) {
     const artifact = manifest[name];
     const archive = join(artifacts, basename(artifact.url));
     const bytes = await readFile(archive);
@@ -100,7 +99,8 @@ try {
   await removePythonBytecode(payload);
   const toolRoot = join(payload, 'metawork', 'desktop-tools');
   await mkdir(toolRoot, { recursive: true });
-  for (const [name, root] of [['node', nodeRoot], ['git', gitRoot], ['executor', executorRoot]]) {
+  await rename(join(payload, 'pi'), join(toolRoot, 'executor'));
+  for (const [name, root] of [['node', nodeRoot], ['git', gitRoot]]) {
     if (name === 'node') await prepareNodeRuntime(root, join(toolRoot, name));
     else await cp(root, join(toolRoot, name), { recursive: true, dereference: true });
     const inventory = await desktopInventory(join(toolRoot, name));

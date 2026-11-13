@@ -1,6 +1,6 @@
 {
   "name": "@metawork/desktop",
-  "version": "0.1.26",
+  "version": "0.1.27",
   "private": true,
   "license": "UNLICENSED",
   "description": "MetaWork desktop client",
@@ -17,13 +17,22 @@
     "smoke": "node tests/electron-smoke.mjs",
     "prepare:runtime": "node packaging/prepare-runtime.mjs"
   },
+  "overrides": {
+    "app-builder-lib": {
+      "minimatch": "11.0.1"
+    },
+    "@electron/universal": {
+      "minimatch": "11.0.1"
+    }
+  },
   "devDependencies": {
     "@types/node": "22.19.11",
-    "electron": "44.5.1",
-    "electron-builder": "26.15.3",
+    "electron": "44.10.2",
+    "electron-builder": "26.18.0",
     "esbuild": "0.25.12",
     "playwright-core": "1.58.2",
     "typescript": "5.9.3",
-    "vitest": "2.1.9"
+    "vite": "6.4.6",
+    "vitest": "4.1.12"
   }
 }

@@ -10,19 +10,20 @@ export class SqliteTaskActivityFacts implements TaskActivityFactsReader {
   constructor(private readonly db: Database.Database) {}
   read(task: TaskViewFacts['task'], pendingPermission: TaskViewFacts['pendingPermission']): TaskViewFacts {
     const dispatch = this.db.prepare(`SELECT attempt_id AS attemptId, subtask_id AS subtaskId, status,
-      attempt_kind AS attemptKind, created_at AS createdAt, updated_at AS updatedAt FROM kernel_dispatch_items
+      attempt_kind AS attemptKind, created_at AS createdAt, updated_at AS updatedAt FROM dispatch_items
       WHERE task_id = ? AND status IN ('pending_launch', 'launching', 'running', 'cancelling')
-      AND (status = 'cancelling' OR NOT EXISTS (SELECT 1 FROM executor_attempt_receipts r WHERE r.attempt_id = kernel_dispatch_items.attempt_id))
+      AND (status = 'cancelling' OR NOT EXISTS (SELECT 1 FROM executor_attempt_receipts r WHERE r.attempt_id = dispatch_items.attempt_id))
       ORDER BY CASE WHEN status = 'pending_launch' THEN 1 ELSE 0 END LIMIT 1`)
       .get(task.id) as TaskViewFacts['dispatches'][number] | undefined;
     const replan = this.db.prepare(`SELECT id, status, generation_id AS generationId, source_revision AS sourceRevision,
       updated_at AS updatedAt FROM generation_replan_requests WHERE task_id = ?
       AND status IN (${ACTIVE_REPLAN_STATUSES.map(() => '?').join(',')}) LIMIT 1`)
       .get(task.id, ...ACTIVE_REPLAN_STATUSES) as TaskViewFacts['replanJobs'][number] | undefined;
-    const recovery = this.db.prepare(`SELECT decision.id AS applicationId, decision.action,
-      substr(application.error_summary, 1, 512) AS errorSummary, application.updated_at AS updatedAt
-      FROM kernel_decisions decision JOIN kernel_decision_applications application ON application.decision_id = decision.id
-      WHERE decision.task_id = ? AND application.status = 'uncertain' LIMIT 1`)
+    // Interrupted applications are explicit owner recovery items (ADR-0055 D6).
+    const recovery = this.db.prepare(`SELECT decision_id AS applicationId,
+      json_extract(decision_json, '$.action.type') AS action,
+      substr(error_summary, 1, 512) AS errorSummary, updated_at AS updatedAt
+      FROM task_recovery_items WHERE task_id = ? AND status IN ('pending', 'retry_authorized') LIMIT 1`)
       .get(task.id) as TaskViewFacts['uncertainApplications'][number] | undefined;
     const publication = this.db.prepare(`SELECT id, status FROM workspace_publications WHERE task_id = ?
       AND status IN (${[...RESIDUAL_PUBLICATION_STATUSES].map(() => '?').join(',')}) LIMIT 1`)

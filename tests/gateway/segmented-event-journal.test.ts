@@ -3,7 +3,7 @@ import { mkdtemp, rm, readFile, writeFile, readdir, stat } from 'node:fs/promise
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { runMigrations } from '../../src/storage/migrations.js';
+import { initializeDatabaseSchema } from '../../src/storage/schema.js';
 import { FileEventJournal } from '../../src/gateway/file-event-journal.js';
 import { SegmentedEventJournal } from '../../src/gateway/segmented-event-journal.js';
 import { SqliteEventJournalSegmentIndex } from '../../src/storage/event-journal-segment-index-repo.js';
@@ -21,7 +21,7 @@ function event(n: number, turn = 'turn_one'): GatewayEventEnvelope {
 async function fixture() {
   const root = await mkdtemp(join(tmpdir(), 'segmented-journal-'));
   const db = new Database(join(root, 'index.db'));
-  runMigrations(db);
+  initializeDatabaseSchema(db);
   const index = new SqliteEventJournalSegmentIndex(db);
   const legacy = new FileEventJournal(root);
   const journal = new SegmentedEventJournal(root, index, legacy);
@@ -30,6 +30,21 @@ async function fixture() {
 }
 
 describe('appendable Gateway journal', () => {
+  it('keeps a failed compaction batch pending until its source bytes are available', async () => {
+    const { root, journal, index } = await fixture();
+    await journal.append(event(1));
+    await journal.append(event(2));
+    const segment = index.segments('local-default', 'conv_one', 0)[0]!;
+    const path = join(root, 'local-default', 'conv_one.segments', `${segment.id}.json`);
+    const body = await readFile(path);
+    await rm(path);
+    await expect(journal.compact('local-default', 'conv_one')).rejects.toMatchObject({ code: 'ENOENT' });
+    await expect(journal.compact('local-default', 'conv_one')).rejects.toMatchObject({ code: 'ENOENT' });
+    expect(index.segments('local-default', 'conv_one', 0)).toHaveLength(2);
+    await writeFile(path, body);
+    await journal.compact('local-default', 'conv_one');
+    expect((await journal.replay('local-default', 'conv_one')).deltas.map(item => item.eventId)).toEqual(['event_1', 'event_2']);
+  });
   it('imports every retained legacy fact rather than an already-compacted replay projection', async () => {
     const { journal, legacy } = await fixture();
     const originals = await legacy.appendBatch([1, 2, 3].map(n => ({

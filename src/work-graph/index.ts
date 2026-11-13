@@ -1,7 +1,5 @@
 export type {
   ContextRef,
-  ProposedExecutorBinding,
-  ProposedModelSelection,
   WorkGraphAcceptanceCriterion,
   WorkGraphDependency,
   WorkGraphItemType,

@@ -43,7 +43,7 @@ STAGING_DIR="$(mktemp -d)"
 trap 'rm -rf "$STAGING_DIR"' EXIT
 MANIFEST_PATH="$STAGING_DIR/manifest.json"
 RUNTIME_ARCHIVE="$STAGING_DIR/release.tar.gz"
-PLANNER_ARCHIVE="$STAGING_DIR/planner.tar.gz"
+PI_ARCHIVE="$STAGING_DIR/pi.tar.gz"
 MEMORY_ARCHIVE="$STAGING_DIR/memory.tar.gz"
 
 platform_name() {
@@ -93,7 +93,7 @@ const required = [
   'minimumInstallerVersion',
   'minimumNodeVersion',
   'metawork',
-  'planner',
+  'pi',
   'memory',
   'compatibility',
   'previousCompatibleRelease',
@@ -114,7 +114,7 @@ if (revokedIds.split(',').filter(Boolean).includes(manifest.signature.keyId)) {
 if (manifest.signature.keyId !== trustedKeyId) throw new Error('unknown release signing key');
 for (const [name, artifact] of Object.entries({
   metawork: manifest.metawork,
-  planner: manifest.planner,
+
   memory: manifest.memory,
 })) {
   if (
@@ -129,11 +129,11 @@ for (const [name, artifact] of Object.entries({
     throw new Error(`invalid ${name} artifact contract`);
   }
 }
-if (manifest.planner.source !== manifest.metawork.source) {
-  throw new Error('vendored Planner source must match MetaWork source');
-}
-if (manifest.planner.revision !== manifest.metawork.revision) {
-  throw new Error('vendored Planner revision must match MetaWork revision');
+if (!manifest.pi || !/^\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?$/.test(manifest.pi.version)
+  || typeof manifest.pi.url !== 'string' || !Number.isSafeInteger(manifest.pi.byteSize)
+  || manifest.pi.byteSize <= 0 || !/^[a-f0-9]{64}$/.test(manifest.pi.sha256)
+  || !/^[a-f0-9]{64}$/.test(manifest.pi.lockSha256)) {
+  throw new Error('invalid packaged Pi version/integrity contract');
 }
 
 function stable(value) {
@@ -200,18 +200,18 @@ curl -fsSL "$MANIFEST_URL" -o "$MANIFEST_PATH"
 verify_manifest "$MANIFEST_PATH"
 
 RUNTIME_URL="$(manifest_field metawork.url)"
-PLANNER_URL="$(manifest_field planner.url)"
+PI_URL="$(manifest_field pi.url)"
 MEMORY_URL="$(manifest_field memory.url)"
 curl -fsSL "$RUNTIME_URL" -o "$RUNTIME_ARCHIVE"
-curl -fsSL "$PLANNER_URL" -o "$PLANNER_ARCHIVE"
+curl -fsSL "$PI_URL" -o "$PI_ARCHIVE"
 curl -fsSL "$MEMORY_URL" -o "$MEMORY_ARCHIVE"
 verify_artifact "$MANIFEST_PATH" metawork "$RUNTIME_ARCHIVE"
-verify_artifact "$MANIFEST_PATH" planner "$PLANNER_ARCHIVE"
+verify_artifact "$MANIFEST_PATH" pi "$PI_ARCHIVE"
 verify_artifact "$MANIFEST_PATH" memory "$MEMORY_ARCHIVE"
 
-mkdir -p "$STAGING_DIR/runtime" "$STAGING_DIR/planner"
+mkdir -p "$STAGING_DIR/runtime/desktop-tools/executor"
 tar -xzf "$RUNTIME_ARCHIVE" --strip-components=1 -C "$STAGING_DIR/runtime"
-tar -xzf "$PLANNER_ARCHIVE" --strip-components=1 -C "$STAGING_DIR/planner"
+tar -xzf "$PI_ARCHIVE" --strip-components=1 -C "$STAGING_DIR/runtime/desktop-tools/executor"
 tar -xzf "$MEMORY_ARCHIVE" -C "$STAGING_DIR"
 
 test -f "$STAGING_DIR/runtime/dist/install-cli.js" || {
@@ -224,5 +224,4 @@ test -f "$STAGING_DIR/memory/tdai/dist/gateway/server.js" || {
 }
 exec node "$STAGING_DIR/runtime/dist/install-cli.js" install "$RELEASE_ID" \
   --source-root "$STAGING_DIR/runtime" \
-  --planner-root "$STAGING_DIR/planner" \
   --memory-root "$STAGING_DIR/memory/tdai"

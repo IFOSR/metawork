@@ -7,8 +7,11 @@
 
 import type Database from 'better-sqlite3';
 import { nanoid } from 'nanoid';
+import { validateModelUsageFilter } from '../metering/token-usage-filter.js';
 import type {
   MeteringSpanRecord,
+  ModelUsageFact,
+  ModelUsageFilter,
   MeteringStore,
   PersistedUsageObservation,
 } from '../metering/ports.js';
@@ -64,6 +67,114 @@ export class SqliteMeteringStore implements MeteringStore {
     private readonly db: Database.Database,
     private readonly createId: (prefix: string) => string = prefix => `${prefix}_${nanoid(12)}`,
   ) {}
+
+  recordModelUsageFact(fact: ModelUsageFact): void {
+    for (const date of [fact.occurredAtUtc, fact.recordedAtUtc]) {
+      if (!Number.isFinite(Date.parse(date)) || new Date(date).toISOString() !== date) throw new Error('model_usage_invalid_time');
+    }
+    for (const value of [fact.inputTokens, fact.outputTokens, fact.cacheReadTokens,
+      fact.cacheWriteTokens, fact.reasoningTokens]) {
+      if (value !== null && !/^\d+$/u.test(value)) throw new Error('model_usage_invalid_tokens');
+    }
+    const existing = this.db.prepare(`
+      SELECT query_id, task_id, provider_ref, model_id, agent_class_ref, payer,
+        occurred_at_utc, source_id, provider_response_id, normalization_version
+      FROM model_usage_facts WHERE call_idempotency_key = ?
+    `).get(fact.callIdempotencyKey) as {
+      query_id: string; task_id: string | null; provider_ref: string | null;
+      model_id: string | null; agent_class_ref: string | null; payer: string;
+      occurred_at_utc: string; source_id: string; provider_response_id: string | null;
+      normalization_version: string;
+    } | undefined;
+    if (existing && (existing.query_id !== fact.queryId
+      || existing.task_id !== fact.taskId
+      || existing.provider_ref !== fact.providerRef
+      || existing.model_id !== fact.modelId
+      || existing.agent_class_ref !== (fact.agentClassRef ?? null)
+      || existing.payer !== (fact.payer ?? 'unknown')
+      // Source identity is part of the call identity: a replay cannot relabel
+      // the same call as another adapter, response or normalization rule, and
+      // it cannot move the call to another occurrence time.
+      || existing.source_id !== fact.sourceId
+      || existing.provider_response_id !== (fact.providerResponseId ?? null)
+      || existing.normalization_version !== fact.normalizationVersion
+      || existing.occurred_at_utc !== fact.occurredAtUtc)) {
+      throw new Error('model_usage_identity_conflict');
+    }
+    this.db.prepare(`
+      INSERT INTO model_usage_facts (
+        usage_id, call_idempotency_key, query_id, task_id, provider_ref, model_id,
+        agent_class_ref, payer, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens,
+        reasoning_tokens, usage_source, occurred_at_utc, recorded_at_utc, source_id, provider_response_id, normalization_version
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(call_idempotency_key) DO UPDATE SET
+        agent_class_ref = excluded.agent_class_ref, payer = excluded.payer,
+        input_tokens = excluded.input_tokens, output_tokens = excluded.output_tokens,
+        cache_read_tokens = excluded.cache_read_tokens, cache_write_tokens = excluded.cache_write_tokens,
+        reasoning_tokens = excluded.reasoning_tokens, usage_source = excluded.usage_source
+    `).run(
+      fact.usageId,
+      fact.callIdempotencyKey,
+      fact.queryId,
+      fact.taskId,
+      fact.providerRef,
+      fact.modelId,
+      fact.agentClassRef ?? null,
+      fact.payer ?? 'unknown',
+      fact.inputTokens,
+      fact.outputTokens,
+      fact.cacheReadTokens,
+      fact.cacheWriteTokens,
+      fact.reasoningTokens,
+      fact.usageSource,
+      fact.occurredAtUtc, fact.recordedAtUtc, fact.sourceId, fact.providerResponseId, fact.normalizationVersion,
+    );
+  }
+
+  transaction<T>(write: () => T): T {
+    return this.db.transaction(write).immediate();
+  }
+
+  listModelUsageFacts(input: ModelUsageFilter): ModelUsageFact[] {
+    return [...this.iterateModelUsageFacts(input)];
+  }
+
+  *iterateModelUsageFacts(input: ModelUsageFilter): IterableIterator<ModelUsageFact> {
+    validateModelUsageFilter(input);
+    const clauses: string[] = [
+      'EXISTS (SELECT 1 FROM query_usage_contexts AS context WHERE context.query_id = model_usage_facts.query_id AND context.account_id = ?)',
+    ];
+    const params: string[] = [input.accountId];
+    if (input.queryId) { clauses.push('query_id = ?'); params.push(input.queryId); }
+    if (input.taskId) { clauses.push('task_id = ?'); params.push(input.taskId); }
+    if (input.agentClassRef) { clauses.push('agent_class_ref = ?'); params.push(input.agentClassRef); }
+    if (input.payer) { clauses.push('payer = ?'); params.push(input.payer); }
+    if (input.from) { clauses.push('occurred_at_utc >= ?'); params.push(input.from); }
+    if (input.to) { clauses.push('occurred_at_utc < ?'); params.push(input.to); }
+    const where = clauses.length > 0 ? `WHERE ${clauses.join(' AND ')}` : '';
+    const rows = this.db.prepare(`SELECT * FROM model_usage_facts ${where} ORDER BY occurred_at_utc, usage_id`).iterate(...params) as Iterable<Record<string, unknown>>;
+    for (const row of rows) yield {
+      usageId: String(row.usage_id),
+      callIdempotencyKey: String(row.call_idempotency_key),
+      queryId: String(row.query_id),
+      taskId: row.task_id == null ? null : String(row.task_id),
+      providerRef: row.provider_ref == null ? null : String(row.provider_ref),
+      modelId: row.model_id == null ? null : String(row.model_id),
+      agentClassRef: row.agent_class_ref == null ? null : String(row.agent_class_ref),
+      payer: String(row.payer ?? 'unknown') as ModelUsageFact['payer'],
+      inputTokens: row.input_tokens == null ? null : String(row.input_tokens),
+      outputTokens: row.output_tokens == null ? null : String(row.output_tokens),
+      cacheReadTokens: row.cache_read_tokens == null ? null : String(row.cache_read_tokens),
+      cacheWriteTokens: row.cache_write_tokens == null ? null : String(row.cache_write_tokens),
+      reasoningTokens: row.reasoning_tokens == null ? null : String(row.reasoning_tokens),
+      usageSource: String(row.usage_source) as ModelUsageFact['usageSource'],
+      occurredAtUtc: String(row.occurred_at_utc),
+      recordedAtUtc: String(row.recorded_at_utc),
+      sourceId: String(row.source_id),
+      providerResponseId: row.provider_response_id == null ? null : String(row.provider_response_id),
+      normalizationVersion: String(row.normalization_version),
+    };
+  }
 
   openSpan(span: MeteringSpanRecord): void {
     this.db.prepare(`

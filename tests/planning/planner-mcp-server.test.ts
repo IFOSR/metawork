@@ -9,7 +9,7 @@ import {
   PlannerDataReader,
   resolvePlannerMcpRuntimePaths,
 } from '../../src/planning/planner-mcp-server.js';
-import { runMigrations } from '../../src/storage/migrations.js';
+import { initializeDatabaseSchema } from '../../src/storage/schema.js';
 import { AgentClassRepo } from '../../src/storage/agent-class-repo.js';
 import { TaskRepo } from '../../src/storage/task-repo.js';
 import { TaskEngine } from '../../src/task/task-engine.js';
@@ -25,7 +25,7 @@ function createHarness(
 ) {
   const db = new Database(':memory:');
   db.pragma('foreign_keys = ON');
-  runMigrations(db);
+  initializeDatabaseSchema(db);
   db.prepare(`
     INSERT OR IGNORE INTO configuration_revisions (
       revision_id, content_hash, source_kind, imported_at
@@ -564,7 +564,7 @@ describe('PlannerDataReader', () => {
     });
     const now = '2026-07-10T00:00:00.000Z';
     db.prepare(`
-      INSERT INTO kernel_executor_status (
+      INSERT INTO executor_status (
         agent_class_name, configuration_revision, class_health,
         recent_attempts_json, recent_recovery_checks_json, updated_at
       )

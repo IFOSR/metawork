@@ -3,7 +3,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { runMigrations } from '../../src/storage/migrations.js';
+import { initializeDatabaseSchema } from '../../src/storage/schema.js';
 import { TaskArtifactRepo, hashContent } from '../../src/storage/task-artifact-repo.js';
 
 const roots: string[] = [];
@@ -18,7 +18,7 @@ function createRepo(taskIds: string[] = ['task_a']) {
   const root = mkdtempSync(join(tmpdir(), 'anyfusion-task-artifact-repo-'));
   roots.push(root);
   const db = new Database(':memory:');
-  runMigrations(db);
+  initializeDatabaseSchema(db);
   for (const taskId of taskIds) {
     db.prepare(`
       INSERT INTO tasks (id, title, goal, status, summary, snapshot_json, resources_json,

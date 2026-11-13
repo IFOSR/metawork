@@ -47,7 +47,7 @@ export type ArtifactMetadataResult =
   | { ok: false; reason: ArtifactPreviewFailure };
 
 export type ArtifactDownloadResult =
-  | { ok: true; artifact: ArtifactProjection; absolutePath: string }
+  | { ok: true; artifact: ArtifactProjection; content: Buffer; absolutePath: string | null }
   | { ok: false; reason: ArtifactPreviewFailure };
 
 interface LoadedArtifactRecord {
@@ -121,7 +121,9 @@ export class ArtifactPreviewService {
       // pass the historical `metaclaw-tasks` containment check.
       let resolvedPath: string | null = null;
       if (referenceKind === 'artifact_version') {
-        resolvedPath = await this.fixedVersionPath(record);
+        // Git versions have no loose CAS file. The content resolver verifies
+        // their pinned commit, regular-file mode, length and digest directly.
+        if (!version?.gitCommit) resolvedPath = await this.fixedVersionPath(record);
       } else if (referenceKind === 'live_file') {
         resolvedPath = await this.resolveLiveFilePath(record);
       } else {
@@ -240,7 +242,10 @@ export class ArtifactPreviewService {
       // their historical published_path may be stale or absent. Resolve the
       // same authorized source used by preview/download instead of checking the
       // old absolute hint.
-      if (referenceKind === 'artifact_version') await this.fixedVersionPath(loaded.record);
+      if (referenceKind === 'artifact_version') {
+        const content = await this.readArtifactContent(loaded.record);
+        if (!content.ok) return content;
+      }
       else if (referenceKind === 'live_file') await this.resolveLiveFilePath(loaded.record);
       else await this.safePublishedPath(loaded.record.publishedPath);
     } catch {
@@ -291,11 +296,14 @@ export class ArtifactPreviewService {
     const content = await this.readArtifactContent(data);
     if (!content.ok) return { ok: false, reason: content.reason };
     const referenceKind = data.referenceKind ?? 'legacy_published_copy';
-    let absolutePath: string;
+    let absolutePath: string | null;
     try {
       // The returned path must be exactly the one the bytes came from.
+      const version = data.artifactVersionId
+        ? this.deps.artifactVersionRepo?.find(data.artifactVersionId)
+        : null;
       absolutePath = referenceKind === 'artifact_version'
-        ? await this.fixedVersionPath(data)
+        ? version?.gitCommit ? null : await this.fixedVersionPath(data)
         : referenceKind === 'live_file'
           ? await this.resolveLiveFilePath(data)
           : await this.safePublishedPath(data.publishedPath);
@@ -307,7 +315,7 @@ export class ArtifactPreviewService {
       contentHash: content.contentHash,
       byteLength: content.bytes.byteLength,
     };
-    return { ok: true, artifact: observed, absolutePath };
+    return { ok: true, artifact: observed, content: content.bytes, absolutePath };
   }
 
   private async fixedVersionPath(record: LoadedArtifactRecord): Promise<string> {
@@ -325,7 +333,7 @@ export class ArtifactPreviewService {
   async readReportImage(artifactId: string, reference: string): Promise<string | undefined> {
     if (/^(?:[a-z][a-z\d+.-]*:|[\\/])/iu.test(reference)) return undefined;
     const source = await this.resolveDownload(artifactId);
-    if (!source.ok) return undefined;
+    if (!source.ok || !source.absolutePath) return undefined;
     try {
       const directory = dirname(source.absolutePath);
       const path = await this.safePublishedPath(resolve(directory, decodeURIComponent(reference.split('#')[0]!)));

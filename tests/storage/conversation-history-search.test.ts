@@ -1,6 +1,6 @@
 import Database from 'better-sqlite3';
 import { afterEach, describe, expect, it } from 'vitest';
-import { runMigrations } from '../../src/storage/migrations.js';
+import { initializeDatabaseSchema } from '../../src/storage/schema.js';
 import { SqliteConversationReadModel } from '../../src/storage/conversation-read-model-repo.js';
 import { SqliteConversationHistorySearch } from '../../src/storage/conversation-history-search-repo.js';
 import { ConversationReadProjector } from '../../src/session/conversation-read-projector.js';
@@ -8,7 +8,7 @@ import { ConversationReadProjector } from '../../src/session/conversation-read-p
 const databases: Database.Database[] = [];
 afterEach(() => databases.splice(0).forEach(db => db.close()));
 function fixture() {
-  const db = new Database(':memory:'); databases.push(db); runMigrations(db);
+  const db = new Database(':memory:'); databases.push(db); initializeDatabaseSchema(db);
   const model = new SqliteConversationReadModel(db);
   const search = new SqliteConversationHistorySearch(db, model);
   const projector = new ConversationReadProjector(model);

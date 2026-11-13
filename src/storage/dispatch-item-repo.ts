@@ -1,0 +1,681 @@
+import type Database from 'better-sqlite3';
+import type { AuthorizedExecutorBinding } from '../core/authorized-executor-binding.js';
+import type {
+  ControlDecision,
+  ControlDispatchItemStatus,
+  ControlDispatchTerminalDisposition,
+  ControlAttemptPayload,
+  ControlAttemptKind,
+  ControlRecoveryMode,
+} from '../control/control-contracts.js';
+import type { ResourceClaim } from '../resource/index.js';
+
+export interface ControlDispatchItemRecord {
+  attemptId: string;
+  decisionId: string;
+  batchOrder: number;
+  taskId: string;
+  generationId: string;
+  subtaskId: string;
+  configurationRevision: string;
+  authorizedBinding: AuthorizedExecutorBinding;
+  bindingFingerprint: string;
+  /**
+   * Fingerprint of the immutable Workspace binding fixed at Generation
+   * admission; the Attempt refuses to run when it no longer matches.
+   */
+  executionBindingFingerprint: string | null;
+  attemptKind: ControlAttemptKind;
+  sourceAttemptId: string | null;
+  recoveryMode: ControlRecoveryMode;
+  attemptPayload: ControlAttemptPayload;
+  resourceGrant: ResourceClaim[];
+  status: ControlDispatchItemStatus;
+  /**
+   * How a `terminal` item stopped. `not_started` means the Attempt yielded
+   * before executing, so no receipt, runtime or measured duration exists.
+   */
+  terminalDisposition?: ControlDispatchTerminalDisposition | null;
+  workUnitId: string | null;
+  backendExecutionId: string | null;
+  launchStartedAt: string | null;
+  terminalAt: string | null;
+  cancellationDecisionId: string | null;
+  cancelRequestedAt: string | null;
+  cancelledAt: string | null;
+  errorSummary: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export type TimelineDispatchItemRecord = Pick<ControlDispatchItemRecord,
+  'attemptId' | 'taskId' | 'subtaskId' | 'attemptKind' | 'status'
+  | 'terminalDisposition' | 'launchStartedAt' | 'createdAt' | 'updatedAt' | 'errorSummary'
+> & { authorizedBinding: Pick<AuthorizedExecutorBinding,
+  'agentClassRef' | 'harnessRef' | 'providerRef' | 'modelRef' | 'configurationRevision'
+  | 'executorDisplayName' | 'harnessDisplayName' | 'providerDisplayName' | 'modelDisplayName'
+> };
+
+interface DispatchItemRow {
+  attempt_id: string;
+  decision_id: string;
+  batch_order: number;
+  task_id: string;
+  generation_id: string;
+  subtask_id: string;
+  agent_class_name: string;
+  configuration_revision: string;
+  authorized_binding_json: string;
+  binding_fingerprint: string;
+  execution_binding_fingerprint: string | null;
+  attempt_kind: ControlAttemptKind;
+  source_attempt_id: string | null;
+  recovery_mode: ControlRecoveryMode;
+  attempt_payload_json: string;
+  resource_grant_json: string;
+  status: ControlDispatchItemStatus;
+  work_unit_id: string | null;
+  sandbox_container_id: string | null;
+  launch_started_at: string | null;
+  terminal_at: string | null;
+  terminal_disposition: ControlDispatchTerminalDisposition | null;
+  cancellation_decision_id: string | null;
+  cancel_requested_at: string | null;
+  cancelled_at: string | null;
+  error_summary: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export class ControlDispatchItemRepo {
+  constructor(private readonly db: Database.Database) {}
+
+  insertBatch(
+    decision: ControlDecision & {
+      action: Extract<ControlDecision['action'], { type: 'dispatch_batch' }>;
+    },
+    bindingContext: {
+      generationId: string;
+      configurationRevision: string;
+      executionBindingFingerprint?: string | null;
+      attempts: Readonly<Record<string, {
+        authorizedBinding: AuthorizedExecutorBinding;
+        bindingFingerprint: string;
+      }>>;
+    },
+    now: string,
+  ): ControlDispatchItemRecord[] {
+    const insert = this.db.transaction(() => {
+      const existing = decision.action.items.map(item => this.find(item.attemptId));
+      if (existing.every((item): item is ControlDispatchItemRecord => item !== null)) {
+        for (const item of existing) {
+          const expected = decision.action.items.find(
+            candidate => candidate.attemptId === item.attemptId,
+          );
+          if (
+            !expected
+            || item.generationId !== bindingContext.generationId
+            || item.configurationRevision !== bindingContext.configurationRevision
+            || item.bindingFingerprint !== expected.bindingFingerprint
+            || !sameBinding(item.authorizedBinding, expected.authorizedBinding)
+          ) {
+            throw new Error(`persisted dispatch binding mismatch: ${item.attemptId}`);
+          }
+        }
+        return existing;
+      }
+      if (existing.some(item => item !== null)) {
+        throw new Error(`partially persisted dispatch batch requires reconciliation: ${decision.id}`);
+      }
+      const maximum = this.db.prepare(`
+        SELECT COALESCE(MAX(batch_order), -1) AS value
+        FROM dispatch_items
+        WHERE task_id = ? AND generation_id = ?
+      `).get(decision.action.taskId, bindingContext.generationId) as { value: number };
+      const firstOrder = maximum.value + 1;
+      if (decision.configurationRevision !== bindingContext.configurationRevision) {
+        throw new Error(`dispatch decision revision mismatch: ${decision.id}`);
+      }
+      for (const item of decision.action.items) {
+        const expected = bindingContext.attempts[item.attemptId];
+        if (
+          !expected
+          || expected.bindingFingerprint !== item.bindingFingerprint
+          || !sameBinding(expected.authorizedBinding, item.authorizedBinding)
+        ) {
+          throw new Error(`dispatch binding context mismatch: ${item.attemptId}`);
+        }
+        if (
+          item.authorizedBinding.configurationRevision
+          !== decision.configurationRevision
+        ) {
+          throw new Error(`authorized binding revision mismatch for attempt ${item.attemptId}`);
+        }
+        // Dispatch payloads carry the execution request (workspace path,
+        // goal, context refs). Batch dispatch synthesizes items without one
+        // (P0-5 follow-up); the attempt runner refuses to execute those
+        // against the workspace-store fallback, so the gap is safe.
+        const fence = this.db.prepare(`
+          SELECT tasks.status AS task_status, subtasks.status AS subtask_status
+          FROM tasks
+          INNER JOIN subtasks ON subtasks.id = ?
+          WHERE tasks.id = ?
+        `).get(item.subtaskId, decision.action.taskId) as {
+          task_status: string;
+          subtask_status: string;
+        } | undefined;
+        const cancelledBeforePersist = Boolean(
+          fence
+          && (fence.task_status === 'cancelled' || fence.subtask_status === 'cancelled'),
+        );
+        const persist = (cancelled: boolean): void => {
+          this.db.prepare(`
+            INSERT INTO dispatch_items (
+              attempt_id, decision_id, batch_order, task_id, generation_id, subtask_id,
+              agent_class_name, attempt_kind, source_attempt_id, recovery_mode,
+              attempt_payload_json, resource_grant_json, status, configuration_revision,
+              authorized_binding_json, binding_fingerprint, execution_binding_fingerprint,
+              created_at, updated_at, terminal_at, error_summary
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          `).run(
+            item.attemptId,
+            decision.id,
+            firstOrder + item.order,
+            decision.action.taskId,
+            bindingContext.generationId,
+            item.subtaskId,
+            item.authorizedBinding.agentClassRef,
+            item.attemptKind,
+            item.sourceAttemptId,
+            item.recoveryMode,
+            JSON.stringify(item.attemptPayload),
+            JSON.stringify(item.defaultResourceGrant),
+            cancelled ? 'cancelled' : 'pending_launch',
+            decision.configurationRevision,
+            JSON.stringify(item.authorizedBinding),
+            item.bindingFingerprint,
+            bindingContext.executionBindingFingerprint ?? null,
+            now,
+            now,
+            cancelled ? now : null,
+            cancelled
+              ? 'task cancelled between authorization and dispatch persistence'
+              : null,
+          );
+        };
+        try {
+          persist(cancelledBeforePersist);
+        } catch (error) {
+          if (!isSubtaskSlotViolation(error)) throw error;
+          // The fence pre-check raced a concurrent cancellation commit. Re-read
+          // the fence: if the cancellation won, persist this attempt as already
+          // terminal instead of failing the whole application (§5.3
+          // conflict-safe dispatch persistence).
+          const refetched = this.db.prepare(`
+            SELECT tasks.status AS task_status, subtasks.status AS subtask_status
+            FROM tasks
+            INNER JOIN subtasks ON subtasks.id = ?
+            WHERE tasks.id = ?
+          `).get(item.subtaskId, decision.action.taskId) as {
+            task_status: string;
+            subtask_status: string;
+          } | undefined;
+          if (
+            refetched
+            && (refetched.task_status === 'cancelled' || refetched.subtask_status === 'cancelled')
+          ) {
+            persist(true);
+            continue;
+          }
+          const owner = this.db.prepare(`
+            SELECT attempt_id FROM dispatch_items
+            WHERE task_id = ? AND generation_id = ? AND subtask_id = ?
+              AND status IN ('pending_launch', 'launching', 'running', 'cancelling')
+              AND attempt_id <> ?
+            LIMIT 1
+          `).get(
+            decision.action.taskId,
+            bindingContext.generationId,
+            item.subtaskId,
+            item.attemptId,
+          ) as { attempt_id: string } | undefined;
+          throw new Error(
+            `live dispatch attempt already owns ${item.subtaskId}: ${owner?.attempt_id ?? 'unknown'}`,
+          );
+        }
+      }
+      return decision.action.items.map(item => {
+        const persisted = this.find(item.attemptId);
+        if (!persisted) throw new Error(`dispatch item was not persisted: ${item.attemptId}`);
+        return persisted;
+      });
+    });
+    return insert.immediate();
+  }
+
+  find(attemptId: string): ControlDispatchItemRecord | null {
+    const row = this.db.prepare(`
+      SELECT * FROM dispatch_items WHERE attempt_id = ?
+    `).get(attemptId) as DispatchItemRow | undefined;
+    return row ? rowToDispatchItem(row) : null;
+  }
+
+  listByTask(taskId: string): ControlDispatchItemRecord[] {
+    return (this.db.prepare(`
+      SELECT * FROM dispatch_items
+      WHERE task_id = ?
+      ORDER BY batch_order ASC, created_at ASC, attempt_id ASC
+    `).all(taskId) as DispatchItemRow[]).map(rowToDispatchItem);
+  }
+
+  listByTasks(taskIds: readonly string[]): ControlDispatchItemRecord[] {
+    if (!taskIds.length) return [];
+    if (taskIds.length > 100) throw new Error('timeline_task_limit');
+    return (this.db.prepare(`SELECT * FROM dispatch_items
+      WHERE task_id IN (${taskIds.map(() => '?').join(',')})
+      ORDER BY batch_order ASC, created_at ASC, attempt_id ASC`)
+      .all(...taskIds) as DispatchItemRow[]).map(rowToDispatchItem);
+  }
+
+  listTimelineByTasks(taskIds: readonly string[]): TimelineDispatchItemRecord[] {
+    if (!taskIds.length) return [];
+    if (taskIds.length > 100) throw new Error('timeline_task_limit');
+    const rows = this.db.prepare(`
+      SELECT attempt_id, task_id, subtask_id, attempt_kind, status, terminal_disposition,
+        launch_started_at, created_at, updated_at, error_summary, agent_class_name,
+        json_extract(authorized_binding_json, '$.agentClassRef') AS agent_class_ref,
+        json_extract(authorized_binding_json, '$.harnessRef') AS harness_ref,
+        json_extract(authorized_binding_json, '$.providerRef') AS provider_ref,
+        json_extract(authorized_binding_json, '$.modelRef') AS model_ref,
+        configuration_revision
+      FROM dispatch_items
+      WHERE task_id IN (${taskIds.map(() => '?').join(',')})
+      ORDER BY batch_order ASC, created_at ASC, attempt_id ASC
+    `).all(...taskIds) as Array<Pick<DispatchItemRow,
+      'attempt_id' | 'task_id' | 'subtask_id' | 'attempt_kind' | 'status'
+      | 'terminal_disposition' | 'launch_started_at' | 'created_at' | 'updated_at' | 'error_summary' | 'agent_class_name'
+    > & {
+      agent_class_ref: string | null;
+      harness_ref: string | null;
+      provider_ref: string | null;
+      model_ref: string | null;
+      configuration_revision: string;
+    }>;
+    return rows.map(row => {
+      if (row.agent_class_name !== row.agent_class_ref) {
+        throw new Error(`persisted dispatch AgentClass projection mismatch: ${row.attempt_id}`);
+      }
+      return {
+        attemptId: row.attempt_id,
+        taskId: row.task_id,
+        subtaskId: row.subtask_id,
+        attemptKind: row.attempt_kind,
+        status: row.status,
+        terminalDisposition: row.terminal_disposition ?? null,
+        launchStartedAt: row.launch_started_at,
+        createdAt: row.created_at,
+        updatedAt: row.updated_at,
+        errorSummary: row.error_summary,
+        authorizedBinding: {
+          agentClassRef: row.agent_class_ref,
+          harnessRef: row.harness_ref ?? '',
+          providerRef: row.provider_ref ?? '',
+          modelRef: row.model_ref ?? '',
+          configurationRevision: row.configuration_revision,
+        },
+      };
+    });
+  }
+
+  listPending(taskId?: string): ControlDispatchItemRecord[] {
+    const taskFilter = taskId ? ' AND task_id = ?' : '';
+    return (this.db.prepare(`
+      SELECT * FROM dispatch_items
+      WHERE status = 'pending_launch'${taskFilter}
+      ORDER BY batch_order ASC, created_at ASC, attempt_id ASC
+    `).all(...(taskId ? [taskId] : [])) as DispatchItemRow[]).map(rowToDispatchItem);
+  }
+
+  listBlocking(): ControlDispatchItemRecord[] {
+    return (this.db.prepare(`
+      SELECT * FROM dispatch_items
+      WHERE status IN ('pending_launch', 'launching', 'running', 'cancelling', 'uncertain')
+      ORDER BY created_at ASC, attempt_id ASC
+    `).all() as DispatchItemRow[]).map(rowToDispatchItem);
+  }
+
+  claimPending(attemptId: string, now: string): ControlDispatchItemRecord | null {
+    const claim = this.db.transaction(() => {
+      const current = this.find(attemptId);
+      if (!current) return null;
+      const fence = this.db.prepare(`
+        SELECT tasks.status AS task_status, subtasks.status AS subtask_status
+        FROM tasks
+        INNER JOIN subtasks ON subtasks.id = ?
+        WHERE tasks.id = ?
+      `).get(current.subtaskId, current.taskId) as {
+        task_status: string;
+        subtask_status: string;
+      } | undefined;
+      if (
+        !fence
+        || fence.task_status === 'cancelled'
+        || fence.subtask_status === 'cancelled'
+      ) {
+        // The cancellation fence won: terminalize the item instead of leaving
+        // it pending forever — otherwise dispatch drains spin on a row that
+        // can never be claimed.
+        this.db.prepare(`
+          UPDATE dispatch_items
+          SET status = 'cancelled',
+              terminal_at = ?,
+              cancel_requested_at = ?,
+              cancelled_at = ?,
+              error_summary = ?,
+              updated_at = ?
+          WHERE attempt_id = ? AND status = 'pending_launch'
+        `).run(
+          now,
+          now,
+          now,
+          fence
+            ? `cancellation fence: task or subtask already cancelled before launch`
+            : 'cancellation fence: task or subtask missing before launch',
+          now,
+          attemptId,
+        );
+        return null;
+      }
+      const changed = this.db.prepare(`
+        UPDATE dispatch_items
+        SET status = 'launching', launch_started_at = ?, updated_at = ?
+        WHERE attempt_id = ? AND status = 'pending_launch'
+      `).run(now, now, attemptId).changes;
+      return changed === 1 ? this.find(attemptId) : null;
+    });
+    return claim.immediate();
+  }
+
+  markRunning(attemptId: string, workUnitId: string | null, now: string): boolean {
+    return this.db.prepare(`
+      UPDATE dispatch_items
+      SET status = 'running', work_unit_id = COALESCE(?, work_unit_id), updated_at = ?
+      WHERE attempt_id = ? AND status = 'launching'
+    `).run(workUnitId, now, attemptId).changes === 1;
+  }
+
+  markBackendExecution(attemptId: string, executionId: string, now: string): void {
+    this.db.prepare(`
+      UPDATE dispatch_items
+      SET sandbox_container_id = ?, status = 'running', updated_at = ?
+      WHERE attempt_id = ? AND status IN ('launching', 'running')
+    `).run(executionId, now, attemptId);
+  }
+
+  touch(attemptId: string, now: string): void {
+    this.db.prepare(`
+      UPDATE dispatch_items
+      SET updated_at = ?
+      WHERE attempt_id = ? AND status IN ('launching', 'running', 'cancelling', 'uncertain')
+    `).run(now, attemptId);
+  }
+
+  markTerminal(attemptId: string, errorSummary: string | null, now: string): void {
+    const finish = this.db.transaction(() => {
+      const current = this.find(attemptId);
+      if (current?.status === 'cancelling') {
+        this.markCancelled(attemptId, now, errorSummary);
+        return;
+      }
+      this.db.prepare(`
+        UPDATE dispatch_items
+        SET status = 'terminal', terminal_at = ?, terminal_disposition = 'executed',
+            error_summary = ?, updated_at = ?
+        WHERE attempt_id = ? AND status IN ('launching', 'running', 'uncertain')
+      `).run(now, errorSummary, now, attemptId);
+    });
+    finish.immediate();
+  }
+
+  markUncertain(attemptId: string, errorSummary: string, now: string): void {
+    this.db.prepare(`
+      UPDATE dispatch_items
+      SET status = 'uncertain', error_summary = ?, updated_at = ?
+      WHERE attempt_id = ? AND status IN ('pending_launch', 'launching', 'running')
+    `).run(errorSummary, now, attemptId);
+  }
+
+  /**
+   * The item stopped being active without an Executor execution: a resource
+   * partition yield, an unavailable Executor or another capacity observation.
+   *
+   * The row stays `terminal` — it no longer owns scheduler capacity — but the
+   * disposition records that nothing executed. Success is still proven only by
+   * a receipt, so no surface may read this item as a completed Attempt
+   * (2026-10-28 transparent execution §P2.1 execution-fact contract).
+   */
+  markNotStarted(attemptId: string, reason: string, now: string): void {
+    const finish = this.db.transaction(() => {
+      const current = this.find(attemptId);
+      if (current?.status === 'cancelling') {
+        this.markCancelled(attemptId, now, reason);
+        return;
+      }
+      this.db.prepare(`
+        UPDATE dispatch_items
+        SET status = 'terminal', terminal_at = ?, terminal_disposition = 'not_started',
+            error_summary = ?, updated_at = ?
+        WHERE attempt_id = ? AND status IN ('launching', 'running', 'uncertain')
+      `).run(now, reason, now, attemptId);
+    });
+    finish.immediate();
+  }
+
+  requestCancellation(input: {
+    taskId: string;
+    generationId?: string | null;
+    subtaskIds?: readonly string[] | null;
+    decisionId: string;
+    now: string;
+  }): ControlDispatchItemRecord[] {
+    const request = this.db.transaction(() => {
+      const filters = ['task_id = ?'];
+      const parameters: unknown[] = [input.taskId];
+      if (input.generationId) {
+        filters.push('generation_id = ?');
+        parameters.push(input.generationId);
+      }
+      if (input.subtaskIds) {
+        if (input.subtaskIds.length === 0) return [];
+        filters.push(`subtask_id IN (${input.subtaskIds.map(() => '?').join(', ')})`);
+        parameters.push(...input.subtaskIds);
+      }
+      const where = filters.join(' AND ');
+      // 1. Rows already inside the one-active-subtask partial index move to
+      //    'cancelling' without changing their index membership.
+      this.db.prepare(`
+        UPDATE dispatch_items
+        SET status = 'cancelling',
+            cancellation_decision_id = ?,
+            cancel_requested_at = COALESCE(cancel_requested_at, ?),
+            updated_at = ?
+        WHERE ${where} AND status IN ('launching', 'running')
+      `).run(input.decisionId, input.now, input.now, ...parameters);
+      // 2. 'uncertain' rows left the partial index when they became uncertain,
+      //    so a newer attempt may already own the same (task, generation,
+      //    subtask) slot. Re-entering the index blindly reproduced the
+      //    2026-09-06 `UNIQUE constraint failed` cancellation failure: the
+      //    whole cancel transaction rolled back and the Task stayed blocked
+      //    with its Conversation slot occupied. Terminalize every superseded
+      //    row instead of cancelling it (§5.3 conflict-safe reconciliation).
+      const uncertain = this.db.prepare(`
+        SELECT attempt_id FROM dispatch_items
+        WHERE ${where} AND status = 'uncertain'
+        ORDER BY batch_order, attempt_id
+      `).all(...parameters) as Array<{ attempt_id: string }>;
+      for (const row of uncertain) {
+        const superseded = this.db.prepare(`
+          SELECT 1 FROM dispatch_items AS sibling
+          WHERE sibling.task_id = (SELECT task_id FROM dispatch_items WHERE attempt_id = ?)
+            AND sibling.generation_id = (SELECT generation_id FROM dispatch_items WHERE attempt_id = ?)
+            AND sibling.subtask_id = (SELECT subtask_id FROM dispatch_items WHERE attempt_id = ?)
+            AND sibling.attempt_id <> ?
+            AND sibling.status IN ('pending_launch', 'launching', 'running', 'cancelling')
+          LIMIT 1
+        `).get(row.attempt_id, row.attempt_id, row.attempt_id, row.attempt_id);
+        if (superseded) {
+          this.db.prepare(`
+            UPDATE dispatch_items
+            SET status = 'cancelled',
+                terminal_at = ?,
+                cancellation_decision_id = ?,
+                cancel_requested_at = COALESCE(cancel_requested_at, ?),
+                cancelled_at = ?,
+                error_summary = COALESCE(error_summary, ?),
+                updated_at = ?
+            WHERE attempt_id = ? AND status = 'uncertain'
+          `).run(
+            input.now,
+            input.decisionId,
+            input.now,
+            input.now,
+            'superseded by a newer active attempt during cancellation',
+            input.now,
+            row.attempt_id,
+          );
+          continue;
+        }
+        this.db.prepare(`
+          UPDATE dispatch_items
+          SET status = 'cancelling',
+              cancellation_decision_id = ?,
+              cancel_requested_at = COALESCE(cancel_requested_at, ?),
+              updated_at = ?
+          WHERE attempt_id = ? AND status = 'uncertain'
+        `).run(input.decisionId, input.now, input.now, row.attempt_id);
+      }
+      // 3. Never-launched rows go straight to terminal 'cancelled'.
+      this.db.prepare(`
+        UPDATE dispatch_items
+        SET status = 'cancelled',
+            terminal_at = ?,
+            cancellation_decision_id = ?,
+            cancel_requested_at = ?,
+            cancelled_at = ?,
+            updated_at = ?
+        WHERE ${where} AND status = 'pending_launch'
+      `).run(
+        input.now,
+        input.decisionId,
+        input.now,
+        input.now,
+        input.now,
+        ...parameters,
+      );
+      return (this.db.prepare(`
+        SELECT * FROM dispatch_items
+        WHERE ${where}
+          AND cancellation_decision_id = ?
+          AND status IN ('cancelling', 'cancelled')
+        ORDER BY batch_order, attempt_id
+      `).all(...parameters, input.decisionId) as DispatchItemRow[]).map(rowToDispatchItem);
+    });
+    return request.immediate();
+  }
+
+  listCancelling(taskId?: string): ControlDispatchItemRecord[] {
+    const filter = taskId ? ' AND task_id = ?' : '';
+    return (this.db.prepare(`
+      SELECT * FROM dispatch_items
+      WHERE status = 'cancelling'${filter}
+      ORDER BY batch_order, created_at, attempt_id
+    `).all(...(taskId ? [taskId] : [])) as DispatchItemRow[]).map(rowToDispatchItem);
+  }
+
+  markCancelled(attemptId: string, now: string, errorSummary: string | null = null): void {
+    this.db.prepare(`
+      UPDATE dispatch_items
+      SET status = 'cancelled',
+          terminal_at = COALESCE(terminal_at, ?),
+          cancelled_at = COALESCE(cancelled_at, ?),
+          error_summary = COALESCE(?, error_summary),
+          updated_at = ?
+      WHERE attempt_id = ? AND status = 'cancelling'
+    `).run(now, now, errorSummary, now, attemptId);
+  }
+
+  hasBlockingResidue(taskId: string, generationId?: string): boolean {
+    const generationFilter = generationId ? ' AND generation_id = ?' : '';
+    return Boolean(this.db.prepare(`
+      SELECT 1 FROM dispatch_items
+      WHERE task_id = ?${generationFilter}
+        AND status IN ('pending_launch', 'launching', 'running', 'cancelling', 'uncertain')
+      LIMIT 1
+    `).get(taskId, ...(generationId ? [generationId] : [])));
+  }
+
+  reconcileLaunching(): number {
+    return this.db.prepare(`
+      UPDATE dispatch_items
+      SET status = 'pending_launch', launch_started_at = NULL, updated_at = created_at
+      WHERE status = 'launching' AND sandbox_container_id IS NULL
+    `).run().changes;
+  }
+}
+
+function rowToDispatchItem(row: DispatchItemRow): ControlDispatchItemRecord {
+  const authorizedBinding = JSON.parse(
+    row.authorized_binding_json,
+  ) as AuthorizedExecutorBinding;
+  if (row.agent_class_name !== authorizedBinding.agentClassRef) {
+    throw new Error(`persisted dispatch AgentClass projection mismatch: ${row.attempt_id}`);
+  }
+  return {
+    attemptId: row.attempt_id,
+    decisionId: row.decision_id,
+    batchOrder: row.batch_order,
+    taskId: row.task_id,
+    generationId: row.generation_id,
+    subtaskId: row.subtask_id,
+    configurationRevision: row.configuration_revision,
+    authorizedBinding,
+    bindingFingerprint: row.binding_fingerprint,
+    executionBindingFingerprint: row.execution_binding_fingerprint ?? null,
+    attemptKind: row.attempt_kind,
+    sourceAttemptId: row.source_attempt_id,
+    recoveryMode: row.recovery_mode,
+    attemptPayload: JSON.parse(row.attempt_payload_json) as ControlAttemptPayload,
+    resourceGrant: JSON.parse(row.resource_grant_json) as ResourceClaim[],
+    status: row.status,
+    workUnitId: row.work_unit_id,
+    backendExecutionId: row.sandbox_container_id,
+    launchStartedAt: row.launch_started_at,
+    terminalAt: row.terminal_at,
+    terminalDisposition: row.terminal_disposition ?? null,
+    cancellationDecisionId: row.cancellation_decision_id,
+    cancelRequestedAt: row.cancel_requested_at,
+    cancelledAt: row.cancelled_at,
+    errorSummary: row.error_summary,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+  };
+}
+
+function sameBinding(
+  left: AuthorizedExecutorBinding,
+  right: AuthorizedExecutorBinding,
+): boolean {
+  return left.agentClassRef === right.agentClassRef
+    && left.harnessRef === right.harnessRef
+    && left.providerRef === right.providerRef
+    && left.modelRef === right.modelRef
+    && left.permissionProfileRef === right.permissionProfileRef
+    && left.configurationRevision === right.configurationRevision;
+}
+
+/** Detects a violation of the one-active-subtask partial unique index. */
+function isSubtaskSlotViolation(error: unknown): boolean {
+  return error instanceof Error
+    && (error as { code?: string }).code === 'SQLITE_CONSTRAINT_UNIQUE'
+    && error.message.includes('dispatch_items');
+}

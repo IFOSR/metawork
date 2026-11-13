@@ -9,27 +9,6 @@ import type {
   InteractionTraceEvent,
 } from './api/types';
 import type { ArtifactProjection } from './api/session-types';
-import type {
-  QueryBillProjection,
-  TaskUsageSummary,
-  TurnBillUserView,
-} from './api/session-types';
-
-export function mergeBilling(
-  current: ConversationTurnProjection | null,
-  turnId: string,
-  queryBill: QueryBillProjection | null,
-  taskUsageSummary: TaskUsageSummary | null,
-  turnBilling?: TurnBillUserView | null,
-): ConversationTurnProjection | null {
-  if (!current || current.id !== turnId) return current;
-  return {
-    ...current,
-    queryBill,
-    taskUsageSummary,
-    turnBilling: turnBilling ?? current.turnBilling ?? null,
-  };
-}
 
 export function mergeTraceSnapshot(
   current: ConversationTurnProjection | null,
@@ -130,8 +109,7 @@ export type LiveTurnEvent =
   | { type: 'result_completed'; turnId: string; resultId: string; content: string; certification: 'certified' | 'uncertified' }
   | { type: 'delivery_status'; turnId: string; resultId: string; status: ConversationTurnProjection['deliveryStatus']; message?: string }
   | { type: 'final_answer'; turnId: string; lines: string[]; completedAt: string; backgroundWorkPending?: boolean }
-  | { type: 'terminal_error'; turnId: string; message: string; completedAt: string }
-  | { type: 'billing'; turnId: string; queryBill: QueryBillProjection | null; taskUsageSummary: TaskUsageSummary | null; turnBilling?: TurnBillUserView | null };
+  | { type: 'terminal_error'; turnId: string; message: string; completedAt: string };
 
 /** One reducer for all live Turn facts. Empty streamed final answers never erase content. */
 export function mergeLiveTurnEvent(
@@ -185,7 +163,7 @@ export function mergeLiveTurnEvent(
     if (!current || current.id !== event.turnId) return current;
     return { ...current, status: 'failed', deliveryStatus: 'failed', finalAnswer: event.message, completedAt: event.completedAt };
   }
-  return mergeBilling(current, event.turnId, event.queryBill, event.taskUsageSummary, event.turnBilling);
+  return current;
 }
 
 function appendUtf8Chunk(current: string, offset: number, chunk: string): string {

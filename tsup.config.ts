@@ -32,5 +32,8 @@ export default defineConfig({
     // The Pi tool-call stall guard ships as extension source, resolved by the
     // attempt home shim written in pi-cli-driver.ts.
     await cp('src/executor/pi-tool-stall', 'dist/pi-tool-stall', { recursive: true });
+    // The Manager extension ships as extension source loaded by the packaged
+    // upstream Pi (ADR-0055 D6).
+    await cp('src/planning/manager-host/extension', 'dist/pi-manager', { recursive: true });
   },
 });

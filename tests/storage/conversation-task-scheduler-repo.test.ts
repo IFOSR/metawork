@@ -1,12 +1,12 @@
 import Database from 'better-sqlite3';
 import { describe, expect, it } from 'vitest';
-import { runMigrations } from '../../src/storage/migrations.js';
+import { initializeDatabaseSchema } from '../../src/storage/schema.js';
 import { ConversationTaskSchedulerRepo } from '../../src/storage/conversation-task-scheduler-repo.js';
 
 function db(): Database.Database {
   const database = new Database(':memory:');
   database.pragma('foreign_keys = ON');
-  runMigrations(database);
+  initializeDatabaseSchema(database);
   database.prepare(`
     INSERT INTO tasks (
       id, title, goal, status, created_at, updated_at,

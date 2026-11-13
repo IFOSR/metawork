@@ -3,7 +3,7 @@ import { mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { runMigrations } from '../../src/storage/migrations.js';
+import { initializeDatabaseSchema } from '../../src/storage/schema.js';
 import { TaskRepo } from '../../src/storage/task-repo.js';
 import { TaskEngine } from '../../src/task/task-engine.js';
 import { WorkspaceGitRepo } from '../../src/storage/workspace-git-repo.js';
@@ -25,7 +25,7 @@ describe('durable shared read ownership and recovery', () => {
     await mkdir(userRoot);
     await writeFile(join(userRoot, 'input.txt'), 'before');
     db = new Database(join(directory, 'state.sqlite'));
-    runMigrations(db);
+    initializeDatabaseSchema(db);
     repo = new WorkspaceGitRepo(db);
     git = new WorkspaceGitService({internalRoot: join(directory, 'runtime')});
     service = new ConversationWorktreeService(git, repo);
@@ -45,7 +45,7 @@ describe('durable shared read ownership and recovery', () => {
     expect(claim('writer', 'write')).toBe(false);
     db.close();
     db = new Database(join(directory, 'state.sqlite'));
-    runMigrations(db);
+    initializeDatabaseSchema(db);
     repo = new WorkspaceGitRepo(db);
     repo.releaseConversation('c', 'one');
     expect(claim('writer', 'write')).toBe(false);

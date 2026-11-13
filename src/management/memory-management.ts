@@ -40,10 +40,7 @@ export interface MemoryStatusView {
   /** Extraction Model display name, resolved from the configuration. */
   modelName: string | null;
   /** Extraction Model price, so the user sees whose quota is spent. */
-  modelPricing: {
-    costInputPerMillion?: number;
-    costOutputPerMillion?: number;
-  } | null;
+
   /** Providers that can be used for extraction, with their models. */
   selectableProviders: Array<{
     providerRef: string;
@@ -55,8 +52,7 @@ export interface MemoryStatusView {
       displayName: string;
       supportsStructuredOutput: boolean;
       enabled: boolean;
-      costInputPerMillion?: number;
-      costOutputPerMillion?: number;
+
     }>;
     /** Why this provider cannot be used, when it cannot. */
     unsupportedReason?: string;
@@ -88,8 +84,19 @@ export interface MemoryAssetListView {
   degradedReason?: string;
 }
 
+/** Portable, credential-free account memory package. */
+export interface MemoryPackage {
+  format: 'metawork-memory';
+  version: 1;
+  exportedAt: string;
+  accountId: string;
+  total: number;
+  items: Array<MemoryAssetView & { content: string; background: string | null; revision: string | null }>;
+}
+
 export interface MemoryManagementQuery {
   status(): Promise<MemoryStatusView>;
+  exportAssets(signal?: AbortSignal): Promise<MemoryPackage>;
   listAssets(input: { limit: number; offset: number; query?: string; type?: string; layer?: 'l1' | 'l2' | 'l3'; enabled?: boolean }): Promise<MemoryAssetListView>;
   getAsset(input: { memoryId: string }): Promise<(MemoryAssetView & { content: string }) | null>;
   setEnabled(input: { memoryId: string; enabled: boolean }): Promise<MemoryAssetSummary | null>;
@@ -112,8 +119,7 @@ export interface MemoryManagementOptions {
       description?: string;
       capabilities: readonly string[];
       enabled: boolean;
-      costInputPerMillion?: number;
-      costOutputPerMillion?: number;
+
     }>;
   }>;
 }
@@ -176,8 +182,7 @@ export function createMemoryManagementQuery(options: MemoryManagementOptions): M
             displayName: candidate.description?.split('\n')[0]?.slice(0, 120) || candidate.modelId,
             supportsStructuredOutput: candidate.capabilities.includes('structured-output'),
             enabled: candidate.enabled,
-            ...(candidate.costInputPerMillion !== undefined ? { costInputPerMillion: candidate.costInputPerMillion } : {}),
-            ...(candidate.costOutputPerMillion !== undefined ? { costOutputPerMillion: candidate.costOutputPerMillion } : {}),
+
           }));
         const unsupportedReason = provider.protocol !== 'openai-compatible'
           ? `provider_protocol_${provider.protocol}_unsupported`
@@ -208,14 +213,30 @@ export function createMemoryManagementQuery(options: MemoryManagementOptions): M
         engineReady: runtimeStatus.engineReady,
         ftsAvailable: runtimeStatus.ftsAvailable,
         modelName: model?.description?.split('\n')[0]?.slice(0, 120) || model?.modelId || null,
-        modelPricing: model
-          ? {
-            ...(model.costInputPerMillion !== undefined ? { costInputPerMillion: model.costInputPerMillion } : {}),
-            ...(model.costOutputPerMillion !== undefined ? { costOutputPerMillion: model.costOutputPerMillion } : {}),
-          }
-          : null,
+
         selectableProviders,
       };
+    },
+
+    async exportAssets(signal?: AbortSignal): Promise<MemoryPackage> {
+      const service = currentRuntime()?.service;
+      if (!service) throw new Error('memory_engine_unavailable');
+      const assets = await service.exportAssets({ accountId, ...(signal ? { signal } : {}) });
+      signal?.throwIfAborted();
+      const result: MemoryPackage = {
+        format: 'metawork-memory', version: 1, exportedAt: new Date().toISOString(), accountId,
+        total: assets.length,
+        items: assets.map(asset => ({
+          memoryId: asset.memoryId, tdaiMemoryId: asset.id, type: asset.type,
+          layer: asset.layer ?? 'l1', title: asset.title ?? asset.type,
+          preview: asset.content.slice(0, 240), content: asset.content,
+          background: asset.background, revision: asset.revision ?? null,
+          source: asset.source, workspaceId: asset.workspaceId, enabled: asset.enabled,
+          createdAt: asset.createdAt, updatedAt: asset.updatedAt,
+        })),
+      };
+      if (Buffer.byteLength(JSON.stringify(result), 'utf8') > 32 * 1024 * 1024) throw new Error('memory_export_too_large');
+      return result;
     },
 
     async listAssets(input: { limit: number; offset: number; query?: string; type?: string; layer?: 'l1' | 'l2' | 'l3'; enabled?: boolean }) {

@@ -1,7 +1,7 @@
 import Database from 'better-sqlite3';
 import { describe, expect, it, vi } from 'vitest';
 import { KernelExecutionRuntime } from '../../src/execution/kernel-execution-runtime.js';
-import { runMigrations } from '../../src/storage/migrations.js';
+import { initializeDatabaseSchema } from '../../src/storage/schema.js';
 import { TaskRepo } from '../../src/storage/task-repo.js';
 import { TaskEngine } from '../../src/task/task-engine.js';
 import { TaskRuntimeService } from '../../src/task/task-runtime-service.js';
@@ -28,7 +28,7 @@ function recordingRuntimeTaskState() {
 describe('Task completion atomicity', () => {
   it('rolls back revision completion with Task and outbox when the completion effect cannot persist', async () => {
     const db = new Database(':memory:');
-    runMigrations(db);
+    initializeDatabaseSchema(db);
     const taskRepo = new TaskRepo(db);
     const taskEngine = new TaskEngine(taskRepo, '/tmp/metaclaw-completion-atomicity');
     const taskRuntimeService = new TaskRuntimeService({ lifecyclePort: recordingTaskLifecyclePort().port, taskEngine, taskRepo });

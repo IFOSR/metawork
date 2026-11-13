@@ -6,6 +6,7 @@ import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { build } from '../apps/desktop/node_modules/esbuild/lib/main.js';
 import { prepareDevelopmentShell } from '../apps/desktop/packaging/development-shell.mjs';
+import { prepareSourcePi } from './lib/packaged-pi.mjs';
 
 const source = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const root = resolve(process.env.METAWORK_DESKTOP_DEVELOPMENT_ROOT ?? join(source, '.tmp', 'desktop-development'));
@@ -39,7 +40,7 @@ function run(command, args, cwd = source) {
 await mkdir(join(source, '.tmp'), { recursive: true });
 if (!alreadyInstalled || refresh) {
   await run('npm', ['run', 'build']);
-  await run('npm', ['run', 'build:offline'], join(source, 'planner/AnyFusion-Pi'));
+  await prepareSourcePi(source);
   const helper = join(source, '.tmp/prepare-desktop-development.mjs');
   await build({ entryPoints: [join(source, 'apps/desktop/packaging/prepare-development.ts')], outfile: helper,
     bundle: true, platform: 'node', format: 'esm', target: 'node22', packages: 'external' });

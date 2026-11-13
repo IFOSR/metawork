@@ -6,11 +6,12 @@
  * conversation callback），按账户构造一次。
  */
 
+import type { UsagePayerResolver } from '../metering/usage-payer.js';
 import { join } from 'node:path';
 import type Database from 'better-sqlite3';
 import { ResourceLeaseService } from '../execution/resource-lease-service.js';
 import { SqliteResourceLeaseRepository } from '../storage/resource-lease-repo.js';
-import { KernelDispatchItemRepo } from '../storage/kernel-dispatch-item-repo.js';
+import { ControlDispatchItemRepo } from '../storage/dispatch-item-repo.js';
 import { WorkspacePublicationRepo } from '../storage/workspace-publication-repo.js';
 import { GenerationReplanRequestRepo } from '../storage/generation-replan-request-repo.js';
 import { TaskCancellationCoordinator } from '../execution/task-cancellation-coordinator.js';
@@ -25,19 +26,18 @@ import type { AgentClassService } from '../executor/agent-class-service.js';
 import type { WorkspaceStore } from '../execution/workspace-store.js';
 import type { AttemptExecutionBackend } from '../execution/attempt-execution-backend.js';
 import type { SqlitePermissionRepository } from '../storage/permission-repo.js';
-import type { KernelWorkflowRepo } from '../storage/kernel-workflow-repo.js';
 import type { SqliteWorkspaceRepository } from '../storage/workspace-repo.js';
 import type { SqliteAttemptExecutionRepository } from '../storage/attempt-execution-backend-repo.js';
 import type { ConversationTaskSchedulerRepo } from '../storage/conversation-task-scheduler-repo.js';
 import type { GatewayAttachmentStore } from '../gateway/attachment-store-port.js';
 import type { RawUsageEvent } from '../metering/usage-normalizer.js';
-import type { Payer } from '../billing/cost-policy.js';
+import type { Payer } from '../metering/usage-payer.js';
 import { RetryWakeRepo } from '../storage/retry-wake-repo.js';
 import { WorkspaceExecutionBindingRepo } from '../storage/workspace-execution-binding-repo.js';
 
 export interface AccountRuntimeExecutionServices {
   readonly resourceLeaseService: ResourceLeaseService;
-  readonly dispatchItemRepo: KernelDispatchItemRepo;
+  readonly dispatchItemRepo: ControlDispatchItemRepo;
   readonly publicationRepo: WorkspacePublicationRepo;
   readonly generationReplanRepo: GenerationReplanRequestRepo;
   readonly cancellationCoordinator: TaskCancellationCoordinator;
@@ -65,7 +65,7 @@ export function buildAccountRuntimeExecutionServices(deps: {
   workspaceStore: WorkspaceStore;
   attemptExecutionBackend: AttemptExecutionBackend;
   permissionRepository: SqlitePermissionRepository;
-  kernelWorkflowRepo: KernelWorkflowRepo;
+  managerPermissionJudge?: import('../resource/manager-permission-judge.js').ManagerPermissionJudge;
   workspaceRepository: SqliteWorkspaceRepository;
   attemptExecutionRepository: SqliteAttemptExecutionRepository;
   conversationTaskSchedulerRepo: ConversationTaskSchedulerRepo;
@@ -79,13 +79,14 @@ export function buildAccountRuntimeExecutionServices(deps: {
   usageSpanOpener?: (span: import('../metering/ports.js').MeteringSpanRecord) => void;
   usageSpanCloser?: (spanId: string, state: 'closed' | 'uncertain', closedAt: string) => void;
   usagePayer?: Payer;
+  resolveUsagePayer?: UsagePayerResolver;
   /**
    * Long-term memory delivery into execution evidence (design §10).
    */
   memoryEvidence?: import('../memory/memory-evidence-service.js').MemoryEvidencePort;
 }): AccountRuntimeExecutionServices {
   const resourceLeaseService = new ResourceLeaseService(new SqliteResourceLeaseRepository(deps.db));
-  const dispatchItemRepo = new KernelDispatchItemRepo(deps.db);
+  const dispatchItemRepo = new ControlDispatchItemRepo(deps.db);
   const publicationRepo = new WorkspacePublicationRepo(deps.db);
   const generationReplanRepo = new GenerationReplanRequestRepo(deps.db);
   const retryWakeRepo = new RetryWakeRepo(deps.db);
@@ -129,7 +130,7 @@ export function buildAccountRuntimeExecutionServices(deps: {
     conversationWorktrees: deps.conversationWorktrees,
     serviceWorktrees: deps.serviceWorktrees,
     permissionRepository: deps.permissionRepository,
-    kernelWorkflowStore: deps.kernelWorkflowRepo,
+    managerPermissionJudge: deps.managerPermissionJudge,
     workspaceRepository: deps.workspaceRepository,
     sourceRoot: deps.sourceRoot,
     controlNetwork: process.env.METACLAW_CONTROL_NETWORK ?? 'metaclaw-control',
@@ -142,6 +143,7 @@ export function buildAccountRuntimeExecutionServices(deps: {
     usageSpanOpener: deps.usageSpanOpener,
     usageSpanCloser: deps.usageSpanCloser,
     usagePayer: deps.usagePayer,
+    resolveUsagePayer: deps.resolveUsagePayer,
   });
 
   return {

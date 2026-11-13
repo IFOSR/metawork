@@ -6,7 +6,7 @@ import Database from 'better-sqlite3';
 import { describe, expect, it } from 'vitest';
 import { WorkspaceRetentionService } from '../../src/execution/workspace-retention-service.js';
 import { WorkspaceStore, type StoredWorkspaceCheckpoint } from '../../src/execution/workspace-store.js';
-import { runMigrations } from '../../src/storage/migrations.js';
+import { initializeDatabaseSchema } from '../../src/storage/schema.js';
 import { SqliteWorkspaceRepository } from '../../src/storage/workspace-repo.js';
 
 function checkpointObjects(checkpoint: StoredWorkspaceCheckpoint) {
@@ -22,7 +22,7 @@ describe('WorkspaceRetentionService', () => {
     writeFileSync(exportedArtifact, 'keep me');
     try {
       const db = new Database(':memory:');
-      runMigrations(db);
+      initializeDatabaseSchema(db);
       const repository = new SqliteWorkspaceRepository(db);
       const store = new WorkspaceStore(join(root, 'store'));
       const now = new Date('2026-07-22T00:00:00.000Z');

@@ -37,7 +37,9 @@ export async function runBuildCommand(
     );
   }
   await assertDirectory(metadata.sourceRoot, 'MetaWork build source');
-  await assertDirectory(metadata.plannerRoot, 'MetaWork Planner source');
+  // A vendored Planner tree is optional since ADR-0055 D6.
+  const plannerRoot = metadata.plannerRoot?.trim() ? metadata.plannerRoot : undefined;
+  if (plannerRoot) await assertDirectory(plannerRoot, 'MetaWork Planner source');
 
   const isServerRunning = dependencies.isServerRunning
     ?? (() => isInstanceRunning(join(dependencies.installationRoot, 'data', 'runtime.lock')));
@@ -50,8 +52,10 @@ export async function runBuildCommand(
   const run = dependencies.run ?? ((command, args, cwd) => runProcess(command, args, cwd, env));
   await run('npm', ['ci'], metadata.sourceRoot);
   await run('npm', ['run', 'build'], metadata.sourceRoot);
-  await run('npm', ['ci', '--ignore-scripts'], metadata.plannerRoot);
-  await run('npm', ['run', 'build:offline'], metadata.plannerRoot);
+  if (plannerRoot) {
+    await run('npm', ['ci', '--ignore-scripts'], plannerRoot);
+    await run('npm', ['run', 'build:offline'], plannerRoot);
+  }
 
   const packageValue = JSON.parse(
     await readFile(join(metadata.sourceRoot, 'package.json'), 'utf8'),
@@ -69,8 +73,7 @@ export async function runBuildCommand(
     releaseId,
     '--source-root',
     metadata.sourceRoot,
-    '--planner-root',
-    metadata.plannerRoot,
+    ...(plannerRoot ? ['--planner-root', plannerRoot] : []),
   ];
   const install = dependencies.install
     ?? (args => runProcess(

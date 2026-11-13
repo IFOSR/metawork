@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, expect, it, vi } from 'vitest';
 import { DesktopInstallation } from '../main/installation.js';
-import { launchDesktopUpdate, prepareDesktopRepair, prepareDesktopUpdate } from '../main/update.js';
+import { canCleanReinstallAfterRestoreFailure, launchDesktopUpdate, prepareDesktopRepair, prepareDesktopUpdate } from '../main/update.js';
 import { desktopSupportRoot } from '../../../src/installation/desktop-support.js';
 
 const mocks = vi.hoisted(() => ({ spawn: vi.fn(), background: vi.fn() }));
@@ -21,6 +21,29 @@ const roots: string[] = [];
 afterEach(async () => {
   vi.restoreAllMocks(); vi.clearAllMocks();
   await Promise.all(roots.splice(0).map(root => rm(root, { recursive: true, force: true })));
+});
+
+it('allows automatic clean reinstall only for a newer Desktop after the prior Runtime restore failed', async () => {
+  const root = await realpath(await mkdtemp(join(tmpdir(), 'desktop-clean-reinstall-'))); roots.push(root);
+  const applicationPath = join(root, 'Applications/MetaWork.app');
+  await mkdir(applicationPath, { recursive: true });
+  await mkdir(join(root, 'upgrades'), { recursive: true });
+  await writeFile(join(root, 'upgrades/desktop-activation.json'), JSON.stringify({
+    schemaVersion: 1, phase: 'prepared', previousReleaseId: '0.1.25-toolfix1',
+    candidateReleaseId: '0.1.26-build-aaaaaaa', applicationPath,
+    stagedApplicationPath: join(root, 'stage/MetaWork.app'), backupApplicationPath: join(root, 'backup/MetaWork.app'),
+  }));
+  await writeFile(join(root, 'upgrades/desktop-update-status.json'), JSON.stringify({
+    schemaVersion: 1, operation: 'update', stage: 'restoreRuntime', outcome: 'failed',
+    updatedAt: new Date().toISOString(), failures: [{ stage: 'restoreRuntime', code: 'unexpected' }],
+  }));
+
+  await expect(canCleanReinstallAfterRestoreFailure(root, applicationPath, '0.1.27-local-recoveryfix'))
+    .resolves.toBe(true);
+  await expect(canCleanReinstallAfterRestoreFailure(root, applicationPath, '0.1.26-build-current'))
+    .resolves.toBe(false);
+  await expect(canCleanReinstallAfterRestoreFailure(root, join(root, 'Other.app'), '0.1.27-local-recoveryfix'))
+    .resolves.toBe(false);
 });
 
 it('stages the downloaded app for native adoption without requiring a previous Desktop Node or helper', async () => {

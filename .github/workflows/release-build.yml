@@ -39,6 +39,8 @@ jobs:
 
   build:
     needs: preflight
+    env:
+      METAWORK_PI_COMMAND: ${{ github.workspace }}/.tmp/pi-build-host/bin/pi
     name: ${{ matrix.target }}
     runs-on: ${{ matrix.runner }}
     strategy:
@@ -93,6 +95,8 @@ jobs:
       # The engine preparation imports the repository toolchain (esbuild).
       - name: Install dependencies
         run: npm ci
+      - name: Prepare isolated upstream Pi build host
+        run: node scripts/prepare-pi-build-host.mjs
       - name: Prepare pinned memory engine
         run: node scripts/prepare-memory-engine.mjs
 
@@ -191,7 +195,6 @@ jobs:
             --artifacts .tmp/formal-release \
             --node-root .tmp/desktop-tools/node \
             --git-root .tmp/desktop-tools/git \
-            --executor-root .tmp/desktop-tools/executor \
             --trusted-keys .tmp/trusted-release-keys.json \
             --signing-key "$RUNNER_TEMP/metawork-release-key.pem" \
             --key-id metawork-release-2026-03 \
@@ -229,8 +232,10 @@ jobs:
           previous_runtime="$RUNNER_TEMP/metawork-previous-runtime"
           mkdir -p "$previous_runtime"
           ditto "$previous_payload/metawork/." "$previous_runtime/"
-          mkdir -p "$previous_runtime/planner"
-          ditto "$previous_payload/planner/." "$previous_runtime/planner/"
+          if [ -d "$previous_payload/planner" ]; then
+            mkdir -p "$previous_runtime/planner"
+            ditto "$previous_payload/planner/." "$previous_runtime/planner/"
+          fi
           test -x "$previous_runtime/desktop-tools/node/bin/node"
           cp "$previous_payload/metawork/release-identity.json" "$previous_runtime/release-identity.json"
           echo "METAWORK_PREVIOUS_RUNTIME=$previous_runtime" >> "$GITHUB_ENV"

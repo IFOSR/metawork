@@ -1,6 +1,6 @@
 import Database from 'better-sqlite3';
 import { describe, expect, it, vi } from 'vitest';
-import { runMigrations } from '../../src/storage/migrations.js';
+import { initializeDatabaseSchema } from '../../src/storage/schema.js';
 import { TaskRepo } from '../../src/storage/task-repo.js';
 import { TaskEngine } from '../../src/task/task-engine.js';
 import { TaskRuntimeService } from '../../src/task/task-runtime-service.js';
@@ -45,7 +45,7 @@ describe('TaskCancellationCoordinator', () => {
   it('lists every Task with durable cancellation residue instead of selecting one account singleton', () => {
     const db = new Database(':memory:');
     db.pragma('foreign_keys = ON');
-    runMigrations(db);
+    initializeDatabaseSchema(db);
     seedConfigurationRevision(db);
     const taskRepo = new TaskRepo(db);
     const taskEngine = new TaskEngine(taskRepo, '/tmp/metawork-task-cleanup-list');
@@ -128,7 +128,7 @@ describe('TaskCancellationCoordinator', () => {
   it('commits the Task fence first, then drains every attempt, publication, WorkUnit, lease, and execution backend', async () => {
     const db = new Database(':memory:');
     db.pragma('foreign_keys = ON');
-    runMigrations(db);
+    initializeDatabaseSchema(db);
     seedConfigurationRevision(db);
     seedAgentClasses(db);
     const taskRepo = new TaskRepo(db);
@@ -367,7 +367,7 @@ describe('TaskCancellationCoordinator', () => {
   it('cancels an atomic downstream closure while leaving an independent sibling dispatch untouched', () => {
     const db = new Database(':memory:');
     db.pragma('foreign_keys = ON');
-    runMigrations(db);
+    initializeDatabaseSchema(db);
     seedConfigurationRevision(db);
     seedAgentClasses(db);
     const taskRepo = new TaskRepo(db);
@@ -594,7 +594,7 @@ describe('TaskCancellationCoordinator idempotent replay (2026-09-06 plan §5.3)'
   it('replaying the same cancellation identity converges instead of failing the application', async () => {
     const db = new Database(':memory:');
     db.pragma('foreign_keys = ON');
-    runMigrations(db);
+    initializeDatabaseSchema(db);
     seedConfigurationRevision(db);
     const taskRepo = new TaskRepo(db);
     const taskEngine = new TaskEngine(taskRepo, '/tmp/metaclaw-cancel-replay');

@@ -5,7 +5,7 @@ import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import Database from 'better-sqlite3';
 import { afterEach, describe, expect, it } from 'vitest';
-import { runMigrations } from '../../src/storage/migrations.js';
+import { initializeDatabaseSchema } from '../../src/storage/schema.js';
 import { ResultObjectRepo } from '../../src/storage/result-object-repo.js';
 
 const roots: string[] = [];
@@ -16,7 +16,7 @@ afterEach(() => {
 
 function setup(): { db: Database.Database; repo: ResultObjectRepo; root: string } {
   const db = new Database(':memory:');
-  runMigrations(db);
+  initializeDatabaseSchema(db);
   const now = new Date().toISOString();
   db.prepare(`
     INSERT INTO tasks (id, title, created_at, updated_at)

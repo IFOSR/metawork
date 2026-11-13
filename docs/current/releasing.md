@@ -121,3 +121,35 @@ See [Desktop packaging](../../apps/desktop/README.md#runtime-payload-and-macos-p
 Pass `--artifact-base-url https://github.com/IFOSR/metawork/releases/download/vVERSION`
 to `scripts/package-release.mjs` or `npm run build:release --`. Build each target
 on a matching native host. Development signatures cannot produce production apps.
+
+### Internal DMG rehearsal (no Developer ID)
+
+A local packaging rehearsal does not need an Apple certificate: it validates the
+release payload, the DMG, the ad-hoc seal and the update path, and produces an
+artifact that must not be published.
+
+```sh
+# 1. Package the Runtime/Pi/Memory archives (uses the pinned host Pi).
+node scripts/build-release.mjs --package-only --out-dir .tmp/release-package \
+  --signing-key <local-ed25519.pem>
+
+# 2. Assemble and sign the Desktop payload inventory.
+node apps/desktop/packaging/prepare-runtime.mjs --artifacts .tmp/release-package \
+  --output .tmp/desktop-payload --node-root <node-distribution> --git-root <git-distribution> \
+  --trusted-keys <trusted-keys.json> --signing-key <local-ed25519.pem> \
+  --key-id <key-id> --source-commit <commit> --development true
+
+# 3. Build the ad-hoc sealed DMG (no Developer ID, no notarization).
+METAWORK_DESKTOP_RESOURCES=$PWD/.tmp/desktop-payload METAWORK_DESKTOP_INTERNAL=1 \
+  npm run package:desktop
+
+# 4. Prove the payload updates an existing installation.
+node scripts/verify-desktop-update.mjs \
+  apps/desktop/release/mac-arm64/MetaWork.app/Contents/Resources <previous-install-root>
+```
+
+`--development true` and `METAWORK_DESKTOP_INTERNAL=1` mark the descriptor as a
+development release; `verifyDesktopRelease` rejects such a payload for
+production promotion, so this path cannot accidentally ship. The rehearsal DMG
+is ad-hoc signed with identifier `com.metawork.desktop` (no Team ID) and is only
+meaningful on the machine that built it.

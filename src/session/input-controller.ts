@@ -13,7 +13,7 @@ export interface InputControllerSubmitOptions {
   principalId?: string;
   requestId?: string;
   idempotencyKey?: string;
-  billingIngress?: QueryIngress;
+  usageIngress?: QueryIngress;
 }
 
 export interface InputControllerSubmitResult {

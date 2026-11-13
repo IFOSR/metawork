@@ -3,7 +3,6 @@ import { redactSensitiveText } from '../utils/redact-sensitive-text.js';
 import { truncateText } from '../utils/truncate-text.js';
 
 export type InteractionTraceStatus = 'running' | 'completed' | 'failed' | 'blocked' | 'cancelled';
-export type InteractionTraceEventStatus = 'pending' | 'running' | 'completed' | 'failed' | 'blocked';
 export type InteractionTracePhase =
   | 'intake'
   | 'planning'
@@ -39,7 +38,11 @@ export interface InteractionTraceEvent {
   phase: InteractionTracePhase;
   actor: InteractionTraceActor;
   kind: string;
-  status: InteractionTraceEventStatus;
+  /**
+   * Events carry no status: a trace is append-only, so a stored process state
+   * could never be settled and a finished Turn would keep looking live. The
+   * Turn's own `InteractionTrace.status` is the only liveness fact.
+   */
   title: string;
   summary: string;
   details: Record<string, unknown>;

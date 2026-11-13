@@ -19,7 +19,7 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import Database from 'better-sqlite3';
-import { runMigrations } from '../../src/storage/migrations.js';
+import { initializeDatabaseSchema } from '../../src/storage/schema.js';
 import { MemoryService } from '../../src/memory/memory-service.js';
 import { TdaiMemoryAdapter } from '../../src/memory/tdai-memory-adapter.js';
 import { MemoryBindingsRepo } from '../../src/storage/memory-bindings-repo.js';
@@ -56,7 +56,7 @@ describeEngine('memory engine end to end', () => {
 
     db = new Database(':memory:');
     db.pragma('foreign_keys = ON');
-    runMigrations(db);
+    initializeDatabaseSchema(db);
     db.prepare(`INSERT INTO tasks
       (id, title, goal, status, created_at, updated_at, account_id, conversation_id, workspace_id)
       VALUES ('task-e2e', '记忆任务', '验证端到端', 'running', '2026-10-22T00:00:00.000Z',
@@ -185,6 +185,28 @@ describeEngine('memory engine end to end', () => {
     await expect(adapter.search({ query: '中文表格', limit: 5 }, other))
       .rejects.toThrow(/memory_scope_mismatch/u);
   }, 60_000);
+
+  it('extracts committed conversations after a crash before the L1 threshold', async () => {
+    const options = { engineRoot: engineRoot!, llmBaseUrl: llm.baseUrl,
+      everyNConversations: 100, l1IdleTimeoutSeconds: 3600 };
+    let pending = await startMemoryEngine(options);
+    const adapterFor = () => new TdaiMemoryAdapter({ baseUrl: `http://127.0.0.1:${pending.port}`,
+      serviceId: 'metawork', kernelAuthToken: pending.kernelAuthToken, timeoutMs: 20_000 });
+    const scope = deriveMemoryScope(ACCOUNT);
+    try {
+      await adapterFor().deposit({ conversationId: 'conv-crash', workspaceId: null, turns: [{
+        turnId: 'turn-crash', sequence: 1, userInput: '以后都用中文表格输出', assistantAnswer: '收到。',
+        completedAt: new Date().toISOString(),
+      }] }, scope);
+      expect((await adapterFor().search({ query: '中文表格', limit: 5 }, scope)).items).toHaveLength(0);
+      await pending.stop({ preserveData: true, crash: true });
+      pending = await startMemoryEngine({ ...options, dataDir: pending.dataDir, port: pending.port });
+      await expect.poll(async () => (await adapterFor().search({ query: '中文表格', limit: 5 }, scope))
+        .items.map(item => item.content).join('\n'), { timeout: 30_000, interval: 500 }).toContain('中文表格');
+    } finally {
+      await pending.stop();
+    }
+  }, 120_000);
 
   it('round-trips scoped L2 scenes and L3 persona with stable revisions', async () => {
     const scope = deriveMemoryScope(ACCOUNT);

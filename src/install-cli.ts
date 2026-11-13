@@ -62,9 +62,9 @@ export function parseNativeInstallArgs(argv: string[]): NativeInstallArgs {
   }
   if (
     (command === 'install' || command === 'update')
-    && (!parsed.sourceRoot || !parsed.plannerRoot)
+    && !parsed.sourceRoot
   ) {
-    throw new Error(`${command} requires --source-root and --planner-root`);
+    throw new Error(`${command} requires --source-root`);
   }
   return parsed;
 }
@@ -135,7 +135,8 @@ export async function runNativeInstallCli(
       }).install({
         releaseId: args.releaseId,
         sourceRoot: args.sourceRoot!,
-        plannerRoot: args.plannerRoot!,
+        ...(args.plannerRoot ? { plannerRoot: args.plannerRoot } : {}),
+        executorPreset: 'desktop-pi',
         ...(args.memoryRoot ? { memoryRoot: args.memoryRoot } : {}),
         ...(provider ? { provider: {
           baseUrl: provider.baseUrl,
@@ -168,7 +169,7 @@ export async function runNativeInstallCli(
         operation: () => updater.update({
           releaseId: args.releaseId,
           sourceRoot: args.sourceRoot!,
-          plannerRoot: args.plannerRoot!,
+          ...(args.plannerRoot ? { plannerRoot: args.plannerRoot } : {}),
           ...(args.memoryRoot ? { memoryRoot: args.memoryRoot } : {}),
         }),
       });

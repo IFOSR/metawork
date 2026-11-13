@@ -1,10 +1,11 @@
 // Installation health checks run after staging and before activation. Executor
-// commands are detected but never installed or modified.
+// runtime is verified without installing or modifying tools.
 import { existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { LOCAL_DEFAULT_ACCOUNT_ID } from '../account/account-id.js';
 import { resolveAccountPaths } from '../account/account-paths.js';
 import { FileAccountRepository } from '../account/file-account-repository.js';
+import { executableFile, resolveExecutorTool } from '../utils/executor-tool-path.js';
 import { resolveMetaWorkPaths } from './paths.js';
 
 export interface InstallationDoctorCheck {
@@ -25,7 +26,7 @@ export async function runInstallationDoctor(
 ): Promise<InstallationDoctorCheck[]> {
   const checks: InstallationDoctorCheck[] = [];
 
-  for (const required of ['dist', 'node_modules', 'package.json', 'planner']) {
+  for (const required of ['dist', 'node_modules', 'package.json']) {
     const present = existsSync(join(input.installRoot, required));
     checks.push({
       name: required,
@@ -34,14 +35,13 @@ export async function runInstallationDoctor(
     });
   }
 
-  for (const command of ['codex', 'pi']) {
-    const detected = await input.detectCommand(command);
-    checks.push({
-      name: `${command}_detected`,
-      ok: detected,
-      detail: detected ? `${command} detected on PATH` : `${command} not detected (creates disabled profile)`,
-    });
-  }
+  const piPath = resolveExecutorTool('pi', { releaseRoot: input.installRoot });
+  const available = executableFile(piPath);
+  checks.push({
+    name: 'packaged_pi',
+    ok: available,
+    detail: available ? `Packaged Pi ready at ${piPath}` : `Packaged Pi missing or not executable at ${piPath}`,
+  });
 
   if (input.anyfusionRoot) {
     checks.push(...await runAccountDiagnostics(input.anyfusionRoot));

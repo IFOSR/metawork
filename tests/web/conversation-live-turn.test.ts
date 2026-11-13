@@ -7,7 +7,6 @@ import {
   isCurrentConversationRecordRequest,
   mergeFinalAnswer,
   mergeLiveTurnEvent,
-  mergeBilling,
   mergeExecutionTimeline,
   mergeTraceDelta,
   mergeTraceSnapshot,
@@ -218,18 +217,6 @@ describe('Conversation live Turn ownership', () => {
     const running = liveTurn('conversation-a');
     expect(mergeTraceDelta(running, 'another-turn', [], 'cancelled')).toBe(running);
     expect(mergeFinalAnswer(running, 'another-turn', ['stopped'], '2026-09-21T00:00:00.000Z')).toBe(running);
-  });
-
-  it('merges a late billing projection without reopening a terminal Turn', () => {
-    const running = liveTurn('conversation-a');
-    const completed = mergeTraceDelta(running, running.id, [], 'completed', '2026-09-21T00:00:00.000Z');
-    const projected = mergeBilling(completed, running.id, {
-      billId: 'bill-1', queryId: 'query-1', taskId: null, state: 'finalized',
-      assessedMicroCoin: '1400000', assessedIsFinal: true, externalState: 'received',
-      externalEntryId: null, confirmedDeductedMicroCoin: null, coverage: 'complete',
-      coverageNote: null, platformAbsorption: false, lines: [], adjustments: [], finalizedAt: '2026-09-21T00:00:00.000Z',
-    }, null);
-    expect(projected).toMatchObject({ status: 'completed', queryBill: { externalState: 'received' } });
   });
 
   it('clears the previous Conversation and preserves a replayed target Turn', () => {

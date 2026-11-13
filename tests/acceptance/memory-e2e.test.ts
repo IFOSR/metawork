@@ -18,7 +18,7 @@ import { seedAuthoritativeTurn } from '../support/conversation-turn-fixture.js';
 
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import Database from 'better-sqlite3';
-import { runMigrations } from '../../src/storage/migrations.js';
+import { initializeDatabaseSchema } from '../../src/storage/schema.js';
 import { MemoryService } from '../../src/memory/memory-service.js';
 import { TdaiMemoryAdapter } from '../../src/memory/tdai-memory-adapter.js';
 import { MemoryBindingsRepo } from '../../src/storage/memory-bindings-repo.js';
@@ -65,7 +65,7 @@ describeAcceptance('long-term memory acceptance (user perspective)', () => {
 
     db = new Database(':memory:');
     db.pragma('foreign_keys = ON');
-    runMigrations(db);
+    initializeDatabaseSchema(db);
     // The Server records the live runtime mode; the Planner readers gate on it.
     db.prepare(`INSERT INTO memory_runtime_state (account_id, mode, detail, updated_at)
       VALUES (?, 'enabled', NULL, '2026-10-26T00:00:00.000Z')`).run(ACCOUNT);

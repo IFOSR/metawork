@@ -397,7 +397,7 @@ type ScheduleDispatchBatches = {
 Each inner item retains the current immutable attempt identity, binding
 fingerprint, generation, attempt kind, recovery mode, resource grant and batch
 order. The Runtime applies this decision by inserting the existing durable
-`kernel_dispatch_items` rows and atomically reserving the corresponding
+`dispatch_items` rows and atomically reserving the corresponding
 Conversation slots. The AttemptSupervisor still launches individual attempts;
 the grouped decision only lets one pure Kernel decision choose work across
 multiple Conversations without adding a scheduler-owned policy path.
@@ -467,7 +467,7 @@ Add indexed `conversation_id` and, where applicable, `workspace_id` to:
 - `kernel_events`;
 - `kernel_decisions`;
 - `kernel_decision_applications` if it has denormalized identity;
-- `kernel_dispatch_items`;
+- `dispatch_items`;
 - `executor_attempt_receipts`;
 - `attempt_execution_backends`;
 - `resource_leases` and resource waits;

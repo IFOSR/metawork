@@ -1,6 +1,6 @@
 import Database from 'better-sqlite3';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { runMigrations } from '../../src/storage/migrations.js';
+import { initializeDatabaseSchema } from '../../src/storage/schema.js';
 import { SqliteConversationTurnStore } from '../../src/storage/conversation-turn-repo.js';
 import { SqliteConversationReadModel } from '../../src/storage/conversation-read-model-repo.js';
 import { ConversationReadProjector } from '../../src/session/conversation-read-projector.js';
@@ -15,7 +15,7 @@ function event(kind: 'turn_started' | 'final_answer', id: string): GatewayEventE
 describe('authoritative conversation content', () => {
   let db: Database.Database;
   let store: SqliteConversationTurnStore;
-  beforeEach(() => { db = new Database(':memory:'); db.pragma('foreign_keys = ON'); runMigrations(db); store = new SqliteConversationTurnStore(db); });
+  beforeEach(() => { db = new Database(':memory:'); db.pragma('foreign_keys = ON'); initializeDatabaseSchema(db); store = new SqliteConversationTurnStore(db); });
   afterEach(() => db.close());
   const accept = (text = '原始问题\n') => store.accept({ ...identity, userInput: text, requestKey: 'request', event: event('turn_started', 'start') });
   const answer = (content = '回答', revisionKey = 'v1') => store.appendFinalAnswer({ ...identity, content, revisionKey, event: event('final_answer', revisionKey) });

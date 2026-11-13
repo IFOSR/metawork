@@ -46,7 +46,7 @@ export async function runDesktopInstall(
     await restoreManagedTools(resources, paths.root, release);
     return;
   }
-  const { sourceRoot, plannerRoot, memoryRoot } = desktopPayloadRoots(resources);
+  const { sourceRoot, memoryRoot } = desktopPayloadRoots(resources);
   const secretStore = createProductionSecretStore({ credentialsFile: paths.credentials });
   const searchPath = [join(sourceRoot, 'desktop-tools/node/bin'), join(sourceRoot, 'desktop-tools/git/bin'),
     join(sourceRoot, 'desktop-tools/executor/bin'), process.env.PATH ?? '/usr/bin:/bin'].join(':');
@@ -62,14 +62,14 @@ export async function runDesktopInstall(
     const lock = await acquireRuntimeUpdateLock(paths.root, 'update');
     try {
       await new SourceNativeInstaller({ paths, secretStore, detectCommand, installLaunchers: false }).install({
-        releaseId: release.releaseId, sourceRoot, plannerRoot, memoryRoot, executorPreset: 'desktop-pi',
+        releaseId: release.releaseId, sourceRoot, memoryRoot, executorPreset: 'desktop-pi',
         ...(provider ? { provider: { ...provider, region: 'international', secretReference: 'file-secret:anyfusion/providers/provider' } } : {}),
       });
     } finally { await lock.release(); }
   } else {
     const updater = new SourceNativeUpdater({ paths, secretStore, detectCommand, isServerRunning: running, installLaunchers: false });
     if (command === 'update') {
-      await updater.update({ releaseId: release.releaseId, sourceRoot, plannerRoot, memoryRoot });
+      await updater.update({ releaseId: release.releaseId, sourceRoot, memoryRoot });
     } else await updater.rollback(release.releaseId);
   }
   process.stdout.write(JSON.stringify({ ok: true, releaseId: release.releaseId }) + '\n');

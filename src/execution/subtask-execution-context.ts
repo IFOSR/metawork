@@ -29,6 +29,14 @@ import {
   TaskExecutionEvidenceRepo,
 } from './execution-evidence-port.js';
 import { TaskEventRepo } from '../storage/task-event-repo.js';
+
+export class TaskResourceReferenceError extends Error {
+  readonly code = 'task_resource_not_authorized';
+  constructor(locator: string) {
+    super(`task_resource_not_authorized: ${locator}`);
+    this.name = 'TaskResourceReferenceError';
+  }
+}
 import { COMPLETION_MARKER_V4 } from './completion-protocol.js';
 import type { ExecutionEvidenceToolBinding } from './execution-evidence-tool-server.js';
 import { ResultObjectRepo } from '../storage/result-object-repo.js';
@@ -590,7 +598,7 @@ export class SubtaskExecutionContextBuilder {
       title = 'Current user input';
       content = row.content;
     } else if (ref.kind === 'task_resource') {
-      if (!task.resources.includes(ref.locator)) throw new Error(`task_resource_not_authorized: ${ref.locator}`);
+      if (!task.resources.includes(ref.locator)) throw new TaskResourceReferenceError(ref.locator);
       evidenceId = createEvidenceId('task_resource', ref.locator);
       title = ref.locator;
       content = readTaskResource(ref.locator);

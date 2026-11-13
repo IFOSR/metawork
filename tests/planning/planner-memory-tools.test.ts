@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it } from 'vitest';
 import Database from 'better-sqlite3';
-import { runMigrations } from '../../src/storage/migrations.js';
+import { initializeDatabaseSchema } from '../../src/storage/schema.js';
 import { PlannerDataReader } from '../../src/planning/planner-mcp-server.js';
 import { MemoryRecallRepo } from '../../src/storage/memory-recall-repo.js';
 import { MemoryBindingsRepo } from '../../src/storage/memory-bindings-repo.js';
@@ -11,7 +11,7 @@ const CONVERSATION = 'conv-1';
 function createTestDb() {
   const db = new Database(':memory:');
   db.pragma('foreign_keys = ON');
-  runMigrations(db);
+  initializeDatabaseSchema(db);
   return db;
 }
 

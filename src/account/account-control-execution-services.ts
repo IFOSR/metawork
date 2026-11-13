@@ -1,0 +1,329 @@
+import type { ControlDecider } from '../control/control-workflow.js';
+import type { RawUsageEvent } from '../metering/usage-normalizer.js';
+import { routerDecisionUsageEvent } from '../metering/router-usage.js';
+import { SqliteTaskActivityFacts } from '../storage/task-activity-facts-repo.js';
+import type { ManagedLocalServices } from '../execution/managed-local-service.js';
+/**
+ * 账户级 Kernel 执行 / 任务执行应用 / 会话 Kernel 运行时服务簇（ADR-0031 第 2 节）。
+ *
+ * 这三个服务是 AccountRuntime 持有的 runtime-wide 服务，但它们通过
+ * callbacks 与 Conversation 交互。callbacks 由会话（当前为 MetaclawSession，
+ * 未来为 ConversationSession）实现，工厂只依赖 callbacks 接口。
+ */
+
+import type Database from 'better-sqlite3';
+import type { OrchestrationEngine } from '../guidance/orchestration.js';
+import type { NotificationService } from '../notifications/types.js';
+import { ControlExecutionRuntime } from '../execution/control-execution-runtime.js';
+import { SessionTaskExecutionApplicationService } from '../session/session-task-execution-application-service.js';
+import { SessionControlRuntime } from '../session/session-control-runtime.js';
+import { WorkspacePublicationWorker } from '../execution/workspace-publication-worker.js';
+import { SubtaskHandoffRepo } from '../storage/subtask-handoff-repo.js';
+import type { TaskRecoveryItemRepo } from '../storage/task-recovery-item-repo.js';
+import { WorkspaceExecutionBindingRepo } from '../storage/workspace-execution-binding-repo.js';
+import { TaskOperationResultRepo } from '../storage/task-operation-result-repo.js';
+import type { TaskRuntimeService } from '../task/task-runtime-service.js';
+import type { AgentClassService } from '../executor/agent-class-service.js';
+import type { WorkGraphRuntimeService } from '../execution/work-graph-runtime-service.js';
+import type { SubtaskRepo } from '../storage/subtask-repo.js';
+import type { WorkGraphRevisionRepo } from '../storage/work-graph-revision-repo.js';
+import type { ControlEffectOutboxRepo } from '../storage/effect-outbox-repo.js';
+import type { ExecutorAttemptReceiptRepo } from '../storage/executor-attempt-receipt-repo.js';
+import type { TaskEventRepo } from '../storage/task-event-repo.js';
+import type { WorkUnitClaimService } from '../execution/work-unit-claim-service.js';
+import type { SubtaskAttemptRunner } from '../execution/subtask-attempt-runner.js';
+import type { ControlDispatchItemRepo } from '../storage/dispatch-item-repo.js';
+import type { WorkspacePublicationRepo } from '../storage/workspace-publication-repo.js';
+import type { GenerationReplanRequestRepo } from '../storage/generation-replan-request-repo.js';
+import { PlanAdmissionResultRepo } from '../storage/plan-admission-result-repo.js';
+import { PlanAdmissionApplicationService } from '../execution/plan-admission-application-service.js';
+import type { TaskCancellationCoordinator } from '../execution/task-cancellation-coordinator.js';
+import type { ExecutionProgressService } from '../execution/execution-progress-service.js';
+import type { VerificationAndDeliveryService } from '../delivery/verification-and-delivery-service.js';
+import type { UserArtifactPublicationService } from '../delivery/user-artifact-publication-service.js';
+import type { SessionPersistenceService } from '../session/session-persistence-service.js';
+import type { ControlExecutorStatusProjector } from '../execution/control-executor-status-projector.js';
+import type { SessionPresentationService } from '../session/session-presentation-service.js';
+import type { WorkspaceStore } from '../execution/workspace-store.js';
+import type { SqliteWorkspaceRepository } from '../storage/workspace-repo.js';
+import type { ResourceLeaseService } from '../execution/resource-lease-service.js';
+import type { ExecutionRuntime } from '../execution/execution-runtime.js';
+import { HistoricalResultUpgrader } from '../execution/historical-result-upgrader.js';
+import { ResultObjectRepo } from '../storage/result-object-repo.js';
+import type { RuntimeConfigurationView } from '../configuration/index.js';
+import type { ConversationTaskSchedulerRepo } from '../storage/conversation-task-scheduler-repo.js';
+import type { RetryWakeRepo } from '../storage/retry-wake-repo.js';
+import { ExecutorAttemptRuntimeRepo } from '../storage/executor-attempt-runtime-repo.js';
+import { RouteDecisionRepo } from '../storage/route-decision-repo.js';
+import { RouterDispatchService } from '../execution/router-dispatch-service.js';
+import { RouterService, type RouteRequest } from '../routing/router.js';
+import { createAccountRouteDispatcher } from './account-router-dispatch.js';
+import type { SpanRoutingEvaluator } from '../routing/span-routing-types.js';
+import { SpanRouterModel } from '../routing/span-router-model.js';
+
+export type ControlExecutionRuntimeCallbacks = ConstructorParameters<typeof ControlExecutionRuntime>[0]['callbacks'];
+export type TaskExecutionApplicationCallbacks = ConstructorParameters<typeof SessionTaskExecutionApplicationService>[0]['callbacks'];
+export type SessionControlRuntimeCallbacks = ConstructorParameters<typeof SessionControlRuntime>[0]['callbacks'];
+
+export interface AccountControlExecutionServices {
+  readonly kernelExecutionRuntime: ControlExecutionRuntime;
+  readonly taskExecutionApplicationService: SessionTaskExecutionApplicationService;
+  readonly sessionControlRuntime: SessionControlRuntime;
+}
+
+export function buildAccountControlExecutionServices(deps: {
+  conversationWorktrees?: import('../execution/conversation-worktree-service.js').ConversationWorktreeService;
+  serviceWorktrees?: import('../execution/service-worktree-service.js').ServiceWorktreeService;
+  workspaceMergeWorker?: import('../execution/workspace-merge-worker.js').WorkspaceMergeWorker;
+  db: Database.Database;
+  sessionId: string;
+  legacyCompatibility?: boolean;
+  getSessionId?: () => string;
+  accountId?: string;
+  resultRoot: string;
+  sourceRoot: string;
+  orchestration: OrchestrationEngine;
+  notifier: NotificationService;
+  /** Attempts a single Task may run at once; there is no account-wide cap. */
+  maxAttemptsPerTask?: number;
+  onTaskTerminal?: (taskId: string) => void | Promise<void>;
+  onTaskQueued?: (taskId: string) => void | Promise<void>;
+  getConfigurationRevision: () => string;
+  getRuntimeConfiguration?: (revisionId: string) => RuntimeConfigurationView | null;
+  summarizeCompletedTask?: ConstructorParameters<typeof ControlExecutionRuntime>[0]['summarizeCompletedTask'];
+  taskRuntimeService: TaskRuntimeService;
+  taskStateAuthority: import('../task/task-state-authority.js').TaskStateAuthority;
+  agentClassService: AgentClassService;
+  workGraphRuntimeService: WorkGraphRuntimeService;
+  subtaskRepo: SubtaskRepo;
+  workGraphRevisionRepo: WorkGraphRevisionRepo;
+  effectOutboxRepo: ControlEffectOutboxRepo;
+  attemptReceiptRepo: ExecutorAttemptReceiptRepo;
+  taskEventRepo: TaskEventRepo;
+  workUnitClaimService: WorkUnitClaimService;
+  attemptRunner: SubtaskAttemptRunner;
+  controlLoop: ControlDecider;
+  recoveryItems: TaskRecoveryItemRepo;
+  dispatchItemRepo: ControlDispatchItemRepo;
+  publicationRepo: WorkspacePublicationRepo;
+  generationReplanRepo: GenerationReplanRequestRepo;
+  retryWakeRepo: RetryWakeRepo;
+  cancellationCoordinator: TaskCancellationCoordinator;
+  executionProgressService: ExecutionProgressService;
+  verificationAndDeliveryService: VerificationAndDeliveryService;
+  userArtifactPublication?: UserArtifactPublicationService;
+  resolveUserWorkspaceRoot?: (
+    sessionId: string,
+  ) => Promise<string | null> | string | null;
+  persistenceService: SessionPersistenceService;
+  kernelExecutorStatusProjector: ControlExecutorStatusProjector;
+  presentation: SessionPresentationService;
+  workspaceStore: WorkspaceStore;
+  workspaceRepository: SqliteWorkspaceRepository;
+  resourceLeaseService: ResourceLeaseService;
+  executionRuntime: ExecutionRuntime;
+  kernelExecutionCallbacks: ControlExecutionRuntimeCallbacks;
+  taskExecutionCallbacks: TaskExecutionApplicationCallbacks;
+  sessionControlCallbacks: SessionControlRuntimeCallbacks;
+  conversationTaskSchedulerRepo?: ConversationTaskSchedulerRepo;
+  resolveWorkspacePath?: (taskId: string) => Promise<string | null>;
+  preflightWorkspacePath?: (path: string) => Promise<string>;
+  managedLocalServices?: ManagedLocalServices;
+  productionAuthorization?: () => { allowed: boolean; reason?: string };
+  spanRoutingEvaluator?: SpanRoutingEvaluator | null;
+  /**
+   * Runtime usage recorder. Router decision-model calls are internal platform
+   * overhead (payer `system`), so they are captured for observability without
+   * changing a user's Included quota.
+   */
+  usageObserver?: (event: RawUsageEvent) => void;
+}): AccountControlExecutionServices {
+  const routeDecisions = new RouteDecisionRepo(deps.db);
+  const routerModel = deps.spanRoutingEvaluator
+    ? new SpanRouterModel({ evaluator: deps.spanRoutingEvaluator })
+    : {
+        providerRef: 'metawork-router',
+        modelRef: 'unavailable',
+        decide: async (_input: RouteRequest) => ({
+          selectedAgentClassRef: null,
+          rationale: 'Router decision model is unavailable; no default route is authorized',
+          // An absent decision model is the same situation as an unreachable
+          // one: the Router's deterministic default binding keeps eligible work
+          // runnable and records the fact in the trace.
+          unavailableReason: 'decision_model_unavailable',
+        }),
+      };
+  const router = new RouterService({
+    model: routerModel,
+  });
+  const routerDispatch = new RouterDispatchService({
+    router,
+    decisions: routeDecisions,
+    ...(deps.usageObserver ? {
+      onModelUsage: record => {
+        const event = routerDecisionUsageEvent({
+          queryId: record.queryId,
+          routeDecisionId: record.routeDecisionId,
+          taskId: record.request.taskId,
+          subtaskId: record.request.subtaskId,
+          attemptOrdinal: record.request.attemptOrdinal,
+          providerRef: record.providerRef,
+          modelId: record.modelId,
+          ...(record.usage ? { usage: record.usage } : {}),
+          occurredAtUtc: record.occurredAtUtc,
+        });
+        if (event) deps.usageObserver!(event);
+      },
+    } : {}),
+  });
+  const routeAttempt = createAccountRouteDispatcher({
+    routerDispatch,
+    readConfiguration: revision => deps.getRuntimeConfiguration?.(revision) ?? null,
+    readAttempts: taskId => deps.attemptReceiptRepo.listByTask(taskId),
+    readTaskStatus: taskId => deps.taskRuntimeService.findTask(taskId)?.status ?? null,
+    readSubtask: subtaskId => deps.subtaskRepo.findById(subtaskId),
+    readActiveRevision: taskId => deps.workGraphRevisionRepo.findActive(taskId),
+    readExecutorStatuses: configurationRevision => (
+      deps.kernelExecutorStatusProjector.list(configurationRevision)
+    ),
+  });
+  const kernelExecutionRuntime = new ControlExecutionRuntime({
+    taskActivityFacts: new SqliteTaskActivityFacts(deps.db),
+    managedLocalServices: deps.managedLocalServices,
+    userArtifactPublication: deps.userArtifactPublication,
+    resolveUserWorkspaceRoot: deps.resolveUserWorkspaceRoot,
+    sessionId: deps.sessionId,
+    getSessionId: deps.getSessionId,
+    getConfigurationRevision: deps.getConfigurationRevision,
+    getRuntimeConfiguration: deps.getRuntimeConfiguration,
+    ...(deps.summarizeCompletedTask ? { summarizeCompletedTask: deps.summarizeCompletedTask } : {}),
+    orchestration: deps.orchestration,
+    notifier: deps.notifier,
+    taskRuntimeService: deps.taskRuntimeService,
+    taskStateAuthority: deps.taskStateAuthority,
+    taskOperationResults: new TaskOperationResultRepo(deps.db),
+    ...(deps.resolveWorkspacePath ? { resolveWorkspacePath: deps.resolveWorkspacePath } : {}),
+    ...(deps.preflightWorkspacePath ? { preflightWorkspacePath: deps.preflightWorkspacePath } : {}),
+    ...(deps.productionAuthorization ? { productionAuthorization: deps.productionAuthorization } : {}),
+    agentClassService: deps.agentClassService,
+    workGraphRuntimeService: deps.workGraphRuntimeService,
+    subtaskRepo: deps.subtaskRepo,
+    workGraphRevisionRepo: deps.workGraphRevisionRepo,
+    effectOutboxRepo: deps.effectOutboxRepo,
+    attemptReceiptRepo: deps.attemptReceiptRepo,
+    historicalResultUpgrader: new HistoricalResultUpgrader({
+      db: deps.db,
+      accountId: deps.accountId ?? 'local-default',
+      resultRoot: deps.resultRoot,
+    }),
+    subtaskHandoffRepo: new SubtaskHandoffRepo(deps.db),
+    taskEventRepo: deps.taskEventRepo,
+    workUnitClaimService: deps.workUnitClaimService,
+    attemptRunner: deps.attemptRunner,
+    attemptRuntimeRepo: new ExecutorAttemptRuntimeRepo(deps.db),
+    controlLoop: deps.controlLoop,
+    recoveryItems: deps.recoveryItems,
+    dispatchItemRepo: deps.dispatchItemRepo,
+    routerDispatch: async item => {
+      const result = await routeAttempt(item);
+      // The Runtime derives the fingerprint from the selected domain binding;
+      // the durable Router decision is carried along for the routing trace.
+      return result;
+    },
+    maxAttemptsPerTask: deps.maxAttemptsPerTask,
+    conversationTaskSchedulerRepo: deps.conversationTaskSchedulerRepo,
+    onTaskTerminal: deps.onTaskTerminal,
+    onTaskQueued: deps.onTaskQueued,
+    publicationWorker: new WorkspacePublicationWorker({
+      db: deps.db,
+      sessionId: deps.sessionId,
+      getSessionId: deps.getSessionId,
+      accountId: deps.accountId,
+      resultRoot: deps.resultRoot,
+      sourceRoot: deps.sourceRoot,
+      workspaceStore: deps.workspaceStore,
+      workspaceRepository: deps.workspaceRepository,
+      subtaskRepo: deps.subtaskRepo,
+      attemptReceiptRepo: deps.attemptReceiptRepo,
+      resourceLeaseService: deps.resourceLeaseService,
+      dispatchItemRepo: deps.dispatchItemRepo,
+      taskRuntimeService: deps.taskRuntimeService,
+      userArtifactPublication: deps.userArtifactPublication,
+    }),
+    publicationRepo: deps.publicationRepo,
+    resultObjectRepo: new ResultObjectRepo(deps.db, deps.resultRoot),
+    workspaceRepository: deps.workspaceRepository,
+    generationReplanRepo: deps.generationReplanRepo,
+    retryWakeRepo: deps.retryWakeRepo,
+    resourceLeaseService: deps.resourceLeaseService,
+    workspaceExecutionBindingRepo: new WorkspaceExecutionBindingRepo(deps.db),
+    conversationWorktrees: deps.conversationWorktrees,
+    serviceWorktrees: deps.serviceWorktrees,
+    workspaceMergeWorker: deps.workspaceMergeWorker,
+    workspaceStore: deps.workspaceStore,
+    runInTransaction: <T>(operation: () => T) => deps.db.transaction(operation).immediate(),
+    cancellationCoordinator: deps.cancellationCoordinator,
+    executionProgressService: deps.executionProgressService,
+    verificationAndDeliveryService: deps.verificationAndDeliveryService,
+    persistenceService: deps.persistenceService,
+    kernelExecutorStatusProjector: deps.kernelExecutorStatusProjector,
+    presentation: deps.presentation,
+    callbacks: deps.kernelExecutionCallbacks,
+  });
+
+  const taskExecutionApplicationService = new SessionTaskExecutionApplicationService({
+    taskRuntimeService: deps.taskRuntimeService,
+    kernelExecutionRuntime,
+    presentation: deps.presentation,
+    callbacks: deps.taskExecutionCallbacks,
+  });
+
+  const planAdmissionResults = new PlanAdmissionResultRepo(deps.db);
+  const planAdmissionApplication = new PlanAdmissionApplicationService({
+    db: deps.db,
+    taskRuntimeService: deps.taskRuntimeService,
+    workGraphRuntimeService: deps.workGraphRuntimeService,
+    planProposals: deps.generationReplanRepo.proposals,
+    admissionResults: planAdmissionResults,
+    ...(deps.conversationTaskSchedulerRepo
+      ? { conversationTaskSchedulerRepo: deps.conversationTaskSchedulerRepo }
+      : {}),
+    conversationGit: Boolean(deps.conversationWorktrees),
+  });
+
+  const sessionControlRuntime = new SessionControlRuntime({
+    planProposals: deps.generationReplanRepo.proposals,
+    planAdmissionResults,
+    planAdmissionApplication,
+    deferPlanForAvailability: ({ proposal, taskId, explanation, bindings }) => {
+      const request = deps.generationReplanRepo.findByGeneration(
+        taskId,
+        proposal.generationId,
+        proposal.targetGraphRevision - 1,
+      );
+      if (!request) return false;
+      return deps.generationReplanRepo.deferForAvailability(
+        request.id,
+        proposal,
+        explanation,
+        bindings,
+        new Date().toISOString(),
+      );
+    },
+    resolveUserWorkspaceRoot: deps.resolveUserWorkspaceRoot,
+    manageLocalService: (taskId, operation, serviceId, turnId) => kernelExecutionRuntime.manageLocalService(taskId, operation, serviceId, turnId),
+    sessionId: deps.sessionId,
+    legacyCompatibility: deps.legacyCompatibility,
+    accountId: deps.accountId,
+    taskRuntimeService: deps.taskRuntimeService,
+    taskStateAuthority: deps.taskStateAuthority,
+    orchestration: deps.orchestration,
+    activeExecutions: deps.executionRuntime,
+    presentation: deps.presentation,
+    callbacks: deps.sessionControlCallbacks,
+    conversationTaskSchedulerRepo: deps.conversationTaskSchedulerRepo,
+  });
+
+  return { kernelExecutionRuntime, taskExecutionApplicationService, sessionControlRuntime };
+}
+

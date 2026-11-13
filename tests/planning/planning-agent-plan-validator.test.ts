@@ -4,409 +4,165 @@ import { validatePlanningAgentPlan } from '../../src/planning/planning-agent-pla
 import type { PlanningAgentPlan, SubtaskProposal } from '../../src/planning/planning-types.js';
 
 const configuration: PlannerConfigurationView = {
-  revisionId: 'revision-2026-08-12',
-  contentHash: 'sha256:planner-view',
-  models: [
-    {
-      id: 'engineering-model',
-      capabilities: ['coding', 'tools'],
-      reasoning: 'high',
-      region: 'international',
-    },
-    {
-      id: 'review-model',
-      capabilities: ['coding', 'tools'],
-      reasoning: 'medium',
-      region: 'international',
-    },
-    {
-      id: 'image-model',
-      capabilities: ['image-generation', 'image-editing'],
-      reasoning: 'disabled',
-      region: 'international',
-    },
-  ],
+  revisionId: 'revision-1', contentHash: 'sha256:planner-view', models: [],
   routingCatalog: {
-    version: 2,
-    configurationRevision: 'revision-2026-08-12',
-    capabilities: [
-      {
-        id: 'current-web-research',
-        deliveryContract: 'Research public web sources.',
-      },
-      {
-        id: 'image-editing',
-        deliveryContract: 'Edit images with an image-capable model.',
-      },
-      {
-        id: 'image-generation',
-        deliveryContract: 'Generate images with an image-capable model.',
-      },
-      {
-        id: 'workspace-engineering',
-        deliveryContract: 'Modify and verify workspace files.',
-      },
-    ],
-    agentClasses: [
-      {
-        id: 'fixed-engineering',
-        routingCapabilities: ['workspace-engineering'],
-        primaryUseCases: ['implementation'],
-        avoidUseCases: [],
-        affordances: ['workspace-command-validation', 'workspace-read-write'],
-        modelPolicy: { mode: 'fixed', modelRef: 'engineering-model' },
-      },
-      {
-        id: 'auto-engineering',
-        routingCapabilities: ['workspace-engineering'],
-        primaryUseCases: ['implementation and review'],
-        avoidUseCases: [],
-        affordances: ['workspace-command-validation', 'workspace-read-write'],
-        modelPolicy: {
-          mode: 'auto',
-          allowedModelRefs: ['engineering-model', 'review-model'],
-          defaultModelRef: 'engineering-model',
-        },
-      },
-      {
-        id: 'pi-image',
-        routingCapabilities: ['image-editing', 'image-generation'],
-        primaryUseCases: ['图片生成', '图片编辑'],
-        avoidUseCases: [],
-        affordances: [],
-        modelPolicy: {
-          mode: 'auto',
-          allowedModelRefs: ['engineering-model', 'image-model'],
-          defaultModelRef: 'engineering-model',
-        },
-      },
-    ],
+    version: 2, configurationRevision: 'revision-1',
+    capabilities: [{ id: 'workspace-engineering', deliveryContract: 'Modify workspace files.' },
+      { id: 'current-web-research', deliveryContract: 'Research public sources.' }],
+    agentClasses: [{ id: 'engineering', routingCapabilities: ['workspace-engineering'],
+      primaryUseCases: ['implementation'], avoidUseCases: [], affordances: [],
+      modelPolicy: { mode: 'fixed', modelRef: 'engineering-model' } }],
   },
 };
 
-function binding(
-  agentClassRef = 'fixed-engineering',
-  modelSelection: SubtaskProposal['executorBindings'][number]['modelSelection'] = {
-    mode: 'fixed-by-agent-class',
-  },
-): SubtaskProposal['executorBindings'][number] {
-  return { agentClassRef, modelSelection };
-}
-
 function subtask(overrides: Partial<SubtaskProposal> = {}): SubtaskProposal {
-  return {
-    id: 'impl',
-    title: 'Implement',
-    goal: 'Implement and verify the change',
-    dependencies: [],
-    contextRefs: [{ kind: 'current_user_input' }],
-    requiredCapabilities: ['workspace-engineering'],
-    executorBindings: [binding()],
-    deliveryKind: 'edit',
-    fileOutputs: [],
-    acceptance: [{ key: 'tests_pass', description: 'tests pass', requiredEvidence: ['test result'] }],
-    riskLevel: 'low',
-    ...overrides,
-  };
+  return { id: 'impl', title: 'Implement', goal: 'Implement and verify', dependencies: [],
+    contextRefs: [{ kind: 'current_user_input' }], requiredCapabilities: ['workspace-engineering'],
+    deliveryKind: 'edit', fileOutputs: ['report.md'],
+    acceptance: [{ key: 'verified', description: 'Requested content is present', requiredEvidence: ['file contents'] }],
+    riskLevel: 'low', ...overrides };
 }
 
-function plan(subtasks: SubtaskProposal[] = [subtask()]): PlanningAgentPlan {
-  return {
-    id: 'plan_1',
-    schemaVersion: 8,
-    action: 'plan_work_graph',
-    confidence: 0.9,
-    reason: 'work is required',
-    clarificationQuestion: null,
-    response: { directReply: null },
-    task: {
-      binding: 'new',
-      taskId: null,
-      control: 'none',
-      scope: null,
-      title: 'Implement change',
-      goal: 'Implement and test the requested change',
-      includeRecentConversationContext: false,
-      priority: { level: 'normal', reason: 'normal scheduling' },
-    },
-    risk: { level: 'low', requiresConfirmation: false, reasons: [] },
-    authorizationResolution: null,
-    workGraph: {
-      schemaVersion: 7,
-      configurationRevision: configuration.revisionId,
-      reason: 'capability-minimal work graph',
-      subtasks,
-    },
-    source: 'anyfusion-planner',
-  };
+function plan(subtasks = [subtask()]): PlanningAgentPlan {
+  return { id: 'plan-1', schemaVersion: 9, action: 'plan_work_graph', confidence: 0.9,
+    reason: 'User requested a file', clarificationQuestion: null,
+    task: { binding: 'new', taskId: null, control: 'none', scope: null, title: 'Create report',
+      goal: 'Deliver the requested report', includeRecentConversationContext: false,
+      priority: { level: 'normal', reason: 'User request' } },
+    risk: { level: 'low', requiresConfirmation: false, reasons: [] }, authorizationResolution: null,
+    workspaceIntent: { targetWorkspaceId: null, targetPaths: ['report.md'], operation: 'create_in_target',
+      confidence: 0.9, reason: 'User requested this target file' },
+    workGraph: { schemaVersion: 7, configurationRevision: configuration.revisionId,
+      reason: 'Capability-minimal work', subtasks }, source: 'anyfusion-planner' };
 }
 
-describe('validatePlanningAgentPlan', () => {
-  it('accepts a revision-scoped capability-minimal work graph', () => {
+function runPlan(workspaceEffect: SubtaskProposal['workspaceEffect']): PlanningAgentPlan {
+  const candidate = plan([subtask({
+    deliveryKind: 'report', fileOutputs: [], workspaceEffect,
+  })]);
+  candidate.workspaceIntent = {
+    ...candidate.workspaceIntent!,
+    operation: 'run_in_target',
+    targetPaths: ['price-in-service/'],
+    reason: '停止 8000 端口的服务',
+  };
+  return candidate;
+}
+
+// ADR-0055: Manager proposes semantics/capabilities. Runtime admission and Router
+// own bindings/models; the retired schema-8 selection tests cannot certify v9.
+describe('validatePlanningAgentPlan schema 9', () => {
+  it('accepts a capability-only proposal without selecting an Executor or Model', () => {
     expect(validatePlanningAgentPlan(plan(), configuration)).toEqual({ valid: true, errors: [] });
   });
 
-  it('rejects empty and exact duplicate routing bindings', () => {
-    const emptyCandidate = plan([
-      subtask({ requiredCapabilities: [] as never }),
-    ]);
-    expect(validatePlanningAgentPlan(emptyCandidate, configuration)).toMatchObject({
-      valid: false,
-      errors: expect.arrayContaining([
-        expect.stringContaining('requiredCapabilities'),
-      ]),
-    });
-
-    const duplicateCandidate = plan([
-      subtask({ executorBindings: [binding(), binding()] }),
-    ]);
-    expect(validatePlanningAgentPlan(duplicateCandidate, configuration)).toMatchObject({
-      valid: false,
-      errors: expect.arrayContaining([
-        'subtask impl contains duplicate executor binding: fixed-engineering:fixed-by-agent-class',
-      ]),
-    });
+  it('rejects a run_in_target plan whose subtasks are all shared readers', () => {
+    // Running or terminating a process needs exclusive Workspace access even
+    // when it changes no file (2026-11-11: "stop the service" was admitted as a
+    // read plan and rejected deep in admission with an internal invariant).
+    const errors = validatePlanningAgentPlan(runPlan('read_only'), configuration).errors;
+    expect(errors.join('\n')).toContain('run_in_target requires at least one subtask');
   });
 
-  it('allows the same AgentClass with distinct proposed Models in fallback order', () => {
-    const candidate = plan([
-      subtask({
-        executorBindings: [
-          binding('auto-engineering', {
-            mode: 'proposed',
-            modelRef: 'engineering-model',
-            reason: 'primary implementation model',
-          }),
-          binding('auto-engineering', {
-            mode: 'proposed',
-            modelRef: 'review-model',
-            reason: 'secondary review model',
-          }),
-        ],
-      }),
-    ]);
-
-    expect(validatePlanningAgentPlan(candidate, configuration)).toEqual({ valid: true, errors: [] });
-  });
-
-  it('rejects AgentClasses unavailable in the pinned revision', () => {
-    const candidate = plan([
-      subtask({ executorBindings: [binding('research')] }),
-    ]);
-
-    expect(validatePlanningAgentPlan(candidate, configuration).errors).toContain(
-      'subtask impl references unavailable AgentClass in revision revision-2026-08-12: research',
-    );
-  });
-
-  it('accepts an ordered subset of eligible bindings instead of requiring the full catalog', () => {
-    const candidate = plan([
-      subtask({
-        executorBindings: [binding('auto-engineering', {
-          mode: 'proposed',
-          modelRef: 'review-model',
-          reason: 'review-oriented model',
-        })],
-      }),
-    ]);
-
-    expect(validatePlanningAgentPlan(candidate, configuration)).toEqual({ valid: true, errors: [] });
-  });
-
-  it('requires every binding to cover all required Routing Capabilities', () => {
-    const candidate = plan([
-      subtask({
-        requiredCapabilities: ['current-web-research', 'workspace-engineering'],
-      }),
-    ]);
-
-    expect(validatePlanningAgentPlan(candidate, configuration).errors).toEqual(expect.arrayContaining([
-      'no_capable_agent_class: subtask impl must be split at a Routing Capability handoff',
-      'subtask impl AgentClass fixed-engineering does not cover required capabilities: current-web-research',
-    ]));
-  });
-
-  it('requires an exact image-capable Model binding for image work', () => {
-    const imageTask = subtask({
-      requiredCapabilities: ['image-generation'],
-      executorBindings: [binding('pi-image', {
-        mode: 'proposed',
-        modelRef: 'image-model',
-        reason: '使用图片模型生成图片',
-      })],
-      deliveryKind: 'edit',
-      fileOutputs: ['images/'],
-    });
-    expect(validatePlanningAgentPlan(plan([imageTask]), configuration))
-      .toEqual({ valid: true, errors: [] });
-
-    imageTask.executorBindings = [binding('pi-image', {
-      mode: 'proposed',
-      modelRef: 'engineering-model',
-      reason: '错误地使用普通模型',
-    })];
-    expect(validatePlanningAgentPlan(plan([imageTask]), configuration).errors).toContain(
-      'subtask impl Model engineering-model does not support required Routing Capabilities: image-generation',
-    );
-  });
-
-  it('allows Auto resolution to choose an image model instead of its ordinary default', () => {
-    const imageTask = subtask({
-      requiredCapabilities: ['image-generation'],
-      executorBindings: [binding('pi-image', {
-        mode: 'agent-class-default',
-      })],
-      deliveryKind: 'edit',
-      fileOutputs: ['images/'],
-    });
-
-    expect(validatePlanningAgentPlan(plan([imageTask]), configuration))
+  it('accepts a run_in_target plan that declares exclusive access without file outputs', () => {
+    expect(validatePlanningAgentPlan(runPlan('write'), configuration))
       .toEqual({ valid: true, errors: [] });
   });
 
-  it('rejects a graph pinned to a different configuration revision', () => {
+  it('tolerates the retired originalFilePolicy on a persisted proposal', () => {
     const candidate = plan();
-    candidate.workGraph!.configurationRevision = 'revision-stale';
-
-    expect(validatePlanningAgentPlan(candidate, configuration).errors).toContain(
-      'work graph configurationRevision revision-stale does not match Planner configuration revision revision-2026-08-12',
-    );
+    candidate.workspaceIntent = {
+      ...candidate.workspaceIntent!,
+      originalFilePolicy: 'unknown',
+    } as PlanningAgentPlan['workspaceIntent'];
+    expect(validatePlanningAgentPlan(candidate, configuration)).toEqual({ valid: true, errors: [] });
   });
 
-  it('rejects a Planner view whose catalog belongs to another revision', () => {
-    const mismatchedConfiguration: PlannerConfigurationView = {
-      ...configuration,
-      routingCatalog: {
-        ...configuration.routingCatalog,
-        configurationRevision: 'revision-stale',
-      },
-    };
-
-    expect(validatePlanningAgentPlan(plan(), mismatchedConfiguration).errors).toContain(
-      'Planner configuration view revision revision-2026-08-12 does not match routing catalog revision revision-stale',
-    );
+  it.each(['executorBindings', 'agentClassRef', 'modelRef'])('rejects Manager-owned %s at the exact subtask path', key => {
+    const candidate = plan();
+    Object.assign(candidate.workGraph!.subtasks[0], { [key]: [] });
+    expect(validatePlanningAgentPlan(candidate, configuration).errors).toEqual([
+      `workGraph.subtasks.0: Unrecognized key: "${key}"`,
+    ]);
   });
 
-  it('enforces fixed and auto ModelPolicy selection modes', () => {
-    const fixedProposed = plan([
-      subtask({
-        executorBindings: [binding('fixed-engineering', {
-          mode: 'proposed',
-          modelRef: 'engineering-model',
-          reason: 'attempt to override fixed policy',
-        })],
-      }),
+  it('reports the invalid nested graph field without rejecting valid workspaceIntent', () => {
+    const candidate = plan();
+    Object.assign(candidate.workGraph!, { subtasksOrderHint: ['impl'] });
+    expect(validatePlanningAgentPlan(candidate, configuration).errors).toEqual([
+      'workGraph: Unrecognized key: "subtasksOrderHint"',
     ]);
-    const autoFixed = plan([
-      subtask({
-        executorBindings: [binding('auto-engineering')],
-      }),
-    ]);
-
-    expect(validatePlanningAgentPlan(fixedProposed, configuration).errors).toContain(
-      'subtask impl AgentClass fixed-engineering uses fixed ModelPolicy and requires fixed-by-agent-class selection',
-    );
-    expect(validatePlanningAgentPlan(autoFixed, configuration).errors).toContain(
-      'subtask impl AgentClass auto-engineering uses auto ModelPolicy and cannot use fixed-by-agent-class selection',
-    );
   });
 
-  it('rejects proposed Models outside the revision-scoped ModelPolicy', () => {
-    const candidate = plan([
-      subtask({
-        executorBindings: [binding('auto-engineering', {
-          mode: 'proposed',
-          modelRef: 'unlisted-model',
-          reason: 'not authorized by policy',
-        })],
-      }),
-    ]);
-
-    expect(validatePlanningAgentPlan(candidate, configuration).errors).toEqual(expect.arrayContaining([
-      'subtask impl references unavailable Model in revision revision-2026-08-12: unlisted-model',
-      'subtask impl Model unlisted-model is not allowed by AgentClass auto-engineering',
-    ]));
+  it('rejects the retired direct response envelope', () => {
+    expect(validatePlanningAgentPlan({ ...plan(), response: { directReply: null } }, configuration).errors)
+      .toEqual(['plan: Unrecognized key: "response"']);
   });
 
-  it('rejects agent-class-default when the auto policy has no explicit default', () => {
-    const noDefaultConfiguration: PlannerConfigurationView = {
-      ...configuration,
-      routingCatalog: {
-        ...configuration.routingCatalog,
-        agentClasses: configuration.routingCatalog.agentClasses.map(agentClass =>
-          agentClass.id === 'auto-engineering'
-            ? {
-                ...agentClass,
-                modelPolicy: {
-                  mode: 'auto' as const,
-                  allowedModelRefs: ['engineering-model', 'review-model'],
-                },
-              }
-            : agentClass),
-      },
-    };
-    const candidate = plan([
-      subtask({
-        executorBindings: [binding('auto-engineering', { mode: 'agent-class-default' })],
-      }),
-    ]);
-
-    expect(validatePlanningAgentPlan(candidate, noDefaultConfiguration).errors).toContain(
-      'subtask impl AgentClass auto-engineering has no default Model',
-    );
+  it('rejects an empty required capability list', () => {
+    expect(validatePlanningAgentPlan(plan([subtask({ requiredCapabilities: [] })]), configuration).errors)
+      .toEqual([expect.stringContaining('workGraph.subtasks.0.requiredCapabilities')]);
   });
 
-  it('rejects fixed or default Models unavailable in the pinned revision', () => {
-    const missingModels: PlannerConfigurationView = {
-      ...configuration,
-      models: [],
-    };
-    const autoDefault = plan([
-      subtask({
-        executorBindings: [binding('auto-engineering', { mode: 'agent-class-default' })],
-      }),
-    ]);
-
-    expect(validatePlanningAgentPlan(plan(), missingModels).errors).toContain(
-      'subtask impl references unavailable Model in revision revision-2026-08-12: engineering-model',
-    );
-    expect(validatePlanningAgentPlan(autoDefault, missingModels).errors).toContain(
-      'subtask impl references unavailable Model in revision revision-2026-08-12: engineering-model',
-    );
+  it('rejects duplicate required capabilities', () => {
+    expect(validatePlanningAgentPlan(plan([subtask({ requiredCapabilities: ['workspace-engineering', 'workspace-engineering'] })]), configuration).errors)
+      .toContain('subtask impl contains duplicate Routing Capability: workspace-engineering');
   });
 
-  it('includes pure work-graph structure violations', () => {
-    const candidate = plan([
-      subtask({ id: 'a' }),
-      subtask({
-        id: 'b',
-        executorBindings: [binding('auto-engineering', { mode: 'agent-class-default' })],
-        dependencies: [{
-          fromSubtaskId: 'missing',
-          requiredItems: [{ key: 'result', type: 'text', description: 'upstream result' }],
-        }],
-      }),
-    ]);
-
-    expect(validatePlanningAgentPlan(candidate, configuration).errors).toContain(
-      'unknown_dependency: subtasks.1.dependencies.0.fromSubtaskId: subtask b depends on unknown subtask missing',
-    );
+  it('requires one eligible AgentClass to cover every capability', () => {
+    expect(validatePlanningAgentPlan(plan([subtask({ requiredCapabilities: ['workspace-engineering', 'current-web-research'] })]), configuration).errors)
+      .toContain('no_capable_agent_class: subtask impl must be split at a Routing Capability handoff');
   });
 
-  it('rejects a mergeable same-AgentClass chain through shared Work Graph validation', () => {
-    const candidate = plan([
-      subtask({ id: 'implement' }),
-      subtask({
-        id: 'verify',
-        dependencies: [{
-          fromSubtaskId: 'implement',
-          requiredItems: [{ key: 'result', type: 'text', description: 'implementation result' }],
-        }],
-      }),
-    ]);
+  it('rejects a known capability missing from the pinned catalog', () => {
+    const config = structuredClone(configuration);
+    config.routingCatalog.capabilities = [];
+    expect(validatePlanningAgentPlan(plan(), config).errors)
+      .toContain('subtask impl references unknown Routing Capability: workspace-engineering');
+  });
 
-    expect(validatePlanningAgentPlan(candidate, configuration).errors).toContain(
-      'mergeable_same_agent_chain: subtasks.1.dependencies.0: subtasks implement -> verify form a mergeable fixed-engineering single chain',
-    );
+  it('rejects a graph pinned to a different configuration', () => {
+    const candidate = plan(); candidate.workGraph!.configurationRevision = 'other';
+    expect(validatePlanningAgentPlan(candidate, configuration).errors)
+      .toContain('work graph configurationRevision other does not match Planner configuration revision revision-1');
+  });
+
+  it('rejects a mismatched routing catalog revision', () => {
+    const config = structuredClone(configuration); config.routingCatalog.configurationRevision = 'other';
+    expect(validatePlanningAgentPlan(plan(), config).errors)
+      .toContain('Planner configuration view revision revision-1 does not match routing catalog revision other');
+  });
+
+  it('includes pure graph dependency violations', () => {
+    const candidate = plan([subtask(), subtask({ id: 'second', dependencies: [{ fromSubtaskId: 'missing',
+      requiredItems: [{ key: 'input', type: 'text', description: 'Input facts' }] }] })]);
+    expect(validatePlanningAgentPlan(candidate, configuration).errors)
+      .toContain('unknown_dependency: subtasks.1.dependencies.0.fromSubtaskId: subtask second depends on unknown subtask missing');
+  });
+
+  it('rejects file deliveries outside the declared Workspace targets', () => {
+    const candidate = plan(); candidate.workspaceIntent!.targetPaths = ['other.md'];
+    expect(validatePlanningAgentPlan(candidate, configuration).errors)
+      .toContain('subtask.fileOutputs must be covered by workspaceIntent.targetPaths: report.md');
+  });
+
+  it('rejects writes under a read-only Workspace intent', () => {
+    const candidate = plan(); candidate.workspaceIntent!.operation = 'read_only';
+    expect(validatePlanningAgentPlan(candidate, configuration).errors)
+      .toContain('a read-only Workspace intent cannot authorize a write Work Graph');
+  });
+
+  it('rejects an ambiguous intent authorizing work', () => {
+    const candidate = plan(); candidate.workspaceIntent!.operation = 'ambiguous';
+    expect(validatePlanningAgentPlan(candidate, configuration).errors)
+      .toContain('an ambiguous Workspace intent cannot authorize plan_work_graph');
+  });
+
+  it('requires explicit read effects when independent text reports could run in parallel', () => {
+    const candidate = plan([subtask({ deliveryKind: 'report', fileOutputs: [] }),
+      subtask({ id: 'second', deliveryKind: 'report', fileOutputs: [] })]);
+    candidate.workspaceIntent!.operation = 'read_only'; candidate.workspaceIntent!.targetPaths = [];
+    expect(validatePlanningAgentPlan(candidate, configuration).errors)
+      .toEqual([expect.stringContaining('must declare workspaceEffect')]);
   });
 });

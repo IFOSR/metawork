@@ -3,7 +3,7 @@ import { tmpdir } from 'os';
 import { join } from 'path';
 import { describe, expect, it, vi } from 'vitest';
 import Database from 'better-sqlite3';
-import { runMigrations } from '../../src/storage/migrations.js';
+import { initializeDatabaseSchema } from '../../src/storage/schema.js';
 import { ExecutionProgressService } from '../../src/execution/execution-progress-service.js';
 import { SkillUsageEventRepo } from '../../src/storage/skill-usage-event-repo.js';
 import { WorkspaceStore } from '../../src/execution/workspace-store.js';
@@ -13,7 +13,7 @@ import { formatExecutorProgress } from '../../src/executor/error-utils.js';
 function createDb() {
   const db = new Database(':memory:');
   db.pragma('foreign_keys = ON');
-  runMigrations(db);
+  initializeDatabaseSchema(db);
   return db;
 }
 

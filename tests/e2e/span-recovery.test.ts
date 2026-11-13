@@ -5,7 +5,7 @@ import { DurableKernelWorkflow, KernelApplicationInterruptedError } from '../../
 import { ControlKernel, type KernelSnapshot } from '../../src/kernel/control-kernel.js';
 import { buildKernelConfigurationView, buildPlannerConfigurationView } from '../../src/configuration/projections.js';
 import { KernelWorkflowRepo } from '../../src/storage/kernel-workflow-repo.js';
-import { runMigrations } from '../../src/storage/migrations.js';
+import { initializeDatabaseSchema } from '../../src/storage/schema.js';
 import { spanSnapshot } from '../support/span-configuration.js';
 import { workGraphPlan } from '../support/planning-agent-plans.js';
 import type { SpanRoutingEvaluator } from '../../src/routing/span-routing-types.js';
@@ -15,7 +15,7 @@ afterEach(() => { for (const db of databases.splice(0)) db.close(); });
 
 function fixture() {
   const snapshot = spanSnapshot();
-  const db = new Database(':memory:'); databases.push(db); runMigrations(db);
+  const db = new Database(':memory:'); databases.push(db); initializeDatabaseSchema(db);
   db.prepare(`INSERT INTO configuration_revisions (revision_id, content_hash, source_kind, imported_at)
     VALUES (?, 'hash', 'native', '2026-09-27T00:00:00.000Z')`).run(snapshot.revisionId);
   const store = new KernelWorkflowRepo(db);

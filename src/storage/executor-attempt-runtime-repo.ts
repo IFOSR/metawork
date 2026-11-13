@@ -1,5 +1,5 @@
 import type Database from 'better-sqlite3';
-import type { KernelRecoverySafety } from '../kernel/control-kernel.js';
+import type { ControlRecoverySafety } from '../control/control-contracts.js';
 
 export interface ExecutorAttemptRuntimeRecord {
   attemptId: string;
@@ -9,7 +9,7 @@ export interface ExecutorAttemptRuntimeRecord {
   workspaceBaseline: Record<string, unknown>;
   workspaceDelta: Record<string, unknown>;
   progress: Record<string, unknown>;
-  recoverySafety: KernelRecoverySafety;
+  recoverySafety: ControlRecoverySafety;
   externalIdempotencyKey: string | null;
   /**
    * Write-after-crash facts. `writeStartedAt` without `receiptPersistedAt`
@@ -42,7 +42,7 @@ interface RuntimeRow {
   workspace_baseline_json: string;
   workspace_delta_json: string;
   progress_json: string;
-  recovery_safety: KernelRecoverySafety;
+  recovery_safety: ControlRecoverySafety;
   external_idempotency_key: string | null;
   write_started_at: string | null;
   write_finished_at: string | null;
@@ -61,7 +61,7 @@ export class ExecutorAttemptRuntimeRepo {
     sourceAttemptId: string | null;
     workspaceRoot: string | null;
     workspaceBaseline?: Record<string, unknown>;
-    recoverySafety: KernelRecoverySafety;
+    recoverySafety: ControlRecoverySafety;
     externalIdempotencyKey?: string | null;
     now: string;
   }): ExecutorAttemptRuntimeRecord {
@@ -134,6 +134,20 @@ export class ExecutorAttemptRuntimeRepo {
       ...entry,
       history: [...existing, entry].slice(-Math.max(1, maxEntries)),
     }, now);
+  }
+
+  /**
+   * The Attempt's sealed Conversation Git commit pair. This is the immutable
+   * identity a published result is accepted against; the working tree is not
+   * (convergence review B-02).
+   */
+  attemptCommits(attemptId: string): { worktreeId: string | null; beforeCommit: string | null; afterCommit: string | null } | null {
+    const row = this.db.prepare(
+      'SELECT worktree_id, before_commit, after_commit FROM executor_attempt_runtime WHERE attempt_id = ?',
+    ).get(attemptId) as { worktree_id: string | null; before_commit: string | null; after_commit: string | null } | undefined;
+    return row
+      ? { worktreeId: row.worktree_id, beforeCommit: row.before_commit, afterCommit: row.after_commit }
+      : null;
   }
 
   recordWorkspaceDelta(attemptId: string, delta: object, now: string): void {
@@ -214,7 +228,7 @@ export class ExecutorAttemptRuntimeRepo {
     if (taskIds.length > 100) throw new Error('timeline_task_limit');
     const placeholders = taskIds.map(() => '?').join(',');
     return (this.db.prepare(`SELECT * FROM executor_attempt_runtime WHERE attempt_id IN (
-      SELECT attempt_id FROM kernel_dispatch_items WHERE task_id IN (${placeholders})
+      SELECT attempt_id FROM dispatch_items WHERE task_id IN (${placeholders})
       UNION SELECT attempt_id FROM executor_attempt_receipts WHERE task_id IN (${placeholders})
     )`).all(...taskIds, ...taskIds) as RuntimeRow[]).map(rowToRecord);
   }
@@ -232,7 +246,7 @@ export class ExecutorAttemptRuntimeRepo {
       ) AS progress_json
       FROM executor_attempt_runtime
       WHERE attempt_id IN (
-        SELECT attempt_id FROM kernel_dispatch_items WHERE task_id IN (${placeholders})
+        SELECT attempt_id FROM dispatch_items WHERE task_id IN (${placeholders})
         UNION SELECT attempt_id FROM executor_attempt_receipts WHERE task_id IN (${placeholders})
       )
     `).all(...taskIds, ...taskIds) as Array<Pick<RuntimeRow, 'attempt_id' | 'created_at' | 'updated_at' | 'progress_json'>>;

@@ -67,10 +67,10 @@ e2e('Web routing identity, canonical execution cards, and theme presentation', (
 
         // 历史 fixture 同时包含 proposal ID 和 Runtime ID，公开投影只能形成一张卡。
         expect(await cdp.evaluate(
-          `document.querySelectorAll('.live-execution-panel .execution-card').length`,
+          `document.querySelectorAll('.task-dag-panel .work-graph-diagram-node').length`,
         )).toBe(1);
         const executionCardText = await cdp.evaluate(
-          `document.querySelector('.execution-card')?.innerText ?? ''`,
+          `document.querySelector('.task-dag-panel')?.innerText ?? ''`,
         );
         expect(String(executionCardText)).toContain('Codex CLI');
         expect(String(executionCardText)).toContain('gpt-5.6-sol');
@@ -89,7 +89,7 @@ e2e('Web routing identity, canonical execution cards, and theme presentation', (
           statusOverlapsDuration: false,
         });
 
-        await cdp.evaluate(`document.querySelector('.execution-card.is-clickable').click()`);
+        await cdp.evaluate(`document.querySelector('.work-graph-diagram-node').click()`);
         await waitForExpression(
           cdp,
           `document.querySelectorAll('.execution-detail-stream li').length >= 4`,
@@ -130,7 +130,7 @@ e2e('Web routing identity, canonical execution cards, and theme presentation', (
         expect(String(trajectoryText)).not.toContain('code-cli-5');
         expect(String(trajectoryText)).not.toContain('Codex CLI 被拒绝');
         expect(await cdp.evaluate(
-          `document.querySelectorAll('.live-execution-panel .execution-card').length`,
+          `document.querySelectorAll('.task-dag-panel .work-graph-diagram-node').length`,
         )).toBe(1);
 
         await assertThemeReadability(cdp);
@@ -760,7 +760,7 @@ async function waitForWorkspace(cdp: CdpClient): Promise<void> {
   await waitForExpression(cdp, `Boolean(document.querySelector('.workspace-shell'))`);
   await waitForExpression(
     cdp,
-    `document.querySelectorAll('.live-execution-panel .execution-card').length === 1`,
+    `document.querySelectorAll('.task-dag-panel .work-graph-diagram-node').length === 1`,
   );
 }
 

@@ -27,7 +27,7 @@ export class SessionPersistenceService {
       const turn = input.turnId ? this.db.prepare(`SELECT account_id, conversation_id, turn_id FROM conversation_turns WHERE turn_id = ? AND conversation_id = ?`)
         .get(input.turnId, input.conversationId ?? input.sessionId) as { account_id: string; conversation_id: string; turn_id: string } | undefined : undefined;
       const linked = input.taskId ? this.db.prepare(`SELECT q.turn_id FROM query_task_links l JOIN query_usage_contexts q ON q.query_id = l.query_id
-        WHERE l.cost_task_id = ? ORDER BY q.accepted_at DESC LIMIT 1`).get(input.taskId) as { turn_id: string | null } | undefined : undefined;
+        WHERE l.task_id = ? ORDER BY q.accepted_at DESC LIMIT 1`).get(input.taskId) as { turn_id: string | null } | undefined : undefined;
       const accountId = turn?.account_id ?? scope?.account_id ?? input.accountId;
       const conversationId = turn?.conversation_id ?? scope?.conversation_id ?? input.conversationId;
       const turnId = turn?.turn_id ?? linked?.turn_id ?? input.turnId ?? null;

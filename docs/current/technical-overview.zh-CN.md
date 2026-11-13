@@ -1,3 +1,15 @@
+> 最新进度（2026-11-10，Review R-01～R-32）：金额链、Codex/容器执行与 TUI facade 已分批删除；采用 fresh-only schema 67，Manager 不再提案选择 Agent/model，Router 边界和逐调用用量正在验证。根 lint 通过，最近专项 182 通过 / 3 失败，最新完整构建/测试未完成；整体未验收。当前状态与证据见[技术概览现状](technical-overview.md)、[Review 报告](../plans/2026-11-10-metawork-full-code-review-report.md)及[续作记录](../plans/2026-11-08-metawork-convergence-continuation-record.md)。下方 D2～D6 是历史检查点，旧 schema/迁移叙述不代表当前契约；仅本地修改，不切换安装。
+
+> 2026-11-09 D2-3b-2d：生产环境已无 `plan_proposed` 生产者——replan effect 准备完提案后直接准入并返回 null，无客户端恢复重规划通过惰性 owner applier 同样直接准入，账户组合根不再包装计划适配器，**计划账本零增长**。Manager 读取改读 `task_plan_proposals` + `task_plan_admission_results`。剩余计划适配器/事件词汇是不可达死代码，随 D6 删除。见[续作记录](../plans/2026-11-08-metawork-convergence-continuation-record.md)。
+> 2026-11-09 D2-3b-2c：普通提交、旧 Session 提交、后台 replan worker 与账户启动恢复已改为直接准入（自求值唯一策略 → `applyPlanAdmission`），不再产生计划事件/决策；准入结果按 `admission_<planId>` 记录一次，重放不重复回复，延迟准入直接写可用性事实并阻塞 Task，计费归因改用准入身份。Kernel 仅为 D5 触发的 replan effect 保留计划事件，且复用同一 owner applier；adapter 与计划事件词汇随 D5 删除。见[续作记录](../plans/2026-11-08-metawork-convergence-continuation-record.md)。
+> 2026-11-09 D2-3b-2b-2b：准入现在是单事务应用——Task、初始来源、已授权 graph revision（含 Subtask 与完成要求）、已应用准入结果、排队载荷与 slot claim 一起提交；Workspace IO 与abandon-and-create 仍在事务外，事务内重读提案生命周期，graph 无法持久化时整笔回滚，已记录结果重放不再产生第二份 Task/graph/队列/slot。执行阶段改为恢复已准入的 revision，不再应用第二份 graph。计划 ledger、`plan_proposed` 事件与 Kernel 驱动的应用仍在生产，下一步是生产者/恢复入口改直接准入并删除该传输。见[续作记录](../plans/2026-11-08-metawork-convergence-continuation-record.md)。
+> 2026-11-09 D2-3b-2b-2a：`work_graph_revisions` 的 Kernel 外键已移除，图授权身份改称操作身份（`authorizedOperationId`），当前版本库启动时幂等重建；Task Runtime 新增 `task_plan_admission_results`，按提案的 `admission_<planId>` 记录已应用准入结论（授权/排队/拒绝/澄清/直答/无动作），等价重放幂等、不同结论冲突，投递回执仍是回执。graph 应用仍在 `prepareExecution` 内，Task+来源+graph+结果原子提交、直接延迟结果、启动扫描与计划账本删除仍未完成。见[续作记录](../plans/2026-11-08-metawork-convergence-continuation-record.md)。
+> 2026-11-09 D2-3b-2b-1：普通/同步/merge 提案、准备重放与输入/附件来源已接到独立 owner；Turn 取消先持久化，再中止和应答，保存/重放/应用及 Workspace IO 后均校验，Session 重建不丢失取消。提案缺失不能作为无 owner 计划重放；延迟激活在策略求值前和 graph 应用前校验同一 owner，失效等待项按确切提案结束且不阻塞其他 Job。forwarded 仍只是投递回执；Task/来源/graph/应用结果原子提交与跨连接 fencing 尚未完成，普通 pending 启动扫描继续关闭，准入 ledger 仍保留。见[续作记录](../plans/2026-11-08-metawork-convergence-continuation-record.md)。
+
+> 2026-11-09 D2-3a：计划准入策略已迁到 Task Runtime 的 `plan-admission-policy.ts`，账户组合根将结果适配到现有 inbox/application；准入 ledger 仍未删除。延迟提案已改为独立事实并校验 Task/generation/revision/配置身份。下一门是普通提交、后台 replan 与启动恢复同时切换持久入口，详见[续作记录](../plans/2026-11-08-metawork-convergence-continuation-record.md)。
+
+> 2026-11-08 收敛状态：ADR-0055 是目标架构，生产 Kernel 尚未删除，Router 直派尚未接通。Manager 权限判断已接入 Server 的原始意图与 Attempt 上下文；取消任务的交付检查覆盖入队、写回与重启恢复。验证与未完成项见[本地续作记录](../plans/2026-11-08-metawork-convergence-continuation-record.md)。下文旧 Kernel/迁移描述不代表目标已经完成。
+
 > 当前 Workspace 执行模型（Workspace 内部 Git / Session Worktree 方案）：所有新任务统一在 Conversation 的 Git Worktree 中执行。Worktree 变更封存后进入 Workspace FIFO 合并队列，未产生变更的问答或报告不创建合并项。历史 `in_place` 记录仅用于迁移和恢复读取，新任务不会再选择该模式。
 
 # MetaWork
@@ -28,7 +40,7 @@ MetaWork 是本仓库统一呈现的闭源商业产品。AnyFusion 是独立的�
 > v39/v40 新增 ADR-0042 定义的 Query 用量与账单事实（Query 归因上下文、计量
 > span/观测、不可变价格版本、成本记录、每 Query 最终单及明细、消费 outbox/
 > 回执、账单调整和稳定实例标识）；计量、账单与外部消费导出在发布门禁通过前
-> 已交付 Server-side observe/shadow 与只读投影；外部消费导出仍需发布门禁。`KernelWorkflow` 串行完成
+> 已交付 Server-side observe/shadow 与只读投影；外部消费导出仍需发布门禁。`TaskControlWorkflow` 串行完成
 > event、Decision 和 application，attempt supervisor 在单一活跃顶层 Task
 > 内并行启动最多四个隔离 attempt。ADR-0037 已将顶层 Task 并行扩展为
 > Conversation 级单 slot：不同 Conversation 可并行，同一 Conversation 的后续
@@ -115,7 +127,7 @@ binding；本地 TUI/Web Client 把启动目录作为不受信任的 Workspace �
 `/workspace /absolute/path` 只选择当前 Client Workspace，绝不移动历史
 Conversation。
 
-KernelWorkflow、Execution Runtime 和启动恢复等账号级服务由
+TaskControlWorkflow、Execution Runtime 和启动恢复等账号级服务由
 `AccountRuntime` 单例持有。每个 Account 只有一个 Kernel coordinator
 负责 durable decision/application drain。每个 Conversation 只有一个执行或清理
 中的顶层 Task slot；不同 Conversation 可以并行，同一 Conversation 的后续 Task
@@ -144,7 +156,7 @@ flowchart LR
   Conversation --> Planning[Planner Work Unit<br/>PlanningAgent]
   Planning --> Plan[PlanningAgentPlan v9<br/>Workspace 意图、目标、风险、<br/>v7 graph 或授权确认]
   Plan --> Event[KernelEvent<br/>plan_proposed]
-  Event --> Workflow[Durable KernelWorkflow v5<br/>inbox、snapshot、decision、application]
+  Event --> Workflow[TaskControlWorkflow<br/>serial decide + apply]
   Workflow --> Kernel[Durable Task Coordinator<br/>frontier、batch、资源与恢复]
   Kernel --> Decision{KernelDecision}
   Decision -->|clarification / task_control / no_action| Conversation[KernelDecisionApplier<br/>非执行状态或澄清]
@@ -155,7 +167,7 @@ flowchart LR
   Decision -->|reject/no_action| Stop[不执行<br/>保留状态]
 
   Runtime --> TaskOS[Task OS<br/>TaskRuntimeService]
-  TaskOS --> ExecCoord[KernelExecutionRuntime<br/>构造 scheduling snapshot]
+  TaskOS --> ExecCoord[ControlExecutionRuntime<br/>构造 scheduling snapshot]
   ExecCoord --> GraphRuntime[WorkGraphRuntimeService<br/>应用已授权 work graph]
   GraphRuntime --> Graph[Work Graph<br/>持久化 Subtasks]
   Graph --> Frontier[纯 runnable frontier<br/>依赖与 publication 事实]
@@ -178,7 +190,7 @@ flowchart LR
   Attempt <--> Store
 ```
 
-所有自然语言输入统一进入隔离的 AnyFusion-Pi `PlanningAgent`，产出严格 v8 `PlanningAgentPlan`。Work Graph 使用 v7 契约，固定一个配置 revision 并携带完整 Executor bindings；Planner 不枚举资源 claim、工具 allowlist 或 execution layer。当前 `ControlKernel` 是迁移期 Durable Task Coordinator 兼容实现，根据 frontier、pending/active item、AgentClass、资源和 slot 事实协调确定性 batch；Execution 并行运行 attempt，并由 publication worker 按拓扑层、首次授权顺序和 Subtask ID 发布成果。Executor/Host 直接处理 capability policy，Kernel 不参与权限解释。
+所有自然语言输入统一进入隔离的 AnyFusion-Pi `PlanningAgent`，产出严格 v8 `PlanningAgentPlan`。Work Graph 使用 v7 契约，固定一个配置 revision 并携带完整 Executor bindings；Planner 不枚举资源 claim、工具 allowlist 或 execution layer。ADR-0055 D3–D5 之后，执行控制循环（派发与容量、执行落地、失败/重试、Task 恢复、分区、沙箱、合并修复、完成与重新规划调度）由 Task Runtime 通过 `src/execution/*-policy.ts` 与唯一的 `ControlLoopPolicy` decider 拥有，根据 frontier、pending/active item、AgentClass、资源和 slot 事实协调确定性 batch；Execution 并行运行 attempt，并由 publication worker 按拓扑层、首次授权顺序和 Subtask ID 发布成果。权限门禁、恢复项、受管服务与未完成工作重试同样由 Task Runtime 拥有；不再存在 Kernel 策略类，D6 已删除操作账本，`src/control/` 只保留传输契约与 owner 事实守卫。Executor/Host 直接处理 capability policy，Kernel 不参与权限解释。
 
 AnyFusion-Pi `PlanningAgent` 使用专用 process runner，而不复用 Executor adapter。一个 Conversation 对应一个持久 Pi session 文件。语义入口以 `--mode rpc` 启动 Planner，通过 stdin/stdout 交换 JSONL；同一 Conversation 的 writer 串行执行，避免多个进程并发写入 session 文件。交互 Pi 进程则以 `--gateway-socket` 和 `--conversation-id` 启动，在创建模型、工具或本地会话 runtime 之前进入 client-only 模式，把原始用户命令提交给 Server。Planner fork 管理服务端 RPC 对话历史和固定 system instructions；MetaWork 不从 SQLite interaction 重建提示词。Provider/Model 与 Planner 工具由 MetaWork 固定管理。语义 RPC 模式不暴露 Pi 原生文件读取工具，避免 Planner 通过源码反推 Runtime 或 Kernel 语义；交互式 client-only TUI 可为工作区问题保留只读的 `read`、`grep`、`find` 和 `ls`。所有模式都禁用 `bash`、`edit` 和 `write`。每个语义 turn 通过受限原生 `submit_planning_proposal({ plan })` 工具提交；runtime 注入 session、turn、user input 和 deterministic submission identity。rejection 是当前 ReAct turn 的结构化反馈，transport uncertain 与 rejection 严格分离；不存在 assistant 文本 proposal parser、proposal 专用 retry、repair prompt 或外层 validation loop。
 
@@ -200,10 +212,11 @@ Executor result 和当前 Conversation Artifact 事实。它是事实目录，�
 Context Bridge 不返回私有发布路径、绝对 Workspace 路径或凭据。只有来源仍是
 普通文件且内容哈希与持久记录一致的已发布 Artifact，才会标记为可用。
 
-语义 RPC 不开放 Web 侦察工具。新语义 Planner turn 不得使用
-`direct_reply`；工作、分析、调研、报告、产物、Workspace 变更和其他用户可见
-结果必须路由给 Executor，通过 `plan_work_graph` 完成。历史 `direct_reply`
-仅用于审计和回放兼容。实时或依赖来源的事实、用户提供的 URL 和公开网络
+语义 RPC 不开放 Web 侦察工具。`direct_reply` 已从计划契约中移除（2026-11-10，
+无兼容路径）：每个语义提案只能是 `clarification`、`task_control`、
+`plan_work_graph`、`authorization_resolution` 或 `no_action`；工作、分析、调研、
+报告、产物、Workspace 变更和其他用户可见结果必须路由给 Executor，通过
+`plan_work_graph` 完成。实时或依赖来源的事实、用户提供的 URL 和公开网络
 研究请求直接路由给覆盖 `current-web-research` 的 AgentClass，由 Executor
 执行最终 Web 检索，并通过 `contextRefs` 接收有界的当前用户输入。Shell、
 语义 Planner 无法完成的 Workspace
@@ -217,7 +230,7 @@ Planner 的收敛预算仍是 8 个处理轮次和 12 次非提案工具调用�
 不把它解释为 `transport_uncertain`，不生成 fallback proposal、Task、Kernel
 事件或 Executor attempt；当前 turn 明确失败并提示用户重试或缩小范围。
 
-本地 AnyFusion-Pi TUI 和 RPC runner 使用同一 vendored 应用，但承担不同角色。TUI 只连接版本化 Unix Gateway，流式展示 replay/live 的 `turn_started`、`trace_delta`、`task_projection`、执行、权限、产物、最终答案和终态错误事件；原始输入、斜杠命令、权限决议与取消请求全部进入 `ClientGateway`。只有受控 RPC runner 连接 mode-`0600` 的 `PlannerHostBridge` 提交 proposal。`ConversationSession` 重新执行 v8 schema 和语义校验，再进入 `plan_proposed → DurableKernelWorkflow → ControlKernel`。client mode 和 bridge 都不能直接访问数据库、Kernel、调度、Execution 或 Executor。
+本地 AnyFusion-Pi TUI 和 RPC runner 使用同一 vendored 应用，但承担不同角色。TUI 只连接版本化 Unix Gateway，流式展示 replay/live 的 `turn_started`、`trace_delta`、`task_projection`、执行、权限、产物、最终答案和终态错误事件；原始输入、斜杠命令、权限决议与取消请求全部进入 `ClientGateway`。只有受控 RPC runner 连接 mode-`0600` 的 `PlannerHostBridge` 提交 proposal。`ConversationSession` 重新执行 v8 schema 和语义校验，再进入 `plan_proposed → TaskControlWorkflow → ControlLoopPolicy`。client mode 和 bridge 都不能直接访问数据库、Kernel、调度、Execution 或 Executor。
 
 Executor 健康恢复是事件驱动的。`ExecutorRecoveryRefreshService` 只检查
 enabled 且持久健康状态已经是 `error` 的 AgentClass，对同一 class 的并发
@@ -238,12 +251,11 @@ dispatch。
 
 ```mermaid
 flowchart LR
-  Historical[历史 direct_reply 记录] --> Replay[审计或回放]
-  Current[新的语义 Planner 提案] --> Reject[Session ingress 拒绝]
+  Current[新的语义 Planner 提案] --> Plan[plan_work_graph / clarification / task_control / no_action]
   Slash[斜杠系统命令] --> Shell[Application-Shell 命令路径]
 ```
 
-新的语义 Planner turn 不通过 `direct_reply` 完成工作。历史记录仍可用于审计和回放；斜杠系统命令继续走 Application-Shell。工作型请求走下面的持久 Task 路径，并由 Executor 产生结果。
+`direct_reply` 动作与其 `response.directReply` 载荷已从契约中删除，没有兼容分支；斜杠系统命令继续走 Application-Shell，工作型请求走下面的持久 Task 路径，并由 Executor 产生结果。
 
 每个启用的 Executor AgentClass 都有自己独立、绑定配置 revision 的统一能力画像。
 Configuration 使用该 Executor 的有效 ModelPolicy、模型能力证据、受控 affordance、
@@ -284,7 +296,7 @@ flowchart LR
   Kernel --> Decision[协调命令<br/>plan_work_graph]
   Decision --> Apply[KernelDecisionApplier]
   Apply --> Task[TaskRuntimeService<br/>创建或绑定任务]
-  Task --> KernelRuntime[KernelExecutionRuntime<br/>构造 snapshot、应用 Decision]
+  Task --> KernelRuntime[ControlExecutionRuntime<br/>构造 snapshot、应用 Decision]
   KernelRuntime --> WorkGraphRuntime[WorkGraphRuntimeService<br/>应用已授权 graph]
   WorkGraphRuntime --> WorkGraph[Work Graph<br/>持久化 Subtasks]
   WorkGraph --> Ready[Runnable frontier<br/>直接依赖已发布]
@@ -320,7 +332,7 @@ flowchart LR
 
 conversation / task 的边界很重要：
 
-- Conversation：处理不需要 Executor 的对话连续性或状态转移，不通过新的 `direct_reply` 完成工作；历史 direct reply 仅作为审计事实保留，不回放进后续提示词。
+- Conversation：处理不需要 Executor 的对话连续性或状态转移（`clarification` / `no_action`），不通过 Planner 文本充当任务完成。
 - Task control：查看或改变已有任务状态。适合“当前在跑什么”“继续那个任务”“清空阻塞任务”。
 - Durable task：创建或继续需要执行、持久化、产物、恢复、调度或后续检索的工作。
 
@@ -339,7 +351,7 @@ PlanningAgent → ControlKernel → Runtime 链处理；已删除 script Client�
 | Codex CLI | `codex` | 仓库修改、测试、确定性实现、带 patch 的代码审查 | 原生安装复用现有命令，不改变其安装或个人 home |
 | Pi Agent | `pi` | 调研、报告生成、多步骤信息综合、agentic CLI 工作流；授权图片模型后也负责图片生成与编辑 | 原生安装复用现有命令，不改变其安装或个人 home；图片执行由 MetaWork 提供 Runner |
 
-默认原生后端（`METACLAW_EXECUTOR_BACKEND=native`）只执行 canonical `codex-cli` 与 `pi-agent`。获批后，Runtime claim 或创建 WorkUnit，再把对应 CLI 作为统一 Runtime 的子进程启动，并把 `cwd` 设为 Kernel 授权的 Conversation Workspace；只读任务使用 Runtime scratch。该路径不扩展第三方 Executor 注册；旧 Docker attempt 后端仍可通过 `METACLAW_EXECUTOR_BACKEND=docker` 显式启用。
+默认原生后端（`METACLAW_EXECUTOR_BACKEND=native`）只执行 canonical `codex-cli` 与 `pi-agent`。获批后，Runtime claim 或创建 WorkUnit，再把对应 CLI 作为统一 Runtime 的子进程启动，并把 `cwd` 设为 Kernel 授权的 Conversation Workspace；只读任务使用 Runtime scratch。该路径不扩展第三方 Executor 注册。Docker attempt 后端、attempt 镜像与 egress proxy 已在 ADR-0055 D12 中移除：`METACLAW_EXECUTOR_BACKEND=docker|container` 现在直接报错，隔离边界是可信用户进程 + Host 强制。
 
 `pi-agent` 仍是用户可见的一个 Executor，但内部包含两个确定性的执行引擎：
 普通任务使用用户本机提供的标准 `pi --mode json` 子进程；需要
@@ -921,7 +933,8 @@ Application Shell。相同事件并发准备合并结果，身份冲突直接拒
 传输在结束前继续占用物理槽位。Span 用量只作为内部路由观测，不新增用户计费阶段。
 
 `npm run smoke:span-routing -- --integration` 可用有效的 OpenRouter Key 对四类任务运行真实
-advisor → Kernel → SQLite 重放验收，记录排序、延迟、usage 和重放零追加调用。
+Router 决策模型（`tests/e2e/span-router-integration.test.ts` 中的 `SpanRouterModel` +
+`SpanRoutingAdvisor`）验收，每个 Attempt 只落一条决策，重放零追加模型调用。
 SDK 边界把结构化 state 序列化为 JSON 字符串，并将转义计入请求预算；Mercury
 、Jev、Drex 以及其他已识别模型统一使用 System One 协议。该模式需要本地开发依赖；默认 smoke
 仅验证 System One 传输。
@@ -1024,7 +1037,7 @@ MetaWork 会用本地 SQLite FTS5 建立任务检索索引，让历史工作可�
 
 ## 单 Task 并发调度模型
 
-MetaWork 为每个 Conversation 调度一个执行或清理中的顶层 Task。AccountRuntime 的 Kernel scheduler 从不同 Conversation 选择候选，并受 `maxConcurrentTasks`、`maxConcurrentAttempts`、每 Task attempt 上限、aging 和公平性控制；同一 Conversation 的后续 Task 保持排队。Work Graph 纯函数从依赖、Subtask 生命周期和 pending/active item 推导稳定 runnable frontier；`KernelWorkflow` 仍串行决定和落应用，attempt supervisor 才异步 claim/run child item。
+MetaWork 为每个 Conversation 调度一个执行或清理中的顶层 Task。AccountRuntime 的 Task scheduler 从不同 Conversation 选择候选，并受 `maxConcurrentTasks`、`maxConcurrentAttempts`、每 Task attempt 上限、aging 和公平性控制；同一 Conversation 的后续 Task 保持排队。Work Graph 纯函数从依赖、Subtask 生命周期和 pending/active item 推导稳定 runnable frontier；`TaskControlWorkflow` 串行决定并立即落应用，attempt supervisor 才异步 claim/run child item。
 
 当当前 Conversation 的顶层任务正在运行或清理时，`ControlKernel` 会将新的 durable Task 持久化排队，而不会并行启动；不同 Conversation 的 Task 可在账户容量允许时调度。Slash command 和确定性执行入口也进入统一 Kernel seam。调度不强制抢占，Task 取消、恢复和跨 Conversation 详细事件均按 immutable Task/Conversation identity 隔离。
 
@@ -1053,7 +1066,7 @@ ADR-0042 接受按 Query 归因的用量计量、精确 MetaCoin 账单，以及
 
 `ControlKernel` v5 当前负责迁移期的 schema、priority、Task/Conversation 身份、Work Graph 和 scheduling facts，并协调 batch dispatch、Task/Subtask 取消、显式部分接受、generation replan、deferred availability、Executor recovery、partition wait 和执行后端恢复。它不决定 Harness 工具集合，也不解释 capability grant/deny/escalate；Executor/Host capability policy 直接处理这些请求。Harness 内部 retry、fallback 和 repair 留在 Executor 内部。
 
-当前 `DurableKernelWorkflow` 是迁移期的 event inbox、协调命令/application 原子 issuance、幂等 Runtime apply 和 observation drain。`WorkGraphRuntimeService` 只持久化或投影经过 Work Graph/Coordinator 验证的 v7 revision。`KernelExecutionRuntime` 构造事实并应用协调命令；`AttemptSupervisor` 管理 durable child launch；`SubtaskAttemptRunner` 负责 attempt-aware claim、唯一 context、Completion Protocol、receipt 和 candidate commit；`WorkspacePublicationWorker` 负责稳定 Git 集成与原子 completion 发布。
+`TaskControlWorkflow` 是内存串行循环：决定一次、立即幂等 apply、观察结果继续，没有 inbox/账本/replay；被中断的 apply 留一条 `task_recovery_items`。`WorkGraphRuntimeService` 只持久化或投影经过 Work Graph/Coordinator 验证的 v7 revision。`ControlExecutionRuntime` 构造事实并应用协调命令；`AttemptSupervisor` 管理 durable child launch；`SubtaskAttemptRunner` 负责 attempt-aware claim、唯一 context、Completion Protocol、receipt 和 candidate commit；`WorkspacePublicationWorker` 负责稳定 Git 集成与原子 completion 发布。
 
 旧版 `ExecutorRouter`、`ExecutorRoutingCoordinator`、`ExecutionPolicyPlanner` 以及 `IntentOrchestrator` 路由子系统已整体删除——不再有独立的 executor-selection 层。`repo_execution`、`research_workflow` 等旧 route intent 名称仅作为 agent class 排序的 affinity key 保留。
 
@@ -1096,10 +1109,21 @@ npm run smoke:metawork
 npm run smoke:gateway
 ```
 
-`npm run smoke:metawork` 默认运行 `planner-session`：在同一个 Conversation 中发送两轮对话，确认第二轮能回忆本轮未重复的口令，并确认只创建一个持久 AnyFusion-Pi Planner session 文件。执行器产物回归仍可显式运行 `--scenario artifact` 或 `--scenario python-hello`。烟测默认以原生进程运行，使用已安装的 MetaWork 配置（`METAWORK_CONFIG_HOME`，默认 `~/.config/metawork`）；传入 `--mode docker` 可强制容器路径，该路径需要 `docker/*.env` provider 文件。
+`npm run smoke:metawork` 默认运行 `planner-session`：在同一个 Conversation 中发送两轮对话，确认第二轮能回忆本轮未重复的口令，并确认只创建一个持久 Manager Pi session 文件。执行器产物回归仍可显式运行 `--scenario artifact` 或 `--scenario python-hello`。烟测以原生进程运行，使用专用夹具配置目录（`METAWORK_CONFIG_HOME`）和显式准备好的 packaged Pi（`METAWORK_PI_COMMAND` 或 `desktop-tools/executor/bin/pi`）；它不会读取当前账户的生效版本，`--mode docker` 已被拒绝（ADR-0055 D12）。
+
+`npm run smoke:span-routing` 是需要凭证的决策模型门禁：从活动 revision 的
+`routing.span` Provider/Model（或显式 `--base-url/--model`）解析目标，向该
+Provider 的 `/systemone` 发一次联合 `choice` 请求，并用 Server 同一套校验规则
+判定；`--integration` 再走四个代表性 workload 与 SQLite replay。产品里没有硬编码
+厂商模型：配置好 Provider/Model 后，任何 System One 兼容端点（例如 `way` 主机上
+的 Jev）都可以直接使用。
 
 `npm run smoke:gateway` 是不依赖外部模型凭据的生产边界门禁，覆盖 Gateway
-准入、replay、重连、账户恢复和独立 Client/Server composition。
+准入、replay、重连、账户恢复和独立 Client/Server composition。跑完验收文件后，
+它会从当前树安装原生发布（packaged Pi，无 vendored Planner）、启动该发布，并用
+两个独立客户端走 v2 JSONL socket 协议验收：同 Workspace 目录共享、跨 Workspace
+隔离、重启后的身份与目录恢复、发布自带 Web 与 session 端点，以及“Server 不会
+拉起已退役 TUI/fork 进程”的守卫。
 
 针对性测试：
 
@@ -1107,8 +1131,8 @@ npm run smoke:gateway
 npm test -- tests/planner-process-runner.test.ts
 npm test -- tests/session/planning-agent-session-routing.test.ts
 npm test -- tests/session/planning-kernel-path.test.ts
-npm test -- tests/kernel/control-kernel.test.ts
-npm test -- tests/kernel/kernel-workflow.test.ts
+npm test -- tests/control/control-contracts-architecture.test.ts
+npm test -- tests/control/control-application-settlement.test.ts
 npm test -- tests/execution/executor-recovery-refresh-service.test.ts
 npm test -- tests/execution/work-unit-claim-service.test.ts
 npm test -- tests/storage/subtask-repo.test.ts
@@ -1121,7 +1145,7 @@ src/
 ├── cli/            # canonical server、tui、web 与管理命令
 ├── client/         # endpoint 解析与独立 TUI/Web launcher
 ├── commands/       # Slash command 路由和命令处理
-├── core/           # 窄共享基础类型和规范化 KernelFailure 事实
+├── core/           # 窄共享基础类型和规范化 ControlFailure 事实
 ├── delivery/       # 验收、产物抽取、聚合检查和最终交付准备
 ├── execution/      # 已授权副作用：workflow apply、probe、claim、执行后端、Git publication
 ├── executor/       # Executor adapter，以及 AgentClass admin/seeder、prompt、skill package
@@ -1129,7 +1153,7 @@ src/
 ├── guidance/       # 主动引导、任务信号、引导策略和仪表盘编排
 ├── integrations/   # 外部集成辅助能力，例如 Markdown preview
 ├── intent/         # 内联资源归一化和非路由意图/材料辅助函数
-├── kernel/         # 纯 ControlKernel v5 contract/decision 与 durable workflow seam
+├── control/        # 控制事件/决策/快照契约、结算与 owner 事实守卫
 ├── learning/       # 反思、周报、技能治理、晋升门禁和安全扫描
 ├── memory/         # 显式偏好、确定性会话上下文和 vault 导出
 ├── notifications/  # 通知适配器，例如飞书通知
@@ -1145,7 +1169,7 @@ src/
 └── work-graph/     # 共享 graph 类型、校验、取消闭包和 runnable frontier
 ```
 
-测试按同样分区放在 `tests/<domain>/`。`src/core` 刻意保持很窄，只保留共享基础类型和共享 `KernelFailure` 事实。关键词 RuleHints、通用记忆/排序 LLM bridge、task-routing 意图猜测和旧路由子系统已删除。Active natural-language path 位于 `src/planning/`、`src/kernel/`、Session Application Shell、`src/execution/` 和 storage repositories。
+测试按同样分区放在 `tests/<domain>/`。`src/core` 刻意保持很窄，只保留共享基础类型和共享 `ControlFailure` 事实。关键词 RuleHints、通用记忆/排序 LLM bridge、task-routing 意图猜测和旧路由子系统已删除。Active natural-language path 位于 `src/planning/`、`src/control/`、Session Application Shell、`src/execution/` 和 storage repositories。
 
 ## License
 
@@ -1203,7 +1227,7 @@ store），后者会以明确错误失败。
 `succeeded`；该边只由状态权威在系统原因下提出，并由生命周期端口在仍有 pendingAction 时拒绝，
 因此不会覆盖真正的用户阻塞。恢复流程每轮会重新评估这类系统阻塞。
 
-调度事实同样显式：`kernel_dispatch_items.terminal` 只表示该调度项不再占用调度容量，
+调度事实同样显式：`dispatch_items.terminal` 只表示该调度项不再占用调度容量，
 schema 61 新增 `terminal_disposition`（`executed` / `not_started`）。资源分区或容量
 让位通过 `AttemptSupervisor → markNotStarted()` 记为 `not_started`，没有 receipt、
 Attempt runtime、Work Unit 或耗时。`ExecutionProjector` 的 Attempt 状态与结果由

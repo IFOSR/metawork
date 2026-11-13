@@ -8,7 +8,7 @@ import {
   workspaceExecutionBindingFingerprint,
 } from '../../src/execution/execution-context.js';
 import { WorkspaceExecutionBindingRepo } from '../../src/storage/workspace-execution-binding-repo.js';
-import { runMigrations } from '../../src/storage/migrations.js';
+import { initializeDatabaseSchema } from '../../src/storage/schema.js';
 
 const roots: string[] = [];
 afterEach(() => { for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true }); });
@@ -16,7 +16,7 @@ afterEach(() => { for (const root of roots.splice(0)) rmSync(root, { recursive: 
 describe('workspace execution binding', () => {
   it('keeps a generation binding immutable and fingerprints its facts', () => {
     const db = new Database(':memory:');
-    runMigrations(db);
+    initializeDatabaseSchema(db);
     const root = mkdtempSync(join(tmpdir(), 'workspace-binding-'));
     roots.push(root);
     mkdirSync(join(root, 'app'), { recursive: true });

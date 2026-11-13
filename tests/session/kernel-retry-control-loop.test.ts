@@ -2,7 +2,7 @@ import Database from 'better-sqlite3';
 import { describe, expect, it } from 'vitest';
 import { TaskEngine } from '../../src/task/task-engine.js';
 import { TaskRepo } from '../../src/storage/task-repo.js';
-import { runMigrations } from '../../src/storage/migrations.js';
+import { initializeDatabaseSchema } from '../../src/storage/schema.js';
 import { OrchestrationEngine } from '../../src/guidance/orchestration.js';
 import { MetaclawSession } from '../../src/session/metaclaw-session.js';
 import type { Config } from '../../src/core/types.js';
@@ -12,7 +12,7 @@ import { FakeAttemptExecutionBackend } from '../support/fake-attempt-execution-b
 describe('Kernel durable retry control loop', () => {
   it('drains a persisted retry wake into one execution-backend recovery-packet attempt and completion', async () => {
     const db = new Database(':memory:');
-    runMigrations(db);
+    initializeDatabaseSchema(db);
     const taskRepo = new TaskRepo(db);
     const taskEngine = new TaskEngine(taskRepo, '/tmp/metaclaw-kernel-retry');
     const attemptExecutionBackend = new FakeAttemptExecutionBackend((_input, attemptIndex) => attemptIndex === 0

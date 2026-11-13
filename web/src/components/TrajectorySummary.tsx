@@ -13,7 +13,7 @@ export function TrajectorySummary({ turn }: { turn: ConversationTurnProjection }
     <section className="trajectory-summary">
       <Metric label="端到端耗时" value={formatDuration(presentation.turnDurationMs)} />
       <Metric label="实际执行耗时" value={formatDuration(presentation.executionDurationMs)} />
-      <Metric label="Planner 轮次" value={String(cycles)} />
+      <Metric label="Manager 轮次" value={String(cycles)} />
       <Metric label="工具调用" value={String(tools)} />
       <Metric label="Kernel 决策" value={String(events.filter(event => event.actor === 'kernel').length)} />
       <Metric label="Executor 尝试" value={String(attempts)} />

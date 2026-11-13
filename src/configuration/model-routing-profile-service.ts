@@ -32,8 +32,7 @@ export class ModelRoutingProfileService {
         modelId: model.modelId, description: model.description,
         capabilities: model.capabilities, contextLimit: model.contextLimit,
         publicFacts: model.publicFacts,
-        costInputCnyPerMillion: model.costInputPerMillion,
-        costOutputCnyPerMillion: model.costOutputPerMillion,
+
       },
       ...(preferredModel ? { preferredModel } : {}),
       ...(onDegraded ? { onDegraded } : {}),

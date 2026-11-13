@@ -24,6 +24,8 @@ export function ExecutionNotice({ turn, failure, receipts }: {
   const subtasks = turn.executionTimeline?.stages.find(stage => stage.phase === 'execution')?.subtasks ?? [];
   const dependencies = turn.executionTimeline?.stages.find(stage => stage.phase === 'planning')?.proposal?.dependencies ?? [];
   const stageLabels: Record<string, string> = {
+    planning: '规划',
+    routing: 'Router 决策',
     attempt: 'Executor 调用', workspace_preflight: 'Workspace 预检',
     dispatch: '任务派发', completion: '结果校验',
   };
@@ -38,6 +40,7 @@ export function ExecutionNotice({ turn, failure, receipts }: {
       </header>
       {configurationMismatch ? <p className="execution-notice-explanation">
         执行器读取到的模型配置与任务授权的配置不一致，系统已停止本次执行。依赖这些结果的后续工作也无法继续。
+        {failure?.summary ? `原因：${failure.summary}` : ''}
       </p> : needsAction && <p className="execution-notice-explanation">
         {failure?.summary ? `原因：${failure.summary}`
           : '部分工作未能继续，请查看执行详情确认原因。'}
@@ -58,11 +61,11 @@ export function ExecutionNotice({ turn, failure, receipts }: {
       {needsAction && <div className="execution-notice-next">
         <h4>下一步</h4>
         <p>{configurationMismatch
-          ? '先修复任务所用版本的运行配置，再使用「继续未完成部分」恢复任务。恢复时系统会重新校验配置。'
+          ? '先修复任务所用版本的运行配置，再根据下方任务状态选择可用操作。恢复时系统会重新校验配置。'
           : failure?.userAction
             ?? (turn.status === 'failed'
-              ? '代码已经保留。处理上面的原因后，点击下方「重试未完成部分」，系统只会重试失败的交付或服务启动。'
-              : '处理上面的原因后，点击下方「继续未完成部分」，系统会从未完成的步骤继续。')}</p>
+              ? '请根据下方任务状态选择可用操作；如果需要修改代码、补充材料或重新规划，直接在输入框说明需求。已有成果与失败记录会保留。'
+              : '请先核对上面的原因，再按下方可用操作处理。涉及执行结果不确定的情况，应先查看恢复项并核实实际结果。')}</p>
       </div>}
       {(failure || receipts.length > 0) && <details className="execution-notice-details">
         <summary>查看错误与运行详情</summary>

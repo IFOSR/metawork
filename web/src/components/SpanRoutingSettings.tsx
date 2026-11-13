@@ -34,9 +34,7 @@ function hasSystemOneDecisionCapability(model: SettingsModelEntry): boolean {
   return model.publicFacts?.outputModalities.some(item => item.toLowerCase() === 'decisions') === true
     || /(?:\/v1\/systemone|system\s*one|systemone|typesafe[\s\S]{0,80}\bjev\b|\bjev\b[\s\S]{0,80}(?:interface|protocol|接口|契约|共用))/iu.test(
       `${model.description ?? ''} ${model.routingNotes?.summary ?? ''}`,
-    )
-    || model.modelId === 'inception/mercury-decide:free'
-    || /(?:^|[/:_-])mercury-decide(?:$|[/:_-])/iu.test(model.modelId);
+    );
 }
 
 export function SpanRoutingSettings({ draft, models, providers, credentialConfigured, editingDisabled, onChange }: SpanRoutingSettingsProps) {
@@ -53,7 +51,7 @@ export function SpanRoutingSettings({ draft, models, providers, credentialConfig
       <div className="section-heading">
         <div>
           <h3 id="decision-model-heading">系统路由</h3>
-          <p>决策模型在 Planner 完成 DAG 后联合选择 AgentClass 和 Model。凭证复用 Provider 配置，设置只影响后续新 Graph。</p>
+          <p>决策模型在 Manager 完成 DAG 后联合选择 AgentClass 和 Model。凭证复用 Provider 配置，设置只影响后续新 Graph。</p>
         </div>
         <span className={`state-badge${configured ? '' : ' state-badge-warning'}`}>{configured ? '可用' : '配置未完成'}</span>
       </div>
@@ -64,7 +62,16 @@ export function SpanRoutingSettings({ draft, models, providers, credentialConfig
           <select className="text-input" value={draft.providerRef} disabled={editingDisabled} onChange={event => {
             const providerRef = event.target.value;
             const nextModel = options.find(model => model.providerRef === providerRef);
-            onChange({ ...draft, enabled: true, providerRef, modelRef: nextModel?.ref ?? '', model: nextModel?.modelId ?? draft.model });
+            // Clearing the Provider turns the decision model off: an enabled
+            // section without a Provider/Model would be an invalid revision.
+            onChange({
+              ...draft,
+              enabled: providerRef !== '',
+              providerRef,
+              modelRef: providerRef ? nextModel?.ref ?? '' : '',
+              model: providerRef ? nextModel?.modelId ?? draft.model : draft.model,
+              fallbackModelRefs: providerRef ? draft.fallbackModelRefs : [],
+            });
           }}>
             <option value="">选择已配置 Provider</option>
             {[...new Set(options.map(model => model.providerRef))].map(providerRef => <option key={providerRef} value={providerRef}>{providers[providerRef]?.displayName ?? providerRef}</option>)}

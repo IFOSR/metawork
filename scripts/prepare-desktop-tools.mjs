@@ -2,9 +2,8 @@ import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { mkdir, readFile, rm } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
-import { verifyExecutorPi } from '../apps/desktop/packaging/verify-executor-pi.mjs';
 
-// The reviewed archive contains node/, git/ and executor/ with complete licenses
+// The reviewed archive contains node/ and git/ (legacy archives may also contain executor/) with complete licenses
 // and libraries. Its checksum is release configuration, never supplied by the download.
 const [url, checksum, outputArg] = process.argv.slice(2);
 if (!url || new URL(url).protocol !== 'https:' || !/^[a-f0-9]{64}$/.test(checksum ?? '') || !outputArg) {
@@ -25,10 +24,9 @@ try {
   if (details.some(line => !['-', 'd', 'h'].includes(line[0]))) throw new Error('Desktop tools must not contain links or special entries');
   execFileSync('tar', ['-xzf', archive, '-C', output]);
   await rm(archive);
-  verifyExecutorPi(join(output, 'executor/bin/pi'), {
-    cwd: output,
-    env: { ...process.env, PATH: [join(output, 'node/bin'), join(output, 'git/bin'), join(output, 'executor/bin'), '/usr/bin', '/bin'].join(':') },
-  });
+  // Pi comes exclusively from the signed formal release archive. A legacy
+  // executor directory in the tool bundle is never selected or executed.
+  await rm(join(output, 'executor'), { recursive: true, force: true });
 } catch (error) {
   await rm(output, { recursive: true, force: true });
   throw error;

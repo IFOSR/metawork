@@ -22,6 +22,20 @@ const ReleaseArtifactSchema = z.object({
   lockSha256: Sha256Schema.optional(),
 }).strict();
 
+/**
+ * Packaged upstream Pi runtime (ADR-0055 D6). The Manager and Executor run the
+ * Pi version the packaging host had installed; the manifest records exactly
+ * which one so an install cannot silently use a different runtime.
+ */
+const PiRuntimeSchema = z.object({
+  version: SemverSchema,
+  nodeEngine: z.string().trim().min(1).optional(),
+  lockSha256: Sha256Schema.optional(),
+  url: z.string().trim().url(),
+  byteSize: z.number().int().positive(),
+  sha256: Sha256Schema,
+}).strict();
+
 const CompatibilitySchema = z.object({
   configurationSchema: z.number().int().positive(),
   plannerHostProtocol: z.number().int().positive(),
@@ -49,7 +63,13 @@ export const ReleaseManifestSchema = z.object({
   platform: z.enum(['darwin', 'linux', 'win32']),
   arch: z.enum(['arm64', 'x64']),
   metawork: ReleaseArtifactSchema,
-  planner: ReleaseArtifactSchema,
+  /**
+   * Vendored Planner tree. Optional: once MetaWork runs the packaged upstream Pi
+   * (ADR-0055 D6) the release ships `pi` instead of a vendored planner.
+   */
+  planner: ReleaseArtifactSchema.optional(),
+  /** Packaged upstream Pi runtime; required once the vendored Planner is gone. */
+  pi: PiRuntimeSchema.optional(),
   /**
    * The memory engine (TDAI MemoryCore) ships with the release as its own
    * tree under `memory/tdai`; it has its own upstream revision and lockfile.
@@ -59,6 +79,17 @@ export const ReleaseManifestSchema = z.object({
   signature: SignatureSchema,
   previousCompatibleRelease: SemverSchema.nullable(),
 }).strict().superRefine((manifest, context) => {
+  // A release must ship a planning transport: the vendored Planner tree, the
+  // packaged upstream Pi runtime, or both during the migration.
+  if (!manifest.planner && !manifest.pi) {
+    context.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ['pi'],
+      message: 'a release must ship either the vendored planner or the packaged Pi runtime',
+    });
+    return;
+  }
+  if (!manifest.planner) return;
   if (manifest.planner.source !== manifest.metawork.source) {
     context.addIssue({
       code: z.ZodIssueCode.custom,
@@ -94,8 +125,11 @@ export interface ReleaseManifestVerificationOptions {
   revokedKeyIds: readonly string[];
   artifacts: {
     metawork: ArtifactVerification;
-    planner: ArtifactVerification;
+    /** Required when the manifest declares a vendored Planner archive. */
+    planner?: ArtifactVerification;
     memory: ArtifactVerification;
+    /** Required when the manifest declares a packaged Pi runtime. */
+    pi?: ArtifactVerification;
   };
 }
 
@@ -180,8 +214,19 @@ export function verifyReleaseManifest(
   }
 
   verifyArtifact('metawork', manifest.metawork, options.artifacts.metawork);
-  verifyArtifact('planner', manifest.planner, options.artifacts.planner);
+  if (manifest.planner) {
+    if (!options.artifacts.planner) {
+      throw new Error('release manifest declares a vendored planner but no planner artifact was verified');
+    }
+    verifyArtifact('planner', manifest.planner, options.artifacts.planner);
+  }
   verifyArtifact('memory', manifest.memory, options.artifacts.memory);
+  if (manifest.pi) {
+    if (!options.artifacts.pi) {
+      throw new Error('release manifest declares a packaged Pi runtime but no Pi artifact was verified');
+    }
+    verifyArtifact('pi', manifest.pi, options.artifacts.pi);
+  }
 
   return manifest;
 }
@@ -229,8 +274,8 @@ function verifyManifestSignature(manifest: ReleaseManifest, trustedPublicKey: st
 }
 
 function verifyArtifact(
-  name: 'metawork' | 'planner' | 'memory',
-  expected: ReleaseManifest['metawork'],
+  name: 'metawork' | 'planner' | 'memory' | 'pi',
+  expected: Pick<ArtifactVerification, 'byteSize' | 'sha256'>,
   actual: ArtifactVerification,
 ): void {
   if (actual.byteSize !== expected.byteSize) {

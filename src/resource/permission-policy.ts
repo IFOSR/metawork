@@ -1,5 +1,6 @@
 import { createHash } from 'node:crypto';
 import { partitionCanonicalKey, partitionCovers } from './partition.js';
+import { CONTROLLED_CAPABILITIES } from './types.js';
 import type {
   CapabilityGrantLimits,
   NormalizedCapabilityRequest,
@@ -76,13 +77,16 @@ export function defaultGrantLimits(request: NormalizedCapabilityRequest, now: st
   const readOrNetwork = READ_OR_NETWORK_CAPABILITIES.has(request.capability);
   return {
     expiresAt: new Date(issuedAt + (readOrNetwork ? 15 : 5) * 60_000).toISOString(),
-    maxCalls: readOrNetwork ? 100 : 1,
+    maxCalls: readOrNetwork && request.suggestedScope !== 'once' ? 100 : 1,
     maxBytes: readOrNetwork ? 100 * 1024 * 1024 : 1024 * 1024,
   };
 }
 
 export function evaluateCapabilityRequest(input: PermissionEvaluationInput): PermissionDecision {
   const { request } = input;
+  if (!(CONTROLLED_CAPABILITIES as readonly string[]).includes(request.capability)) {
+    return { type: 'deny_capability', ruleId: null, reason: 'unknown capability' };
+  }
   const operation = request.operation.toLowerCase();
   const hardDeny = HARD_DENY_TOKENS.find(token => operation.includes(token));
   if (hardDeny) {
@@ -96,6 +100,14 @@ export function evaluateCapabilityRequest(input: PermissionEvaluationInput): Per
   }
   if (input.previouslyDeniedFingerprints.includes(request.fingerprint)) {
     return { type: 'deny_capability', ruleId: null, reason: 'identical capability request was already denied' };
+  }
+
+  // Capabilities that can expose credentials or cause an external side effect
+  // always require an explicit user decision. A profile `allow` rule must not
+  // be able to bypass this boundary.
+  if (ALWAYS_ESCALATE_CAPABILITIES.has(request.capability)
+    && !input.userAuthorizationFingerprints.includes(request.fingerprint)) {
+    return { type: 'escalate_capability', ruleId: null, reason: 'capability requires exact user authorization' };
   }
 
   const rule = matchingRule(request, input.rules);
@@ -113,9 +125,6 @@ export function evaluateCapabilityRequest(input: PermissionEvaluationInput): Per
       reason: rule?.reason ?? 'exact user authorization covers this request',
       limits: defaultGrantLimits(request, input.now),
     };
-  }
-  if (ALWAYS_ESCALATE_CAPABILITIES.has(request.capability)) {
-    return { type: 'escalate_capability', ruleId: null, reason: 'capability requires exact user authorization' };
   }
   return { type: 'deny_capability', ruleId: null, reason: 'no explicit permission rule covers this request' };
 }

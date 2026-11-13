@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import type Database from 'better-sqlite3';
+import { ensurePermissionResolutionSchema, ensurePermissionWorkSchema } from './permission-schema.js';
 import type {
   CapabilityGrant,
   NormalizedCapabilityRequest,
@@ -7,6 +8,7 @@ import type {
   PermissionRepositoryPort,
   PermissionRequestRecord,
   PermissionRequestStatus,
+  PermissionResolutionRecord,
   UserAuthorizationRecord,
 } from '../resource/index.js';
 import { partitionCanonicalKey } from '../resource/index.js';
@@ -51,6 +53,19 @@ interface PermissionGrantRow {
   calls_used: number;
   bytes_used: number;
   revoked_at: string | null;
+}
+
+interface PermissionResolutionRow {
+  request_id: string;
+  event_id: string;
+  session_id: string;
+  task_id: string;
+  subtask_id: string;
+  attempt_id: string;
+  resolution: PermissionResolutionRecord['resolution'];
+  source: PermissionResolutionRecord['source'];
+  planner_plan_id: string | null;
+  created_at: string;
 }
 
 function requestFromRow(row: PermissionRequestRow): PermissionRequestRecord {
@@ -99,38 +114,142 @@ function grantFromRow(row: PermissionGrantRow): CapabilityGrant {
   };
 }
 
+function resolutionFromRow(row: PermissionResolutionRow): PermissionResolutionRecord {
+  return {
+    requestId: row.request_id,
+    eventId: row.event_id,
+    sessionId: row.session_id,
+    taskId: row.task_id,
+    subtaskId: row.subtask_id,
+    attemptId: row.attempt_id,
+    resolution: row.resolution,
+    source: row.source,
+    plannerPlanId: row.planner_plan_id,
+    createdAt: row.created_at,
+  };
+}
+
+function sameResolution(left: PermissionResolutionRecord, right: PermissionResolutionRecord): boolean {
+  return left.requestId === right.requestId
+    && left.eventId === right.eventId
+    && left.sessionId === right.sessionId
+    && left.taskId === right.taskId
+    && left.subtaskId === right.subtaskId
+    && left.attemptId === right.attemptId
+    && left.resolution === right.resolution
+    && left.source === right.source
+    && left.plannerPlanId === right.plannerPlanId;
+}
+
 export class SqlitePermissionRepository implements PermissionRepositoryPort {
-  constructor(private readonly db: Database.Database) {}
+  constructor(private readonly db: Database.Database) {
+    // Keep this constructor tolerant of focused repository fixtures while the
+    // application migration boundary remains the authoritative repair point.
+    ensurePermissionResolutionSchema(this.db);
+    ensurePermissionWorkSchema(this.db);
+  }
+
+  enqueuePermissionWork(input: {
+    eventId: string;
+    requestId: string;
+    eventType: 'permission_requested' | 'permission_resolution_received';
+    createdAt: string;
+  }): void {
+    this.db.prepare(`
+      INSERT INTO permission_work_items (
+        event_id, request_id, event_type, status, created_at, updated_at
+      ) VALUES (?, ?, ?, 'pending', ?, ?)
+      ON CONFLICT(event_id) DO NOTHING
+    `).run(input.eventId, input.requestId, input.eventType, input.createdAt, input.createdAt);
+  }
+
+  claimPermissionWork(eventId: string, now: string): boolean {
+    return this.db.prepare(`
+      UPDATE permission_work_items
+      SET status = 'processing', processing_started_at = ?, updated_at = ?
+      WHERE event_id = ? AND status = 'pending'
+    `).run(now, now, eventId).changes === 1;
+  }
+
+  releasePermissionWork(eventId: string, now: string): void {
+    this.db.prepare(`
+      UPDATE permission_work_items
+      SET status = 'pending', processing_started_at = NULL, updated_at = ?
+      WHERE event_id = ? AND status = 'processing'
+    `).run(now, eventId);
+  }
+
+  markPermissionWorkApplied(eventId: string, now: string): void {
+    this.db.prepare(`
+      UPDATE permission_work_items
+      SET status = 'processed', processed_at = ?, processing_started_at = NULL, updated_at = ?
+      WHERE event_id = ? AND status IN ('pending', 'processing')
+    `).run(now, now, eventId);
+  }
+
+  reconcilePermissionWork(now: string): number {
+    return this.db.prepare(`
+      UPDATE permission_work_items
+      SET status = 'pending', processing_started_at = NULL, updated_at = ?
+      WHERE status = 'processing'
+    `).run(now).changes;
+  }
+
+  listPermissionWork(limit = 32): Array<{
+    eventId: string;
+    requestId: string;
+    eventType: 'permission_requested' | 'permission_resolution_received';
+    status: 'pending' | 'processing';
+  }> {
+    return this.db.prepare(`
+      SELECT event_id AS eventId, request_id AS requestId, event_type AS eventType, status
+      FROM permission_work_items
+      WHERE status = 'pending'
+      ORDER BY created_at, event_id
+      LIMIT ?
+    `).all(Math.max(1, Math.min(128, limit))) as Array<{
+      eventId: string;
+      requestId: string;
+      eventType: 'permission_requested' | 'permission_resolution_received';
+      status: 'pending' | 'processing';
+    }>;
+  }
+
+  findResolution(requestId: string): PermissionResolutionRecord | null {
+    const row = this.db.prepare('SELECT * FROM permission_resolutions WHERE request_id = ?')
+      .get(requestId) as PermissionResolutionRow | undefined;
+    return row ? resolutionFromRow(row) : null;
+  }
+
+  recordResolution(record: PermissionResolutionRecord): 'inserted' | 'replayed' | 'conflict' {
+    const existing = this.findResolution(record.requestId);
+    if (existing) return sameResolution(existing, record) ? 'replayed' : 'conflict';
+    try {
+      this.db.prepare(`
+        INSERT INTO permission_resolutions (
+          request_id, event_id, session_id, task_id, subtask_id, attempt_id,
+          resolution, source, planner_plan_id, created_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `).run(
+        record.requestId, record.eventId, record.sessionId, record.taskId,
+        record.subtaskId, record.attemptId, record.resolution, record.source,
+        record.plannerPlanId, record.createdAt,
+      );
+      return 'inserted';
+    } catch (error) {
+      const replay = this.findResolution(record.requestId);
+      if (replay) return sameResolution(replay, record) ? 'replayed' : 'conflict';
+      throw error;
+    }
+  }
 
   ensureDecisionAnchor(
-    decisionId: string,
-    configurationRevision: string,
-    request: NormalizedCapabilityRequest,
+    _decisionId: string,
+    _configurationRevision: string,
+    _request: NormalizedCapabilityRequest,
   ): void {
-    // Older released schemas keep a foreign key from permission_grants to
-    // kernel_decisions. Keep that storage invariant without routing capability
-    // policy through ControlKernel: this is a fact anchor emitted by the
-    // Executor/Host capability service.
-    this.db.prepare(`
-      INSERT OR IGNORE INTO kernel_decisions (
-        id, schema_version, event_id, event_type, correlation_id, causation_id,
-        session_id, task_id, subtask_id, attempt_id, event_json, snapshot_json,
-        decision_json, action, reason, configuration_revision,
-        authorized_bindings_json, binding_fingerprints_json, created_at
-      ) VALUES (?, 5, ?, 'executor_capability', ?, NULL, 'executor-capability', ?, ?, ?, ?, '{}', ?,
-        'executor_capability', 'Executor capability policy fact', ?, '[]', '[]', ?)
-    `).run(
-      decisionId,
-      `executor_capability_event_${decisionId}`,
-      request.id,
-      request.taskId,
-      request.subtaskId,
-      request.attemptId,
-      JSON.stringify({ type: 'executor_capability', requestId: request.id }),
-      JSON.stringify({ requestId: request.id }),
-      configurationRevision,
-      new Date().toISOString(),
-    );
+    // ADR-0055 D6 removed the ledger anchor: permission grants are owned by the
+    // Permission Service and no longer reference a Kernel decision row.
   }
 
   createRequest(request: NormalizedCapabilityRequest, createdAt: string): PermissionRequestRecord {
@@ -171,8 +290,8 @@ export class SqlitePermissionRepository implements PermissionRepositoryPort {
   listEscalatedForTask(taskId: string, afterId = '', limit = 33): PermissionRequestRecord[] {
     return (this.db.prepare(`SELECT * FROM permission_requests request
       WHERE task_id = ? AND status = 'escalated' AND id > ?
-        AND NOT EXISTS (SELECT 1 FROM kernel_events accepted
-          WHERE accepted.event_type = 'permission_resolution_received' AND accepted.correlation_id = request.id)
+        AND NOT EXISTS (SELECT 1 FROM permission_resolutions accepted
+          WHERE accepted.request_id = request.id)
       ORDER BY id LIMIT ?`).all(taskId, afterId, Math.max(1, Math.min(33, limit))) as PermissionRequestRow[]).map(requestFromRow);
   }
 
@@ -206,12 +325,12 @@ export class SqlitePermissionRepository implements PermissionRepositoryPort {
 
   listEscalatedForSession(sessionId: string, afterId: string, limit: number, createdAfter: string): PermissionRequestRecord[] {
     return (this.db.prepare(`SELECT request.* FROM permission_requests request
-      JOIN kernel_events requested ON requested.correlation_id = request.id
-        AND requested.event_type = 'permission_requested'
-      WHERE requested.session_id = ? AND request.status = 'escalated'
+      JOIN tasks owner_task ON owner_task.id = request.task_id
+      WHERE owner_task.owner_planner_session_id = ?
+        AND request.status = 'escalated'
         AND request.id > ? AND request.created_at >= ?
-        AND NOT EXISTS (SELECT 1 FROM kernel_events accepted
-          WHERE accepted.event_type = 'permission_resolution_received' AND accepted.correlation_id = request.id)
+        AND NOT EXISTS (SELECT 1 FROM permission_resolutions accepted
+          WHERE accepted.request_id = request.id)
       ORDER BY request.id LIMIT ?`).all(sessionId, afterId, createdAfter, Math.max(1, Math.min(33, limit))) as PermissionRequestRow[]).map(requestFromRow);
   }
 
@@ -254,6 +373,22 @@ export class SqlitePermissionRepository implements PermissionRepositoryPort {
 
   grant(input: Parameters<PermissionRepositoryPort['grant']>[0]): CapabilityGrant {
     const transaction = this.db.transaction(() => {
+      const current = this.requireMatchingRequest(input.request);
+      if (current.status === 'granted') {
+        const grant = this.db.prepare('SELECT * FROM permission_grants WHERE request_id = ?')
+          .get(input.request.id) as PermissionGrantRow | undefined;
+        if (!grant) throw new Error('permission_grant_missing');
+        return grantFromRow(grant);
+      }
+      if (!['pending', 'escalated'].includes(current.status)
+        || (current.status === 'escalated' && input.authorization?.resolution !== 'approve')) {
+        throw new Error('permission_decision_conflict');
+      }
+      const scope = input.scope ?? input.request.suggestedScope;
+      if (scope !== input.request.suggestedScope && !(scope === 'once' && input.request.suggestedScope === 'attempt')) {
+        throw new Error('permission_scope_expansion');
+      }
+      if (scope === 'once' && input.limits.maxCalls !== 1) throw new Error('permission_scope_expansion');
       this.insertAuthorization(input.request, input.authorization, input.grantedAt);
       const id = `permission_grant_${randomUUID()}`;
       this.db.prepare(`
@@ -268,13 +403,13 @@ export class SqlitePermissionRepository implements PermissionRepositoryPort {
         id, input.request.id, input.request.fingerprint, input.decisionId,
         input.request.taskId, input.request.subtaskId, input.request.attemptId,
         input.request.capability, partitionCanonicalKey(input.request.partition), JSON.stringify(input.request.partition),
-        input.request.operation, input.request.suggestedScope, input.limits.expiresAt,
+        input.request.operation, scope, input.limits.expiresAt,
         input.limits.maxCalls, input.limits.maxBytes, input.grantedAt,
       );
       this.db.prepare(`
         UPDATE permission_requests SET status = 'granted', decision_id = ?,
-          decision_reason = 'granted', resolved_at = ? WHERE id = ?
-      `).run(input.decisionId, input.grantedAt, input.request.id);
+          decision_reason = ?, resolved_at = ? WHERE id = ?
+      `).run(input.decisionId, input.reason ?? 'granted', input.grantedAt, input.request.id);
       return grantFromRow(this.db.prepare('SELECT * FROM permission_grants WHERE request_id = ?')
         .get(input.request.id) as PermissionGrantRow);
     });
@@ -283,6 +418,9 @@ export class SqlitePermissionRepository implements PermissionRepositoryPort {
 
   deny(input: Parameters<PermissionRepositoryPort['deny']>[0]): void {
     const transaction = this.db.transaction(() => {
+      const current = this.requireMatchingRequest(input.request);
+      if (current.status === 'denied') return;
+      if (current.status === 'granted') throw new Error('permission_decision_conflict');
       this.insertAuthorization(input.request, input.authorization, input.deniedAt);
       this.db.prepare(`
         UPDATE permission_requests SET status = 'denied', decision_id = ?,
@@ -290,6 +428,21 @@ export class SqlitePermissionRepository implements PermissionRepositoryPort {
       `).run(input.decisionId, input.reason, input.deniedAt, input.request.id);
     });
     transaction.immediate();
+  }
+
+  private requireMatchingRequest(request: NormalizedCapabilityRequest): PermissionRequestRecord {
+    const current = this.findRequest(request.id);
+    const stored = current?.request;
+    if (!stored || stored.fingerprint !== request.fingerprint
+      || stored.taskId !== request.taskId || stored.generationId !== request.generationId
+      || stored.subtaskId !== request.subtaskId || stored.attemptId !== request.attemptId
+      || stored.agentClassName !== request.agentClassName || stored.permissionProfileId !== request.permissionProfileId
+      || stored.capability !== request.capability || stored.operation !== request.operation
+      || stored.suggestedScope !== request.suggestedScope
+      || partitionCanonicalKey(stored.partition) !== partitionCanonicalKey(request.partition)) {
+      throw new Error('permission_request_identity_mismatch');
+    }
+    return current!;
   }
 
   escalate(requestId: string, decisionId: string, reason: string, at: string): void {

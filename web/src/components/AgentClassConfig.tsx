@@ -1,3 +1,4 @@
+import { DEFAULT_AGENT_ROLES } from '../../../src/configuration/default-agent-roles';
 import type { HttpClient } from '../api/http';
 import { AgentCapabilityProfile } from './AgentCapabilityProfile';
 import { AiActionStatus, type ResponsibilityRewriteFeedback } from './AiActionStatus';
@@ -6,7 +7,6 @@ import type {
   AgentClassRoutingFacts,
   SettingsModelEntry,
   SettingsProviderEntry,
-  RoutingObjective,
 } from '../settings-model';
 import {
   evaluateModelCompatibility,
@@ -23,13 +23,6 @@ interface AgentClassConfigProps {
   onSuggestResponsibility?: () => void;
   responsibilityFeedback?: ResponsibilityRewriteFeedback;
 }
-
-const objectiveOptions: Array<{ value: RoutingObjective; label: string }> = [
-  { value: 'balanced', label: '均衡' },
-  { value: 'quality', label: '质量优先' },
-  { value: 'cost', label: '成本优先' },
-  { value: 'latency', label: '速度优先' },
-];
 
 export function AgentClassConfig({
   http,
@@ -69,7 +62,7 @@ export function AgentClassConfig({
           <div>
             <div className="settings-eyebrow">智能体设置</div>
             <h3>{facts.kind === 'planner' ? '规划智能体' : '执行智能体'}</h3>
-            <p>先定义职责，再选择模型；能力信息由系统根据模型事实自动补充。</p>
+            <p>请绑定你自己的模型；能力信息由系统根据模型事实自动补充。未绑定模型的角色无法执行任务。</p>
           </div>
         </div>
         <span className="system-badge">{facts.kind === 'planner' ? '系统智能体' : '可编辑'}</span>
@@ -94,7 +87,7 @@ export function AgentClassConfig({
               </div>
               <span className="agent-field-badge">系统定义</span>
             </div>
-            <strong>理解用户意图，拆解任务为 DAG 图，选择执行智能体并完成编排规划。</strong>
+            <strong>{DEFAULT_AGENT_ROLES.planner.responsibility}</strong>
           </section>
         ) : (
           <section className="agent-responsibility-panel">
@@ -305,21 +298,13 @@ function renderRoutePolicyPanel(input: {
               })}
             </div>
           </div>
+          {/*
+            ADR-0055 D4: in Auto mode the Router owns the AgentClass/Provider/
+            Model choice, so there is no "optimization objective" for the user to
+            pick. The stored `objective` value is preserved unchanged for old
+            revisions; new AgentClasses default to `balanced`.
+          */}
           <div className="route-field-grid">
-            <label className="route-field">
-              <span className="field-label">优化目标</span>
-              <select
-                value={draft.objective}
-                onChange={event => onChange({
-                  ...draft,
-                  objective: event.target.value as RoutingObjective,
-                })}
-              >
-                {objectiveOptions.map(option => (
-                  <option value={option.value} key={option.value}>{option.label}</option>
-                ))}
-              </select>
-            </label>
             <label className="route-field">
               <span className="field-label">默认偏好</span>
               <select
@@ -346,15 +331,16 @@ function renderRoutePolicyPanel(input: {
           <>
           {!fixedModelAvailable && (
             <div className="route-invalid">
-              当前没有可用模型，请重新选择。
+              {enabledModels.length ? '请选择你自己的模型完成绑定。' : '请先在“模型服务”添加你自己的 Provider 和模型，再回到此处绑定。'}
             </div>
           )}
           <select
+            aria-label={`${draft.displayName || facts.displayName}的模型`}
             value={fixedModelAvailable ? draft.modelRef : ''}
             onChange={event => onChange({ ...draft, modelRef: event.target.value })}
           >
             {!fixedModelAvailable && (
-              <option value="">没有可用模型，请重新选择</option>
+              <option value="">请选择你自己的模型</option>
             )}
             {enabledModels.map(model => {
               const compatibility = modelCompatibility.get(model.ref)!;

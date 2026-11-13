@@ -43,7 +43,6 @@ export function useWorkspaceController() {
   const directoryChangesRef = useRef(new NavigationDirectoryChanges());
   const [tab, setTab] = useState<WorkspaceTab>('conversation');
   const [selectedTrajectoryTurnId, setSelectedTrajectoryTurnId] = useState<string | null>(null);
-  const [selectedBillingTurnId, setSelectedBillingTurnId] = useState<string | null>(null);
   const [draft, setDraft] = useState('');
   const [route, setRoute] = useState<ConversationRoute | null>(() => readConversationRoute());
   const [search, setSearch] = useState('');
@@ -122,14 +121,12 @@ export function useWorkspaceController() {
   const observedActivity = useConversationActivity(observationClient?.conversations, observedId);
   const latestObservedTurn = useConversationTurn(observationClient?.conversations, observedId, observedWindow.ids.at(-1) ?? '');
   const trajectoryObservedTurn = useConversationTurn(observationClient?.conversations, observedId, selectedTrajectoryTurnId ?? '');
-  const billingObservedTurn = useConversationTurn(observationClient?.conversations, observedId, selectedBillingTurnId ?? '');
   useLayoutEffect(() => {
     draftOwner.current = observedId;
     const saved = drafts.current.get(observedId);
     setDraft(saved?.draft ?? ''); setPendingAttachments(saved?.attachments ?? []); setUploadError(null);
   }, [observedId]);
   const openTrajectory = useCallback((turnId: string) => { setSelectedTrajectoryTurnId(turnId); setTab('trajectory'); }, []);
-  const openBilling = useCallback((turnId: string) => { setSelectedBillingTurnId(turnId); setTab('billing'); }, []);
   useEffect(() => {
     const failed = () => setActivationNotice('草稿或偏好未能保存到本机，请保留窗口并重试。');
     window.addEventListener('metawork:persistence-error', failed);
@@ -148,7 +145,7 @@ export function useWorkspaceController() {
     if (draftOwner.current === id) {
       draftOwner.current = null; draftValue.current = { draft: '', attachments: [] };
       setDraft(''); setPendingAttachments([]); setSelectedRecord(null);
-      setSelectedTrajectoryTurnId(null); setSelectedBillingTurnId(null); setExecutionDetail(null);
+      setSelectedTrajectoryTurnId(null); setExecutionDetail(null);
       setPreviewState({ status: 'closed' }); ++recordRequestRef.current;
     }
   }), [observationClient]);
@@ -487,7 +484,6 @@ export function useWorkspaceController() {
   }, [authenticated, activeWorkspaceId, search]);
   useEffect(() => {
     setSelectedTrajectoryTurnId(null);
-    setSelectedBillingTurnId(null);
     setPreviewState({ status: 'closed' });
     setExecutionDetail(null);
   }, [activeWorkspaceId, currentSessionId]);
@@ -835,6 +831,9 @@ export function useWorkspaceController() {
     catch (error) { setActivationNotice((error as Error).message); }
   };
   const handleSend = (text: string, attachments: Array<{ attachmentId: string }>) => {
+    if (newSessionPendingRef.current) {
+      setActivationNotice('新会话正在创建，请稍后发送。'); return;
+    }
     if (pendingInputsRef.current.size >= 64) {
       setActivationNotice('有较多消息正在确认发送状态，请稍后再发。'); return;
     }
@@ -883,7 +882,7 @@ export function useWorkspaceController() {
     const activity = target && source ? source.activity(target).tasks : [];
     const turnId = ids.slice().reverse().find(id => turnHasOngoingWork(activity, source?.turn(target!, id) ?? null)) ?? null;
     const cancellable = activity.filter(task => task.canCancel && taskHasOngoingWork(task));
-    // A Turn can hand off to an Executor before its Planner trace is closed.
+    // A Turn can hand off to an Executor before its Manager trace is closed.
     // Prefer the running Task attached to the latest observed Turn. Blocked
     // and queued Tasks have their own controls; Stop must not cancel an old
     // blocked Task instead of the work that is currently executing.
@@ -905,9 +904,9 @@ export function useWorkspaceController() {
         kind: 'cancel_task', taskId: task.taskId,
         expectedExecutionGeneration: task.executionGeneration,
       }, () => undefined));
-      // A Planner trace can still be running while its Task is already
+      // A Manager trace can still be running while its Task is already
       // executing. Send both controls so stopping the Executor also aborts a
-      // Planner that has not closed its turn yet.
+      // Manager that has not closed its turn yet.
       if (turnId) requests.push(wsRef.current.control(target, { kind: 'cancel_turn', turnId }, () => undefined));
       void Promise.allSettled(requests).then(results => {
         if (currentConversationRef.current !== target) return;
@@ -943,12 +942,13 @@ export function useWorkspaceController() {
     ?? selectedRecord;
   const latestTurn = latestObservedTurn ? turnProjection(latestObservedTurn) : null;
   const selectedTrajectoryTurn = trajectoryObservedTurn ? turnProjection(trajectoryObservedTurn) : latestTurn;
-  const selectedBillingTurn = billingObservedTurn ? turnProjection(billingObservedTurn) : latestTurn;
   const running = conversationHasOngoingWork(observedActivity.tasks, latestTurn);
   const requiredBlock = requiredAgentBlock(agentReadiness);
   const configurationNeeded = configurationRuntime?.workConfigurationReady === false;
-  const composerDisabled = !selectedId || !connected || requiredBlock.blocked || configurationNeeded;
-  const composerBlockedReason = workspaceSwitching
+  const composerDisabled = newSessionPending || !selectedId || !connected || requiredBlock.blocked || configurationNeeded;
+  const composerBlockedReason = newSessionPending
+    ? '新会话正在创建…'
+    : workspaceSwitching
     ? '正在切换 Workspace…'
     : !connected
         ? 'WebSocket 尚未连接，消息不会丢失。连接恢复后再发送。'
@@ -975,11 +975,11 @@ export function useWorkspaceController() {
     uploadingAttachments,
     previewCollapsed, setPreviewCollapsed, previewMaximized, setPreviewMaximized, previewWidth,
     setPreviewWidth, executionDetail, setExecutionDetail, httpRef, observationClient,
-    viewportMemory, openTrajectory, openBilling, handleSelectWorkspace, handleCreateWorkspace,
+    viewportMemory, openTrajectory, handleSelectWorkspace, handleCreateWorkspace,
     handleOpenArtifact, handleOpenAttachment, handleLoadMoreConversations, handleSelectSession, handleNewSession, handleRefreshAgentReadiness,
     handleOpenAgentSettings, handleDeleteSession, handleFilesSelected, handleClearSessions,
     activeWorkspace, selectedId, selectedMetadata, selectedTrajectoryTurn,
-    selectedBillingTurn, running, requiredBlock, composerDisabled, composerBlockedReason,
+    running, requiredBlock, composerDisabled, composerBlockedReason,
     handleDraftChange, handleSend, handleCancelTurn, executionDetailTurn, executionDetailOpen,
     failedInput: Boolean(failedInput), handleRestoreFailedInput,
   };
@@ -988,7 +988,7 @@ function activationMessage(result: WebSessionActivationResult): string | null {
   if (result.state === 'active') return null;
   if (result.state === 'browsable') return '会话已打开为只读历史。';
   return {
-    planner_turn_active: 'Planner 正在处理当前请求，完成前不能切换会话。',
+    planner_turn_active: 'Manager 正在处理当前请求，完成前不能切换会话。',
     task_runtime_active: '当前 Task 仍在执行或等待处理，不能强制切换会话。',
     session_unavailable: '会话不存在、已归档或无法恢复。',
   }[result.reason];

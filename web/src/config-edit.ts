@@ -25,7 +25,6 @@ export type AutoModelPolicy = {
 export type EditableModelPolicy = FixedModelPolicy | AutoModelPolicy;
 
 /** Legacy default retained for migrations with no configured decision model. */
-export const SPAN_ROUTING_MODEL = 'inception/mercury-decide:free';
 export const SPAN_ROUTING_DEFAULT_TIMEOUT_MS = 8_000;
 export const SPAN_ROUTING_MIN_TIMEOUT_MS = 500;
 export const SPAN_ROUTING_MAX_TIMEOUT_MS = 10_000;
@@ -52,7 +51,7 @@ export function loadSpanRoutingDraft(
     : SPAN_ROUTING_DEFAULT_TIMEOUT_MS;
   return {
     enabled: span?.enabled === true,
-    model: typeof span?.model === 'string' && span.model.trim() ? span.model : SPAN_ROUTING_MODEL,
+    model: typeof span?.model === 'string' ? span.model : '',
     providerRef: typeof span?.providerRef === 'string' ? span.providerRef : '',
     modelRef: typeof span?.modelRef === 'string' ? span.modelRef : '',
     fallbackModelRefs: Array.isArray(span?.fallbackModelRefs)
@@ -87,7 +86,7 @@ export function buildSpanRoutingSection(
     span: {
       ...originalSpan,
       enabled: draft.enabled,
-      model: draft.model.trim() || SPAN_ROUTING_MODEL,
+      ...(draft.model.trim() ? { model: draft.model.trim() } : {}),
       ...(draft.providerRef.trim() ? { providerRef: draft.providerRef.trim() } : {}),
       ...(draft.modelRef.trim() ? { modelRef: draft.modelRef.trim() } : {}),
       ...(draft.fallbackModelRefs.length > 0 ? { fallbackModelRefs: [...draft.fallbackModelRefs] } : {}),

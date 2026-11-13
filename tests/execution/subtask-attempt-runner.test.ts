@@ -14,7 +14,7 @@ import { cancelFixtureTask } from '../support/task-state-fixture.js';
 import { createSqliteTaskLifecyclePort } from '../../src/storage/task-lifecycle-port-adapter.js';
 import { TaskStateChangeRepo, TaskStateProjectionOutbox } from '../../src/storage/task-state-change-repo.js';
 import { describe, expect, it, vi } from 'vitest';
-import { runMigrations } from '../../src/storage/migrations.js';
+import { initializeDatabaseSchema } from '../../src/storage/schema.js';
 import { SubtaskRepo } from '../../src/storage/subtask-repo.js';
 import { WorkUnitRepo } from '../../src/storage/work-unit-repo.js';
 import { WorkUnitClaimService } from '../../src/execution/work-unit-claim-service.js';
@@ -109,7 +109,7 @@ function setup(
     })),
   };
   const db = new Database(':memory:');
-  runMigrations(db);
+  initializeDatabaseSchema(db);
   db.prepare(`
     INSERT INTO configuration_revisions (
       revision_id, content_hash, source_kind, imported_at

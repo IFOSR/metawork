@@ -1,15 +1,15 @@
 import type { Task } from '../core/types.js';
-import type { KernelDecision } from '../kernel/control-kernel.js';
+import type { ControlDecision } from '../control/control-contracts.js';
 import type { TaskRuntimeService } from '../task/task-runtime-service.js';
 import type { QueuedExecutionRequest } from './session-helpers.js';
-import type { KernelExecutionRuntime } from '../execution/kernel-execution-runtime.js';
+import type { ControlExecutionRuntime } from '../execution/control-execution-runtime.js';
 import type { SessionPresentationService } from './session-presentation-service.js';
 import type { ExecutionTraceAppendInput } from '../execution/execution-trace.js';
 import { isUnknownTaskBlocker } from '../task/task-blocker-guidance.js';
 
 export interface SessionTaskExecutionApplicationDeps {
   taskRuntimeService: TaskRuntimeService;
-  kernelExecutionRuntime: KernelExecutionRuntime;
+  kernelExecutionRuntime: ControlExecutionRuntime;
   presentation: SessionPresentationService;
   callbacks: {
     appendOutput(...lines: string[]): void;
@@ -21,13 +21,13 @@ export interface SessionTaskExecutionApplicationDeps {
 }
 
 export interface TaskExecutionStart {
-  decision: Promise<KernelDecision | null>;
+  decision: Promise<ControlDecision | null>;
   completion: Promise<void>;
 }
 
 export function formatTaskResumeDecision(
   taskId: string,
-  decision: KernelDecision,
+  decision: ControlDecision,
   taskStatus?: Task['status'],
 ): string {
   if (decision.action.type === 'resume_task') {
@@ -37,7 +37,7 @@ export function formatTaskResumeDecision(
   return `任务 #${taskId} 未重新执行：${explanation}（Kernel: ${decision.reason}）`;
 }
 
-function resumeDecisionExplanation(decision: KernelDecision, taskStatus?: Task['status']): string {
+function resumeDecisionExplanation(decision: ControlDecision, taskStatus?: Task['status']): string {
   if (decision.reason === 'running Task has no exact recoverable Subtask') {
     return '当前任务没有可安全恢复的精确 Subtask，未启动新的 Executor';
   }
@@ -84,9 +84,9 @@ export class SessionTaskExecutionApplicationService {
         completion: Promise.resolve(),
       };
     }
-    let resolveDecision!: (decision: KernelDecision | null) => void;
+    let resolveDecision!: (decision: ControlDecision | null) => void;
     let decisionSettled = false;
-    const decision = new Promise<KernelDecision | null>(resolve => {
+    const decision = new Promise<ControlDecision | null>(resolve => {
       resolveDecision = resolve;
     });
     const prepared = this.deps.kernelExecutionRuntime.prepareExecution({
@@ -114,7 +114,6 @@ export class SessionTaskExecutionApplicationService {
             phase: 'delivery',
             actor: 'runtime',
             kind: 'resume_not_executed',
-            status: 'completed',
             title: 'Task resume completed without execution',
             summary: message,
             details: {

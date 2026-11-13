@@ -4,7 +4,7 @@ import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { runMigrations } from '../../src/storage/migrations.js';
+import { initializeDatabaseSchema } from '../../src/storage/schema.js';
 import {
   buildEligibleContextRefKeys,
   isEligibleInteractionRef,
@@ -26,7 +26,7 @@ function insertInteraction(
 describe('assistant interaction reference eligibility', () => {
   it('qualifies current input and fails closed on a retired preference reference', () => {
     const db = new Database(':memory:');
-    runMigrations(db);
+    initializeDatabaseSchema(db);
 
     expect(buildEligibleContextRefKeys({
       db,
@@ -47,7 +47,7 @@ describe('assistant interaction reference eligibility', () => {
 
   it('allows Planner-selected assistant interaction without an explicit user quote', () => {
     const db = new Database(':memory:');
-    runMigrations(db);
+    initializeDatabaseSchema(db);
     insertInteraction(db, {
       id: 'interaction_historical',
       sessionId: 'session_current',
@@ -66,7 +66,7 @@ describe('assistant interaction reference eligibility', () => {
 
   it('qualifies a published artifact from the current Conversation without accepting its private path', () => {
     const db = new Database(':memory:');
-    runMigrations(db);
+    initializeDatabaseSchema(db);
     const root = mkdtempSync(join(tmpdir(), 'metawork-context-eligibility-'));
     const publishedPath = join(root, 'history.jpg');
     const bytes = Buffer.from([0xff, 0xd8, 0xff, 0x01]);
@@ -126,7 +126,7 @@ describe('assistant interaction reference eligibility', () => {
 
   it('allows Planner-selected same-session assistant history and rejects cross-session refs', () => {
     const db = new Database(':memory:');
-    runMigrations(db);
+    initializeDatabaseSchema(db);
     insertInteraction(db, {
       id: 'interaction_exact',
       sessionId: 'session_current',
@@ -174,7 +174,7 @@ describe('assistant interaction reference eligibility', () => {
 
   it('rejects a published artifact whose source content no longer matches its durable hash', () => {
     const db = new Database(':memory:');
-    runMigrations(db);
+    initializeDatabaseSchema(db);
     const root = mkdtempSync(join(tmpdir(), 'metawork-context-hash-'));
     const publishedPath = join(root, 'artifact.txt');
     writeFileSync(publishedPath, 'changed content');
@@ -225,7 +225,7 @@ describe('assistant interaction reference eligibility', () => {
 
   it('allows Planner-selected assistant history beyond the recent interaction window', () => {
     const db = new Database(':memory:');
-    runMigrations(db);
+    initializeDatabaseSchema(db);
     insertInteraction(db, {
       id: 'interaction_old',
       sessionId: 'session_current',

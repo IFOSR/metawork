@@ -59,7 +59,7 @@ if (mode === 'update') {
   await new SourceNativeUpdater({ paths, installLaunchers: false,
     secretStore: createProductionSecretStore({ credentialsFile: paths.credentials }),
     isServerRunning: running, detectCommand: commandExistsOnPath,
-  }).update({ releaseId, sourceRoot: resolve(source), plannerRoot: join(resolve(source), 'planner/AnyFusion-Pi'), ...memory });
+  }).update({ releaseId, sourceRoot: resolve(source), ...memory });
   const accountPaths = resolveAccountPaths(LOCAL_DEFAULT_ACCOUNT_ID, paths.root);
   const repository = new FileConfigurationRepository(accountPaths.config);
   const secretStore = createProductionSecretStore({ credentialsFile: paths.credentials });
@@ -100,7 +100,7 @@ const lock = await acquireRuntimeUpdateLock(paths.root, 'update');
 try {
   await new SourceNativeInstaller({ paths, installLaunchers: false,
     secretStore: createProductionSecretStore({ credentialsFile: paths.credentials }), detectCommand: async () => false,
-  }).install({ releaseId, sourceRoot: resolve(source), plannerRoot: join(resolve(source), 'planner/AnyFusion-Pi'),
+  }).install({ releaseId, sourceRoot: resolve(source), executorPreset: 'desktop-pi',
     ...memory,
     provider: developmentProvider,
   });

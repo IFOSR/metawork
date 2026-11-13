@@ -9,7 +9,7 @@ import {
 } from '../../src/gateway/command-admission-store.js';
 import type { CommandReceipt } from '../../src/gateway/command-admission.js';
 import { SqliteCommandAdmissionStore } from '../../src/storage/command-admission-repo.js';
-import { runMigrations } from '../../src/storage/migrations.js';
+import { initializeDatabaseSchema } from '../../src/storage/schema.js';
 
 const accountId = 'local-default';
 const cleanups: Array<() => Promise<void>> = [];
@@ -33,7 +33,7 @@ function record(idempotencyKey: string, state: StoredCommandAdmission['state']):
 async function fixture() {
   const root = await mkdtemp(join(tmpdir(), 'admission-repo-'));
   const db = new Database(join(root, 'index.db'));
-  runMigrations(db);
+  initializeDatabaseSchema(db);
   cleanups.push(async () => { db.close(); await rm(root, { recursive: true, force: true }); });
   const legacy = new FileCommandAdmissionStore(join(root, 'legacy'));
   const store = new SqliteCommandAdmissionStore(db, accountId);

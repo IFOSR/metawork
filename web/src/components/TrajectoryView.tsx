@@ -7,7 +7,6 @@ import type { HttpClient } from '../api/http';
 import type { WorkGraphPresentationProjection } from '../api/types';
 import { WorkGraphPanel } from './WorkGraphPanel';
 import { ExecutionNarrative } from './ExecutionNarrative';
-import { LiveExecutionPanel } from './LiveExecutionPanel';
 import { ArtifactLink } from './ArtifactLink';
 import { workGraphTitleIndex } from '../work-graph-titles';
 
@@ -15,7 +14,6 @@ export function TrajectoryView({
   turn,
   http,
   onOpenArtifact,
-  onOpenSubtaskDetail,
   onLoadMore,
   loading = false,
   hasMore = false,
@@ -23,7 +21,6 @@ export function TrajectoryView({
   turn: ConversationTurnProjection | null;
   http?: HttpClient | null;
   onOpenArtifact?: (artifact: ArtifactProjection) => void;
-  onOpenSubtaskDetail?: (subtaskId: string, subtaskTitle: string) => void;
   onLoadMore?: () => void;
   loading?: boolean;
   hasMore?: boolean;
@@ -48,9 +45,6 @@ export function TrajectoryView({
   const titleBySubtask = workGraphTitleIndex(workGraph);
   return (
     <div className="trajectory-view">
-      {turn && (
-        <LiveExecutionPanel turn={turn} onSelectSubtask={onOpenSubtaskDetail} workGraph={workGraph} />
-      )}
       <TrajectorySummary turn={turn} />
       <ExecutionNarrative turn={turn} titleBySubtask={titleBySubtask} />
       <WorkGraphPanel projection={workGraph} />

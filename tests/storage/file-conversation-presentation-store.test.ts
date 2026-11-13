@@ -8,7 +8,7 @@ import {
 } from '../../src/storage/file-conversation-presentation-store.js';
 import type { ConversationTurn } from '../../src/management/web-session-types.js';
 import Database from 'better-sqlite3';
-import { runMigrations } from '../../src/storage/migrations.js';
+import { initializeDatabaseSchema } from '../../src/storage/schema.js';
 import { SqliteConversationHistoryRepo } from '../../src/storage/conversation-history-repo.js';
 
 const roots: string[] = [];
@@ -51,7 +51,7 @@ describe('FileConversationPresentationStore', () => {
     await legacy.write({ version: 1, conversationId: 'conv_alpha', turns });
     const db = new Database(':memory:');
     try {
-      runMigrations(db);
+      initializeDatabaseSchema(db);
       const history = new SqliteConversationHistoryRepo<ConversationTurn>(db, 'local-default', 'presentation');
       const store = new FileConversationPresentationStore(root, history);
       const page = await store.readPage('conv_alpha', { limit: 5 });

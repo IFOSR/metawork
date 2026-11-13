@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import {
+  access,
   chmod,
   lstat,
   mkdir,
@@ -19,8 +20,8 @@ import { createProductionConfigurationProbe } from '../configuration/production-
 import { FileConfigurationRepository } from '../configuration/file-configuration-repository.js';
 import { migrateLegacyProviderCredentials } from '../configuration/provider-credential-migration.js';
 import type { CredentialsFileSecretStore } from '../configuration/credentials-file-secret-store.js';
-import { CURRENT_SCHEMA_VERSION, runMigrations } from '../storage/migrations.js';
-import { DatabaseUpgradeTransaction } from './database-upgrade-transaction.js';
+import { assertCurrentDatabaseFile } from '../storage/schema.js';
+import { DatabaseReleaseSnapshot } from './database-release-snapshot.js';
 import type { AnyFusionPaths } from './paths.js';
 import { resolveReleasePaths } from './paths.js';
 import {
@@ -30,7 +31,6 @@ import {
   type ReleaseActivationJournal,
   type ReleasePointerName,
 } from './release-pointer-transaction.js';
-import { createMigrationContextFromSnapshot } from './schema30-migration-context.js';
 import { stageSourceRelease } from './source-native-installer.js';
 import { AccountLayoutMigrator } from './account-layout-migrator.js';
 import { acquireRuntimeUpdateLock } from './runtime-update-lock.js';
@@ -42,7 +42,7 @@ import { backupGatewayJournal, restoreGatewayJournal } from './gateway-journal-b
 export interface SourceNativeUpdateInput {
   releaseId: string;
   sourceRoot: string;
-  plannerRoot: string;
+  plannerRoot?: string;
   /** Memory engine tree shipped with the release (see `stageSourceRelease`). */
   memoryRoot?: string;
 }
@@ -73,6 +73,7 @@ export class SourceNativeUpdater {
     if (await this.dependencies.isServerRunning()) throw new Error('Stop Server before activation recovery');
     const paths = this.dependencies.paths;
     const accountPaths = resolveAccountPaths(LOCAL_DEFAULT_ACCOUNT_ID, paths.root);
+    await preflightExistingDatabases(paths, accountPaths);
     const lock = await acquireRuntimeUpdateLock(paths.root, 'update');
     try {
       const pointers = releasePointerPaths(paths, accountPaths);
@@ -93,6 +94,7 @@ export class SourceNativeUpdater {
         'running Server must be quiesced through ServerUpdateCoordinator before update',
       );
     }
+    await preflightExistingDatabases(paths, accountPaths);
     const lock = await acquireRuntimeUpdateLock(paths.root, 'update');
     try {
       await new AccountLayoutMigrator({ paths }).migrate();
@@ -127,33 +129,12 @@ export class SourceNativeUpdater {
         paths.appCurrent,
         input.memoryRoot,
       );
-      const sourceSchema = readSchemaVersion(accountPaths.database);
-      if (!isSupportedDatabaseSchema(sourceSchema)) {
-        throw new Error(`unsupported update source schema: ${sourceSchema}`);
-      }
       const candidateDatabase = join(accountPaths.databaseRevisions, `${upgradeId}.db`);
       const backupDatabase = join(accountPaths.backups, upgradeId, 'anyfusion.db');
-      const migrationContext = sourceSchema === 30
-        ? createMigrationContextFromSnapshot(snapshot)
-        : undefined;
-      const databaseTransaction = new DatabaseUpgradeTransaction({
-        migrateClone: path => {
-          const db = new Database(path);
-          try {
-            db.pragma('foreign_keys = ON');
-            runMigrations(db, migrationContext);
-          } finally {
-            db.close();
-          }
-        },
-      });
-      await databaseTransaction.prepare({
+      await new DatabaseReleaseSnapshot().prepare({
         sourcePath: accountPaths.database,
         backupPath: backupDatabase,
         clonePath: candidateDatabase,
-        expectedSourceSchema: sourceSchema,
-        expectedTargetSchema: CURRENT_SCHEMA_VERSION,
-        sentinelTables: ['schema_version'],
       });
       await chmod(candidateDatabase, 0o600);
       await backupGatewayJournal({
@@ -219,6 +200,7 @@ export class SourceNativeUpdater {
         'running Server must be quiesced through ServerUpdateCoordinator before rollback',
       );
     }
+    await preflightExistingDatabases(paths, accountPaths);
     const lock = await acquireRuntimeUpdateLock(paths.root, 'update');
     try {
       await new AccountLayoutMigrator({ paths }).migrate();
@@ -324,7 +306,7 @@ export class SourceNativeUpdater {
               `rollback configuration probe failed: ${(probeResult.issues ?? []).join('; ')}`,
             );
           }
-          verifyCompatibleDatabase(accountPaths.database);
+          verifyActiveDatabase(accountPaths.database);
         },
       });
       // The current config transaction is already recovered and verified. Retire
@@ -438,7 +420,7 @@ async function ensureRevisionedDatabasePointer(accountPaths: AccountPaths): Prom
   if (!info.isFile()) {
     throw new Error(`account database is not a file or symlink: ${accountPaths.database}`);
   }
-  verifyCompatibleDatabase(accountPaths.database);
+  verifyActiveDatabase(accountPaths.database);
   await mkdir(accountPaths.databaseRevisions, { recursive: true, mode: 0o700 });
   const baseline = join(
     accountPaths.databaseRevisions,
@@ -446,7 +428,7 @@ async function ensureRevisionedDatabasePointer(accountPaths: AccountPaths): Prom
   );
   await backupSqliteDatabase(accountPaths.database, baseline);
   await chmod(baseline, 0o600);
-  verifyCompatibleDatabase(baseline);
+  verifyActiveDatabase(baseline);
   const temporary = `${accountPaths.database}.next-${randomUUID()}`;
   await symlink(relative(dirname(accountPaths.database), baseline), temporary);
   await rename(temporary, accountPaths.database);
@@ -465,30 +447,48 @@ async function backupSqliteDatabase(sourcePath: string, targetPath: string): Pro
   }
 }
 
-function readSchemaVersion(path: string): number {
-  const db = new Database(path, { readonly: true, fileMustExist: true });
-  try {
-    const row = db.prepare('SELECT version FROM schema_version').get() as {
-      version: number;
-    } | undefined;
-    if (!row || !Number.isInteger(row.version)) {
-      throw new Error('database schema version is missing');
+async function preflightExistingDatabases(paths: AnyFusionPaths, accountPaths: AccountPaths): Promise<void> {
+  const pointerPaths = releasePointerPaths(paths, accountPaths);
+  const names = await readdir(paths.upgradeJournals).catch((error: NodeJS.ErrnoException) => {
+    if (error.code === 'ENOENT') return [];
+    throw error;
+  });
+  const prepared: ReleaseActivationJournal[] = [];
+  for (const name of names.filter(name => name.endsWith('-activation.json'))) {
+    const journal = await readReleaseActivationJournal(join(paths.upgradeJournals, name));
+    if (journal.phase === 'prepared') prepared.push(journal);
+  }
+  if (prepared.length > 1) throw new Error('multiple prepared release activations require manual recovery');
+  const recovery = prepared[0];
+  if (recovery) {
+    // A crash may leave the database pointing at an unhealthy candidate. Verify
+    // the complete rollback identity and previous schema before any mutation.
+    for (const name of Object.keys(pointerPaths) as ReleasePointerName[]) {
+      if (recovery.paths[name] !== pointerPaths[name]) {
+        throw new Error(`release activation journal path mismatch: ${name}`);
+      }
+      const target = await readlink(pointerPaths[name]);
+      if (target !== recovery.previousTargets[name] && target !== recovery.candidateTargets[name]) {
+        throw new Error(`prepared activation does not match ${name} pointer`);
+      }
     }
-    return row.version;
-  } finally {
-    db.close();
+    assertCurrentDatabaseFile(resolve(dirname(accountPaths.database), recovery.previousTargets.database));
+  }
+  for (const path of new Set([accountPaths.database, paths.database])) {
+    if (recovery && path === accountPaths.database) continue;
+    try { await access(path); }
+    catch (error) {
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') continue;
+      throw error;
+    }
+    assertCurrentDatabaseFile(path);
   }
 }
 
 function verifyActiveDatabase(path: string): void {
+  assertCurrentDatabaseFile(path);
   const db = new Database(path, { readonly: true, fileMustExist: true });
   try {
-    const version = db.prepare('SELECT version FROM schema_version').get() as {
-      version: number;
-    } | undefined;
-    if (version?.version !== CURRENT_SCHEMA_VERSION) {
-      throw new Error(`candidate database schema mismatch: ${version?.version ?? 'missing'}`);
-    }
     const integrity = db.pragma('integrity_check') as Array<{ integrity_check: string }>;
     if (integrity.length !== 1 || integrity[0]?.integrity_check !== 'ok') {
       throw new Error('candidate database integrity check failed');
@@ -496,35 +496,5 @@ function verifyActiveDatabase(path: string): void {
     if ((db.pragma('foreign_key_check') as unknown[]).length > 0) {
       throw new Error('candidate database foreign key check failed');
     }
-  } finally {
-    db.close();
-  }
-}
-
-function verifyCompatibleDatabase(path: string): void {
-  const db = new Database(path, { readonly: true, fileMustExist: true });
-  try {
-    const version = db.prepare('SELECT version FROM schema_version').get() as {
-      version: number;
-    } | undefined;
-    if (!isSupportedDatabaseSchema(version?.version)) {
-      throw new Error(`rollback database schema is incompatible: ${version?.version ?? 'missing'}`);
-    }
-    const integrity = db.pragma('integrity_check') as Array<{ integrity_check: string }>;
-    if (integrity.length !== 1 || integrity[0]?.integrity_check !== 'ok') {
-      throw new Error('rollback database integrity check failed');
-    }
-    if ((db.pragma('foreign_key_check') as unknown[]).length > 0) {
-      throw new Error('rollback database foreign key check failed');
-    }
-  } finally {
-    db.close();
-  }
-}
-
-function isSupportedDatabaseSchema(version: number | undefined): boolean {
-  return version !== undefined
-    && Number.isInteger(version)
-    && version >= 30
-    && version <= CURRENT_SCHEMA_VERSION;
+  } finally { db.close(); }
 }

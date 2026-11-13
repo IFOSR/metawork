@@ -1,8 +1,7 @@
+import { DEFAULT_AGENT_ROLES, isUnboundDefaultAgentRole, isDefaultAgentSetupPending } from '../../../src/configuration/default-agent-roles';
 import { ProviderProtocolSelect } from './ProviderProtocolSelect';
 import { ModelCapabilityDetails } from './ModelCapabilityDetails';
 import { ExecutorTools } from './ExecutorTools';
-import { sameAiText, aiActionError, degradationNotice, type ResponsibilityRewriteFeedback } from './AiActionStatus';
-import { useEffect, useMemo, useRef, useState } from 'react';
 import type { HttpClient } from '../api/http';
 import type {
   ActivateResult,
@@ -66,6 +65,7 @@ interface SettingsPanelProps {
   runtime: ConfigurationRuntimeState | null;
   onClose: () => void;
   agentReadiness?: AgentReadiness[];
+  initialSection?: 'memory';
 }
 
 type ProviderDraft = SettingsProviderEntry & { apiKey: string };
@@ -250,25 +250,9 @@ function loadCatalog(config: RawRecord, completion?: ConfigurationCompletionResu
         capabilityState: completedModel?.capabilityState
           ?? (capabilities.length > 0 ? '已自动发现' : '需要确认'),
         ...(typeof model.contextLimit === 'number' ? { contextLimit: model.contextLimit } : {}),
-        ...(typeof model.costInputPerMillion === 'number'
-          ? { costInputPerMillion: model.costInputPerMillion }
-          : completedModel?.costInputPerMillion !== undefined
-            ? { costInputPerMillion: completedModel.costInputPerMillion }
-            : {}),
-        ...(typeof model.costOutputPerMillion === 'number'
-          ? { costOutputPerMillion: model.costOutputPerMillion }
-          : completedModel?.costOutputPerMillion !== undefined
-            ? { costOutputPerMillion: completedModel.costOutputPerMillion }
-            : {}),
-        ...(model.pricing && typeof model.pricing === 'object'
-          ? { pricing: model.pricing as ModelDraft['pricing'] }
-          : completedModel?.pricing && typeof completedModel.pricing === 'object'
-            ? { pricing: completedModel.pricing }
-            : {}),
         ...(typeof model.latencyTier === 'string' ? { latencyTier: model.latencyTier } : {}),
         ...(typeof model.qualityTier === 'string' ? { qualityTier: model.qualityTier } : {}),
         ...(typeof model.reasoning === 'string' ? { reasoning: model.reasoning } : {}),
-        ...(typeof model.costTier === 'string' ? { costTier: model.costTier } : {}),
         routingNotes,
         enabled: model.enabled !== false,
       },
@@ -291,6 +275,9 @@ function loadRuntimePolicy(config: RawRecord): RuntimePolicyDraft {
 
 function loadRoutingDraft(config: RawRecord): RoutingDraft {
   const rawAgentClasses = asRecord(config.agentClasses);
+  const setupPending = isDefaultAgentSetupPending(Object.fromEntries(
+    Object.entries(rawAgentClasses).map(([ref, raw]) => [ref, asRecord(raw)]),
+  ), asRecord(config.models));
   const modelEntries = Object.entries(asRecord(config.models)).map(([ref, raw]) => {
     const model = asRecord(raw);
     return {
@@ -324,13 +311,13 @@ function loadRoutingDraft(config: RawRecord): RoutingDraft {
     return [
       agentClassRef,
       {
-        enabled: agentClass.enabled !== false,
+        enabled: isPlanner || setupPending || agentClass.enabled !== false,
         displayName: resolveAgentDisplayName(
           agentClassRef,
           typeof agentClass.displayName === 'string' ? agentClass.displayName : undefined,
         ),
         responsibility: isPlanner
-          ? '理解用户意图，拆解任务为 DAG 图，选择执行智能体并完成编排规划。'
+          ? DEFAULT_AGENT_ROLES.planner.responsibility
           : typeof agentClass.responsibility === 'string'
             ? agentClass.responsibility : '',
         mode,
@@ -348,7 +335,6 @@ function loadRoutingDraft(config: RawRecord): RoutingDraft {
           .map(ref => resolveConfiguredModelRef(ref, modelEntries))
           .filter(ref => modelRefs.includes(ref)))],
         objective: fallback.priority === 'quality'
-          || fallback.priority === 'cost'
           || fallback.priority === 'latency'
           ? fallback.priority
           : 'balanced',
@@ -418,20 +404,26 @@ export function SettingsPanel({
   runtime,
   onClose,
   agentReadiness = [],
+  initialSection,
 }: SettingsPanelProps) {
+  const focusMemorySettings = useCallback((node: HTMLDetailsElement | null) => {
+    if (node && initialSection === 'memory') {
+      node.open = true;
+      node.querySelector('.memory-panel')?.scrollIntoView({ block: 'start' });
+    }
+  }, [initialSection]);
   const memoryApi = useMemo(() => http
     ? createMemoryApiClient((path, init) => http.requestMemory(path, init))
     : null, [http]);
   const [activationState, setActivationState] = useState<ConfigurationRuntimeState | null>(runtime);
   const [revisionId, setRevisionId] = useState<string | null>(null);
-  const [codexCommand, setCodexCommand] = useState('codex');
   const [draft, setDraft] = useState<RoutingDraft | null>(null);
   const [facts, setFacts] = useState<RoutingFacts | null>(null);
   const [catalog, setCatalog] = useState<CatalogDraft | null>(null);
   const [runtimePolicy, setRuntimePolicy] = useState<RuntimePolicyDraft | null>(null);
   const [spanDraft, setSpanDraft] = useState<SpanRoutingDraft>({
     enabled: false,
-    model: 'inception/mercury-decide:free',
+    model: '',
     providerRef: '',
     modelRef: '',
     fallbackModelRefs: [],
@@ -455,21 +447,6 @@ export function SettingsPanel({
       description?: string;
       publicFacts?: ModelPublicFacts;
       contextLimit?: number;
-      costInputPerMillion?: number;
-      costOutputPerMillion?: number;
-      pricing?: SettingsModelEntry['pricing'];
-    }>;
-    prices?: Record<string, {
-      inputCnyPerMillion?: number;
-      outputCnyPerMillion?: number;
-      pricing?: {
-        source: 'openrouter' | 'catalog' | 'user';
-        usdInputPerToken?: number;
-        usdOutputPerToken?: number;
-        exchangeRate: 7;
-        fetchedAt?: string;
-        catalogModelId?: string;
-      };
     }>;
     message?: string;
   }>>({});
@@ -510,8 +487,6 @@ export function SettingsPanel({
     completion?: ConfigurationCompletionResult,
   ) => {
     const config = snapshot.config as RawRecord;
-    const codex = Object.values(asRecord(config.harnesses)).map(asRecord).find(harness => harness.driverId === 'codex-cli');
-    setCodexCommand(typeof codex?.command === 'string' ? codex.command : 'codex');
     setRevisionId(snapshot.revisionId);
     setExecutorDefinitions({});
     setExecutorPermissionProfiles({});
@@ -662,7 +637,7 @@ export function SettingsPanel({
     for (const [agentClassRef, entry] of Object.entries(draft)) {
       const agentFacts = facts[agentClassRef];
       if (!agentFacts) continue;
-      if (agentFacts.enabled === false || entry.enabled === false) continue;
+      if (entry.enabled === false) continue;
       const modelRefs = entry.mode === 'fixed'
         ? [entry.modelRef]
         : [...new Set([entry.defaultModelRef, ...entry.allowedModelRefs])];
@@ -721,7 +696,7 @@ export function SettingsPanel({
     setExecutorView(current => current ? { ...current, executors: [
       ...current.executors.filter(agent => agent.agentClassRef !== agentClassRef),
       {
-        agentClassRef, tool: nextFacts[agentClassRef].driverId === 'codex-cli' ? 'codex' : 'pi',
+        agentClassRef, tool: nextFacts[agentClassRef].driverId === 'pi-cli' ? 'pi' : null,
         displayName: String(definition.displayName ?? agentClassRef),
         enabled: definition.enabled !== false,
         operations: current.executors.find(agent => agent.agentClassRef === agentClassRef)?.operations ?? 'standard',
@@ -782,12 +757,6 @@ export function SettingsPanel({
     const originalProviders = asRecord(originalConfig.providers);
     const originalAgentClasses = { ...asRecord(originalConfig.agentClasses), ...executorDefinitions };
     const harnesses = { ...asRecord(originalConfig.harnesses) };
-    for (const [ref, value] of Object.entries(harnesses)) {
-      const harness = asRecord(value);
-      if (harness.driverId === 'codex-cli' && harness.transport === 'local-cli') {
-        harnesses[ref] = { ...harness, command: codexCommand.trim() || 'codex' };
-      }
-    }
     const spanRoutingSection = buildSpanRoutingSection(spanDraft, originalConfig);
     const memorySection = buildMemorySection(memoryDraft, originalConfig);
     const knownSecretReferences = Object.values(originalProviders)
@@ -822,30 +791,18 @@ export function SettingsPanel({
       const originalModel = asRecord(asRecord(originalConfig.models)[model.ref]);
       const sameIdentity = originalModel.providerRef === model.providerRef
         && originalModel.modelId === model.modelId;
-      const {
-        costInputPerMillion: _oldInputPrice,
-        costOutputPerMillion: _oldOutputPrice,
-        pricing: _oldPricing,
-        ...originalModelWithoutPrices
-      } = originalModel;
       models[model.ref] = {
-        ...(sameIdentity ? originalModelWithoutPrices : {}),
+        // Carry forward only schema-owned facts. Spreading the whole original
+        // entry resurrected removed fields (model price/cost) on every save.
+        ...(sameIdentity && originalModel.systemManaged === true ? { systemManaged: true } : {}),
         modelId: model.modelId,
         providerRef: model.providerRef,
         ...(model.description ? { description: model.description } : {}),
         ...(model.publicFacts ? { publicFacts: model.publicFacts } : {}),
         capabilities: model.capabilities,
         ...(model.contextLimit !== undefined ? { contextLimit: model.contextLimit } : {}),
-        ...(model.costInputPerMillion !== undefined
-          ? { costInputPerMillion: model.costInputPerMillion }
-          : {}),
-        ...(model.costOutputPerMillion !== undefined
-          ? { costOutputPerMillion: model.costOutputPerMillion }
-          : {}),
-        ...(model.pricing ? { pricing: model.pricing } : {}),
         ...(model.latencyTier ? { latencyTier: model.latencyTier } : {}),
         ...(model.qualityTier ? { qualityTier: model.qualityTier } : {}),
-        ...(model.costTier ? { costTier: model.costTier } : {}),
         routingNotes: hasRoutingNotes(model.routingNotes) ? model.routingNotes : undefined,
         reasoning: model.reasoning ?? (sameIdentity ? originalModel.reasoning : undefined) ?? 'high',
         enabled: model.enabled !== false,
@@ -940,7 +897,7 @@ export function SettingsPanel({
       .map(provider => provider.providerRef);
     if (draftValidationIssues.length > 0) {
       setResult(null);
-      setLoadError(`以下路由配置需要重新选择可用模型：${draftValidationIssues.join('、')}`);
+      setLoadError(`以下路由配置需要重新选择可用模型：${draftValidationIssues.map(ref => draft[ref]?.displayName || ref).join('、')}`);
       return;
     }
     if (missingCredentials.length > 0) {
@@ -1032,8 +989,6 @@ export function SettingsPanel({
               ...(model.description ? { description: model.description } : {}),
               ...(model.routingNotes ? { routingNotes: model.routingNotes } : {}),
               ...(model.contextLimit !== undefined ? { contextLimit: model.contextLimit } : {}),
-              ...(model.costInputPerMillion !== undefined ? { costInputPerMillion: model.costInputPerMillion } : {}),
-              ...(model.costOutputPerMillion !== undefined ? { costOutputPerMillion: model.costOutputPerMillion } : {}),
               ...(model.publicFacts ? { publicFacts: model.publicFacts } : {}),
             }] : [];
           });
@@ -1163,31 +1118,6 @@ export function SettingsPanel({
     setDraft(current => current ? removeModelRefsFromRoutingDraft(current, modelRefs) : current);
   };
 
-  const updateModelPrice = (
-    modelRef: string,
-    field: 'costInputPerMillion' | 'costOutputPerMillion',
-    value: string,
-  ) => {
-    const trimmed = value.trim();
-    const parsed = trimmed === '' ? undefined : Number(trimmed);
-    if (parsed !== undefined && (!Number.isFinite(parsed) || parsed < 0)) return;
-    setCatalog(current => {
-      if (!current) return current;
-      const model = current.models[modelRef];
-      if (!model) return current;
-      const nextModel = { ...model };
-      if (parsed === undefined) delete nextModel[field];
-      else nextModel[field] = parsed;
-      nextModel.pricing = {
-        ...(nextModel.pricing ?? { exchangeRate: 7 }),
-        source: 'user',
-        exchangeRate: 7,
-        overrideReason: '用户在设置中手动修改人民币价格',
-      };
-      return { ...current, models: { ...current.models, [modelRef]: nextModel } };
-    });
-  };
-
   const updateModelId = (modelRef: string, modelId: string): void => {
     setCatalog(current => {
       if (!current) return current;
@@ -1196,7 +1126,6 @@ export function SettingsPanel({
       const nextId = modelId.trim();
       const discovery = modelDiscoveries[model.providerRef];
       const metadata = discovery?.metadata?.[nextId];
-      const discoveredPrice = discovery?.prices?.[nextId];
       const capabilities = [...new Set([
         ...(discovery?.capabilities?.[nextId] ?? []),
         ...capabilitiesForModelId(nextId),
@@ -1210,9 +1139,6 @@ export function SettingsPanel({
         ...(metadata?.description ? { description: metadata.description } : {}),
         ...(metadata?.publicFacts ? { publicFacts: metadata.publicFacts } : {}),
         ...(metadata?.contextLimit !== undefined ? { contextLimit: metadata.contextLimit } : {}),
-        ...(discoveredPrice?.inputCnyPerMillion !== undefined ? { costInputPerMillion: discoveredPrice.inputCnyPerMillion } : {}),
-        ...(discoveredPrice?.outputCnyPerMillion !== undefined ? { costOutputPerMillion: discoveredPrice.outputCnyPerMillion } : {}),
-        ...(discoveredPrice?.pricing ? { pricing: discoveredPrice.pricing } : {}),
       };
       if (!metadata?.displayName) delete nextModel.displayName;
       if (!metadata?.description) delete nextModel.description;
@@ -1247,7 +1173,7 @@ export function SettingsPanel({
 
   const updateModelString = (
     modelRef: string,
-    field: 'reasoning' | 'latencyTier' | 'qualityTier' | 'costTier',
+    field: 'reasoning' | 'latencyTier' | 'qualityTier',
     value: string,
   ): void => {
     setCatalog(current => {
@@ -1299,7 +1225,6 @@ export function SettingsPanel({
     candidates: OpenRouterCandidate[];
     capabilities: string[];
     metadata?: NonNullable<import('../api/types').ProviderModelDiscoveryResult['metadata']>[string];
-    price?: NonNullable<import('../api/types').ProviderModelDiscoveryResult['prices']>[string];
     routingNotes?: ModelDraft['routingNotes'];
     routingError?: string;
   }> => {
@@ -1317,14 +1242,12 @@ export function SettingsPanel({
         candidates: cachedCandidates,
         capabilities: cached.capabilities?.[cachedMatchedId] ?? [],
         metadata: cached.metadata?.[cachedMatchedId],
-        price: cached.prices?.[cachedMatchedId],
       };
     }
     if (!http) return {
       candidates: [] as OpenRouterCandidate[],
       capabilities: [] as string[],
       metadata: undefined,
-      price: undefined,
     };
     try {
       const result = await http.discoverProviderModels({ baseUrl: 'https://openrouter.ai/api/v1' });
@@ -1332,7 +1255,6 @@ export function SettingsPanel({
         candidates: [] as OpenRouterCandidate[],
         capabilities: [] as string[],
         metadata: undefined,
-        price: undefined,
       };
       const discovery = {
         modelIds: result.modelIds,
@@ -1358,10 +1280,6 @@ export function SettingsPanel({
             ...(current[providerRef]?.metadata ?? {}),
             ...(result.metadata ?? {}),
           },
-          prices: {
-            ...(current[providerRef]?.prices ?? {}),
-            ...(result.prices ?? {}),
-          },
         },
       }));
       return {
@@ -1372,14 +1290,12 @@ export function SettingsPanel({
         candidates,
         capabilities: result.capabilities[matchedId ?? modelId] ?? [],
         metadata: result.metadata?.[matchedId ?? modelId],
-        price: result.prices?.[matchedId ?? modelId],
       };
     } catch {
       return {
         candidates: [] as OpenRouterCandidate[],
         capabilities: [] as string[],
         metadata: undefined,
-        price: undefined,
       };
     }
   };
@@ -1397,8 +1313,7 @@ export function SettingsPanel({
       const facts = await fetchOpenRouterFactsForModel(model.providerRef, model.modelId, true);
       const candidates = facts.candidates ?? [];
       const metadata = facts.metadata;
-      const price = facts.price;
-      if (!metadata && !price && facts.capabilities.length === 0) {
+      if (!metadata && facts.capabilities.length === 0) {
         if (candidates.length > 0) {
           setModelInfoStatus(current => ({
             ...current,
@@ -1429,16 +1344,6 @@ export function SettingsPanel({
               ...(metadata?.description ? { description: metadata.description } : {}),
               ...(metadata?.publicFacts ? { publicFacts: metadata.publicFacts } : {}),
               ...(metadata?.contextLimit !== undefined ? { contextLimit: metadata.contextLimit } : {}),
-              ...(price?.inputCnyPerMillion !== undefined
-                ? { costInputPerMillion: price.inputCnyPerMillion }
-                : metadata?.costInputPerMillion !== undefined
-                  ? { costInputPerMillion: metadata.costInputPerMillion } : {}),
-              ...(price?.outputCnyPerMillion !== undefined
-                ? { costOutputPerMillion: price.outputCnyPerMillion }
-                : metadata?.costOutputPerMillion !== undefined
-                  ? { costOutputPerMillion: metadata.costOutputPerMillion } : {}),
-              ...(price?.pricing ? { pricing: price.pricing }
-                : metadata?.pricing ? { pricing: metadata.pricing } : {}),
             },
           },
         };
@@ -1453,8 +1358,6 @@ export function SettingsPanel({
             facts.capabilities.length > 0 ? `${facts.capabilities.length} 项能力` : '能力描述未提供',
             metadata?.description ? '已获取模型描述' : '模型描述未提供',
             metadata?.publicFacts?.highlights?.length ? `${metadata.publicFacts.highlights.length} 条模型特征` : '结构化特征未提供',
-            price?.inputCnyPerMillion !== undefined || price?.outputCnyPerMillion !== undefined
-              ? '价格已获取' : '价格未提供',
           ].join(' · ')}`,
         },
       }));
@@ -1520,9 +1423,8 @@ export function SettingsPanel({
     const discovery = model ? modelDiscoveries[model.providerRef] : undefined;
     if (!model || !discovery) return;
     const metadata = discovery.metadata?.[candidateId];
-    const price = discovery.prices?.[candidateId];
     const capabilities = discovery.capabilities?.[candidateId] ?? [];
-    if (!metadata && !price && capabilities.length === 0) return;
+    if (!metadata && capabilities.length === 0) return;
     setModelInfoLoading(modelRef);
     // 与「获取模型信息」一致：带上用户已配置的 Provider 引用，优先走用户自己的模型。
     const profile = await summarizeRoutingProfile(
@@ -1544,11 +1446,6 @@ export function SettingsPanel({
             ...(metadata?.description ? { description: metadata.description } : {}),
             ...(metadata?.publicFacts ? { publicFacts: metadata.publicFacts } : {}),
             ...(metadata?.contextLimit !== undefined ? { contextLimit: metadata.contextLimit } : {}),
-            ...(price?.inputCnyPerMillion !== undefined ? { costInputPerMillion: price.inputCnyPerMillion }
-              : metadata?.costInputPerMillion !== undefined ? { costInputPerMillion: metadata.costInputPerMillion } : {}),
-            ...(price?.outputCnyPerMillion !== undefined ? { costOutputPerMillion: price.outputCnyPerMillion }
-              : metadata?.costOutputPerMillion !== undefined ? { costOutputPerMillion: metadata.costOutputPerMillion } : {}),
-            ...(price?.pricing ? { pricing: price.pricing } : metadata?.pricing ? { pricing: metadata.pricing } : {}),
           },
         },
       };
@@ -1586,9 +1483,7 @@ export function SettingsPanel({
         ...capabilitiesForModelId(modelId),
       ])].sort();
       const discoveredMetadata = modelDiscoveries[providerRef]?.metadata?.[modelId];
-      const discoveredPrice = modelDiscoveries[providerRef]?.prices?.[modelId];
       const metadata = openRouterFacts.metadata ?? discoveredMetadata;
-      const price = openRouterFacts.price ?? discoveredPrice;
       return {
         ...current,
         models: {
@@ -1604,13 +1499,6 @@ export function SettingsPanel({
             capabilities,
             capabilityState: capabilities.length > 0 ? '已从 Provider 补全' : '需要确认',
             ...(metadata?.contextLimit !== undefined ? { contextLimit: metadata.contextLimit } : {}),
-            ...(price?.inputCnyPerMillion !== undefined
-              ? { costInputPerMillion: price.inputCnyPerMillion } : metadata?.costInputPerMillion !== undefined
-                ? { costInputPerMillion: metadata.costInputPerMillion } : {}),
-            ...(price?.outputCnyPerMillion !== undefined
-              ? { costOutputPerMillion: price.outputCnyPerMillion } : metadata?.costOutputPerMillion !== undefined
-                ? { costOutputPerMillion: metadata.costOutputPerMillion } : {}),
-            ...(price?.pricing ? { pricing: price.pricing } : metadata?.pricing ? { pricing: metadata.pricing } : {}),
           },
         },
       };
@@ -1639,7 +1527,6 @@ export function SettingsPanel({
         ref = `custom-model-${index}`;
       }
       const discoveredMetadata = openRouterFacts.metadata ?? modelDiscoveries[providerRef]?.metadata?.[modelId];
-      const discoveredPrice = openRouterFacts.price ?? modelDiscoveries[providerRef]?.prices?.[modelId];
       const capabilities = [...new Set([
         ...capabilitiesForModelId(modelId),
         ...(openRouterFacts.capabilities ?? []),
@@ -1660,16 +1547,6 @@ export function SettingsPanel({
             capabilities,
             capabilityState: capabilities.length > 0 ? '已从 Provider 补全' : '需要确认',
             ...(discoveredMetadata?.contextLimit !== undefined ? { contextLimit: discoveredMetadata.contextLimit } : {}),
-            ...(discoveredPrice?.inputCnyPerMillion !== undefined
-              ? { costInputPerMillion: discoveredPrice.inputCnyPerMillion }
-              : discoveredMetadata?.costInputPerMillion !== undefined
-                ? { costInputPerMillion: discoveredMetadata.costInputPerMillion } : {}),
-            ...(discoveredPrice?.outputCnyPerMillion !== undefined
-              ? { costOutputPerMillion: discoveredPrice.outputCnyPerMillion }
-              : discoveredMetadata?.costOutputPerMillion !== undefined
-                ? { costOutputPerMillion: discoveredMetadata.costOutputPerMillion } : {}),
-            ...(discoveredPrice?.pricing ? { pricing: discoveredPrice.pricing }
-              : discoveredMetadata?.pricing ? { pricing: discoveredMetadata.pricing } : {}),
           },
         },
       };
@@ -1708,7 +1585,6 @@ export function SettingsPanel({
           modelIds: result.modelIds,
           capabilities: result.capabilities,
           metadata: result.metadata,
-          prices: result.prices,
         },
       }));
       setCatalog(current => {
@@ -1742,7 +1618,7 @@ export function SettingsPanel({
           <div>
             <div className="settings-eyebrow">配置工作台</div>
             <h2>设置</h2>
-            <p>管理 Provider、模型和智能体路由。新增模型后，公开目录会自动补全能力与价格。</p>
+            <p>管理 Provider、模型和智能体路由。新增模型后，公开目录会自动补全能力资料。</p>
           </div>
           <div className="settings-header-actions">
             <span className={`activation-pill activation-pill-${activationState?.activationStatus ?? 'idle'}`}>
@@ -1845,7 +1721,7 @@ export function SettingsPanel({
                           <strong>{configuredModels.length}</strong>
                           <span>个已添加模型</span>
                           <span className="provider-stat-divider">·</span>
-                          <span>能力与价格自动补全</span>
+                          <span>能力资料自动补全</span>
                           {configuredModels.length > 0 && (
                             <span
                               className="provider-model-preview"
@@ -1974,14 +1850,6 @@ export function SettingsPanel({
                                       <small className="mono">{modelId}</small>
                                       <small>{modelDiscoveries[provider.providerRef]?.metadata?.[modelId]?.description ?? '公开目录已发现，可添加后查看模型事实。'}</small>
                                     </span>
-                                    <span className="model-fact-summary">
-                                      <span className="model-price-inline">
-                                        {modelDiscoveries[provider.providerRef]?.prices?.[modelId]?.inputCnyPerMillion !== undefined
-                                          && modelDiscoveries[provider.providerRef]?.prices?.[modelId]?.outputCnyPerMillion !== undefined
-                                          ? `¥${modelDiscoveries[provider.providerRef]?.prices?.[modelId]?.inputCnyPerMillion} / ¥${modelDiscoveries[provider.providerRef]?.prices?.[modelId]?.outputCnyPerMillion}`
-                                          : '价格待补充'}
-                                      </span>
-                                    </span>
                                     <button
                                       type="button"
                                       className="text-button"
@@ -2019,14 +1887,6 @@ export function SettingsPanel({
                                     )}
                                   </span>
 
-                                  {option.configured && option.modelRef && (
-                                    <span className="model-price-inline">
-                                      {catalog.models[option.modelRef]?.costInputPerMillion !== undefined
-                                        && catalog.models[option.modelRef]?.costOutputPerMillion !== undefined
-                                        ? `¥${catalog.models[option.modelRef]?.costInputPerMillion} / ¥${catalog.models[option.modelRef]?.costOutputPerMillion}`
-                                        : '价格待补充'}
-                                    </span>
-                                  )}
                                   {option.configured && option.modelRef && (
                                     <span className="model-context-inline">
                                       {catalog.models[option.modelRef]?.contextLimit
@@ -2091,7 +1951,7 @@ export function SettingsPanel({
                                     <div className="model-edit-header">
                                       <div>
                                         <strong>编辑模型</strong>
-                                        <span>获取公开能力资料，或修改模型连接参数和价格。</span>
+                                        <span>获取公开能力资料，或修改模型连接参数。</span>
                                       </div>
                                       <div className="model-edit-header-actions">
                                         <button
@@ -2102,13 +1962,6 @@ export function SettingsPanel({
                                         >
                                           {modelInfoLoading === option.modelRef ? '获取中…' : '获取模型信息'}
                                         </button>
-                                        <span className="state-badge">
-                                          {catalog.models[option.modelRef]?.pricing?.source === 'user'
-                                            ? '价格已覆盖'
-                                            : catalog.models[option.modelRef]?.pricing?.source === 'openrouter'
-                                              ? '价格已自动获取'
-                                              : '价格待补充'}
-                                        </span>
                                       </div>
                                     </div>
                                     {modelInfoStatus[option.modelRef] && (
@@ -2272,7 +2125,7 @@ export function SettingsPanel({
                                         )}
                                       </div>
                                     )}
-                                    <div className="model-price-editor">
+                                    <div className="model-parameter-editor">
                                     <label className="settings-field">
                                       <span>上下文长度</span>
                                       <input
@@ -2322,94 +2175,6 @@ export function SettingsPanel({
                                         <option value="medium">中</option><option value="high">快</option>
                                       </select>
                                     </label>
-                                    <label className="settings-field">
-                                      <span>成本等级</span>
-                                      <select
-                                        className="text-input"
-                                        value={catalog.models[option.modelRef]?.costTier ?? ''}
-                                        disabled={loading || executorLoading}
-                                        onChange={event => updateModelString(option.modelRef!, 'costTier', event.target.value)}
-                                      >
-                                        <option value="">自动</option><option value="low">低</option>
-                                        <option value="medium">中</option><option value="high">高</option>
-                                      </select>
-                                    </label>
-                                    <label className="settings-field">
-                                      <span>输入价格（CNY / 1M tokens）</span>
-                                      <input
-                                        className="text-input"
-                                        type="number"
-                                        min="0"
-                                        step="any"
-                                        inputMode="decimal"
-                                        value={catalog.models[option.modelRef]?.costInputPerMillion ?? ''}
-                                        placeholder="未配置"
-                                        disabled={loading || executorLoading}
-                                        onChange={event => updateModelPrice(
-                                          option.modelRef!,
-                                          'costInputPerMillion',
-                                          event.target.value,
-                                        )}
-                                      />
-                                    </label>
-                                    <label className="settings-field">
-                                      <span>输出价格（CNY / 1M tokens）</span>
-                                      <input
-                                        className="text-input"
-                                        type="number"
-                                        min="0"
-                                        step="any"
-                                        inputMode="decimal"
-                                        value={catalog.models[option.modelRef]?.costOutputPerMillion ?? ''}
-                                        placeholder="未配置"
-                                        disabled={loading || executorLoading}
-                                        onChange={event => updateModelPrice(
-                                          option.modelRef!,
-                                          'costOutputPerMillion',
-                                          event.target.value,
-                                        )}
-                                      />
-                                    </label>
-                                    <span className="fact-label">
-                                      价格来源：{catalog.models[option.modelRef]?.pricing?.source === 'user'
-                                        ? '用户覆盖' : catalog.models[option.modelRef]?.pricing?.source === 'openrouter'
-                                          ? 'OpenRouter 自动获取' : '待补充'}
-                                    </span>
-                                    {catalog.models[option.modelRef]?.pricing?.source === 'user' && (
-                                      <button
-                                        type="button"
-                                        className="text-button"
-                                        disabled={loading || executorLoading}
-                                        onClick={() => setCatalog(current => {
-                                          if (!current) return current;
-                                          const model = current.models[option.modelRef!];
-                                          if (!model?.pricing?.catalogModelId) return current;
-                                          const discovered = modelDiscoveries[provider.providerRef]?.prices?.[model.modelId];
-                                          const pricing = discovered?.pricing ?? model.pricing;
-                                          if (pricing.source !== 'openrouter') return current;
-                                          const inputCny = discovered?.inputCnyPerMillion
-                                            ?? (pricing.usdInputPerToken !== undefined
-                                              ? pricing.usdInputPerToken * 1_000_000 * 7 : undefined);
-                                          const outputCny = discovered?.outputCnyPerMillion
-                                            ?? (pricing.usdOutputPerToken !== undefined
-                                              ? pricing.usdOutputPerToken * 1_000_000 * 7 : undefined);
-                                          return {
-                                            ...current,
-                                            models: {
-                                              ...current.models,
-                                              [option.modelRef!]: {
-                                                ...model,
-                                                ...(inputCny !== undefined ? { costInputPerMillion: inputCny } : {}),
-                                                ...(outputCny !== undefined ? { costOutputPerMillion: outputCny } : {}),
-                                                pricing,
-                                              },
-                                            },
-                                          };
-                                        })}
-                                      >
-                                        恢复自动价格
-                                      </button>
-                                    )}
                                     </div>
                                   </div>
                                 )}
@@ -2446,8 +2211,7 @@ export function SettingsPanel({
                 )}
               </section>
 
-              <ExecutorTools agents={agentReadiness} http={http} command={codexCommand}
-                onCommand={setCodexCommand} disabled={editingDisabled} />
+              <ExecutorTools agents={agentReadiness} http={http} disabled={editingDisabled} />
 
               <section className="settings-section agents-section" aria-labelledby="agents-heading">
                 <div className="section-heading">
@@ -2460,8 +2224,9 @@ export function SettingsPanel({
                     onClick={() => { void openExecutorEditor('create'); }}>新增智能体</button>
                 </div>
                 {executorView?.executors.length === 0 && <p role="status">尚无智能体。新增并启用智能体后才能开始新工作。</p>}
-                {executorView && executorView.executors.length > 0 && executorView.executors.every(agent => !agent.enabled)
+                {executorView && executorView.executors.length > 0 && executorView.executors.every(agent => draft[agent.agentClassRef]?.enabled === false)
                   && <p role="status">全部智能体已停用，请先启用至少一名智能体。</p>}
+                <p className="routing-section-note">预设总管、助理、分析师三个角色，默认启用。总管是任务规划的必需角色，始终启用。每个角色都必须绑定你自己的模型：先在“模型服务”添加 Provider 和模型，再展开角色选择模型，保存并激活后才能执行任务。</p>
                 <p className="routing-section-note">智能体按“职责 → 模型 → 能力画像”组织。默认收起配置详情，先看整体状态，再进入单个智能体编辑。</p>
                 <div className="routing-stack">
                   {Object.entries(draft)
@@ -2471,6 +2236,7 @@ export function SettingsPanel({
                     if (!agentFacts) return null;
                     const managed = executorView?.executors.find(agent => agent.agentClassRef === ref);
                     const expanded = expandedAgents.has(ref);
+                    const needsModel = entry.enabled !== false && invalidRoutingDrafts({ [ref]: entry }, Object.values(catalog.models)).length > 0;
                     return (
                       <div key={ref}>
                         <div className={`agent-summary-row ${agentFacts.kind === 'planner' ? 'agent-summary-planner' : ''}`}>
@@ -2488,20 +2254,23 @@ export function SettingsPanel({
                             <span className="agent-summary-icon">{agentFacts.kind === 'planner' ? 'P' : 'A'}</span>
                             <span className="agent-summary-title">
                               <strong>{entry.displayName || agentFacts.displayName}</strong>
-                              <small>{agentFacts.kind === 'planner' ? 'Planner · 复杂意图理解与 DAG 编排' : 'Executor · 具体任务执行'}</small>
+                              <small>{agentFacts.kind === 'planner' ? 'Manager · 复杂意图理解与 DAG 编排' : 'Executor · 具体任务执行'}</small>
                             </span>
                             <span className="agent-summary-chevron" aria-hidden="true">{expanded ? '⌃' : '⌄'}</span>
                           </button>
                           <div className="agent-summary-meta">
-                            <span className={`state-badge ${entry.enabled === false ? 'state-badge-warning' : ''}`}>
-                              {entry.enabled === false ? '已停用' : '已启用'}
+                            <span className={`state-badge ${entry.enabled === false || needsModel ? 'state-badge-warning' : ''}`}>
+                              {entry.enabled === false ? '已停用' : needsModel ? '默认启用 · 待绑定模型' : agentFacts.kind === 'planner' ? '始终启用' : '已启用'}
                             </span>
                             <span className="agent-summary-model">
                               {entry.modelRef && catalog.models[entry.modelRef]?.modelId
                                 ? catalog.models[entry.modelRef]?.modelId
-                                : entry.mode === 'auto' ? '自动选择模型' : '未选择模型'}
+                                : entry.mode === 'auto' && !needsModel ? '自动选择模型' : '请绑定你自己的模型'}
                             </span>
                           </div>
+                          {needsModel && <button type="button" className="ghost-button"
+                            aria-label={`为${entry.displayName || agentFacts.displayName}绑定模型`}
+                            onClick={() => setExpandedAgents(current => new Set([...current, ref]))}>绑定模型</button>}
                           <p className="agent-summary-responsibility">
                             {entry.responsibility || (agentFacts.kind === 'planner' ? '理解复杂用户意图并拆解可执行 DAG' : '尚未填写职责')}
                           </p>
@@ -2510,24 +2279,24 @@ export function SettingsPanel({
                         {agentFacts.kind === 'planner' ? (
                           <div className="executor-management-actions">
                             <p className="routing-section-note planner-agent-note">
-                              规划智能体负责理解意图并编排工作。选择模型后启用，再保存并激活。
+                              总管是所有任务的规划入口，始终启用，无需单独开启。请绑定你自己的模型，再保存并激活。
                             </p>
-                            <label>
-                              <input type="checkbox" checked={entry.enabled !== false} disabled={editingDisabled}
-                                onChange={event => {
-                                  const enabled = event.target.checked;
-                                  setDraft(current => current ? { ...current, [ref]: { ...current[ref], enabled } } : current);
-                                }} /> 启用规划智能体
-                            </label>
                           </div>
                         ) : (
                           <div className="executor-management-actions">
-                            <span>{managed?.enabled === false ? '已停用' : '已启用'}</span>
+                            <span>{entry.enabled === false ? '已停用' : needsModel ? '待绑定模型' : '已启用'}</span>
                             <button type="button" className="ghost-button" disabled={editingDisabled || !managed?.tool}
                               onClick={() => { void openExecutorEditor('update', ref); }}>编辑智能体</button>
                             <button type="button" className="ghost-button" disabled={editingDisabled || !managed}
-                              onClick={() => { void openExecutorEditor(managed?.enabled ? 'disable' : 'enable', ref); }}>
-                              {managed?.enabled ? '停用' : '启用'}
+                              onClick={() => {
+                                const pendingPreset = managed?.enabled === false && isUnboundDefaultAgentRole(ref, {
+                                  displayName: entry.displayName, responsibility: entry.responsibility,
+                                  modelPolicy: { mode: 'fixed', modelRef: 'default-model' },
+                                }, catalog.models);
+                                if (pendingPreset) setDraft(current => current ? { ...current, [ref]: { ...current[ref], enabled: entry.enabled === false } } : current);
+                                else void openExecutorEditor(entry.enabled !== false ? 'disable' : 'enable', ref);
+                              }}>
+                              {entry.enabled !== false ? '停用' : '启用'}
                             </button>
                             <button type="button" className="ghost-button" disabled={editingDisabled || !managed}
                               onClick={() => { void openExecutorEditor('remove', ref); }}>删除</button>
@@ -2562,7 +2331,7 @@ export function SettingsPanel({
                 </div>
               </section>
 
-              <details className="settings-section advanced-settings">
+              <details className="settings-section advanced-settings" ref={focusMemorySettings}>
                 <summary>高级设置</summary>
                 <div className="advanced-settings-body">
                   {memoryApi && (
@@ -2632,7 +2401,7 @@ export function SettingsPanel({
               {result.ok
                 ? result.restartRequired
                   ? `配置包含进程级变更，需要重启后生效：${result.restartPaths?.join('、') ?? ''}`
-                  : '配置已热激活。新任务和下一轮 Planner 将使用新配置。'
+                  : '配置已热激活。新任务和下一轮 Manager 将使用新配置。'
                 : result.code === 'restart_required'
                   ? `此更改需要重启服务后生效：${result.restartPaths?.join('、') ?? '进程级配置变更'}`
                   : `激活失败（${result.code ?? 'unknown'}）`}
@@ -2648,6 +2417,7 @@ export function SettingsPanel({
         {(draft || loadError) && (
           <footer className="drawer-footer settings-footer">
             <div className="settings-footer-note">
+              {draftValidationIssues.length > 0 && <p role="status">请先为以下角色绑定可用的自有模型：{draftValidationIssues.map(ref => draft?.[ref]?.displayName || ref).join('、')}。点击角色旁的“绑定模型”完成选择；没有模型时，先在“模型服务”添加。</p>}
               所有修改先保留在草稿中。「保存并激活」会统一应用连接与 Key、模型、智能体、决策模型和运行时策略。
             </div>
             <div className="settings-footer-actions">
@@ -2687,3 +2457,6 @@ export function SettingsPanel({
     </div>
   );
 }
+
+import { sameAiText, aiActionError, degradationNotice, type ResponsibilityRewriteFeedback } from './AiActionStatus';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';

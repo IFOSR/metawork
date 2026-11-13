@@ -1,6 +1,6 @@
 import Database from 'better-sqlite3';
 import { describe, expect, it } from 'vitest';
-import { runMigrations } from '../../src/storage/migrations.js';
+import { initializeDatabaseSchema } from '../../src/storage/schema.js';
 import { SqliteConversationDeletionStore } from '../../src/storage/conversation-deletion-repo.js';
 import { TaskStateProjectionOutbox } from '../../src/storage/task-state-change-repo.js';
 
@@ -16,7 +16,7 @@ import { TaskStateProjectionOutbox } from '../../src/storage/task-state-change-r
 function setup(): Database.Database {
   const db = new Database(':memory:');
   db.pragma('foreign_keys = ON');
-  runMigrations(db);
+  initializeDatabaseSchema(db);
   const now = new Date().toISOString();
   db.prepare(`INSERT INTO tasks (id, title, goal, status, created_at, updated_at,
     account_id, conversation_id, workspace_id, owner_planner_session_id, admitted_at)

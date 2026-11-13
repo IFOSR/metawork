@@ -1,4 +1,24 @@
-import type { PlannerTuiPermissionRequest } from '../session/session-types.js';
+export interface AccountPermissionRequestProjection {
+  schemaVersion: 1;
+  permissionRequestId: string;
+  taskId: string;
+  taskTitle: string;
+  generationId: string;
+  subtaskId: string;
+  subtaskTitle: string;
+  attemptId: string;
+  executorName: string;
+  permissionProfileId: string;
+  capability: string;
+  resource: string;
+  operation: string;
+  reason: string;
+  suggestedScope: 'once' | 'attempt';
+  escalationReason: string;
+  createdAt: string;
+  expiresAt: string;
+}
+
 
 export interface AccountPermissionResolutionInput {
   readonly sessionId: string;
@@ -20,6 +40,6 @@ export interface AccountPermissionResolutionResult {
 }
 
 export interface AccountPermissionService {
-  listForSession(sessionId: string, afterId?: string, limit?: number): Array<PlannerTuiPermissionRequest & { readonly requestRevision: string }>;
+  listForSession(sessionId: string, afterId?: string, limit?: number): Array<AccountPermissionRequestProjection & { readonly requestRevision: string }>;
   resolve(input: AccountPermissionResolutionInput): Promise<AccountPermissionResolutionResult>;
 }

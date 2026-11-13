@@ -3,18 +3,16 @@ import type { Task } from '../core/types.js';
 import type { TimelineTaskRecord } from '../storage/task-repo.js';
 import type { SubtaskRepo, TimelineSubtaskRecord } from '../storage/subtask-repo.js';
 import type { ExecutorAttemptReceiptRepo, TimelineReceiptRecord } from '../storage/executor-attempt-receipt-repo.js';
-import type { KernelDecisionRepo } from '../storage/kernel-decision-repo.js';
 import type { WorkspacePublicationRepo } from '../storage/workspace-publication-repo.js';
 import type { ExecutorAttemptRuntimeRepo, TimelineRuntimeRecord } from '../storage/executor-attempt-runtime-repo.js';
-import type { KernelDispatchItemRepo, TimelineDispatchItemRecord } from '../storage/kernel-dispatch-item-repo.js';
+import type { ControlDispatchItemRepo, TimelineDispatchItemRecord } from '../storage/dispatch-item-repo.js';
 import { formatExecutorProgress } from '../executor/error-utils.js';
-import type { KernelAttemptKind } from '../kernel/control-kernel.js';
+import type { ControlAttemptKind } from '../control/control-contracts.js';
 import type { ConfigurationSnapshot } from '../configuration/types.js';
 import { resolvePublicRoutingIdentity } from '../configuration/public-routing-identity.js';
 
 const MAX_TIMELINE_ATTEMPTS_PER_SUBTASK = 20;
 const MAX_TIMELINE_PROGRESS_EVENTS_PER_ATTEMPT = 50;
-const MAX_TIMELINE_DECISIONS = 200;
 
 // 与 web/src/api/types.ts 同构的前端执行时间线类型。
 export type StagePhase = 'planning' | 'authorization' | 'execution' | 'verification' | 'delivery';
@@ -33,7 +31,7 @@ export interface TimelineDecision {
 
 export interface TimelineAttempt {
   attemptId?: string;
-  attemptKind: KernelAttemptKind;
+  attemptKind: ControlAttemptKind;
   attemptOrdinal: number;
   attemptLabel: string;
   displayStatus: '等待启动' | '执行中' | '已完成' | '失败' | '已取消' | '未执行' | '状态未知';
@@ -99,10 +97,9 @@ export interface ExecutionProjectorDeps {
   taskView?: (task: TimelineTaskRecord) => TaskView;
   subtaskRepo: SubtaskRepo;
   receiptRepo: ExecutorAttemptReceiptRepo;
-  decisionRepo: KernelDecisionRepo;
   publicationRepo: WorkspacePublicationRepo;
   attemptRuntimeRepo: ExecutorAttemptRuntimeRepo;
-  dispatchItemRepo: KernelDispatchItemRepo;
+  dispatchItemRepo: ControlDispatchItemRepo;
   /** Revision-pinned configuration used to render historical public names. */
   configurationByRevision?: ReadonlyMap<string, ConfigurationSnapshot>;
 }
@@ -119,13 +116,12 @@ export class ExecutionProjector {
     const ids = [...new Set(tasks.map(task => task.id))];
     const subtasks = groupByTask(this.deps.subtaskRepo.listTimelineByTasks(ids));
     const receipts = groupByTask(this.deps.receiptRepo.listTimelineByTasks(ids));
-    const decisions = groupByTask(this.deps.decisionRepo.listTimelineByTasks(ids, MAX_TIMELINE_DECISIONS));
     const dispatches = groupByTask(this.deps.dispatchItemRepo.listTimelineByTasks(ids));
     const runtimes = new Map(this.deps.attemptRuntimeRepo.listTimelineByTasks(ids).map(runtime => [runtime.attemptId, runtime]));
     const publications = this.deps.publicationRepo.timelineByTaskIds(ids);
     return new Map(tasks.map(task => [task.id, this.projectFacts(
       task, subtasks.get(task.id) ?? [], receipts.get(task.id) ?? [],
-      decisions.get(task.id) ?? [], dispatches.get(task.id) ?? [],
+      dispatches.get(task.id) ?? [],
       attemptId => runtimes.get(attemptId) ?? null, publications.get(task.id) ?? { integrated: false, blocking: false },
     )]));
   }
@@ -136,12 +132,8 @@ export class ExecutionProjector {
       ...receipt,
       hasViolations: receipt.verification?.violations?.length > 0,
     }));
-    const decisions = this.deps.decisionRepo.listTimelineByTask(
-      task.id,
-      MAX_TIMELINE_DECISIONS,
-    );
     const dispatchItems = this.deps.dispatchItemRepo.listByTask(task.id);
-    return this.projectFacts(task, subtasks, receipts, decisions, dispatchItems,
+    return this.projectFacts(task, subtasks, receipts, dispatchItems,
       attemptId => this.deps.attemptRuntimeRepo.find(attemptId));
   }
 
@@ -149,7 +141,6 @@ export class ExecutionProjector {
     task: TimelineTaskRecord,
     subtasks: TimelineSubtaskRecord[],
     receipts: TimelineReceiptRecord[],
-    decisions: ReturnType<KernelDecisionRepo['listTimelineByTask']>,
     dispatchItems: TimelineDispatchItemRecord[],
     runtimeFor: (attemptId: string) => TimelineRuntimeRecord | null,
     publication?: { integrated: boolean; blocking: boolean },
@@ -180,7 +171,7 @@ export class ExecutionProjector {
       explanation: view.explanation,
       stages: [
         this.projectPlanning(subtasks),
-        this.projectAuthorization(decisions),
+        this.projectAuthorization(dispatchItems),
         this.projectExecution(subtasks, receipts, dispatchItems, runtimeFor),
         this.projectVerification(subtasks, receipts),
         this.projectDelivery(task, subtasks, publication),
@@ -204,19 +195,17 @@ export class ExecutionProjector {
     };
   }
 
-  private projectAuthorization(
-    decisions: ReturnType<KernelDecisionRepo['listTimelineByTask']>,
-  ): TimelineStage {
-    if (decisions.length === 0) {
+  private projectAuthorization(dispatchItems: TimelineDispatchItemRecord[]): TimelineStage {
+    if (dispatchItems.length === 0) {
       return { phase: 'authorization', status: 'pending' };
     }
     return {
       phase: 'authorization',
       status: 'done',
-      decisions: decisions.map(record => ({
-        type: record.action,
-        subtask: record.subtaskId ?? record.taskId ?? '',
-        reason: record.reason,
+      decisions: dispatchItems.map(item => ({
+        type: 'authorize_dispatch',
+        subtask: item.subtaskId,
+        reason: item.authorizedBinding.agentClassRef,
       })),
     };
   }
@@ -391,8 +380,8 @@ function historicalPublicIdentity(
   return resolvePublicRoutingIdentity(configuration, binding);
 }
 
-function attemptLabel(kind: KernelAttemptKind): string {
-  const labels: Record<KernelAttemptKind, string> = {
+function attemptLabel(kind: ControlAttemptKind): string {
+  const labels: Record<ControlAttemptKind, string> = {
     primary: '主执行',
     continuation: '继续执行',
     fallback: '回退执行',

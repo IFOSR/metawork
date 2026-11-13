@@ -12,7 +12,7 @@ import Database from 'better-sqlite3';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { runMigrations } from '../../src/storage/migrations.js';
+import { initializeDatabaseSchema } from '../../src/storage/schema.js';
 import { MemoryService } from '../../src/memory/memory-service.js';
 import { MemoryFlushScheduler } from '../../src/memory/memory-flush-scheduler.js';
 import { MemoryBindingsRepo } from '../../src/storage/memory-bindings-repo.js';
@@ -40,7 +40,7 @@ const ACCOUNT = 'local-default';
 function createDb(): Database.Database {
   const db = new Database(':memory:');
   db.pragma('foreign_keys = ON');
-  runMigrations(db);
+  initializeDatabaseSchema(db);
   return db;
 }
 

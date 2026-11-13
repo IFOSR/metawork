@@ -6,16 +6,16 @@
  */
 
 import type { AccountPermissionService } from './account-permission-service.js';
-import type { AccountKernelCoordinator } from './account-kernel-coordinator.js';
+import type { AccountControlCoordinator } from './account-control-coordinator.js';
 import type { Task, Subtask } from '../core/types.js';
 import type { PlanningAgent } from '../planning/planning-agent.js';
-import type { KernelDecision, KernelEvent } from '../kernel/control-kernel.js';
-import type { RevisionedKernelDecisionLedgerRecord } from '../storage/kernel-decision-repo.js';
-import type { RevisionedKernelExecutorStatusProjection } from '../storage/kernel-executor-status-repo.js';
+import type { RecoveryApplicationFact } from '../execution/control-application-recovery.js';
+import type { ControlDecision, ControlEvent } from '../control/control-contracts.js';
+import type { RevisionedControlExecutorStatusProjection } from '../storage/executor-status-repo.js';
 import type { PermissionRequestRecord } from '../resource/index.js';
-import type { KernelDecisionApplicationRecord } from '../kernel/kernel-workflow.js';
-import type { ApplicationPostconditionInspection } from '../execution/kernel-application-recovery.js';
-import type { KernelEffectRecord } from '../storage/kernel-effect-outbox-repo.js';
+import type { ControlDecisionApplicationRecord } from '../control/control-workflow.js';
+import type { ApplicationPostconditionInspection } from '../execution/control-application-recovery.js';
+import type { ControlEffectRecord } from '../storage/effect-outbox-repo.js';
 import type { WorkspacePublicationRecord } from '../storage/workspace-publication-repo.js';
 import type { TaskEvidenceRecord } from '../execution/execution-evidence-port.js';
 import type { ExecutorAttemptReceipt } from '../storage/executor-attempt-receipt-repo.js';
@@ -24,12 +24,14 @@ import type { ActiveExecutionControl } from '../execution/active-execution-contr
 import type {
   ExecutorRecoveryRefreshReport,
 } from '../execution/executor-recovery-refresh-service.js';
-import type { ExecutorRecoveryRefreshTrigger } from '../kernel/executor-status-projection.js';
+import type { ExecutorRecoveryRefreshTrigger } from '../control/executor-status-projection.js';
 import type {
   ConfigurationActivationStatusSnapshot,
 } from '../configuration/configuration-activation-gate.js';
 import type { ConversationActivityProjection } from '../workspace/conversation-activity-projector.js';
 import type { ConversationTaskSlot } from '../storage/conversation-task-scheduler-repo.js';
+import type { PlanProposalStore } from '../execution/plan-proposal-store.js';
+import type { TurnCancellationStore } from '../session/turn-cancellation-store.js';
 
 /** AccountRuntime 暴露给 Application Shell 的窄句柄。 */
 export interface AccountRuntimeHandle {
@@ -63,6 +65,8 @@ export interface AccountRuntimeHandle {
 /** Conversation 通过该端口访问账户 runtime-wide 服务。 */
 export interface ConversationRuntimePort {
   readonly accountId: string;
+  readonly proposals: PlanProposalStore;
+  readonly turnCancellations: TurnCancellationStore;
   readonly planning: Pick<PlanningAgent, 'plan' | 'submit'> | null;
   readonly permissions: AccountPermissionService | null;
   readonly queries: {
@@ -71,19 +75,17 @@ export interface ConversationRuntimePort {
     listTasksByStatus(status: Task['status']): Task[];
     listSubtasks(taskId: string): Subtask[];
     findSubtask(subtaskId: string): Subtask | null;
-    findKernelEvent(eventId: string): KernelEvent | null;
-    findKernelApplicationByDecisionId(
-      decisionId: string,
-    ): KernelDecisionApplicationRecord | null;
-    listKernelDecisionsBySession(sessionId: string): RevisionedKernelDecisionLedgerRecord[];
-    listKernelDecisionsByTask(taskId: string): RevisionedKernelDecisionLedgerRecord[];
-    listCurrentKernelDecisions(action: KernelDecision['action']['type']): RevisionedKernelDecisionLedgerRecord[];
-    listExecutorStatuses(configurationRevision: string): RevisionedKernelExecutorStatusProjection[];
+    /**
+     * Capacity waits are owner facts: a Task carries a `kernel_capacity`
+     * blocker and the ready Subtask to re-dispatch.
+     */
+    listCapacityBlockedTasks(): Array<{ taskId: string; subtaskId: string; blockedAt: string }>;
+    listExecutorStatuses(configurationRevision: string): RevisionedControlExecutorStatusProjection[];
     listWorkGraphTaskIds(): string[];
     findOldestPendingPermission(conversationId: string): PermissionRequestRecord | null;
     listIntegratedPublications(taskIds: string[]): WorkspacePublicationRecord[];
-    listRecoveryApplications(taskId: string): KernelDecisionApplicationRecord[];
-    findRecoveryApplication(recoveryItemId: string): KernelDecisionApplicationRecord | null;
+    listRecoveryApplications(taskId: string): RecoveryApplicationFact[];
+    findRecoveryApplication(recoveryItemId: string): RecoveryApplicationFact | null;
     /**
      * Declared-postcondition diagnosis for one Kernel application, so the
      * explicit `/task recovery` surface shows the same verdict that startup and
@@ -92,8 +94,8 @@ export interface ConversationRuntimePort {
     diagnoseRecoveryApplication(
       decisionId: string,
     ): ApplicationPostconditionInspection | null;
-    listRecoveryEffects(taskId: string): KernelEffectRecord[];
-    findRecoveryEffect(recoveryItemId: string): KernelEffectRecord | null;
+    listRecoveryEffects(taskId: string): ControlEffectRecord[];
+    findRecoveryEffect(recoveryItemId: string): ControlEffectRecord | null;
     findActiveWorkGraphRevision(taskId: string): WorkGraphRevisionRecord | null;
     listTaskEvidence(taskId: string, generationId: string): TaskEvidenceRecord[];
     listAttemptReceipts(taskId: string): ExecutorAttemptReceipt[];
@@ -109,7 +111,7 @@ export interface ConversationRuntimePort {
     listCompletionResidue(taskId: string): string[];
   };
   readonly commands: {
-    submitKernel: AccountKernelCoordinator['submit'];
+    submitControl: AccountControlCoordinator['submit'];
     materializeCompletedEvidence(taskId: string, revision: number): void;
     resolveRecoveryApplication(
       recoveryItemId: string,

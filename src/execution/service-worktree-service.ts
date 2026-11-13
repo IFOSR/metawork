@@ -9,6 +9,17 @@ import { withWorkspaceGitLock } from './workspace-git-lock.js';
 /** Running services own their checkout; Conversation cleanup can never remove it. */
 export class ServiceWorktreeService {
   constructor(private readonly git:WorkspaceGitService,private readonly repo:WorkspaceGitPort) {}
+  async containsPublishedFile(taskId: string, directory: string, relativePath: string): Promise<boolean> {
+    const source = this.repo.sourceForTask(taskId);
+    if (!source) return false;
+    const checkout = await this.prepare(taskId, `discovery_${taskId}`);
+    // macOS /tmp and /var are symlink aliases. The manifest reader passes a
+    // canonical root, whereas installation paths can retain either spelling.
+    if (await realpath(directory) !== await realpath(checkout.rootPath)) return false;
+    const root = this.repo.root(source.workspaceId)!;
+    return (await this.git.entries(root.repositoryPath, source.commit))
+      .some(entry => entry.path === relativePath && entry.kind === 'file');
+  }
   async prepare(taskId:string,serviceId:string,projectPath=''):Promise<ServiceGitWorktree> {
     if(projectPath && projectPath!=='.')assertGitPath(projectPath);
     const source=this.repo.sourceForTask(taskId);if(!source)throw new Error('service_source_commit_missing');

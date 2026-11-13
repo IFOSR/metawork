@@ -15,7 +15,6 @@ import type {
 } from '../metering/ports.js';
 
 interface ContextRow {
-  external_account_ref: string | null;
   query_id: string;
   account_id: string;
   ingress: QueryIngress;
@@ -25,15 +24,12 @@ interface ContextRow {
   request_id: string;
   turn_id: string | null;
   execution_segment_id: string | null;
-  price_book_version: string;
-  fee_policy_version: string;
-  payer_policy_version: string;
   accepted_at: string;
 }
 
 interface LinkRow {
   query_id: string;
-  cost_task_id: string;
+  task_id: string;
   decision_id: string;
   basis: QueryTaskLink['basis'];
   linked_at: string;
@@ -68,8 +64,8 @@ export class SqliteQueryContextStore implements QueryContextStore {
       INSERT INTO query_usage_contexts (
         query_id, account_id, ingress, request_key, request_payload_digest,
         conversation_id, request_id, turn_id, execution_segment_id,
-        price_book_version, fee_policy_version, payer_policy_version, accepted_at, external_account_ref
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        accepted_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `).run(
       context.queryId,
       context.accountId,
@@ -80,11 +76,7 @@ export class SqliteQueryContextStore implements QueryContextStore {
       context.requestId,
       context.turnId,
       context.executionSegmentId,
-      context.priceBookVersion,
-      context.feePolicyVersion,
-      context.payerPolicyVersion,
       context.acceptedAt,
-      context.externalAccountRef ?? null,
     );
   }
 
@@ -99,12 +91,12 @@ export class SqliteQueryContextStore implements QueryContextStore {
     return this.db.transaction(() => {
       const existing = this.findTaskLink(link.queryId);
       if (existing) {
-        return existing.costTaskId === link.costTaskId ? 'already_linked' : 'conflict';
+        return existing.taskId === link.taskId ? 'already_linked' : 'conflict';
       }
       this.db.prepare(`
-        INSERT INTO query_task_links (query_id, cost_task_id, decision_id, basis, linked_at)
+        INSERT INTO query_task_links (query_id, task_id, decision_id, basis, linked_at)
         VALUES (?, ?, ?, ?, ?)
-      `).run(link.queryId, link.costTaskId, link.decisionId, link.basis, link.linkedAt);
+      `).run(link.queryId, link.taskId, link.decisionId, link.basis, link.linkedAt);
       return 'linked';
     }).immediate();
   }
@@ -112,7 +104,7 @@ export class SqliteQueryContextStore implements QueryContextStore {
   listQueryIdsForTask(taskId: string): string[] {
     const rows = this.db.prepare(`
       SELECT query_id FROM query_task_links
-      WHERE cost_task_id = ?
+      WHERE task_id = ?
       ORDER BY linked_at, query_id
     `).all(taskId) as Array<{ query_id: string }>;
     return rows.map(row => row.query_id);
@@ -202,13 +194,13 @@ export class SqliteQueryContextStore implements QueryContextStore {
     if (!turnIds.length) return new Map();
     if (turnIds.length > 100) throw new Error('history_turn_limit');
     const rows = this.db.prepare(`
-      SELECT context.turn_id, link.cost_task_id FROM (
+      SELECT context.turn_id, link.task_id FROM (
         SELECT query_id, turn_id, row_number() OVER
           (PARTITION BY turn_id ORDER BY accepted_at DESC, query_id DESC) AS position
         FROM query_usage_contexts WHERE account_id = ? AND turn_id IN (${turnIds.map(() => '?').join(',')})
       ) context LEFT JOIN query_task_links link ON link.query_id = context.query_id WHERE context.position = 1
-    `).all(accountId, ...turnIds) as { turn_id: string; cost_task_id: string | null }[];
-    return new Map(rows.map(row => [row.turn_id, row.cost_task_id]));
+    `).all(accountId, ...turnIds) as { turn_id: string; task_id: string | null }[];
+    return new Map(rows.map(row => [row.turn_id, row.task_id]));
   }
 
   listContextsForConversation(conversationId: string): QueryUsageContext[] {
@@ -223,7 +215,6 @@ export class SqliteQueryContextStore implements QueryContextStore {
 
 function rowToContext(row: ContextRow): QueryUsageContext {
   return {
-    externalAccountRef: row.external_account_ref,
     queryId: row.query_id,
     accountId: row.account_id,
     ingress: row.ingress,
@@ -233,9 +224,6 @@ function rowToContext(row: ContextRow): QueryUsageContext {
     requestId: row.request_id,
     turnId: row.turn_id,
     executionSegmentId: row.execution_segment_id,
-    priceBookVersion: row.price_book_version,
-    feePolicyVersion: row.fee_policy_version,
-    payerPolicyVersion: row.payer_policy_version,
     acceptedAt: row.accepted_at,
   };
 }
@@ -243,7 +231,7 @@ function rowToContext(row: ContextRow): QueryUsageContext {
 function rowToLink(row: LinkRow): QueryTaskLink {
   return {
     queryId: row.query_id,
-    costTaskId: row.cost_task_id,
+    taskId: row.task_id,
     decisionId: row.decision_id,
     basis: row.basis,
     linkedAt: row.linked_at,

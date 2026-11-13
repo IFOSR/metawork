@@ -1,5 +1,4 @@
 import { verifyInteractionContent } from '../storage/conversation-content-references.js';
-import { decodeKernelEvent } from '../storage/kernel-event-content.js';
 import Database from 'better-sqlite3';
 import { lstatSync, readFileSync } from 'node:fs';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
@@ -223,11 +222,22 @@ export class PlannerDataReader {
       FROM interaction_contents WHERE session_id = ?
       ORDER BY created_at DESC LIMIT ?
     `).all(this.sessionId, bounded) as Array<Record<string, unknown>>;
-    const decisions = this.db.prepare(`
-      SELECT id, task_id, event_json, decision_json, action, reason, created_at
-      FROM kernel_decisions WHERE session_id = ? AND event_type = 'plan_proposed'
-      ORDER BY created_at DESC LIMIT ?
-    `).all(this.sessionId, Math.min(5, bounded)) as Array<Record<string, unknown>>;
+    // Plan admission is owner-recorded now: proposals plus the applied outcome,
+    // never a Kernel decision.
+    const hasOwnerFacts = Boolean(this.db.prepare(
+      "SELECT 1 AS present FROM sqlite_master WHERE type = 'table' AND name = 'task_plan_proposals'",
+    ).get());
+    const decisions = hasOwnerFacts
+      ? this.db.prepare(`
+        SELECT p.proposal_id, p.request_json, p.delivery, p.created_at,
+               r.status AS result_status, r.task_id, r.reason AS result_reason,
+               r.applied_at
+        FROM task_plan_proposals p
+        LEFT JOIN task_plan_admission_results r ON r.proposal_id = p.proposal_id
+        WHERE json_extract(p.request_json, '$.sessionId') = ?
+        ORDER BY p.created_at DESC LIMIT ?
+      `).all(this.sessionId, Math.min(5, bounded)) as Array<Record<string, unknown>>
+      : [];
     const recentPlanningDecisions = decisions
       .sort((left, right) => String(left.created_at).localeCompare(String(right.created_at)))
       .slice(-Math.min(5, bounded));
@@ -294,22 +304,23 @@ export class PlannerDataReader {
         createdAt: row.created_at,
       })),
       recentPlanningDecisions: recentPlanningDecisions.map(row => {
-        const event = safeJson<Record<string, unknown>>(decodeKernelEvent(this.db, String(row.event_json ?? '{}')), {});
-        const plan = isRecord(event.proposal) ? event.proposal : {};
+        const request = safeJson<Record<string, unknown>>(String(row.request_json ?? '{}'), {});
+        const plan = isRecord(request.proposal) ? request.proposal : {};
         const task = isRecord(plan.task) ? plan.task : {};
         const risk = isRecord(plan.risk) ? plan.risk : {};
+        const status = typeof row.result_status === 'string' ? row.result_status : null;
         return {
-          id: row.id,
-          taskId: row.task_id,
-          requestText: truncateText(String(event.requestText ?? ''), 500),
+          id: row.proposal_id,
+          taskId: row.task_id ?? request.taskId ?? null,
+          requestText: truncateText(String(request.requestText ?? ''), 500),
           action: plan.action,
           control: task.control,
           targetTaskId: task.taskId,
           clarificationQuestion: truncateText(String(plan.clarificationQuestion ?? ''), 500) || null,
-          outcome: 'issued',
-          kernelAction: row.action,
+          outcome: status ? 'applied' : 'issued',
+          kernelAction: planAdmissionActionFor(status),
           riskRequiresConfirmation: risk.requiresConfirmation === true,
-          reason: truncateText(String(row.reason ?? ''), 320),
+          reason: truncateText(String(row.result_reason ?? ''), 320),
           createdAt: row.created_at,
         };
       }),
@@ -379,7 +390,7 @@ export class PlannerDataReader {
       SELECT a.name, s.class_health, s.recent_attempts_json,
              s.recent_recovery_checks_json, s.updated_at
       FROM agent_classes a
-      LEFT JOIN kernel_executor_status s ON s.agent_class_name = a.name
+      LEFT JOIN executor_status s ON s.agent_class_name = a.name
       WHERE a.kind = 'executor'
       ORDER BY a.name ASC
     `).all() as Array<Record<string, unknown>>;
@@ -873,4 +884,19 @@ function sanitizePriority(value: unknown): Record<string, unknown> {
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === 'object' && !Array.isArray(value);
+}
+
+/** Owner admission status expressed in the existing tool vocabulary. */
+function planAdmissionActionFor(status: string | null): string {
+  switch (status) {
+    case null: return 'pending';
+    case 'authorized':
+    case 'queued':
+    case 'deferred': return 'authorize_task_plan';
+    case 'task_control': return 'authorize_task_control';
+    case 'clarification': return 'request_clarification';
+    case 'permission_resolution': return 'record_permission_resolution';
+    case 'rejected': return 'reject_request';
+    default: return 'no_op';
+  }
 }

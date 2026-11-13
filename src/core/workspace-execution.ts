@@ -32,6 +32,15 @@ export type WorkspaceOperation =
 export type WorkspaceOriginalFilePolicy = 'may_replace' | 'must_preserve' | 'unknown';
 
 /**
+ * Retired field: `unknown` used to stop admission and ask the user whether an
+ * existing target file may be replaced. Conversation Git Worktree execution and
+ * the merge queue own that answer now, so `originalFilePolicy` is no longer part
+ * of the intent and must never gate a Turn again.
+ *
+ * @deprecated kept only so persisted historical intents remain readable.
+ */
+
+/**
  * Planner-owned semantic Workspace intent. It is a proposal, never an
  * authorization: target Workspace identity must come from the trusted
  * Conversation binding, and target paths are Workspace-relative only.
@@ -42,13 +51,40 @@ export interface WorkspaceIntent {
   /** Workspace-relative file or directory references only; never absolute paths. */
   targetPaths: string[];
   operation: WorkspaceOperation;
-  originalFilePolicy: WorkspaceOriginalFilePolicy;
   confidence: number;
   reason: string;
 }
 
 /** Kernel-owned Workspace access fact used by new admission code. */
 export type WorkspaceAdmissionKind = 'read' | 'write' | 'clarification' | 'rejected';
+
+/**
+ * Runtime-observed readiness of the Workspace Git root for Task writes.
+ * `initializing` is not a blocker: Conversation binding already started
+ * preparation and execution waits for it. Absent facts mean "unknown" (legacy
+ * proposals) and must never be read as unavailable.
+ */
+export type WorkspaceWriteState = 'ready' | 'initializing' | 'failed';
+
+/** Server-projected Workspace fact carried by a plan proposal. */
+export interface WorkspaceAdmissionTargetFact {
+  workspaceId: string;
+  canonicalPath: string;
+  writeState?: WorkspaceWriteState;
+}
+
+/**
+ * Projects a persisted Workspace Git root state into the admission fact. An
+ * absent root stays unknown so legacy proposals keep their existing behavior;
+ * only an explicitly failed root blocks writes.
+ */
+export function workspaceWriteStateOf(
+  root: { state: 'initializing' | 'ready' | 'recovering' | 'failed' } | null | undefined,
+): WorkspaceWriteState | undefined {
+  if (!root) return undefined;
+  if (root.state === 'failed') return 'failed';
+  return root.state === 'ready' ? 'ready' : 'initializing';
+}
 
 export interface WorkspaceAdmissionBinding {
   workspaceId: string | null;
@@ -99,7 +135,6 @@ export const WORKSPACE_OPERATIONS: readonly WorkspaceOperation[] = [
 ];
 
 const WORKSPACE_OPERATION_SET = new Set<string>(WORKSPACE_OPERATIONS);
-const ORIGINAL_FILE_POLICY_SET = new Set<string>(['may_replace', 'must_preserve', 'unknown']);
 const SOURCE_SET = new Set<string>(['explicit_user', 'planner', 'fallback', 'kernel_safety']);
 const DELIVERY_POLICY_SET = new Set<string>(['none', 'auto_publish', 'await_acceptance']);
 
@@ -119,9 +154,7 @@ export function parseWorkspaceIntent(value: unknown): WorkspaceIntent | null {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
   const record = value as Record<string, unknown>;
   const operation = record.operation;
-  const originalFilePolicy = record.originalFilePolicy;
   if (typeof operation !== 'string' || !WORKSPACE_OPERATION_SET.has(operation)) return null;
-  if (typeof originalFilePolicy !== 'string' || !ORIGINAL_FILE_POLICY_SET.has(originalFilePolicy)) return null;
   if (!Array.isArray(record.targetPaths) || record.targetPaths.some(path => typeof path !== 'string')) return null;
   if (record.targetWorkspaceId !== null && typeof record.targetWorkspaceId !== 'string') return null;
   if (typeof record.confidence !== 'number' || !Number.isFinite(record.confidence)) return null;
@@ -130,7 +163,6 @@ export function parseWorkspaceIntent(value: unknown): WorkspaceIntent | null {
     targetWorkspaceId: record.targetWorkspaceId as string | null,
     targetPaths: [...record.targetPaths] as string[],
     operation: operation as WorkspaceOperation,
-    originalFilePolicy: originalFilePolicy as WorkspaceOriginalFilePolicy,
     confidence: record.confidence,
     reason: record.reason,
   };

@@ -1,6 +1,6 @@
 import Database from 'better-sqlite3';
 import { describe, expect, it } from 'vitest';
-import { runMigrations } from '../../src/storage/migrations.js';
+import { initializeDatabaseSchema } from '../../src/storage/schema.js';
 import { TaskRepo } from '../../src/storage/task-repo.js';
 import { TaskEngine } from '../../src/task/task-engine.js';
 import { OrchestrationEngine } from '../../src/guidance/orchestration.js';
@@ -14,7 +14,7 @@ import { KernelExecutorStatusRepo } from '../../src/storage/kernel-executor-stat
 describe('Kernel capacity control loop', () => {
   it('classifies an Executor image probe failure as a local blocker instead of capacity wait', async () => {
     const db = new Database(':memory:');
-    runMigrations(db);
+    initializeDatabaseSchema(db);
     const taskRepo = new TaskRepo(db);
     const taskEngine = new TaskEngine(taskRepo, '/tmp/metaclaw-kernel-capacity');
     const attemptExecutionBackend = new FakeAttemptExecutionBackend(() => ({ body: 'capacity recovered' }));

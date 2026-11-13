@@ -1,7 +1,7 @@
 /**
  * 受控执行助手候选配置构造器（ADR-0028 §6，ADR-0033 2026-09-19 修正案）。
  *
- * 用户只提供产品字段（名称、Pi/Codex、模型策略、职责说明、
+ * 用户只提供产品字段（名称、模型策略、职责说明、
  * 启用状态）；Harness、Driver、命令、能力声明等底层字段由服务端从受控模板
  * 补齐。该模块是纯函数构造：不写磁盘、不接触运行时 Repository，候选配置
  * 经 ConfigurationService 的既有校验/编译/探测/激活流程生效。
@@ -54,7 +54,7 @@ export function projectExecutorManagement(snapshot: ConfigurationSnapshot): Exec
         const driver = config.harnesses[agent.harnessRef]?.driverId;
         return {
           agentClassRef,
-          tool: driver === 'pi-cli' ? 'pi' : driver === 'codex-cli' ? 'codex' : null,
+          tool: driver === 'pi-cli' ? 'pi' : null,
           displayName: agent.displayName ?? agentClassRef,
           modelPolicy: structuredClone(agent.modelPolicy),
           operations: standardProfileRef(config.permissionProfiles[agent.permissionProfileRef ?? '']) ? 'standard' : 'restricted',
@@ -62,7 +62,7 @@ export function projectExecutorManagement(snapshot: ConfigurationSnapshot): Exec
           enabled: agent.enabled,
         };
       }),
-    tools: (['pi', 'codex'] as const).map(id => {
+    tools: (['pi'] as const).map(id => {
       try {
         const harnessRef = resolveExecutorToolHarness(config, id);
         const candidates = projectConfigurationCandidates({
@@ -84,7 +84,7 @@ export function projectExecutorManagement(snapshot: ConfigurationSnapshot): Exec
   };
 }
 
-export type ExecutorToolId = 'pi' | 'codex';
+export type ExecutorToolId = 'pi';
 
 export interface ExecutorEditableFields {
   displayName: string;
@@ -141,7 +141,7 @@ const ExecutorEditableFieldsSchema = z.object({
 export const ExecutorConfigurationChangeSchema = z.discriminatedUnion('operation', [
   z.object({
     operation: z.literal('create'),
-    tool: z.enum(['pi', 'codex']),
+    tool: z.literal('pi'),
     fields: ExecutorEditableFieldsSchema,
   }).strict(),
   z.object({
@@ -176,14 +176,12 @@ export function parseExecutorConfigurationChange(value: unknown): ExecutorConfig
   return parsed.data;
 }
 
-const TOOL_DRIVER_IDS: Record<ExecutorToolId, 'pi-cli' | 'codex-cli'> = {
+const TOOL_DRIVER_IDS: Record<ExecutorToolId, 'pi-cli'> = {
   pi: 'pi-cli',
-  codex: 'codex-cli',
 };
 
 const TOOL_LABELS: Record<ExecutorToolId, string> = {
   pi: 'Pi',
-  codex: 'Codex CLI',
 };
 
 /**
@@ -195,6 +193,9 @@ export function resolveExecutorToolHarness(
   config: AnyFusionConfigurationV2,
   tool: ExecutorToolId,
 ): string {
+  if (tool !== 'pi') {
+    throw new ExecutorConfigurationError('unsupported_change', '当前只支持内置 Pi 执行工具。', 'tool');
+  }
   const driverId = TOOL_DRIVER_IDS[tool];
   const matches = Object.entries(config.harnesses)
     .filter(([, harness]) => harness.kind === 'executor' && harness.driverId === driverId)
@@ -276,6 +277,12 @@ function requireExecutorAgentClass(
   return agentClass;
 }
 
+function assertSupportedExecutor(config: AnyFusionConfigurationV2, agent: AgentClassDefinition): void {
+  if (config.harnesses[agent.harnessRef]?.driverId !== 'pi-cli') {
+    throw new ExecutorConfigurationError('unsupported_change', '该执行工具不受支持，请使用内置 Pi 执行助手。', 'agentClassRef');
+  }
+}
+
 /**
  * 基于当前生效配置构造一次执行助手变更的候选配置。
  * 纯函数：不修改 base，不读写磁盘。
@@ -334,6 +341,7 @@ export function buildExecutorConfigurationCandidate(
     }
     case 'update': {
       const existing = requireExecutorAgentClass(config, change.agentClassRef);
+      if (change.fields.enabled) assertSupportedExecutor(config, existing);
       assertEditableFields(config, change.fields);
       config.agentClasses[change.agentClassRef] = {
         ...existing,
@@ -360,6 +368,7 @@ export function buildExecutorConfigurationCandidate(
     case 'disable': {
       const existing = requireExecutorAgentClass(config, change.agentClassRef);
       const enabled = change.operation === 'enable';
+      if (enabled) assertSupportedExecutor(config, existing);
       if (existing.enabled !== enabled) {
         config.agentClasses[change.agentClassRef] = { ...existing, enabled };
       }

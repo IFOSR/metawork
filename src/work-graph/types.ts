@@ -34,16 +34,6 @@ export interface WorkGraphAcceptanceCriterion {
   requiredEvidence: string[];
 }
 
-export type ProposedModelSelection =
-  | { mode: 'fixed-by-agent-class' }
-  | { mode: 'proposed'; modelRef: string; reason: string }
-  | { mode: 'agent-class-default' };
-
-export interface ProposedExecutorBinding {
-  agentClassRef: string;
-  modelSelection: ProposedModelSelection;
-}
-
 export interface WorkGraphSubtask {
   id: string;
   title: string;
@@ -51,7 +41,6 @@ export interface WorkGraphSubtask {
   dependencies: WorkGraphDependency[];
   contextRefs: ContextRef[];
   requiredCapabilities: RoutingCapabilityId[];
-  executorBindings: ProposedExecutorBinding[];
   /** Absent on historical graphs; unknown keeps exclusive execution. */
   workspaceEffect?: 'read_only' | 'write' | 'unknown';
   deliveryKind: 'edit' | 'report';

@@ -6,9 +6,9 @@
  * 有一个权威覆盖范围参与汇总。
  */
 
-import type { Payer } from '../billing/cost-policy.js';
-import type { BillingResource } from '../billing/pricing.js';
-import { rational, type Rational } from '../billing/money.js';
+import type { Payer } from './usage-payer.js';
+import type { UsageResource } from './usage-resource.js';
+import { rational, type Rational } from './quantity.js';
 
 export const METERING_STAGES = [
   'intake',
@@ -99,7 +99,7 @@ export interface UsageObservation {
   readonly taskId: string | null;
   readonly stage: MeteringStage | null;
   readonly reason: MeteringReason;
-  readonly resource: BillingResource;
+  readonly resource: UsageResource;
   readonly metric: string;
   readonly unit: string;
   readonly quantity: ExactQuantity;

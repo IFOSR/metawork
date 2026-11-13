@@ -10,7 +10,7 @@
  */
 
 import type { SubtaskStatus, Task } from '../core/types.js';
-import type { KernelDispatchItemStatus } from '../kernel/control-kernel.js';
+import type { ControlDispatchItemStatus } from '../control/control-contracts.js';
 import type { PendingResultIdentity } from './safe-result-identity.js';
 import { isServiceReadyState } from './local-service.js';
 import {
@@ -42,7 +42,7 @@ export interface TaskRawSubtaskFact {
 export interface TaskRawDispatchFact {
   readonly attemptId: string;
   readonly subtaskId: string;
-  readonly status: KernelDispatchItemStatus;
+  readonly status: ControlDispatchItemStatus;
   readonly generationId: string;
 }
 
@@ -58,6 +58,8 @@ export interface TaskRawReceiptFact {
     | 'cancelled_or_stale';
   readonly failureCode: string | null;
   readonly failureKind: string | null;
+  /** Exact bounded failure text from the attempt receipt, when available. */
+  readonly failureSummary?: string | null;
   readonly completedAt: string;
   readonly accepted?: boolean;
 }
@@ -127,6 +129,8 @@ export interface TaskStateRawFacts {
   readonly capacityWaiting: boolean;
   /** An operation's external outcome is unknown and must be verified. */
   readonly externalOutcomeUnknown: boolean;
+  /** Final result assembly failed; no unknown external operation is implied. */
+  readonly completionRecovery?: { readonly id: string; readonly error: string | null } | null;
   /** Normalized operation results (service start, delivery, integration). */
   readonly operationResults: readonly {
     readonly operationKey: string;
@@ -161,13 +165,22 @@ export interface TaskEvaluationInput {
   readonly anomaly: TaskReason | null;
 }
 
-const ACTIVE_DISPATCH: readonly KernelDispatchItemStatus[] = [
+const ACTIVE_DISPATCH: readonly ControlDispatchItemStatus[] = [
   'pending_launch', 'launching', 'running', 'cancelling',
 ];
 
 const FAILED_TERMINAL_STATES = new Set(['executor_failed', 'contract_blocked', 'heartbeat_lost']);
 const UNCERTAIN_FAILURE_KINDS = new Set([
   'unknown', 'timeout', 'network', 'infrastructure', 'heartbeat_lost',
+]);
+// These failures stop execution but do not prove the work impossible: the
+// user (or the operator) can fix the environment and continue. Treating them
+// as definite failures made a Task that the runtime had just blocked for
+// "explicit recovery" conclude as failed (observed 2026-11-11: a missing
+// generated Pi extension surfaced as a configuration failure and the Task
+// ended failed instead of remaining resumable).
+const RECOVERABLE_BLOCK_FAILURE_KINDS = new Set([
+  'configuration', 'adapter', 'permission', 'stale',
 ]);
 
 export function readTaskEvaluationInput(raw: TaskStateRawFacts): TaskEvaluationInput {
@@ -275,6 +288,17 @@ export function readTaskEvaluationInput(raw: TaskStateRawFacts): TaskEvaluationI
             '存在结果不明的外部操作，需要核实。',
             [`task:${raw.task.id}`],
           ),
+      result: null,
+    });
+  }
+  if (raw.completionRecovery) {
+    pendingActions.push({
+      actionId: `recovery:${raw.completionRecovery.id}`,
+      kind: 'resolve_recovery',
+      label: '查看最终结果收尾恢复项',
+      reason: createTaskReason('system_anomaly',
+        '子任务已完成，但最终结果汇总或交付尚未完成，需要恢复系统收尾流程。',
+        [`recovery:${raw.completionRecovery.id}`]),
       result: null,
     });
   }
@@ -629,6 +653,18 @@ function resolveRequiredWork(input: {
     && latestReceipt.failureCode !== null
     && latestReceipt.failureCode !== 'unknown'
     && !uncertainFailure;
+  if (subtask.status === 'blocked' && !input.armedRetry && latestReceipt?.failureKind
+    && RECOVERABLE_BLOCK_FAILURE_KINDS.has(latestReceipt.failureKind)) {
+    const permission = latestReceipt.failureKind === 'permission';
+    const reason = createTaskReason(
+      permission ? 'input_required' : 'system_anomaly',
+      permission
+        ? '执行所需权限需要确认后才能继续。'
+        : '执行环境或配置需要处理；修复后可继续未完成部分。',
+      [`receipt:${latestReceipt.attemptId}`],
+    );
+    return { fact: { ...base, state: 'waiting_for_user', reason }, failureReason: null };
+  }
   if (subtask.status === 'blocked' && definiteFailure && !input.armedRetry) {
     const reason = failureReasonFor(latestReceipt!);
     return { fact: { ...base, state: 'failed', reason }, failureReason: reason };
@@ -708,7 +744,11 @@ function failureReasonFor(receipt: TaskRawReceiptFact): TaskReason {
         : receipt.failureCode === 'retry_exhausted'
           ? 'retry_exhausted' as const
           : 'execution_failed' as const;
-  return createTaskReason(code, failureMessageFor(code), [`receipt:${receipt.attemptId}`]);
+  return createTaskReason(
+    code,
+    receipt.failureSummary?.trim() || failureMessageFor(code),
+    [`receipt:${receipt.attemptId}`],
+  );
 }
 
 function failureMessageFor(code: ReturnType<typeof failureReasonFor>['code']): string {

@@ -104,6 +104,7 @@ export interface GatewayTaskViewLifecycle {
   readonly reason: TaskReason;
   readonly pendingActions: readonly TaskPendingAction[];
   readonly cleanup: TaskStateSnapshot['cleanup'];
+  readonly retryOfTaskId?: string | null;
   /** Active Work Graph generation; per-Turn controls must target it exactly. */
   readonly executionGeneration?: string | null;
   readonly activeAttempt: {

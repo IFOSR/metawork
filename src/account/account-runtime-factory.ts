@@ -9,11 +9,11 @@
  */
 
 import { resolve } from 'node:path';
-import type { AccountKernelCoordinator } from './account-kernel-coordinator.js';
+import type { AccountControlCoordinator } from './account-control-coordinator.js';
 import { AccountRuntime } from './account-runtime.js';
 import Database from 'better-sqlite3';
-import type { AccountKernelServices } from './account-kernel-services.js';
-import { buildAccountKernelServices } from './account-kernel-services.js';
+import type { AccountControlServices } from './account-control-services.js';
+import { buildAccountControlServices } from './account-control-services.js';
 import type { AccountRepositories } from './account-repositories.js';
 import { buildAccountRepositories } from './account-repositories.js';
 import type { AccountWorkspaceServices } from './account-workspace-services.js';
@@ -28,8 +28,8 @@ import type { ConfigurationActivationGate } from '../configuration/configuration
 import type { ConversationActivityProjection } from '../workspace/conversation-activity-projector.js';
 
 export interface AccountRuntimeFactoryDeps {
-  buildKernelCoordinator(accountId: string): AccountKernelCoordinator;
-  buildKernelServices?(accountId: string): AccountKernelServices;
+  buildControlCoordinator(accountId: string): AccountControlCoordinator;
+  buildControlServices?(accountId: string): AccountControlServices;
   buildRepositories?(accountId: string): AccountRepositories;
   buildWorkspaceServices?(accountId: string): AccountWorkspaceServices;
   buildExecutionServices?(accountId: string): AccountExecutionServices;
@@ -59,13 +59,13 @@ export class AccountRuntimeFactory {
   create(accountId: string): AccountRuntime {
     return new AccountRuntime({
       accountId,
-      kernelCoordinator: this.deps.buildKernelCoordinator(accountId),
-      kernelServices: this.deps.buildKernelServices
-        ? this.deps.buildKernelServices(accountId)
-        : buildAccountKernelServices(this.defaultDb),
+      kernelCoordinator: this.deps.buildControlCoordinator(accountId),
+      kernelServices: this.deps.buildControlServices
+        ? this.deps.buildControlServices(accountId)
+        : buildAccountControlServices(this.defaultDb),
       repositories: this.deps.buildRepositories
         ? this.deps.buildRepositories(accountId)
-        : buildAccountRepositories(this.defaultDb),
+        : buildAccountRepositories(this.defaultDb, accountId),
       workspaceServices: this.deps.buildWorkspaceServices
         ? this.deps.buildWorkspaceServices(accountId)
         : buildAccountWorkspaceServices(this.defaultDb, resolve(process.cwd(), '.anyfusion-workspace')),

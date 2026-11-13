@@ -5,6 +5,46 @@ AnyFusion release entries remain unchanged for auditability.
 
 The project follows [Semantic Versioning](https://semver.org/) for public releases.
 
+## [0.1.27] - 2026-11-12
+
+- Retire the kernel control axis in favour of the `src/control` contracts and the
+  Planner-owned proposal/validation boundary; the vendored Planner fork is gone and
+  the packaged Manager/Executor run the pinned upstream Pi.
+- Carry the execution write fact in planning facts instead of rendering the
+  Manager's read-only tool surface as a Workspace property, and reserve
+  clarifications for user-intent ambiguity.
+- Keep recoverable blocked Subtasks resumable, park Tasks left `executing` without
+  live work, cancel orphan replans of terminal Tasks, resume via `recoverDue`, and
+  count explicitly accepted receipts as completion sources.
+- Require exclusive Workspace access to run or terminate a process, gate external
+  process termination on an explicit user turn, and upgrade schema 67 to 68 in
+  place for `repair_pending`.
+- Treat anti-bot/verification pages as blocked retryable sources, fall back to the
+  deterministic Router binding when the decision model is unavailable, and remove
+  the retired `originalFilePolicy` admission gate.
+- Show the Manager planning process inline with staged tool telemetry, and stop
+  finished turns from showing `running` trace progress.
+- Desktop: recover from an interrupted update whose restore stage failed by
+  isolating the incompatible installation, installing cleanly, and restoring the
+  previous installation if the clean install fails; accept an empty data directory
+  for a new installation.
+- Packaging: publish Runtime/Planner/Memory/Pi archives from an explicit runtime
+  allowlist that excludes development toolchains.
+
+## [0.1.26] - 2026-11-06
+
+- Restore the Executor's extension tools. Pi's `--tools` flag is a global
+  allowlist that also covers extension-registered tools, so deriving it from the
+  Executor affordance projection removed `web_search`, `web_fetch`,
+  `evidence_*`, `result_reference_*` and the `pdf_*` tools from every Attempt
+  since 2026-10-28. Launching Attempts now use Pi's complete registry and
+  affordances only decide what gets materialized.
+- Dependent Subtasks can read authorized upstream results again through
+  `result_reference_get` instead of improvising shell scans for them.
+- The response-only completion correction entrypoint runs with no tools and no
+  durable session (`--no-session --no-tools`); its contract is one completion
+  trailer and no action.
+
 ## [0.1.25] - 2026-11-05
 
 - Uncertified results now wait for explicit acceptance or retry after completion

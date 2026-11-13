@@ -83,7 +83,7 @@ node dist/index.js server start
 | A6 | 健康检查 503 | ⚠️ 部分通过 | 未把 503 当成功：服务记录 `server503` state=unhealthy，`health_message=服务已启动，健康检查返回 503`；任务最终 failed，文案保留 `service_health_timeout，serviceId=server503，state=failed，进程已退出，健康检查=503`。但收敛耗时约 3.5 分钟且期间用户只看到「执行中」；未显示已尝试轮数（见 D7） |
 | A7 | 旧 failed 服务记录 | ✅ 通过（测试级） | `managed-local-service.test.ts`「starts the current specification again after an earlier round recorded failure」「keeps the same service id separate per Workspace」通过；`managed-service-handover.test.ts`「lets a later Task in the same Workspace take over the manifest an earlier Task wrote」通过。Web 手工未单独构造历史 failed 记录 |
 | A8 | 规格发生变化 | ✅ 通过（测试级） | `managed-local-service.test.ts`「binds a changed specification only through the authorized update」通过（未授权不得改绑，授权后按新 revision 启动） |
-| A9 | 自动修复预算耗尽 | ⚠️ 部分通过 | 503 场景实际产生 1 次 primary + 3 次 `service_repair` continuation（`kernel_dispatch_items`），最终展示真实原因与下一步建议；**未显示「已尝试 3 轮」类信息**，用户无法判断预算已耗尽 |
+| A9 | 自动修复预算耗尽 | ⚠️ 部分通过 | 503 场景实际产生 1 次 primary + 3 次 `service_repair` continuation（`dispatch_items`），最终展示真实原因与下一步建议；**未显示「已尝试 3 轮」类信息**，用户无法判断预算已耗尽 |
 | A10 | 普通任务无内部门槛 | ⚠️ 部分通过 | A1/A3/A4 完成态均无「接受结果 / 继续未完成任务 / 显式重启」按钮（DOM 校验为空）；但失败态直接暴露 `Task #task_plan_event_proposal_…`、`state=failed`、`serviceId` 等内部标识，并给出「重试未完成部分 / 取消任务」内部动作；成功任务下方仍残留「Task #… 尚未完成：系统正在执行任务。。」（见 D6） |
 | A11 | 失败任务自然取代 | ❌ 失败（P0） | 失败后直接重新输入同一目标：「再试一次：这次把 /health 改成返回 200…」。新任务 `task_plan_event_proposal_e5fea319…` 一直停留在 `queued`（13:56:44 起 >4 分钟未执行）；`conversation_task_slots` 中该会话仍为 `state=releasing`，持有失败任务 2d62ff9e…；转录区不显示用户刚输入的消息，仅侧栏显示「排队中」（见 D2） |
 | A12 | Executor 假成功 | ✅ 通过（测试级） | 运行 `completion-protocol.test.ts` + `control-kernel.test.ts` + `resource-lease-repo.test.ts` + `in-place-attempt-recovery.test.ts` + `kernel-application-recovery.test.ts`：138/152 通过；其中「holds downstream when a declared artifact handoff has no files」「rejects reportPath that was not produced by this attempt or escapes the workspace」通过，说明 Runtime 独立验收而非信任 Executor 成功 |
@@ -244,7 +244,7 @@ node dist/index.js server start
 - 影响：用户看到自相矛盾的完成状态（A10）。
 
 ### D7（P1）服务健康失败的收敛时间与预算可见性
-- 证据：503 场景 22s 出现「已阻塞：Local service did not become healthy」，约 3.5 分钟后才失败收尾，期间只有「执行中」；最终文案无「已尝试 3 轮/预算耗尽」信息（`kernel_dispatch_items` 有 1 primary + 3 continuation）。
+- 证据：503 场景 22s 出现「已阻塞：Local service did not become healthy」，约 3.5 分钟后才失败收尾，期间只有「执行中」；最终文案无「已尝试 3 轮/预算耗尽」信息（`dispatch_items` 有 1 primary + 3 continuation）。
 - 影响：A6/A9 的用户可解释性不足。
 
 ### D8（P1）只读/新建任务被要求确认「覆盖原文件」

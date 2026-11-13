@@ -5,7 +5,7 @@ import { join } from 'node:path';
 import { createServer } from 'node:net';
 import Database from 'better-sqlite3';
 import { afterEach, describe, expect, it } from 'vitest';
-import { runMigrations } from '../../src/storage/migrations.js';
+import { initializeDatabaseSchema } from '../../src/storage/schema.js';
 import { TaskRepo } from '../../src/storage/task-repo.js';
 import { TaskEngine } from '../../src/task/task-engine.js';
 import { OrchestrationEngine } from '../../src/guidance/orchestration.js';
@@ -36,7 +36,7 @@ function fixture(responder: FakeAttemptExecutionResponder, service = false, exis
   mkdirSync(join(process.env.ANYFUSION_INSTALL_ROOT!, 'app/current/dist'), { recursive: true });
   writeFileSync(join(process.env.ANYFUSION_INSTALL_ROOT!, 'app/current/dist/pi-attempt-tools.ts'), 'export default function () {}\n');
   if (existing) { mkdirSync(join(root, 'existing')); writeFileSync(join(root, 'existing', 'answer.md'), 'original'); }
-  const db = new Database(databasePath); runMigrations(db);
+  const db = new Database(databasePath); initializeDatabaseSchema(db);
   const repo = new TaskRepo(db); const engine = new TaskEngine(repo, '/tmp/metawork-acceptance');
   const artifacts = new TaskArtifactRepo(db);
   const delivery = new UserArtifactPublicationService({ userWorkspaceRoot: root, taskArtifactRepo: artifacts });

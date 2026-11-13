@@ -7,14 +7,14 @@ import type { QueryTaskLink } from './ports.js';
 
 export interface QueryUsageLifecycle {
   beginQuery(input: BeginQueryInput): BeginQueryResult;
-  bindCostTask(input: {
+  bindTask(input: {
     readonly queryId: string;
     readonly taskId: string;
     readonly decisionId: string;
     readonly basis: QueryTaskLink['basis'];
     readonly linkedAt: string;
   }): BindTaskResult;
-  getCostTaskId(queryId: string): string | null;
+  getTaskId(queryId: string): string | null;
   finalizeQueriesForTask(taskId: string, finalizedAt: string): void;
   finalizeQuery(input: {
     readonly queryId: string;

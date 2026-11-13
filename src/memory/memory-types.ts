@@ -130,6 +130,19 @@ export interface MemoryMaterialization {
   title?: string;
 }
 
+/** One model call the memory engine reports for MetaWork metering. */
+export interface MemoryEngineUsage {
+  /** Per-engine-process identity; a restarted engine never reuses sequence keys. */
+  instanceId: string;
+  seq: number;
+  occurredAt: string;
+  model: string;
+  inputTokens: number | null;
+  outputTokens: number | null;
+  success: boolean;
+  error: string | null;
+}
+
 /** Management view of one bound asset. */
 export interface MemoryAssetSummary {
   memoryId: string;

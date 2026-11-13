@@ -2,7 +2,7 @@ import Database from 'better-sqlite3';
 import { describe, expect, it, vi } from 'vitest';
 import { NotificationRoutingService } from '../../src/delivery/notification-routing.js';
 import { SqliteNotificationRoutingStore } from '../../src/storage/notification-routing-repo.js';
-import { runMigrations } from '../../src/storage/migrations.js';
+import { initializeDatabaseSchema } from '../../src/storage/schema.js';
 import { FeishuGatewaySessionPort } from '../../src/gateway/feishu-gateway-session-port.js';
 import { GatewaySubscriptions } from '../../src/gateway/gateway-subscriptions.js';
 import { handleFeishuMessageEvent, subscribeFeishuGatewayDeliveries } from '../../src/integrations/feishu-app.js';
@@ -10,7 +10,7 @@ import { handleFeishuMessageEvent, subscribeFeishuGatewayDeliveries } from '../.
 /** Real durable Delivery + production Feishu bridge; only the external HTTP platform is substituted. */
 describe('Feishu long-task visibility through durable routes', () => {
   it('acknowledges promptly, coalesces progress into one card, restores after restart and delivers the full result', async () => {
-    const db = new Database(':memory:'); runMigrations(db);
+    const db = new Database(':memory:'); initializeDatabaseSchema(db);
     let now = 100_000;
     const route = { accountId: 'local-default', principalId: 'feishu:tenant:sender', conversationId: 'conversation',
       requestId: 'message', taskId: null, source: 'default_reply' as const,

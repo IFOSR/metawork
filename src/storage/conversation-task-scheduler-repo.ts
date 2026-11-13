@@ -1,6 +1,6 @@
 import { resolveDerivedContent, storeDerivedContent } from './conversation-content-references.js';
 import { randomUUID } from 'node:crypto';
-import { selectTaskDispatches, type SchedulerPriority } from '../kernel/task-scheduler.js';
+import { selectTaskDispatches, type SchedulerPriority } from '../control/task-scheduler.js';
 import type Database from 'better-sqlite3';
 
 export type ConversationTaskSlotState = 'free' | 'occupied' | 'releasing' | 'recovery_blocked';

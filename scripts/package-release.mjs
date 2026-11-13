@@ -11,6 +11,7 @@
 //   --source-meta-root <dir>  Source tree for version metadata such as the
 //                            database schema version (default: script parent)
 //   --planner-root <dir>     Vendored Planner root (default: <source>/planner/AnyFusion-Pi)
+//   --pi-command <cmd>       Upstream Pi executable to package (default: pi)
 //   --memory-root <dir>      Memory engine tree, TDAI MemoryCore (default:
 //                            $METAWORK_MEMORY_ENGINE_ROOT or <source>/memory/tdai).
 //                            Must contain a compiled dist/gateway/server.js.
@@ -44,6 +45,8 @@ import { spawn, spawnSync } from 'node:child_process';
 import { promisify } from 'node:util';
 import { basename, dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { probePiRuntimePin } from './lib/pi-runtime-pin.mjs';
+import { stagePackagedPi } from './lib/packaged-pi.mjs';
 
 const scriptDir = dirname(fileURLToPath(import.meta.url));
 
@@ -52,6 +55,8 @@ function parseArguments(argv) {
     sourceRoot: resolve(scriptDir, '..'),
     sourceMetaRoot: undefined,
     plannerRoot: undefined,
+    piCommand: undefined,
+    piPinPath: undefined,
     memoryRoot: undefined,
     memorySource: undefined,
     memoryRevision: undefined,
@@ -80,6 +85,8 @@ function parseArguments(argv) {
       case '--source-root': options.sourceRoot = resolve(requireValue()); break;
       case '--source-meta-root': options.sourceMetaRoot = resolve(requireValue()); break;
       case '--planner-root': options.plannerRoot = resolve(requireValue()); break;
+      case '--pi-command': options.piCommand = requireValue(); break;
+      case '--pi-pin': options.piPinPath = resolve(requireValue()); break;
       case '--memory-root': options.memoryRoot = resolve(requireValue()); break;
       case '--memory-source': options.memorySource = requireValue(); break;
       case '--memory-revision': options.memoryRevision = requireValue(); break;
@@ -127,7 +134,7 @@ export function archiveExtension(platform) {
 }
 
 export function archiveName(kind, releaseId, platform, arch) {
-  if (kind !== 'metawork' && kind !== 'planner' && kind !== 'memory') {
+  if (kind !== 'metawork' && kind !== 'planner' && kind !== 'memory' && kind !== 'pi') {
     throw new Error(`unsupported release artifact: ${kind}`);
   }
   return `${kind}-${releaseId}-${platform}-${arch}${archiveExtension(platform)}`;
@@ -215,9 +222,11 @@ function assertPackagableTree(options) {
     join(options.sourceRoot, 'dist', 'planning-agent-plan-v9.schema.json'),
     join(options.sourceRoot, 'web', 'dist'),
     join(options.sourceRoot, 'node_modules'),
-    join(options.plannerRoot, 'package.json'),
-    join(options.plannerRoot, 'packages', 'coding-agent', 'dist'),
-    join(options.plannerRoot, 'node_modules'),
+    ...(existsSync(options.plannerRoot) ? [
+      join(options.plannerRoot, 'package.json'),
+      join(options.plannerRoot, 'packages', 'coding-agent', 'dist'),
+      join(options.plannerRoot, 'node_modules'),
+    ] : []),
     join(options.memoryRoot, 'package.json'),
     join(options.memoryRoot, 'dist', 'gateway', 'server.js'),
   ];
@@ -254,6 +263,34 @@ const waitForExit = promisify((child, callback) => {
 
 const memoryArchiveExcludes = [
   '.DS_Store',
+  '.git',
+  'package-lock.json',
+  'npm-shrinkwrap.json',
+  'yarn.lock',
+  'pnpm-lock.yaml',
+  'tsconfig*.json',
+  'vitest.config.*',
+  'eslint.config.*',
+  'src',
+  'scripts',
+  'assets',
+  'hermes-plugin',
+  'README*',
+  'CHANGELOG*',
+  'index.ts',
+  'openclaw.plugin.json',
+  'node_modules/.bin',
+  'node_modules/@types',
+  'node_modules/@vitest',
+  'node_modules/@vitest/**',
+  'node_modules/@rolldown',
+  'node_modules/@rolldown/**',
+  'node_modules/esbuild',
+  'node_modules/@esbuild',
+  'node_modules/tsx',
+  'node_modules/tsdown',
+  'node_modules/typescript',
+  'node_modules/vitest',
   '**/*.map',
   '**/*.d.ts',
   '**/test',
@@ -266,6 +303,32 @@ const memoryArchiveExcludes = [
 
 const runtimeArchiveExcludes = [
   '.DS_Store',
+  'node_modules/.bin',
+  'node_modules/@types',
+  'node_modules/@vitest',
+  'node_modules/@rolldown',
+  'node_modules/esbuild',
+  'node_modules/@esbuild',
+  'node_modules/typescript',
+  'node_modules/vitest',
+  'node_modules/tsx',
+  'node_modules/tsup',
+  'node_modules/vite',
+  'node_modules/rollup',
+  '**/node_modules/.bin',
+  '**/node_modules/@types',
+  '**/node_modules/@vitest',
+  '**/node_modules/@vitest/**',
+  '**/node_modules/@rolldown',
+  '**/node_modules/@rolldown/**',
+  '**/node_modules/esbuild',
+  '**/node_modules/@esbuild',
+  '**/node_modules/typescript',
+  '**/node_modules/vitest',
+  '**/node_modules/tsx',
+  '**/node_modules/tsup',
+  '**/node_modules/vite',
+  '**/node_modules/rollup',
   '**/*.map',
   '**/*.d.ts',
   '**/test',
@@ -276,6 +339,10 @@ const runtimeArchiveExcludes = [
   '**/.cache',
   '**/.vite',
   '**/.turbo',
+  '**/.github',
+  '**/.github/**',
+  '**/docker',
+  '**/docker/**',
 ];
 
 const plannerArchiveExcludes = [
@@ -394,9 +461,9 @@ function stableStringify(value) {
 }
 
 function currentDatabaseSchema(sourceRoot) {
-  const migrationsSource = readFileSync(join(sourceRoot, 'src', 'storage', 'migrations.ts'), 'utf8');
-  const match = /export const CURRENT_SCHEMA_VERSION = (\d+)/u.exec(migrationsSource);
-  if (!match) throw new Error('cannot determine CURRENT_SCHEMA_VERSION from src/storage/migrations.ts');
+  const schemaSource = readFileSync(join(sourceRoot, 'src', 'storage', 'current-schema.ts'), 'utf8');
+  const match = /export const CURRENT_SCHEMA_VERSION = (\d+)/u.exec(schemaSource);
+  if (!match) throw new Error('cannot determine CURRENT_SCHEMA_VERSION from src/storage/current-schema.ts');
   return Number(match[1]);
 }
 
@@ -450,7 +517,10 @@ async function main() {
   mkdirSync(stagingRoot, { recursive: true });
 
   const runtimeArchiveName = archiveName('metawork', releaseId, platform, arch);
-  const plannerArchiveName = archiveName('planner', releaseId, platform, arch);
+  // The vendored Planner is optional now (ADR-0055 D6): a release that runs the
+  // packaged Pi runtime does not ship a vendored planner tree at all.
+  const vendorPlanner = existsSync(options.plannerRoot);
+  const plannerArchiveName = vendorPlanner ? archiveName('planner', releaseId, platform, arch) : null;
   const memoryArchiveName = archiveName('memory', releaseId, platform, arch);
   await packageArchive({
     sourceRoot: options.sourceRoot,
@@ -461,24 +531,46 @@ async function main() {
     outputPath: join(options.outDir, runtimeArchiveName),
     platform,
   });
+  if (vendorPlanner) {
+    await packageArchive({
+      sourceRoot: options.plannerRoot,
+      stagingRoot,
+      prefix: 'planner',
+      entries: [
+        'package.json',
+        'packages/coding-agent/package.json',
+        'packages/coding-agent/dist',
+        'packages/ai/package.json',
+        'packages/ai/dist',
+        'packages/agent/package.json',
+        'packages/agent/dist',
+        'packages/tui/package.json',
+        'packages/tui/dist',
+        'node_modules',
+      ],
+      exclude: plannerArchiveExcludes,
+      outputPath: join(options.outDir, plannerArchiveName),
+      platform,
+    });
+  }
+  // ADR-0055 D6: the packaged upstream Pi runtime is pinned at build time and
+  // archived with the release, so an install cannot drift to another Pi.
+  const piPin = probePiRuntimePin({ command: options.piCommand });
+  if (options.piPinPath) {
+    const expected = JSON.parse(readFileSync(options.piPinPath, 'utf8'));
+    if (['commandPath', 'releaseDir', 'version', 'packageVersion', 'lockSha256'].some(key => expected[key] !== piPin[key])) {
+      throw new Error('Pi runtime changed after build-time pin');
+    }
+  }
+  const piDistribution = join(stagingRoot, 'pi-distribution');
+  await stagePackagedPi(piPin, piDistribution);
+  const piArchiveName = archiveName('pi', releaseId, platform, arch);
   await packageArchive({
-    sourceRoot: options.plannerRoot,
+    sourceRoot: piDistribution,
     stagingRoot,
-    prefix: 'planner',
-    entries: [
-      'package.json',
-      'packages/coding-agent/package.json',
-      'packages/coding-agent/dist',
-      'packages/ai/package.json',
-      'packages/ai/dist',
-      'packages/agent/package.json',
-      'packages/agent/dist',
-      'packages/tui/package.json',
-      'packages/tui/dist',
-      'node_modules',
-    ],
-    exclude: plannerArchiveExcludes,
-    outputPath: join(options.outDir, plannerArchiveName),
+    prefix: 'pi',
+    entries: ['.'],
+    outputPath: join(options.outDir, piArchiveName),
     platform,
   });
   await packageArchive({
@@ -511,12 +603,22 @@ async function main() {
       byteSize: statSize(join(options.outDir, runtimeArchiveName)),
       sha256: sha256sum(join(options.outDir, runtimeArchiveName)),
     },
-    planner: {
-      source: sourceUrl,
-      revision,
-      url: base === '.' ? plannerArchiveName : `${base}/${plannerArchiveName}`,
-      byteSize: statSize(join(options.outDir, plannerArchiveName)),
-      sha256: sha256sum(join(options.outDir, plannerArchiveName)),
+    ...(vendorPlanner ? {
+      planner: {
+        source: sourceUrl,
+        revision,
+        url: base === '.' ? plannerArchiveName : `${base}/${plannerArchiveName}`,
+        byteSize: statSize(join(options.outDir, plannerArchiveName)),
+        sha256: sha256sum(join(options.outDir, plannerArchiveName)),
+      },
+    } : {}),
+    pi: {
+      version: piPin.version,
+      ...(piPin.nodeEngine ? { nodeEngine: piPin.nodeEngine } : {}),
+      ...(piPin.lockSha256 ? { lockSha256: piPin.lockSha256 } : {}),
+      url: base === '.' ? piArchiveName : `${base}/${piArchiveName}`,
+      byteSize: statSize(join(options.outDir, piArchiveName)),
+      sha256: sha256sum(join(options.outDir, piArchiveName)),
     },
     memory: {
       source: options.memorySource ?? memorySourceUrl(options.memoryRoot),
@@ -558,7 +660,8 @@ async function main() {
   process.stdout.write([
     `release: ${releaseId} (${platform}-${arch}, channel ${options.channel})`,
     `runtime: ${runtimeArchiveName} (${signedManifest.metawork.byteSize} bytes)`,
-    `planner: ${plannerArchiveName} (${signedManifest.planner.byteSize} bytes)`,
+    ...(vendorPlanner ? [`planner: ${plannerArchiveName} (${signedManifest.planner.byteSize} bytes)`] : []),
+    `pi: ${piArchiveName} (${signedManifest.pi.byteSize} bytes)`,
     `memory: ${memoryArchiveName} (${signedManifest.memory.byteSize} bytes)`,
     `manifest: ${manifestPath}`,
     `signed by: ${options.keyId}`,

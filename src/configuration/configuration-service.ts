@@ -1,7 +1,7 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { dump } from 'js-yaml';
 import {
-  buildKernelConfigurationView,
+  buildControlConfigurationView,
   buildPlannerConfigurationView,
   buildRuntimeConfigurationView,
   buildExecutorManualPreview,
@@ -20,7 +20,7 @@ import type {
   ConfigurationServicePort,
   ConfigurationSnapshot,
   ExecutorManualUserProfile,
-  KernelConfigurationView,
+  ControlConfigurationView,
   PlannerConfigurationView,
   PlannerExecutorCapabilityManual,
   RuntimePrivateConfigurationBinding,
@@ -550,8 +550,8 @@ export class ConfigurationService implements ConfigurationServicePort {
     return buildPlannerConfigurationView(await this.getSnapshot(revisionId));
   }
 
-  async getKernelView(revisionId: string): Promise<KernelConfigurationView> {
-    return buildKernelConfigurationView(await this.getSnapshot(revisionId));
+  async getControlView(revisionId: string): Promise<ControlConfigurationView> {
+    return buildControlConfigurationView(await this.getSnapshot(revisionId));
   }
 
   async getRuntimeBinding(
@@ -617,7 +617,7 @@ export function compileConfigurationRevision(
     contentHash,
     files: {
       'config.yaml': dump(config, { noRefs: true, sortKeys: true, lineWidth: -1 }),
-      'kernel.json': `${JSON.stringify(buildKernelConfigurationView(snapshot), null, 2)}\n`,
+      'kernel.json': `${JSON.stringify(buildControlConfigurationView(snapshot), null, 2)}\n`,
       'planner.json': `${JSON.stringify(buildPlannerConfigurationView(snapshot), null, 2)}\n`,
       'runtime.json': `${JSON.stringify(buildRuntimeConfigurationView(snapshot), null, 2)}\n`,
     },

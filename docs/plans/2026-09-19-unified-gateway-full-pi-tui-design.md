@@ -846,7 +846,7 @@ docker run --rm metaclaw-test
 
 2026-09-20 代码审查发现原验收遗漏真实 Socket 响应解析、补全时序、导航和
 Task 查询接线等问题。修复范围、回归测试及尚未覆盖的外部环境验收见
-[TUI review fixes](2026-09-20-tui-review-fixes.md)。原 §18.3 的验收记录
+[TUI review fixes](../archive/plans/2026-09-20-tui-review-fixes.md)。原 §18.3 的验收记录
 是当时执行结果，不替代本次修复后的验证。
 
 - [ADR-0020：模块所有权](../adr/0020-core-module-ownership-and-dependency-direction.md)
@@ -858,4 +858,4 @@ Task 查询接线等问题。修复范围、回归测试及尚未覆盖的外部
 - [ADR-0037：多 Conversation 并行](../adr/0037-multi-conversation-task-parallelism.md)
 - [ADR-0040：用户取消 Turn](../adr/0040-user-initiated-turn-cancellation.md)
 - [2026-08-26 独立 Server/Client 设计](2026-08-26-independent-server-client-and-tui-experience-design.md)
-- [2026-08-28 TUI 系统命令与 AI Task 分离](2026-08-28-pi-tui-system-command-separation-design.md)
+- [2026-08-28 TUI 系统命令与 AI Task 分离](../archive/plans/2026-08-28-pi-tui-system-command-separation-design.md)

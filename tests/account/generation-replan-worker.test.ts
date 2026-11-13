@@ -7,7 +7,7 @@ import {
   type GenerationReplanPlannerPort,
 } from '../../src/account/generation-replan-worker.js';
 import { GenerationReplanRequestRepo } from '../../src/storage/generation-replan-request-repo.js';
-import { runMigrations } from '../../src/storage/migrations.js';
+import { initializeDatabaseSchema } from '../../src/storage/schema.js';
 import type { PlanningContext, PlanningAgentPlan } from '../../src/planning/planning-types.js';
 import { workGraphPlan } from '../support/planning-agent-plans.js';
 
@@ -333,7 +333,7 @@ function createFixture(): Fixture {
   const db = new Database(':memory:');
   databases.push(db);
   db.pragma('foreign_keys = ON');
-  runMigrations(db);
+  initializeDatabaseSchema(db);
   const createdAt = '2026-09-25T00:00:00.000Z';
   db.prepare(`
     INSERT INTO configuration_revisions (revision_id, content_hash, source_kind, imported_at)

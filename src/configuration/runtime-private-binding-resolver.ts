@@ -79,10 +79,7 @@ export async function resolveRuntimePrivateConfigurationBinding(
     );
   }
 
-  if (harness.driverId === 'codex-cli'
-    && configuration.providers[authorizedBinding.providerRef]?.protocol === 'anthropic') {
-    throw new Error('Provider protocol is not supported by Codex: anthropic');
-  }
+
 
   const environment = await resolveProviderEnvironment({
     configuration,
@@ -177,6 +174,9 @@ async function resolveProviderEnvironment(input: {
   const provider = input.configuration.providers[input.providerRef];
   if (!provider || !provider.enabled) {
     throw new Error(`Provider is not enabled: ${input.providerRef}`);
+  }
+  if (!['openai-compatible', 'openai-responses', 'anthropic'].includes(provider.protocol)) {
+    throw new Error(`Provider protocol is not supported: ${input.providerRef}`);
   }
   if (!provider.baseUrl.trim()) {
     throw new Error(`Provider base URL is empty: ${input.providerRef}`);

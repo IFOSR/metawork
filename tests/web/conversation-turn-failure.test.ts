@@ -61,6 +61,28 @@ function blockedTurn(): ConversationTurnProjection {
 }
 
 describe('Conversation turn failure passthrough', () => {
+  it('keeps a rejected planning turn visible with its cause and trace action before any task exists', () => {
+    const turn = { ...blockedTurn(), status: 'failed' as const, taskId: null,
+      traceEvents: [{ ...blockedTurn().traceEvents[1]!, phase: 'planning' as const,
+        kind: 'proposal_rejected', summary: 'risk.reasons: Required', details: {} }] };
+    const html = renderToStaticMarkup(createElement(ConversationTurnView, {
+      turn, onOpenTrajectory: () => undefined,
+    }));
+    expect(html).toContain('规划未完成');
+    expect(html).toContain('risk.reasons: Required');
+    expect(html).toContain('查看完整轨迹');
+    expect(html).toContain('本轮未创建执行任务');
+    expect(html).not.toContain('代码已经保留');
+    expect(html).not.toContain('重试未完成部分');
+  });
+
+  it('shows a persistent taskless failure notice even before trace hydration', () => {
+    const turn = { ...blockedTurn(), status: 'failed' as const, taskId: null, traceEvents: [] };
+    const html = renderToStaticMarkup(createElement(ConversationTurnView, { turn }));
+    expect(html).toContain('规划未完成');
+    expect(html).toContain('重新发送消息');
+  });
+
   it('separates repeated runtime receipts from business results without consuming fenced examples', () => {
     const receipt = 'Execution needs attention: no runnable Subtask while work remains';
     const output = conversationOutput([
@@ -101,7 +123,8 @@ describe('Conversation turn failure passthrough', () => {
     const html = renderToStaticMarkup(createElement(ConversationTurnView, { turn }));
     expect(html).toContain('执行配置校验未通过');
     expect(html).toContain('等待上游结果');
-    expect(html).toContain('继续未完成部分');
+    expect(html).toContain('选择可用操作');
+    expect(html).not.toContain('使用「继续未完成部分」');
     expect(html).toContain('<details class="execution-notice-details">');
     expect(html).not.toContain('<details open');
     expect(html).not.toContain('<section class="final-answer">');
@@ -194,8 +217,8 @@ describe('Conversation turn failure passthrough', () => {
     const html = renderToStaticMarkup(createElement(ConversationTurnView, { turn }));
     expect(html).toContain('服务启动失败');
     expect(html).toContain('代码已写入 Workspace，但服务端口 8811 已被其他进程占用。');
-    expect(html).toContain('重试未完成部分');
-    expect(html).toContain('只会重试失败的交付或服务启动');
+    expect(html).toContain('直接在输入框说明需求');
+    expect(html).not.toContain('点击下方「重试未完成部分」');
   });
 
   it('infers the same diagnosis for a historical receipt without new failure fields', () => {

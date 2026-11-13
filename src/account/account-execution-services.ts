@@ -15,16 +15,13 @@ import type { AttemptExecutionBackend } from '../execution/attempt-execution-bac
 import { ExecutionRuntime, ExecutorRegistry } from '../execution/execution-runtime.js';
 import type { SqliteAttemptExecutionRepository } from '../storage/attempt-execution-backend-repo.js';
 import { HarnessDriverRegistry } from '../executor/harness-driver-registry.js';
-import { CodexCliDriver } from '../executor/codex-cli-driver.js';
 import { resolveExecutorTool } from '../utils/executor-tool-path.js';
 import { PiCliDriver } from '../executor/pi-cli-driver.js';
 import type { ProbeCommandRunner } from '../executor/harness-driver.js';
+import { DurableNativeProcessRunner } from '../executor/durable-native-process-runner.js';
 import { LocalCliExecutorAdapter } from '../executor/local-cli-executor-adapter.js';
-import { ContainerCompatibilityAdapter } from '../executor/container-compatibility-adapter.js';
 import { ImageApiExecutorAdapter } from '../executor/image-api-executor-adapter.js';
 import { PiCompositeExecutorAdapter } from '../executor/pi-composite-executor-adapter.js';
-import { getPermissionProfile } from '../resource/permission-profiles.js';
-import { ImageContainerExecutorAdapter } from '../executor/image-container-executor-adapter.js';
 
 export type RuntimeBindingResolver = (
   binding: AuthorizedExecutorBinding,
@@ -58,82 +55,38 @@ export function buildAccountExecutionServices(deps: {
   const attemptsRoot = deps.attemptsRoot;
   const driverRegistry = new HarnessDriverRegistry();
 
-  const registerLocalDriver = (driver: CodexCliDriver | PiCliDriver) => {
+  const registerLocalDriver = (driver: PiCliDriver) => {
     driverRegistry.register(driver, input => {
-      // The Executor adapter follows the backend's path semantics. Conversation
-      // Git worktrees are executed by a host CLI, so their backend is `native`
-      // with `pathMode: 'native'`; routing them through the container
-      // compatibility adapter would fail at dispatch with
-      // "requires a container execution backend".
-      const nativeExecution = deps.attemptExecutionBackend.pathMode === 'native'
-        || deps.attemptExecutionBackend.kind === 'native';
-      if (nativeExecution) {
-        const command = resolveExecutorTool(input.harness.transport === 'local-cli'
-          ? input.harness.command : driver.id === 'pi-cli' ? 'pi' : 'codex');
-        const boundDriver = driver.id === 'pi-cli'
-          ? new PiCliDriver({ command, probeCommand, generatedRuntimeRoot: deps.generatedRuntimeRoot })
-          : new CodexCliDriver({ command, probeCommand, generatedRuntimeRoot: deps.generatedRuntimeRoot });
-        const piAdapter = new LocalCliExecutorAdapter({
-          agentClassId: input.authorizedBinding.agentClassRef,
-          driver: boundDriver,
-          runtimeBinding: input.runtimeBinding,
-          authorizedBinding: input.authorizedBinding,
-          modelId: input.configuration.models[input.authorizedBinding.modelRef]!.modelId,
-          executorAffordances: input.agentClass.plannerAffordances,
-          attemptsRoot,
-          idleTimeoutMs: input.configuration.runtimePolicy.executorIdleTimeoutMs,
-        });
-        if (input.driver.id !== 'pi-cli') return piAdapter;
-        const imageAdapter = new ImageApiExecutorAdapter({
-          agentClassId: input.authorizedBinding.agentClassRef,
-          authorizedBinding: input.authorizedBinding,
-          runtimeBinding: input.runtimeBinding,
-        });
-        return new PiCompositeExecutorAdapter({
-          piAdapter,
-          imageAdapter,
-        });
+      if ((deps.attemptExecutionBackend.kind && deps.attemptExecutionBackend.kind !== 'native')
+        || (deps.attemptExecutionBackend.pathMode && deps.attemptExecutionBackend.pathMode !== 'native')
+        || input.driver.id !== 'pi-cli') {
+        throw new Error('MetaWork requires the native bundled Pi Executor runtime');
       }
-      const piAdapter = new ContainerCompatibilityAdapter({
+      const command = resolveExecutorTool(input.harness.transport === 'local-cli' ? input.harness.command : 'pi');
+      const piDriver = new PiCliDriver({ command, probeCommand, generatedRuntimeRoot: deps.generatedRuntimeRoot });
+      const piAdapter = new LocalCliExecutorAdapter({
         agentClassId: input.authorizedBinding.agentClassRef,
-        driver: input.driver,
+        driver: piDriver,
         runtimeBinding: input.runtimeBinding,
         authorizedBinding: input.authorizedBinding,
         modelId: input.configuration.models[input.authorizedBinding.modelRef]!.modelId,
         executorAffordances: input.agentClass.plannerAffordances,
         attemptsRoot,
-        imageRef: containerCompatibilityImage(input.driver.id),
-        backend: deps.attemptExecutionBackend,
-        repository: deps.attemptExecutionRepository,
-        egressMode: getPermissionProfile(input.configuration.permissionProfiles[input.authorizedBinding.permissionProfileRef]!.profileId).publicNetwork === 'egress_proxy'
-          ? 'proxy'
-          : 'disabled',
-        nestedSandbox: input.driver.id === 'codex-cli'
-          ? 'codex-workspace-write'
-          : undefined,
+        processRunner: new DurableNativeProcessRunner(deps.attemptExecutionBackend, deps.attemptExecutionRepository),
+        idleTimeoutMs: input.configuration.runtimePolicy.executorIdleTimeoutMs,
       });
-      if (input.driver.id !== 'pi-cli') return piAdapter;
-      const imageAdapter = new ImageContainerExecutorAdapter({
+      const imageAdapter = new ImageApiExecutorAdapter({
         agentClassId: input.authorizedBinding.agentClassRef,
         authorizedBinding: input.authorizedBinding,
         runtimeBinding: input.runtimeBinding,
-        imageRef: containerCompatibilityImage(input.driver.id),
-        backend: deps.attemptExecutionBackend,
       });
-      return new PiCompositeExecutorAdapter({
-        piAdapter,
-        imageAdapter,
-      });
+      return new PiCompositeExecutorAdapter({ piAdapter, imageAdapter });
     });
   };
 
   const probeCommand = deps.probeCommand ?? (process.env.NODE_ENV === 'test'
     ? async () => ({ code: 0, stdout: 'test-harness', stderr: '' })
     : undefined);
-  registerLocalDriver(new CodexCliDriver({
-    probeCommand,
-    generatedRuntimeRoot: deps.generatedRuntimeRoot,
-  }));
   registerLocalDriver(new PiCliDriver({
     probeCommand,
     generatedRuntimeRoot: deps.generatedRuntimeRoot,
@@ -148,17 +101,4 @@ export function buildAccountExecutionServices(deps: {
   const executionRuntime = new ExecutionRuntime(executorRegistry);
 
   return { executorRegistry, executionRuntime };
-}
-
-/** Maps a legacy local-CLI harness driver to its retained Docker image for container compatibility. */
-function containerCompatibilityImage(driverId: string): string {
-  const legacyContainerImages: Record<string, string> = {
-    'codex-cli': 'metaclaw-executor-codex:phase5',
-    'pi-cli': 'metaclaw-executor-pi:phase5',
-  };
-  const image = legacyContainerImages[driverId];
-  if (!image) {
-    throw new Error(`No container compatibility image for harness driver: ${driverId}`);
-  }
-  return image;
 }

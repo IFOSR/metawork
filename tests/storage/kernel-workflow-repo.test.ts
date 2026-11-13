@@ -3,13 +3,13 @@ import { SqliteConversationDeletionStore } from '../../src/storage/conversation-
 import { describe, expect, it } from 'vitest';
 import type { KernelDecision, KernelEvent, KernelSnapshot } from '../../src/kernel/control-kernel.js';
 import { KernelWorkflowRepo } from '../../src/storage/kernel-workflow-repo.js';
-import { runMigrations } from '../../src/storage/migrations.js';
+import { initializeDatabaseSchema } from '../../src/storage/schema.js';
 
 const CONFIGURATION_REVISION = 'revision_test';
 
 describe('KernelWorkflowRepo', () => {
   it('does not replay erased pending events after conversation deletion', () => {
-    const db = new Database(':memory:'); runMigrations(db); seedConfigurationRevision(db);
+    const db = new Database(':memory:'); initializeDatabaseSchema(db); seedConfigurationRevision(db);
     const repo = new KernelWorkflowRepo(db);
     const event = { ...directReplyEvent(), taskId: null, sessionId: 'deleted-conv' };
     repo.enqueue(event);
@@ -22,7 +22,7 @@ describe('KernelWorkflowRepo', () => {
   });
   it('arbitrates opposing permission decisions at durable admission and recovers before application', () => {
     const db = new Database(':memory:');
-    runMigrations(db);
+    initializeDatabaseSchema(db);
     seedConfigurationRevision(db);
     const repo = new KernelWorkflowRepo(db);
     const event: Extract<KernelEvent, { type: 'permission_resolution_received' }> = {
@@ -45,7 +45,7 @@ describe('KernelWorkflowRepo', () => {
 
   it('does not accept a permission decision when its workflow input transaction fails', () => {
     const db = new Database(':memory:');
-    runMigrations(db);
+    initializeDatabaseSchema(db);
     seedConfigurationRevision(db);
     const repo = new KernelWorkflowRepo(db);
     const event: Extract<KernelEvent, { type: 'permission_resolution_received' }> = {
@@ -64,7 +64,7 @@ describe('KernelWorkflowRepo', () => {
 
   it('atomically advances an event to an immutable Decision and pending application', () => {
     const db = new Database(':memory:');
-    runMigrations(db);
+    initializeDatabaseSchema(db);
     seedConfigurationRevision(db);
     const repo = new KernelWorkflowRepo(db);
     const event = directReplyEvent();
@@ -110,7 +110,7 @@ describe('KernelWorkflowRepo', () => {
 
   it('stores the stable observation while completing apply and makes it drainable once', () => {
     const db = new Database(':memory:');
-    runMigrations(db);
+    initializeDatabaseSchema(db);
     seedConfigurationRevision(db);
     const repo = new KernelWorkflowRepo(db);
     const event = directReplyEvent();
@@ -147,7 +147,7 @@ describe('KernelWorkflowRepo', () => {
 
   it('settles an application as applied while keeping the tagged refusal reason', () => {
     const db = new Database(':memory:');
-    runMigrations(db);
+    initializeDatabaseSchema(db);
     seedConfigurationRevision(db);
     const repo = new KernelWorkflowRepo(db);
     const event = directReplyEvent();
@@ -183,7 +183,7 @@ describe('KernelWorkflowRepo', () => {
 
   it('fails closed without claiming an event outside the unique v4 contract', () => {
     const db = new Database(':memory:');
-    runMigrations(db);
+    initializeDatabaseSchema(db);
     seedConfigurationRevision(db);
     const repo = new KernelWorkflowRepo(db);
     const event = directReplyEvent();

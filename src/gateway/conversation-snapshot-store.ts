@@ -12,7 +12,7 @@ export function projectConversationSnapshot(
   const events = [...previous, ...appended].filter(event => ![
     'workspace_directory_snapshot', 'workspace_activity_changed', 'workspace_conversation_upserted',
     'workspace_conversation_removed', 'workspace_availability_changed',
-    'conversation_history_page', 'command_completion', 'task_view_snapshot', 'usage_billing_projection',
+    'conversation_history_page', 'command_completion', 'task_view_snapshot', 'token_usage_projection', 'quota_guidance_projection',
   ].includes(event.kind));
   const reverse = [...events].reverse();
   const latestTurn = (reverse.find(event => event.kind === 'turn_started' && event.turnId)

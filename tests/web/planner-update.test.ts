@@ -169,6 +169,6 @@ describe('buildPlannerScopedConfiguration', () => {
     expect(() => buildPlannerScopedConfiguration({
       activeConfig: activeConfig(),
       candidateConfig: { ...activeConfig(), agentClasses: {} },
-    })).toThrow('Planner 配置不可用');
+    })).toThrow('Manager 配置不可用');
   });
 });

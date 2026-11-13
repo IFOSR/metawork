@@ -1,6 +1,6 @@
 import Database from 'better-sqlite3';
 import { describe, expect, it } from 'vitest';
-import { runMigrations } from '../../src/storage/migrations.js';
+import { initializeDatabaseSchema } from '../../src/storage/schema.js';
 import { runTaskStateReconciler } from '../../src/execution/task-state-reconciler.js';
 import { ConversationTaskSchedulerRepo } from '../../src/storage/conversation-task-scheduler-repo.js';
 
@@ -14,7 +14,7 @@ function seed(options: {
 } = {}): Database.Database {
   const db = new Database(':memory:');
   db.pragma('foreign_keys = ON');
-  runMigrations(db);
+  initializeDatabaseSchema(db);
   db.prepare(`
     INSERT INTO configuration_revisions (revision_id, content_hash, source_kind, imported_at)
     VALUES ('revision-1', 'sha256:test', 'native', ?)

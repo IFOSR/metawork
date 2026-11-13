@@ -1,4 +1,5 @@
 import type { InteractionTraceEvent } from '../api/types';
+import { markdownPreview } from '../markdown-preview';
 import { MarkdownContent } from './MarkdownContent';
 
 const ACTOR: Record<InteractionTraceEvent['actor'], string> = {
@@ -17,13 +18,13 @@ export function ExecutionStep({
   active: boolean;
 }) {
   return (
-    <details className="execution-step" data-status={event.status} open={active}>
+    <details className="execution-step" data-active={active || undefined} open={active}>
       <summary>
         <span className="step-status" />
         <span className="step-actor">{ACTOR[event.actor]}</span>
         <span className="step-copy">
           <strong>{event.title}</strong>
-          <small>{event.summary}</small>
+          <small>{markdownPreview(event.summary, 160)}</small>
         </span>
         <time>{formatTime(event.occurredAt)}</time>
       </summary>

@@ -4,7 +4,7 @@ import { createDefaultCommandCatalog } from '../../src/commands/command-tree.js'
 import { CommandReadServices } from '../../src/commands/command-read-services.js';
 import { seedAgentClasses } from '../support/seed-agent-classes.js';
 import { OrchestrationEngine } from '../../src/guidance/orchestration.js';
-import { runMigrations } from '../../src/storage/migrations.js';
+import { initializeDatabaseSchema } from '../../src/storage/schema.js';
 import { TaskEngine } from '../../src/task/task-engine.js';
 import { TaskRepo } from '../../src/storage/task-repo.js';
 import { TaskEventRepo } from '../../src/storage/task-event-repo.js';
@@ -13,7 +13,7 @@ import { WorkUnitRepo } from '../../src/storage/work-unit-repo.js';
 function createHarness() {
   const db = new Database(':memory:');
   db.pragma('foreign_keys = ON');
-  runMigrations(db);
+  initializeDatabaseSchema(db);
   db.prepare(`
     INSERT INTO configuration_revisions (
       revision_id, content_hash, source_kind, imported_at

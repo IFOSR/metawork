@@ -12,8 +12,8 @@
 import type { Task } from '../core/types.js';
 import { isTerminalTaskStatus } from '../task/task-state.js';
 import { measureNavigationStageSync } from '../utils/navigation-diagnostics.js';
-import type { AccountKernelCoordinator } from './account-kernel-coordinator.js';
-import type { AccountKernelServices } from './account-kernel-services.js';
+import type { AccountControlCoordinator } from './account-control-coordinator.js';
+import type { AccountControlServices } from './account-control-services.js';
 import type { AccountRepositories } from './account-repositories.js';
 import type { AccountWorkspaceServices } from './account-workspace-services.js';
 import type { AccountExecutionServices } from './account-execution-services.js';
@@ -32,12 +32,12 @@ import {
   ConversationActivityProjector,
   type ConversationActivityProjection,
 } from '../workspace/conversation-activity-projector.js';
-import { inspectApplicationAgainstSources } from '../execution/kernel-application-recovery.js';
+import { inspectApplicationAgainstSources } from '../execution/control-application-recovery.js';
 
 export interface AccountRuntimeDeps {
   readonly accountId: string;
-  readonly kernelCoordinator: AccountKernelCoordinator;
-  readonly kernelServices: AccountKernelServices;
+  readonly kernelCoordinator: AccountControlCoordinator;
+  readonly kernelServices: AccountControlServices;
   readonly repositories: AccountRepositories;
   readonly workspaceServices: AccountWorkspaceServices;
   readonly executionServices?: AccountExecutionServices;
@@ -96,11 +96,11 @@ export class AccountRuntime implements AccountRuntimeHandle {
     return this.deps.accountId;
   }
 
-  get kernelCoordinator(): AccountKernelCoordinator {
+  get kernelCoordinator(): AccountControlCoordinator {
     return this.deps.kernelCoordinator;
   }
 
-  get kernelServices(): AccountKernelServices {
+  get kernelServices(): AccountControlServices {
     return this.deps.kernelServices;
   }
 
@@ -426,6 +426,8 @@ export class AccountRuntime implements AccountRuntimeHandle {
     const coordinator = this.deps.coordinatorServices;
     return {
       accountId: this.accountId,
+      proposals: this.deps.repositories.planProposalRepo,
+      turnCancellations: this.deps.repositories.turnCancellationStore,
       planning: this.deps.plannerServices?.planningAgent ?? null,
       permissions: this.deps.permissionService ?? null,
       queries: {
@@ -434,19 +436,17 @@ export class AccountRuntime implements AccountRuntimeHandle {
         listTasksByStatus: status => taskRuntimeService?.listTasksByStatus(status) ?? [],
         listSubtasks: taskId => this.deps.repositories.subtaskRepo.listByTask(taskId),
         findSubtask: subtaskId => this.deps.repositories.subtaskRepo.findById(subtaskId),
-        findKernelEvent: eventId => this.deps.kernelServices.kernelWorkflowRepo.findEvent(eventId),
-        findKernelApplicationByDecisionId: decisionId => (
-          this.deps.kernelServices.kernelWorkflowRepo.findApplicationByDecisionId(decisionId)
-        ),
-        listKernelDecisionsBySession: sessionId => (
-          this.deps.kernelServices.kernelDecisionRepo.listBySession(sessionId)
-        ),
-        listKernelDecisionsByTask: taskId => (
-          this.deps.kernelServices.kernelDecisionRepo.listByTask(taskId)
-        ),
-        listCurrentKernelDecisions: action => (
-          this.deps.kernelServices.kernelDecisionRepo.listCurrentByAction(action)
-        ),
+        listCapacityBlockedTasks: () => (
+          taskRuntimeService?.listTasksByStatus('needs_action') ?? []
+        ).flatMap(task => task.dependencies
+          .filter(dependency => dependency.type === 'kernel_capacity' && dependency.status === 'waiting')
+          .flatMap(dependency => {
+            const subtask = this.deps.repositories.subtaskRepo.listActiveByTask(task.id)
+              .find(item => item.status === 'ready');
+            return subtask
+              ? [{ taskId: task.id, subtaskId: subtask.id, blockedAt: dependency.createdAt }]
+              : [];
+          })),
         listExecutorStatuses: configurationRevision => (
           this.deps.repositories.kernelExecutorStatusRepo.list(configurationRevision)
         ),
@@ -459,15 +459,15 @@ export class AccountRuntime implements AccountRuntimeHandle {
           this.deps.runtimeExecutionServices?.publicationRepo.listIntegratedByTaskIds(taskIds) ?? []
         ),
         listRecoveryApplications: taskId => (
-          this.deps.kernelServices.kernelWorkflowRepo.listRecoveryItems(taskId)
+          this.deps.kernelServices.recoveryItems.listRecoveryItems(taskId)
         ),
         findRecoveryApplication: recoveryItemId => (
-          this.deps.kernelServices.kernelWorkflowRepo.findRecoveryItem(recoveryItemId)
+          this.deps.kernelServices.recoveryItems.findRecoveryItem(recoveryItemId)
         ),
         diagnoseRecoveryApplication: decisionId => {
-          const application = this.deps.kernelServices.kernelWorkflowRepo
-            .findApplicationByDecisionId(decisionId);
-          if (!application || application.status === 'applied') return null;
+          const application = this.deps.kernelServices.recoveryItems
+            .findRecoveryItem(decisionId);
+          if (!application) return null;
           return inspectApplicationAgainstSources(application, {
             findTask: taskId => {
               const task = this.deps.taskServices?.taskRuntimeService.findTask(taskId);
@@ -489,8 +489,7 @@ export class AccountRuntime implements AccountRuntimeHandle {
             ).map(item => ({
               attemptId: item.attemptId,
               decisionId: item.decisionId,
-              causationId: this.deps.kernelServices.kernelDecisionRepo.findById(item.decisionId)
-                ?.causationId ?? null,
+              causationId: null,
               subtaskId: item.subtaskId,
               generationId: item.generationId,
               attemptKind: item.attemptKind,
@@ -505,7 +504,7 @@ export class AccountRuntime implements AccountRuntimeHandle {
                 ? {
                     revision: record.revision,
                     generationId: record.generationId,
-                    authorizedDecisionId: record.authorizedDecisionId,
+                    authorizedOperationId: record.authorizedOperationId,
                     status: record.status,
                   }
                 : null;
@@ -559,13 +558,13 @@ export class AccountRuntime implements AccountRuntimeHandle {
         ),
       },
       commands: {
-        submitKernel: this.deps.kernelCoordinator.submit.bind(this.deps.kernelCoordinator),
+        submitControl: this.deps.kernelCoordinator.submit.bind(this.deps.kernelCoordinator),
         materializeCompletedEvidence: (taskId, revision) => {
           this.deps.repositories.workGraphRuntimeService
             .materializeCompletedEvidence(taskId, revision);
         },
         resolveRecoveryApplication: (recoveryItemId, resolution, now) => {
-          this.deps.kernelServices.kernelWorkflowRepo.resolveRecoveryItem(
+          this.deps.kernelServices.recoveryItems.resolveRecoveryItem(
             recoveryItemId,
             resolution,
             now,
@@ -578,10 +577,9 @@ export class AccountRuntime implements AccountRuntimeHandle {
           if (!coordinator) throw new Error('Executor recovery service is unavailable');
           return coordinator.executorRecoveryRefreshService.refresh(input);
         },
-        cancelPlannerTurn: plannerSessionId => (
-          this.deps.plannerServices?.plannerSupervisor?.abortSession(plannerSessionId)
-          ?? Promise.resolve()
-        ),
+        // Cancelling a planning turn now closes the Manager's turn; the Manager
+        // transport has no per-session planner process to abort.
+        cancelPlannerTurn: () => Promise.resolve(),
       },
       execution: this.deps.executionServices && this.deps.taskServices
         ? {
@@ -597,8 +595,7 @@ export class AccountRuntime implements AccountRuntimeHandle {
   private originConversationId(taskId: string): string | null {
     const task = this.deps.taskServices?.taskRuntimeService.findTask(taskId);
     if (task?.conversationId) return task.conversationId;
-    const decisions = this.deps.kernelServices.kernelDecisionRepo.listByTask(taskId);
-    return decisions.find(decision => decision.sessionId)?.sessionId ?? null;
+    return null;
   }
 
   private async publishConversationActivity(conversationId: string): Promise<void> {

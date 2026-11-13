@@ -87,35 +87,21 @@ export class TaskResidueReader {
         AND status IN ('armed', 'fired', 'recovery_required')
       LIMIT 1
     `).get(...parameters)) reasons.push('retry_wake');
-    const applicationParameters: unknown[] = [taskId];
+    // Interrupted applications are explicit owner recovery items (ADR-0055 D6).
+    const recoveryParameters: unknown[] = [taskId];
     let decisionFilter = '';
     if (excludedDecisionId) {
-      decisionFilter = ' AND application.decision_id <> ?';
-      applicationParameters.push(excludedDecisionId);
+      decisionFilter = ' AND decision_id <> ?';
+      recoveryParameters.push(excludedDecisionId);
     }
     if (this.deps.db.prepare(`
-      SELECT 1
-      FROM kernel_decision_applications AS application
-      INNER JOIN kernel_events AS event ON event.id = application.event_id
-      LEFT JOIN tasks AS task ON task.id = event.task_id
-      WHERE event.task_id = ?
-        AND application.status IN ('pending', 'applying', 'uncertain')
-        -- Schema-51 migration quarantines unapplied legacy decisions so they
-        -- cannot be replayed under the six-state contract. If the legacy Task
-        -- was already cancelled, that quarantine is historical audit only: it
-        -- has no live side effect and must not keep the Conversation slot
-        -- occupied forever. Any real dispatch/lease/backend residue is still
-        -- checked by the categories above and remains a release fence.
-        AND NOT (
-          task.status = 'cancelled'
-          AND application.error_summary = 'task_state_upgrade_requires_reauthorization'
-        )
-        ${decisionFilter}
+      SELECT 1 FROM task_recovery_items
+      WHERE task_id = ? AND status IN ('pending', 'retry_authorized')${decisionFilter}
       LIMIT 1
-    `).get(...applicationParameters)) reasons.push('kernel_application');
+    `).get(...recoveryParameters)) reasons.push('kernel_application');
     if (this.deps.db.prepare(`
       SELECT 1
-      FROM kernel_dispatch_items AS dispatch
+      FROM dispatch_items AS dispatch
       LEFT JOIN executor_attempt_receipts AS receipt
         ON receipt.attempt_id = dispatch.attempt_id
       WHERE dispatch.task_id = ?${dispatchGeneration}
@@ -125,13 +111,13 @@ export class TaskResidueReader {
       LIMIT 1
     `).get(...parameters)) reasons.push('attempt_receipt');
     if (this.deps.db.prepare(`SELECT 1 FROM managed_local_service_effects e
-      JOIN kernel_decisions d ON d.id = e.decision_id
-      WHERE d.task_id = ? AND json_extract(e.effect_json, '$.phase') <> 'completed' LIMIT 1`).get(taskId)
+      JOIN managed_local_services s ON s.account_id = e.account_id AND s.service_id = e.decision_id
+      WHERE s.task_id = ? AND json_extract(e.effect_json, '$.phase') <> 'completed' LIMIT 1`).get(taskId)
       || this.deps.db.prepare(`SELECT 1 FROM managed_local_services
         WHERE task_id = ? AND state IN ('starting', 'unhealthy', 'failed') AND process_id IS NOT NULL LIMIT 1`).get(taskId)) {
       reasons.push('service_operation');
     }
-    if (this.deps.db.prepare(`SELECT 1 FROM kernel_effect_outbox
+    if (this.deps.db.prepare(`SELECT 1 FROM effect_outbox
       WHERE task_id = ? AND effect_type IN ('task_result_continuation', 'task_remaining_work')
         AND status = 'sending' LIMIT 1`).get(taskId)) reasons.push('continuation');
     return reasons;

@@ -4,13 +4,14 @@ import type { InteractionTraceEvent } from '../api/types';
 import { formatExecutionDuration } from '../execution-duration';
 import { turnExecutionPresentation } from '../turn-execution-presentation';
 import { ExecutionStep } from './ExecutionStep';
+import { MarkdownContent } from './MarkdownContent';
 import { subtaskTitle, type WorkGraphTitleIndex } from '../work-graph-titles';
 
 const GROUPS: Array<{
   title: string;
   phases: InteractionTraceEvent['phase'][];
 }> = [
-  { title: 'Planner', phases: ['intake', 'planning'] },
+  { title: 'Manager', phases: ['intake', 'planning'] },
   { title: '授权与路由', phases: ['authorization', 'routing'] },
   { title: '执行', phases: ['execution'] },
   { title: '验证与交付', phases: ['verification', 'delivery'] },
@@ -22,9 +23,7 @@ export function ExecutionNarrative({ turn, titleBySubtask }: {
 }) {
   const [nowMs, setNowMs] = useState(() => Date.now());
   const [collapsed, setCollapsed] = useState(true);
-  const activeEvent = turn.status === 'running'
-    ? [...turn.traceEvents].reverse().find(event => event.status === 'running')
-    : undefined;
+  const activeEvent = turn.status === 'running' ? turn.traceEvents.at(-1) : undefined;
 
   useEffect(() => {
     if (turn.status !== 'running') return;
@@ -83,7 +82,7 @@ export function ExecutionNarrative({ turn, titleBySubtask }: {
             </div>
             {stage?.proposal && (
               <div className="narrative-stage-fact">
-                <strong>Planner 已形成执行提案</strong>
+                <strong>Manager 已形成执行提案</strong>
                 <span>{stage.proposal.subtasks.length} 个子任务，{stage.proposal.dependencies.length} 条依赖</span>
               </div>
             )}
@@ -133,13 +132,15 @@ export function ExecutionNarrative({ turn, titleBySubtask }: {
                         {history.map((entry, index) => (
                           <li key={`${entry.occurredAt}:${index}`}>
                             <time>{formatClock(entry.occurredAt)}</time>
-                            <span>{entry.text}</span>
+                            <div className="executor-attempt-entry"><MarkdownContent value={entry.text} /></div>
                           </li>
                         ))}
                         {history.length === 0 && (
                           <li className="executor-waiting">
                             <time>LIVE</time>
-                            <span>{latestText ?? 'Executor 已启动，等待第一个可公开的执行进度事件…'}</span>
+                            <div className="executor-attempt-entry">
+                              <MarkdownContent value={latestText ?? 'Executor 已启动，等待第一个可公开的执行进度事件…'} />
+                            </div>
                           </li>
                         )}
                       </ol>

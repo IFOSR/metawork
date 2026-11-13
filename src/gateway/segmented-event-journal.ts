@@ -299,8 +299,8 @@ export class SegmentedEventJournal implements EventJournal {
       const key = this.directory(accountId, conversationId);
       const cursor = this.compactionCursors.get(key) ?? 0;
       const candidates = this.index.segments(accountId, conversationId, cursor, MAINTENANCE_SEGMENTS);
-      this.compactionCursors.set(key, candidates.length === MAINTENANCE_SEGMENTS
-        ? candidates.at(-1)!.lastSequence : 0);
+      const nextCursor = candidates.length === MAINTENANCE_SEGMENTS
+        ? candidates.at(-1)!.lastSequence : 0;
       let segments: JournalSegment[] = [];
       let bytes = 2;
       for (const segment of candidates) {
@@ -314,12 +314,18 @@ export class SegmentedEventJournal implements EventJournal {
         segments.push(segment);
         bytes += segment.byteLength - 2 + (segments.length > 1 ? 1 : 0);
       }
-      if (segments.length < 2) return;
-      this.compactionCursors.set(key, segments.at(-1)!.lastSequence);
+      if (segments.length < 2) {
+        this.compactionCursors.set(key, nextCursor);
+        return;
+      }
       const events: GatewayEventEnvelope[] = [];
       for (const segment of segments) events.push(...await this.readSegment(accountId, conversationId, segment.id));
       const next = await this.writeSegment(accountId, conversationId, events);
       this.index.replaceSegments(accountId, conversationId, segments, next);
+      // A failed read/write must retry the same batch. Advancing before commit
+      // made the following empty pass falsely report recovery and reset backoff,
+      // while the missing segment was still referenced by the durable index.
+      this.compactionCursors.set(key, segments.at(-1)!.lastSequence);
       for (const segment of segments) await unlink(this.segmentPath(accountId, conversationId, segment.id)).catch(error => {
         if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
       });

@@ -23,8 +23,7 @@ export interface CandidateProjectionConfiguration {
     publicFacts?: import('../configuration/openrouter-model-catalog.js').OpenRouterPublicFacts;
     capabilities: ModelCapability[];
     contextLimit?: number;
-    costInputPerMillion?: number;
-    costOutputPerMillion?: number;
+
     latencyTier?: 'low' | 'medium' | 'high';
     qualityTier?: 'low' | 'medium' | 'high';
     enabled: boolean;
@@ -45,7 +44,7 @@ export function projectConfigurationCandidates(
   options: CandidateProjectionOptions = {},
 ): AutoModelCandidate[] {
   const agentClass = configuration.agentClasses[agentClassRef];
-  const harnessCompatible = (modelId: string): boolean => {
+  const harnessCompatible = (): boolean => {
     // Fixed 模式不应用 Auto 池的 Driver 限制。
     if (options.mode === 'fixed') return true;
     // Planner 候选与 Executor 工具无关。
@@ -53,9 +52,7 @@ export function projectConfigurationCandidates(
     // 缺少助手定义的历史调用保持既有行为。
     if (!agentClass) return true;
     const driverId = resolveAgentClassDriverId(configuration, agentClassRef);
-    // 兼容性只由真实 Driver 决定：Codex 执行 GPT-family 筛选，Pi 使用全部
-    // 启用模型；未知 Driver 失败关闭，不能猜成 Pi。
-    if (driverId === 'codex-cli') return isGptRelatedModel(modelId);
+    // Only the packaged Pi driver is eligible; unknown drivers fail closed.
     if (driverId === 'pi-cli') return true;
     return false;
   };
@@ -77,14 +74,13 @@ export function projectConfigurationCandidates(
           ?? model.capabilities,
       ),
       contextLimit: model.contextLimit,
-      costInputPerMillion: model.costInputPerMillion,
-      costOutputPerMillion: model.costOutputPerMillion,
+
       latencyTier: model.latencyTier,
       qualityTier: model.qualityTier,
       health: 'healthy' as const,
       available: true,
       providerEnabled: true,
-      harnessCompatible: harnessCompatible(model.modelId),
+      harnessCompatible: harnessCompatible(),
     }))
     .sort((left, right) => left.modelRef.localeCompare(right.modelRef));
 }

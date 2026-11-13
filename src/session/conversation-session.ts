@@ -11,6 +11,7 @@
  * callbacks（appendOutput/setCurrentTaskId/getCurrentTaskId/refreshRuntimeState）。
  */
 
+import type { UsagePayerResolver } from '../metering/usage-payer.js';
 import { AsyncLocalStorage } from 'node:async_hooks';
 import type { GuidanceProposal, RuntimeState } from '../core/types.js';
 import type { Config } from '../core/types.js';
@@ -30,17 +31,20 @@ import type { SessionPresentationService, GuidanceState } from './session-presen
 import type { SessionStateRepo } from '../storage/session-state-repo.js';
 import type { SessionPersistenceService } from './session-persistence-service.js';
 import type { InteractionTraceStream } from './interaction-trace-stream.js';
-import type { KernelDecision, KernelEvent, KernelSnapshot } from '../kernel/control-kernel.js';
+import type { ControlDecision, ControlEvent, ControlSnapshot } from '../control/control-contracts.js';
+import { PlanProposalUnavailableError, planAdmissionRequest, planProposalIdentity } from '../execution/plan-proposal-store.js';
+import type { PlanAdmissionRequest } from '../execution/plan-admission-policy.js';
 import {
-  attachSpanRoutingObservation,
-  type PlanProposedEvent,
-} from './span-plan-preparation.js';
-import type { SpanRoutingEvaluator } from '../routing/span-routing-types.js';
-import { buildKernelConfigurationView, buildPlannerConfigurationView, buildRuntimeConfigurationView } from '../configuration/projections.js';
+  evaluatePlanAdmission,
+  planAdmissionSnapshotFromControl,
+} from '../execution/plan-admission-entry.js';
+import type { PlanAdmissionResult } from '../execution/plan-admission-policy.js';
+import type { PlanAdmissionAppliedResult } from '../execution/plan-admission-applier.js';
+import { buildControlConfigurationView, buildPlannerConfigurationView, buildRuntimeConfigurationView } from '../configuration/projections.js';
 import type { ConfigurationSnapshot } from '../configuration/types.js';
-import { KernelApplicationInterruptedError } from '../kernel/kernel-workflow.js';
+import { ControlApplicationInterruptedError, ControlApplicationRejectionError } from '../control/control-workflow.js';
 import { SpanEvaluationAbortedError } from '../routing/span-routing-types.js';
-import type { KernelExecutionRuntime } from '../execution/kernel-execution-runtime.js';
+import type { ControlExecutionRuntime } from '../execution/control-execution-runtime.js';
 import { buildExecutorDisplayFacts } from '../execution/execution-transparency.js';
 import type { PlanningContextBuilder } from '../planning/planning-context-builder.js';
 import type {
@@ -49,6 +53,7 @@ import type {
   PlanningContext,
 } from '../planning/planning-types.js';
 import type { PlannerProposalResult } from '../planning/planner-proposal.js';
+import type { WorkspaceWriteState } from '../core/workspace-execution.js';
 import {
   createPlannerProposalSubmissionId,
   plannerProposalFingerprint,
@@ -66,7 +71,7 @@ import { validatePlanningAgentPlan } from '../planning/planning-agent-plan-valid
 import type Database from 'better-sqlite3';
 import {
   resolvePublicRoutingIdentity,
-  type KernelConfigurationView,
+  type ControlConfigurationView,
   type RuntimeConfigurationView,
 } from '../configuration/index.js';
 import { generateInteractionId } from '../utils/id.js';
@@ -74,14 +79,15 @@ import { createHash } from 'node:crypto';
 import {
   buildCanonicalSubtaskIdentityMap,
   buildEligibleContextRefKeys,
+  contextRefKey,
 } from '../work-graph/index.js';
 import { redactSensitiveText } from '../utils/redact-sensitive-text.js';
 import type {
-  KernelExecutionRuntimeCallbacks,
+  ControlExecutionRuntimeCallbacks,
   TaskExecutionApplicationCallbacks,
-  SessionKernelRuntimeCallbacks,
-} from '../account/account-kernel-execution-services.js';
-import type { SessionKernelRuntime } from './session-kernel-runtime.js';
+  SessionControlRuntimeCallbacks,
+} from '../account/account-control-execution-services.js';
+import type { SessionControlRuntime } from './session-control-runtime.js';
 import { formatEmptyTaskRecovery } from '../task/task-blocker-guidance.js';
 import type { SessionSnapshot, SessionSwitchingState } from './session-types.js';
 import type { InteractionTrace } from '../management/interaction-trace.js';
@@ -89,7 +95,7 @@ import type { PlanningAgentPlan } from '../planning/planning-types.js';
 import type { PlannerRunProgress } from '../planning/planner-progress.js';
 import type { HarnessUsageEvent } from '../executor/harness-driver.js';
 import type { RawUsageEvent } from '../metering/usage-normalizer.js';
-import type { Payer } from '../billing/cost-policy.js';
+import type { Payer } from '../metering/usage-payer.js';
 import type { ExecutionTraceAppendInput } from '../execution/execution-trace.js';
 import {
   ConversationInputMailbox,
@@ -109,11 +115,6 @@ import type { QueryUsageLifecycle } from '../metering/query-lifecycle.js';
 import type { BeginQueryResult } from '../metering/query-context-service.js';
 import type { CommandCompletion } from '../commands/catalog.js';
 import type {
-  PlannerTuiCommandSubmissionResult,
-  PlannerTuiExecutorResult,
-  PlannerTuiPermissionRequest,
-  PlannerTuiPermissionResolutionResult,
-  PlannerTuiSnapshot,
 } from './session-types.js';
 
 export interface ConversationSessionSnapshot {
@@ -154,17 +155,24 @@ export interface ConversationSessionDeps {
   readonly sessionStateRepo?: SessionStateRepo;
   readonly persistenceService?: SessionPersistenceService;
   readonly interactionTraceStream?: InteractionTraceStream;
-  readonly kernelExecutionRuntime?: KernelExecutionRuntime;
+  readonly kernelExecutionRuntime?: ControlExecutionRuntime;
   readonly planningContextBuilder?: PlanningContextBuilder;
   readonly db?: Database.Database;
-  readonly kernelConfiguration?: KernelConfigurationView;
-  readonly getKernelConfiguration?: () => KernelConfigurationView | undefined;
+  readonly kernelConfiguration?: ControlConfigurationView;
+  readonly getControlConfiguration?: () => ControlConfigurationView | undefined;
   readonly getRuntimeConfiguration?: (revisionId: string) => RuntimeConfigurationView | null;
   readonly resolveConfigurationSnapshot?: (revisionId: string) => Promise<ConfigurationSnapshot>;
   /** Shared Server advisor, also injected into detached recovery sessions. */
-  readonly spanRoutingEvaluator?: SpanRoutingEvaluator | null;
+  /** Admission policy seam; production always uses the owner policy. */
+  readonly evaluatePlanAdmission?: typeof evaluatePlanAdmission;
   readonly lifetimeSignal?: AbortSignal;
-  readonly sessionKernelRuntime?: SessionKernelRuntime;
+  readonly sessionControlRuntime?: SessionControlRuntime;
+  /**
+   * Scopes a whole Turn inside the account execution binding (ADR-0055 D10).
+   * One mechanism: the shared services stay unproxied and every callback/runtime
+   * call inside the Turn resolves through AsyncLocalStorage.
+   */
+  readonly runInBinding?: <T>(operation: () => Promise<T>) => Promise<T>;
   readonly executeUserInput?: (text: string) => Promise<{ exitRequested: boolean }>;
   readonly handleCommand?: (input: string) => Promise<boolean>;
   readonly commandCatalog?: CommandCatalog;
@@ -186,23 +194,22 @@ export interface ConversationSessionDeps {
   readonly plannerProposalRepo?: PlannerProposalRepo;
   readonly dispose?: () => Promise<void>;
   readonly workspace?: ConversationWorkspacePort;
+  /**
+   * Runtime-observed Workspace Git readiness for writes. Supplied by
+   * composition; the Session never reads Git state itself.
+   */
+  readonly resolveWorkspaceWriteState?: (workspaceId: string) => WorkspaceWriteState | undefined;
   readonly queryUsage?: {
     readonly lifecycle: QueryUsageLifecycle;
-    readonly externalAccountRef: string | null;
-    readonly priceBookVersion: string;
-    readonly feePolicyVersion: string;
-    readonly payerPolicyVersion: string;
-    readonly getPriceBookVersion?: () => string;
-    readonly getFeePolicyVersion?: () => string;
     readonly ingress: QueryIngress;
     readonly usageObserver?: (event: RawUsageEvent) => void;
     readonly usagePayer?: Payer;
+    readonly resolveUsagePayer?: UsagePayerResolver;
   };
   /**
    * Compatibility switch for historical low-level tests/replay fixtures.
    * Production semantic Planner ingress keeps this disabled.
    */
-  readonly allowLegacyDirectReply?: boolean;
 }
 
 export class ConversationSession {
@@ -231,7 +238,7 @@ export class ConversationSession {
    * The eligible attachment set belongs to the Turn, not to a call site: the
    * native Planner submits its proposal through the host bridge, so the plan
    * arrives after the local planning context is out of scope. Every path that
-   * builds a `plan_proposed` event reads this one record (in memory while this
+   * builds a proposal reads this one record (in memory while this
    * process ran the turn, otherwise the durable record written at turn start).
    */
   private activePlannerTurn: PlannerTurnFacts | null = null;
@@ -244,8 +251,9 @@ export class ConversationSession {
   private lastBlockedRecheckAt: number | null = null;
   private lastTaskPoolWatchdogFingerprint: string | null = null;
   private lastTaskPoolWatchdogReminderAt: number | null = null;
-  private kernelExecutionRuntime: KernelExecutionRuntime | null = null;
-  private sessionKernelRuntime: SessionKernelRuntime | null = null;
+  private kernelExecutionRuntime: ControlExecutionRuntime | null = null;
+  private sessionControlRuntime: SessionControlRuntime | null = null;
+  private runInBinding: (<T>(operation: () => Promise<T>) => Promise<T>) | null = null;
   private taskExecutionApplicationService: SessionTaskExecutionApplicationService | null = null;
   private workspacePath: string | null = null;
   private readonly inputController: InputController;
@@ -269,18 +277,17 @@ export class ConversationSession {
   private readonly preparations = new Map<string, {
     fingerprint: string;
     signal: AbortSignal;
-    work: Promise<PlanProposedEvent | null>;
+    work: Promise<PlanAdmissionRequest | null>;
   }>();
   private attachedClients = 0;
   private disposePromise: Promise<void> | null = null;
-  private readonly allowLegacyDirectReply: boolean;
   private readonly plannerTurnInputRepo: PlannerTurnInputRepo | null;
   private activeQueryId: string | null = null;
 
   constructor(private readonly deps: ConversationSessionDeps) {
-    this.allowLegacyDirectReply = deps.allowLegacyDirectReply ?? process.env.NODE_ENV === 'test';
     this.kernelExecutionRuntime = deps.kernelExecutionRuntime ?? null;
-    this.sessionKernelRuntime = deps.sessionKernelRuntime ?? null;
+    this.sessionControlRuntime = deps.sessionControlRuntime ?? null;
+    this.runInBinding = deps.runInBinding ?? null;
     this.taskExecutionApplicationService = deps.taskExecutionApplicationService ?? null;
     this.plannerTurnInputRepo = deps.db ? new PlannerTurnInputRepo(deps.db) : null;
     this.inputController = new InputController({
@@ -409,35 +416,38 @@ export class ConversationSession {
   }
 
   resolveRequestText(eventId: string): string {
-    const event = this.deps.runtimePort.queries.findKernelEvent(eventId);
-    return event?.type === 'plan_proposed' ? event.requestText : '';
+    return this.deps.runtimePort.proposals.find(eventId)?.request.requestText ?? '';
   }
 
   setRunningExecutorName(taskId: string, subtaskId: string, attemptId: string, name: string): void {
     this.runningExecutorsByAttempt.set(attemptId, { taskId, subtaskId, name });
   }
 
-  bindKernelExecutionRuntime(runtime: KernelExecutionRuntime): void {
+  bindControlExecutionRuntime(runtime: ControlExecutionRuntime): void {
     this.kernelExecutionRuntime = runtime;
   }
 
-  bindSessionKernelRuntime(runtime: SessionKernelRuntime): void {
-    this.sessionKernelRuntime = runtime;
+  bindSessionControlRuntime(runtime: SessionControlRuntime): void {
+    this.sessionControlRuntime = runtime;
+  }
+
+  /** Scopes every Turn inside the account execution binding. */
+  bindRunInBinding(run: <T>(operation: () => Promise<T>) => Promise<T>): void {
+    this.runInBinding = run;
   }
 
   bindTaskExecutionApplicationService(service: SessionTaskExecutionApplicationService): void {
     this.taskExecutionApplicationService = service;
   }
 
-  recordKernelDecisionTrace(decision: KernelDecision): void {
+  recordControlDecisionTrace(decision: ControlDecision): void {
     this.deps.interactionTraceStream?.append({
       phase: 'authorization',
       actor: 'kernel',
       kind: 'kernel_decision',
-      status: 'completed',
       title: decision.action.type === 'request_clarification'
         ? '需要补充信息'
-        : `Kernel decision: ${decision.action.type}`,
+        : `Control operation: ${decision.action.type}`,
       summary: decision.action.type === 'request_clarification'
         ? decision.action.question
         : decision.reason,
@@ -487,7 +497,6 @@ export class ConversationSession {
           phase: 'routing',
           actor: 'kernel',
           kind: 'executor_routed',
-          status: 'completed',
           title: fallbackOrder === 0 ? 'Primary Executor authorized' : 'Fallback Executor authorized',
           summary: `${identity.executorDisplayName} via ${identity.harnessDisplayName}`
             + ` using ${identity.providerDisplayName}/${identity.modelDisplayName}`,
@@ -510,59 +519,6 @@ export class ConversationSession {
         });
       });
     }
-  }
-
-  private recordSpanRoutingTrace(event: PlanProposedEvent): void {
-    const observation = event.spanRouting;
-    if (!observation || !this.deps.interactionTraceStream?.getSnapshot()) return;
-    const configuration = this.deps.getRuntimeConfiguration?.(event.configurationRevision) ?? null;
-    const subtasks = observation.subtasks.map(subtask => ({
-      subtaskId: subtask.subtaskId,
-      status: subtask.status,
-      ...(subtask.status === 'advised'
-        ? {
-            advisorModel: subtask.resolvedModel,
-            candidates: subtask.candidates
-              .map(candidate => {
-                const agentClass = configuration?.agentClasses?.[candidate.agentClassRef];
-                const identity = resolvePublicRoutingIdentity(configuration, {
-                  agentClassRef: candidate.agentClassRef,
-                  harnessRef: agentClass?.harnessRef ?? candidate.agentClassRef,
-                  providerRef: candidate.providerRef,
-                  modelRef: candidate.modelRef,
-                  configurationRevision: event.configurationRevision,
-                });
-                return {
-                  executorDisplayName: identity.executorDisplayName,
-                  providerDisplayName: identity.providerDisplayName,
-                  modelDisplayName: identity.modelDisplayName,
-                  probability: candidate.probability,
-                };
-              })
-              .sort((left, right) => right.probability - left.probability),
-          }
-        : { reason: subtask.reason }),
-      ...('durationMs' in subtask && subtask.durationMs !== undefined
-        ? { durationMs: subtask.durationMs }
-        : {}),
-    }));
-    const advisedCount = subtasks.filter(subtask => subtask.status === 'advised').length;
-    const fallbackCount = subtasks.filter(subtask => subtask.status === 'fallback').length;
-    this.deps.interactionTraceStream.append({
-      phase: 'routing',
-      actor: 'kernel',
-      kind: 'span_routing_evaluated',
-      status: 'completed',
-      title: '决策模型完成路由评估',
-      summary: `已评估 ${subtasks.length} 个子任务：${advisedCount} 个提供候选评分，${fallbackCount} 个回退到确定性路由；最终授权仍由 Kernel 完成。`,
-      details: {
-        model: observation.model,
-        policyVersion: observation.policyVersion,
-        questionVersion: observation.questionVersion,
-        subtasks,
-      },
-      eventKey: `span-routing:${event.id}`,
-    });
   }
 
   appendExecutionTrace(input: ExecutionTraceAppendInput): void {
@@ -596,7 +552,6 @@ export class ConversationSession {
       phase: 'execution',
       actor: 'runtime',
       kind: 'execution_resumed',
-      status: 'running',
       title: '任务已重新执行',
       summary: '已在原任务视图中恢复执行，并保留此前的轨迹记录。',
       details: { taskId },
@@ -680,14 +635,14 @@ export class ConversationSession {
   }
 
   buildPlanAdmissionSnapshot(
-    event: Extract<KernelEvent, { type: 'plan_proposed' }>,
-  ): Extract<KernelSnapshot, { type: 'plan_admission' }> | null {
+    event: PlanAdmissionRequest,
+  ): Extract<ControlSnapshot, { type: 'plan_admission' }> | null {
     const port = this.deps.runtimePort;
     const pinned = this.configurationSnapshots.get(event.configurationRevision);
     const plannerConfiguration = pinned ? buildPlannerConfigurationView(pinned)
       : this.deps.planningContextBuilder?.getPlannerConfiguration();
-    const kernelConfiguration = pinned ? buildKernelConfigurationView(pinned)
-      : this.deps.getKernelConfiguration?.() ?? this.deps.kernelConfiguration;
+    const kernelConfiguration = pinned ? buildControlConfigurationView(pinned)
+      : this.deps.getControlConfiguration?.() ?? this.deps.kernelConfiguration;
     if (!plannerConfiguration || !kernelConfiguration) return null;
     if (
       event.configurationRevision !== plannerConfiguration.revisionId
@@ -740,47 +695,86 @@ export class ConversationSession {
   }
 
   /**
-   * Attaches the bounded Span observation to a `plan_proposed` event before it
-   * enters the durable Kernel inbox. Absent advisor or disabled Span policy
-   * leaves the event untouched so the deterministic resolver runs.
+   * Attaches the bounded Span observation before saving the owner proposal. Absent advisor or disabled Span policy
+   * leaves the proposal untouched so the deterministic resolver runs.
    *
    * Returns null for Turn cancellation. Replan preparation interrupted by
    * disposal/shutdown remains recoverable; initial submission is rejected.
-   * A raw transport abort without a cancellation signal may fall back.
+   * A raw transport abort without a cancellation signal is a preparation
+   * failure, not an abandoned proposal.
    */
-  private async preparePlanProposedEvent(
-    event: PlanProposedEvent,
+  private async preparePlanProposal(
+    event: PlanAdmissionRequest,
     signal = this.turnCancellation.signal,
-  ): Promise<PlanProposedEvent | null> {
+    triggerOperationId?: string,
+  ): Promise<PlanAdmissionRequest | null> {
     if (this.preparationCancelled(event, signal)) return null;
-    const fingerprint = planEventIdentity(event);
-    const persisted = this.deps.runtimePort.queries.findKernelEvent?.(event.id);
+    const fingerprint = JSON.stringify([planProposalIdentity(event), triggerOperationId ?? null]);
+    const persisted = this.deps.runtimePort.proposals.find(event.id);
     if (persisted) {
-      if (persisted.type !== 'plan_proposed' || planEventIdentity(persisted) !== fingerprint) {
-        throw new Error('plan event identity conflict');
+      if (JSON.stringify([planProposalIdentity(persisted.request), persisted.triggerOperationId]) !== fingerprint) {
+        throw new Error('plan proposal identity conflict');
       }
+      if (persisted.delivery === 'invalidated') throw new Error('plan proposal invalidated');
       this.preparations.delete(event.id);
       await this.loadConfigurationSnapshot(event.configurationRevision);
-      return this.preparationCancelled(event, signal) ? null : persisted;
+      if (this.preparationCancelled(persisted.request, signal)) return null;
+      this.deps.runtimePort.proposals.assertAdmissionOpen(event.id);
+      return persisted.request;
     }
     const existing = this.preparations.get(event.id);
     if (existing) {
-      if (existing.fingerprint !== fingerprint) throw new Error('plan event identity conflict');
-      const result = await existing.work;
+      if (existing.fingerprint !== fingerprint) throw new Error('plan proposal identity conflict');
+      const result = await this.awaitPreparation(existing.work, event, signal);
       return existing.signal.aborted || this.preparationCancelled(event, signal) ? null : result;
     }
     for (const id of this.preparations.keys()) {
-      if (this.deps.runtimePort.queries.findKernelEvent?.(id)) this.preparations.delete(id);
+      if (this.deps.runtimePort.proposals.find(id)) this.preparations.delete(id);
     }
     if (this.preparations.size >= 64) throw new Error('plan preparation capacity exceeded');
-    const work = this.prepareNewPlanEvent(event, signal);
+    const work = (async () => {
+      const result = await this.prepareNewPlanProposal(event, signal);
+      if (!result || this.preparationCancelled(result, signal)) return null;
+      // Coalesced callers must also await persistence. A failed save cannot
+      // let another waiter hand an unrecorded proposal to admission.
+      return this.deps.runtimePort.proposals.save({
+        request: planAdmissionRequest(result),
+        ...(triggerOperationId ? { triggerOperationId } : {}),
+      }).request;
+    })();
     this.preparations.set(event.id, { fingerprint, signal, work });
     try {
-      const result = await work;
+      const result = await this.awaitPreparation(work, event, signal);
       if (!result) this.preparations.delete(event.id);
+      if (result && this.preparationCancelled(result, signal)) {
+        this.preparations.delete(event.id);
+        return null;
+      }
       return result;
     } catch (error) {
       this.preparations.delete(event.id);
+      throw error;
+    }
+  }
+
+  /**
+   * Preparation seams that honour the Turn signal report cancellation by
+   * aborting. An abandoned Turn has nothing to admit, so the abort settles as
+   * `null`; disposal or Server shutdown keeps a replan recoverable through
+   * `ControlApplicationInterruptedError`. Every other failure, including an
+   * adapter-side abort with no cancellation in effect, stays a real error and
+   * must never be read as a cancelled proposal.
+   */
+  private async awaitPreparation(
+    work: Promise<PlanAdmissionRequest | null>,
+    event: PlanAdmissionRequest,
+    signal: AbortSignal,
+  ): Promise<PlanAdmissionRequest | null> {
+    try {
+      return await work;
+    } catch (error) {
+      if (!(error instanceof Error) || error.name !== 'AbortError') throw error;
+      if (this.preparationCancelled(event, signal)) return null;
       throw error;
     }
   }
@@ -794,52 +788,12 @@ export class ConversationSession {
     return snapshot;
   }
 
-  private async prepareNewPlanEvent(original: PlanProposedEvent, signal: AbortSignal): Promise<PlanProposedEvent | null> {
+  private async prepareNewPlanProposal(original: PlanAdmissionRequest, signal: AbortSignal): Promise<PlanAdmissionRequest | null> {
     if (this.preparationCancelled(original, signal)) return null;
-    const pinned = await this.loadConfigurationSnapshot(original.configurationRevision);
+    await this.loadConfigurationSnapshot(original.configurationRevision);
     if (this.preparationCancelled(original, signal)) return null;
-    // Pin the trusted Workspace admission facts on the durable event before any
-    // Kernel decision: the target Workspace identity never comes from Planner
-    // text, and a replay reaches the same decision without asking again.
     const event = await this.attachWorkspaceAdmission(original);
-    if (this.preparationCancelled(event, signal)) return null;
-    const evaluator = this.deps.spanRoutingEvaluator;
-    if (!evaluator) return event;
-    const configuration = pinned ? buildKernelConfigurationView(pinned)
-      : this.deps.getKernelConfiguration?.() ?? this.deps.kernelConfiguration;
-    if (!configuration || configuration.revisionId !== event.configurationRevision) {
-      return event;
-    }
-    const runtimeConfiguration = pinned ? buildRuntimeConfigurationView(pinned)
-      : this.deps.getRuntimeConfiguration?.(event.configurationRevision) ?? null;
-    // Only touch the admission queries when Span is actually enabled, so a
-    // disabled advisor cannot change when plan admission errors surface.
-    if (!runtimeConfiguration?.routing?.span?.enabled) return event;
-    const snapshot = this.buildPlanAdmissionSnapshot(event);
-    if (!snapshot) return event;
-    try {
-      const prepared = await attachSpanRoutingObservation({
-        event,
-        configuration,
-        executorStatuses: snapshot.executorStatuses,
-        runtimeConfiguration,
-        evaluator,
-        signal,
-      });
-      return this.preparationCancelled(event, signal) ? null : prepared;
-    } catch (error) {
-      // An advisor-contract abort means the request was cancelled by the Turn
-      // or by the Server lifetime: never admit the proposal on that basis. A
-      // raw `AbortError` with no cancellation is an adapter-side abort and
-      // keeps the deterministic path.
-      if (this.disposed || (error instanceof SpanEvaluationAbortedError && !signal.aborted)) {
-        if (event.proposalSource !== 'initial') throw new KernelApplicationInterruptedError();
-        return null;
-      }
-      if (signal.aborted || error instanceof SpanEvaluationAbortedError) return null;
-      if (error instanceof Error && error.name === 'AbortError') return event;
-      throw error;
-    }
+    return this.preparationCancelled(event, signal) ? null : event;
   }
 
   /**
@@ -848,12 +802,21 @@ export class ConversationSession {
    * for a Workspace instead of guessing one.
    */
   private async attachWorkspaceAdmission(
-    event: PlanProposedEvent,
-  ): Promise<PlanProposedEvent> {
+    event: PlanAdmissionRequest,
+  ): Promise<PlanAdmissionRequest> {
     if (event.workspaceAdmission) return event;
     const workspace = await this.deps.workspace?.getWorkspace() ?? null;
+    // Runtime owns write readiness: a broken Workspace Git root fails admission
+    // with its own reason instead of becoming a user-facing capability question.
+    const writeState = workspace
+      ? this.deps.resolveWorkspaceWriteState?.(workspace.workspaceId)
+      : undefined;
     const targetWorkspace = workspace
-      ? { workspaceId: workspace.workspaceId, canonicalPath: workspace.path }
+      ? {
+        workspaceId: workspace.workspaceId,
+        canonicalPath: workspace.path,
+        ...(writeState ? { writeState } : {}),
+      }
       : null;
     return {
       ...event,
@@ -867,12 +830,18 @@ export class ConversationSession {
    * True when this Turn can no longer admit work: the client asked to stop it,
    * or the Session was disposed while external preparation was in flight.
    */
-  private preparationCancelled(event: Pick<PlanProposedEvent, 'proposalSource'>, signal: AbortSignal): boolean {
+  private preparationCancelled(
+    event: Pick<PlanAdmissionRequest, 'proposalSource' | 'sourceTurnId' | 'conversationId'>,
+    signal: AbortSignal,
+  ): boolean {
     if (this.disposed || this.deps.lifetimeSignal?.aborted) {
-      if (event.proposalSource !== 'initial') throw new KernelApplicationInterruptedError();
+      if (event.proposalSource !== 'initial') throw new ControlApplicationInterruptedError();
       return true;
     }
-    return signal.aborted;
+    return signal.aborted || (event.sourceTurnId !== undefined
+      && this.deps.runtimePort.turnCancellations.isRequested(
+        event.conversationId ?? this.deps.conversationId, event.sourceTurnId,
+      ));
   }
 
   private isCancellationRequested(): boolean {
@@ -943,10 +912,10 @@ export class ConversationSession {
     }
     const query = this.beginQuery(userInput, images, attachments, options);
     try {
-      const handled = await this.handlePlanningKernelDecision(userInput, images, attachments);
+      const handled = await this.handlePlanningControlDecision(userInput, images, attachments);
       if (handled) return;
       this.appendOutput(
-        '-> ControlKernel did not produce a runtime action.',
+        '-> Task Runtime produced no action for this turn.',
         'Please clarify whether you want to chat, create a new task, resume an existing task, or dispatch an executor.',
       );
     } finally {
@@ -954,7 +923,7 @@ export class ConversationSession {
         const lifecycle = this.deps.queryUsage?.lifecycle;
         // Planner returns before a bound Task finishes. Task terminal
         // recovery owns finalization for that asynchronous path.
-        if (!lifecycle || lifecycle.getCostTaskId(query.context.queryId) === null) {
+        if (!lifecycle || lifecycle.getTaskId(query.context.queryId) === null) {
           lifecycle?.finalizeQuery({
             queryId: query.context.queryId,
             finalizedAt: new Date().toISOString(),
@@ -971,8 +940,8 @@ export class ConversationSession {
     attachments: PlannerAttachmentView[] | undefined,
     options: InputControllerSubmitOptions | undefined,
   ): Extract<BeginQueryResult, { status: 'created' | 'reused' }> | null {
-    const billing = this.deps.queryUsage;
-    if (!billing) return null;
+    const usage = this.deps.queryUsage;
+    if (!usage) return null;
     const requestId = options?.requestId ?? `request_${generateInteractionId()}`;
     const requestKey = options?.idempotencyKey ?? requestId;
     const payloadDigest = createHash('sha256')
@@ -985,19 +954,15 @@ export class ConversationSession {
         })),
       }))
       .digest('hex');
-    const result = billing.lifecycle.beginQuery({
-      externalAccountRef: billing.externalAccountRef,
+    const result = usage.lifecycle.beginQuery({
       accountId: this.accountId,
-      ingress: options?.billingIngress ?? billing.ingress,
+      ingress: options?.usageIngress ?? usage.ingress,
       requestKey,
       requestPayloadDigest: payloadDigest,
       conversationId: this.deps.conversationId,
       requestId,
       turnId: this.activeInteractionTurnId,
       executionSegmentId: null,
-      priceBookVersion: billing.getPriceBookVersion?.() ?? billing.priceBookVersion,
-      feePolicyVersion: billing.getFeePolicyVersion?.() ?? billing.feePolicyVersion,
-      payerPolicyVersion: billing.payerPolicyVersion,
       acceptedAt: new Date().toISOString(),
     });
     if (result.status === 'conflict') {
@@ -1007,7 +972,7 @@ export class ConversationSession {
     return result;
   }
 
-  private async handlePlanningKernelDecision(
+  private async handlePlanningControlDecision(
     userInput: string,
     images?: PlannerImageAttachment[],
     attachments?: PlannerAttachmentView[],
@@ -1029,7 +994,6 @@ export class ConversationSession {
       phase: 'planning',
       actor: 'planner',
       kind: 'planner_started',
-      status: 'running',
       title: 'Planner started',
       summary: 'Parsing the request and preparing a structured proposal.',
       details: { configurationRevision: context.configuration.revisionId },
@@ -1039,9 +1003,44 @@ export class ConversationSession {
     this.notify();
     let result: PlannerProposalResult;
     try {
-      result = await planningAgent.submit(context, {        submit: async plan => this.submitValidatedPlannerProposal(userInput, plan),
+      result = await planningAgent.submit(context, {
+        submit: async rawPlan => {
+          // The Runtime owns identity/plumbing: schemaVersion, source and the
+          // proposal id come from here, so the model cannot get them wrong.
+          const plan = normalizePlanningAgentPlanInput(rawPlan, {
+            configurationRevision: context.configuration.revisionId,
+            id: `plan_${context.request.sessionId}_${this.activeInteractionTurnId ?? 'turn'}`,
+          });
+          // Cancellation/disposal wins over validation: the late proposal must
+          // report the cancelled Turn, not a schema complaint.
+          if (this.isCancelledTurn() || this.disposed) {
+            return this.submitValidatedPlannerProposal(userInput, plan as PlanningAgentPlan);
+          }
+          // One validation point; failures become repair feedback instead of a
+          // raw storage error or a fatal turn.
+          const normalizedPlan = plan;
+          const validation = validatePlanningAgentPlan(
+            normalizedPlan,
+            context.configuration,
+            context.pendingAuthorizationRequest,
+            context.replan,
+          );
+          if (!validation.valid) {
+            return {
+              status: 'rejected',
+              turnId: `plan_event_${String((plan as { id?: unknown } | null)?.id ?? 'unknown')}`,
+              submissionId: `plan_submission_${generateInteractionId()}`,
+              planId: typeof (plan as { id?: unknown } | null)?.id === 'string'
+                ? (plan as { id: string }).id : null,
+              rejectionType: 'validation',
+              issues: validation.errors,
+              kernel: null,
+            };
+          }
+          return this.submitValidatedPlannerProposal(userInput, plan as PlanningAgentPlan);
+        },
         onProgress: progress => this.recordPlannerProgressTrace(progress),
-        onUsage: usage => this.recordPlannerUsage(usage),
+        onUsage: usage => this.recordPlannerUsage(usage, context.configuration.revisionId),
       });
     } catch (error) {
       if (this.isCancelledTurn()) {
@@ -1054,7 +1053,6 @@ export class ConversationSession {
         phase: 'planning',
         actor: 'planner',
         kind: 'planner_failed',
-        status: 'failed',
         title: 'Planner failed',
         summary: (error as Error).message,
         details: {},
@@ -1072,6 +1070,9 @@ export class ConversationSession {
       return true;
     }
     this.recordPlannerProposalTerminalTrace(result);
+    if (result.status === 'accepted' && result.outcome === 'no_action') {
+      this.appendOutput(result.displayText);
+    }
     if (result.status === 'convergence_exhausted') {
       const label = result.reason === 'processing_cycles'
         ? '处理轮次'
@@ -1091,7 +1092,7 @@ export class ConversationSession {
     return result.status === 'accepted' || result.status === 'rejected';
   }
 
-  private recordPlannerUsage(usage: HarnessUsageEvent): void {
+  private recordPlannerUsage(usage: HarnessUsageEvent, configurationRevision: string): void {
     const queryId = this.activeQueryId;
     const observer = this.deps.queryUsage?.usageObserver;
     if (!queryId || !observer) return;
@@ -1109,8 +1110,10 @@ export class ConversationSession {
       taskId: null,
       stage: 'planning',
       reason: 'primary',
-      payer: this.deps.queryUsage?.usagePayer ?? 'unknown',
-      capturedAt: now,
+      payer: this.deps.queryUsage?.resolveUsagePayer?.(usage.providerRef ?? this.deps.plannerProviderRef, configurationRevision)
+        ?? this.deps.queryUsage?.usagePayer ?? 'unknown',
+      capturedAt: usage.occurredAtUtc ?? now,
+      providerResponseId: usage.providerResponseId,
       providerBindingVersion: this.deps.plannerBindingFingerprint ?? null,
       evidenceRef: `query:${queryId}`,
       agentClassRef: usage.agentClassRef ?? 'planner',
@@ -1136,32 +1139,32 @@ export class ConversationSession {
     if (this.isCancelledTurn() || this.disposed) {
       return this.cancelledProposalResult(eventId, plan.id);
     }
-    if (!this.allowLegacyDirectReply && plan.action === 'direct_reply') {
+    // Invalid model-generated references are repair feedback, not a question
+    // for the user. Validate before saving/admitting the proposal so the same
+    // bounded Manager turn can correct it without creating a waiting Task.
+    const eligible = new Set(this.buildEligibleContextRefKeys(plan, userInput,
+      (this.turnFactsFor(userInput)?.attachments ?? []).map(item => item.attachmentId)));
+    const invalidRefs = [...new Set((plan.workGraph?.subtasks ?? []).flatMap(subtask =>
+      subtask.contextRefs.map(contextRefKey).filter(key => !eligible.has(key))))];
+    if (invalidRefs.length) {
       return {
-        status: 'rejected',
-        turnId: eventId,
-        submissionId: eventId,
-        planId: plan.id,
-        rejectionType: 'validation',
-        issues: [
-          'Semantic Planner cannot use direct_reply; route task-like work through an Executor.',
-          'Slash-prefixed system commands must use the Application-Shell command path.',
-        ],
-        kernel: null,
+        status: 'rejected', turnId: plan.id, submissionId: eventId, planId: plan.id,
+        rejectionType: 'validation', kernel: null,
+        issues: [`Unavailable context references: ${invalidRefs.join(', ')}. Use current_user_input for this request. For history, read the context tool and copy an exact eligible interaction ID; a Conversation ID is not an interaction ID. Do not ask the user to repair internal references.`],
       };
     }
     const port = this.deps.runtimePort;
-    const sessionKernelRuntime = this.sessionKernelRuntime;
-    if (!sessionKernelRuntime) {
+    const sessionControlRuntime = this.sessionControlRuntime;
+    if (!sessionControlRuntime) {
       if (this.deps.executeUserInput) {
         await this.deps.executeUserInput(userInput);
       }
       return { status: 'accepted' } as PlannerProposalResult;
     }
 
-    let event: PlanProposedEvent | null;
+    let event: PlanAdmissionRequest | null;
     try {
-      event = await this.preparePlanProposedEvent(this.buildPlanProposedEvent({
+      event = await this.preparePlanProposal(this.buildPlanProposal({
         plan,
         configurationRevision: this.deps.planningContextBuilder
           ?.getPlannerConfiguration().revisionId ?? null,
@@ -1169,8 +1172,6 @@ export class ConversationSession {
           .map(attachment => attachment.attachmentId),
         proposalSource: 'initial',
         eventId,
-        correlationId: plan.id,
-        causationId: null,
         workspaceId: (await this.getWorkspace())?.workspaceId,
         taskId: plan.task.taskId ?? undefined,
         requestText: userInput,
@@ -1188,51 +1189,54 @@ export class ConversationSession {
       // does not always abort it; never admit the proposal in that window.
       return this.cancelledProposalResult(eventId, plan.id);
     }
-    this.recordSpanRoutingTrace(event);
-    const result = await port.commands.submitKernel(event, {
-      buildSnapshot: claimed => this.buildPlanAdmissionSnapshot(
-        claimed as Extract<KernelEvent, { type: 'plan_proposed' }>,
-      )!,
-      runtime: sessionKernelRuntime.forInput(userInput, this.deps.conversationId, this.activeQueryId),
+
+    port.proposals.assertAdmissionOpen(event.id);
+    const kernelSnapshot = this.buildPlanAdmissionSnapshot(event);
+    if (!kernelSnapshot) {
+      return {
+        status: 'transport_uncertain',
+        turnId: plan.id,
+        submissionId: eventId,
+        retryableByReplay: true,
+        message: 'Admission snapshot is unavailable for this configuration revision.',
+      };
+    }
+    // One admission policy, evaluated here: no Kernel event, decision or
+    // application record is created for a plan proposal any more.
+    const admission = (this.deps.evaluatePlanAdmission ?? evaluatePlanAdmission)(
+      event,
+      planAdmissionSnapshotFromControl(kernelSnapshot),
+    );
+    const applied = await sessionControlRuntime.applyPlanAdmission(admission, {
+      proposalId: event.id,
+      userInput: event.requestText,
+      ...(event.conversationId ? { conversationId: event.conversationId } : {}),
+      queryId: event.queryId ?? null,
     });
-    const decision = result.decisions.find(item => item.eventId === eventId)
-      ?? port.queries.listKernelDecisionsBySession(this.deps.plannerSessionId)
-        .find(item => item.eventId === eventId)?.decision
-      ?? null;
-    if (!decision) {
+    // A failed application leaves the proposal pending so the same submission
+    // can be replayed; only a durable outcome records the hand-off.
+    port.proposals.markForwarded(event.id, new Date().toISOString());
+    if (applied.status === 'rejected') {
       return {
-        status: 'transport_uncertain',
-        turnId: event.correlationId,
+        status: 'rejected',
+        turnId: plan.id,
         submissionId: eventId,
-        retryableByReplay: true,
-        message: 'Kernel application did not produce an authoritative decision.',
+        planId: plan.id,
+        rejectionType: 'kernel',
+        issues: [admission.reason],
+        kernel: {
+          decisionId: applied.operationId,
+          action: 'reject_request',
+          reason: admission.reason,
+        },
       };
     }
-    const application = port.queries.findKernelApplicationByDecisionId(decision.id);
-    if (application?.status !== 'applied') {
-      return {
-        status: 'transport_uncertain',
-        turnId: event.correlationId,
-        submissionId: eventId,
-        retryableByReplay: true,
-        message: application?.errorSummary
-          ? `Kernel application is uncertain: ${application.errorSummary}`
-          : 'Kernel application did not reach the applied state.',
-      };
-    }
-    const taskId = plan.task.taskId
-      ?? ('taskId' in decision.action && typeof decision.action.taskId === 'string'
-        ? decision.action.taskId
-        : null);
-    if (
-      this.activeQueryId
-      && taskId
-      && decision.action.type === 'authorize_task_plan'
-    ) {
-      const binding = this.deps.queryUsage?.lifecycle.bindCostTask({
+    const taskId = applied.taskId ?? plan.task.taskId ?? null;
+    if (this.activeQueryId && taskId) {
+      const binding = this.deps.queryUsage?.lifecycle.bindTask({
         queryId: this.activeQueryId,
         taskId,
-        decisionId: decision.id,
+        decisionId: applied.operationId,
         basis: 'authorized_application',
         linkedAt: new Date().toISOString(),
       });
@@ -1240,33 +1244,18 @@ export class ConversationSession {
         throw new Error('query_task_attribution_conflict');
       }
     }
-    if (decision.action.type === 'reject_request') {
-      return {
-        status: 'rejected',
-        turnId: event.correlationId,
-        submissionId: eventId,
-        planId: plan.id,
-        rejectionType: 'kernel',
-        issues: [decision.reason],
-        kernel: {
-          decisionId: decision.id,
-          action: 'reject_request',
-          reason: decision.reason,
-        },
-      };
-    }
     return {
       status: 'accepted',
-      turnId: event.correlationId,
+      turnId: plan.id,
       submissionId: eventId,
       planId: plan.id,
-      outcome: plannerOutcome(decision.action.type),
-      displayText: plannerDecisionDisplayText(decision, this.output.at(-1)),
+      outcome: plannerAdmissionOutcome(applied.status),
+      displayText: plannerAdmissionDisplayText(applied, admission, this.output.at(-1)),
       taskId,
       kernel: {
-        decisionId: decision.id,
-        action: decision.action.type,
-        reason: decision.reason,
+        decisionId: applied.operationId,
+        action: plannerAdmissionAction(applied.status),
+        reason: admission.reason,
       },
     };
   }
@@ -1314,54 +1303,6 @@ export class ConversationSession {
           dependency.type === 'kernel_retry' && dependency.status === 'waiting'
         ),
       );
-  }
-
-  deliverDirectReply(userInput: string, reply: string): void {
-    this.setDirectReplyRuntimeState('planning-agent');
-    try {
-      this.deps.interactionTraceStream?.append({
-        phase: 'delivery',
-        actor: 'runtime',
-        kind: 'delivery_completed',
-        status: 'completed',
-        title: 'Final answer delivered',
-        summary: 'The Planner answer passed Kernel authorization and was delivered.',
-        details: { executor: 'planning-agent' },
-        eventKey: 'direct_reply',
-        traceStatus: 'completed',
-      } as never);
-      this.appendOutput(reply);
-      this.deps.persistenceService?.recordInteraction({
-        turnId: this.activeInteractionTurnId,
-        conversationId: this.deps.conversationId,
-        accountId: this.accountId,
-        taskId: null,
-        sessionId: this.deps.plannerSessionId,
-        userInput,
-        systemOutput: reply,
-        executorUsed: 'planning-agent',
-      });
-      this.setFocusContext({ kind: 'conversation', taskId: null });
-    } finally {
-      this.setDirectReplyRuntimeState(null);
-    }
-  }
-
-  private setDirectReplyRuntimeState(executorName: string | null): void {
-    this.refreshRuntimeState();
-    const schedulerState = this.runtimeState;
-    if (schedulerState.runningTaskId) {
-      this.refreshRuntimeState();
-      return;
-    }
-    this.runtimeState = {
-      ...schedulerState,
-      runningExecutorName: executorName,
-      lastEvent: executorName
-        ? `普通对话由 ${executorName} 生成回答`
-        : schedulerState.lastEvent,
-    };
-    this.notify();
   }
 
   refreshRuntimeState(): void {
@@ -1519,7 +1460,10 @@ export class ConversationSession {
 
   private isCancelledTurn(): boolean {
     return this.activeInteractionTurnId !== null
-      && this.cancelledTurnIds.has(this.activeInteractionTurnId);
+      && (this.cancelledTurnIds.has(this.activeInteractionTurnId)
+        || this.deps.runtimePort.turnCancellations.isRequested(
+          this.deps.conversationId, this.activeInteractionTurnId,
+        ));
   }
 
   /**
@@ -1538,6 +1482,11 @@ export class ConversationSession {
       this.appendOutput('该轮次已不在执行中。');
       return;
     }
+    // Persist before acknowledging or aborting. A restarted Session must fence
+    // late proposals even though the in-memory controller and latch are gone.
+    this.deps.runtimePort.turnCancellations.request(
+      this.deps.conversationId, targetTurnId, new Date().toISOString(),
+    );
     this.cancelledTurnIds.add(targetTurnId);
     // Abort external routing work still in flight for this Turn.
     this.turnCancellation.abort();
@@ -1545,7 +1494,6 @@ export class ConversationSession {
       phase: 'planning',
       actor: 'runtime',
       kind: 'turn_cancel_requested',
-      status: 'running',
       title: 'Turn cancellation requested',
       summary: '用户请求取消当前轮。',
       details: {},
@@ -1597,7 +1545,6 @@ export class ConversationSession {
       phase: 'planning',
       actor: 'runtime',
       kind: 'turn_cancelled',
-      status: 'completed',
       title: 'Turn cancelled',
       summary,
       details: {},
@@ -1636,7 +1583,7 @@ export class ConversationSession {
         : task.status === 'failed' ? 'failed' : null;
     if (!traceStatus) return;
     this.appendTrace({
-      phase: 'delivery', actor: 'runtime', kind: 'turn_settled', status: traceStatus === 'failed' ? 'failed' : 'completed',
+      phase: 'delivery', actor: 'runtime', kind: 'turn_settled',
       title: traceStatus === 'completed' ? 'Turn completed' : `Turn ${traceStatus}`,
       summary: traceStatus === 'completed' ? '任务已完成，用户决策已应用。' : `任务已结束：${task.status}。`,
       details: { taskId, taskStatus: task.status }, eventKey: 'turn_settled', traceStatus,
@@ -1666,100 +1613,6 @@ export class ConversationSession {
       hint: null,
       error: null,
     };
-  }
-
-  getPlannerTuiSnapshot(): PlannerTuiSnapshot {
-    const snapshot = this.getSnapshot();
-    const port = this.deps.runtimePort;
-    return {
-      schemaVersion: 1,
-      session: {
-        id: this.plannerSessionId,
-        focusedTask: snapshot.currentTask,
-        runtimeState: snapshot.runtimeState,
-        plannerState: snapshot.plannerState,
-        recentOutput: snapshot.output.slice(-100),
-      },
-      taskPool: port.queries.listTasks()
-        .filter(task => task.conversationId === this.deps.conversationId)
-        .slice(0, 100).map(task => ({
-        id: task.id,
-        title: task.title,
-        goal: task.goal,
-        status: task.status,
-        blockingReason: (
-          task.lastInterruptionReason
-          || task.dependencies.find(dependency => dependency.status === 'waiting')?.description
-          || ''
-        ).slice(0, 500) || null,
-        subtasks: port.queries.listSubtasks(task.id).slice(0, 100).map(subtask => ({
-          id: subtask.id,
-          title: subtask.title,
-          status: subtask.status,
-          preferredAgentClassList: subtask.executorBindings.map(binding => binding.agentClassRef),
-        })),
-      })),
-      executorStatuses: port.queries.listExecutorStatuses(
-        (this.deps.getKernelConfiguration?.() ?? this.deps.kernelConfiguration)?.revisionId ?? '',
-      ),
-    };
-  }
-
-  getPlannerTuiExecutorResults(): PlannerTuiExecutorResult[] {
-    const port = this.deps.runtimePort;
-    const taskIds = [...new Set(
-      port.queries.listKernelDecisionsBySession(this.plannerSessionId)
-        .map(decision => decision.taskId)
-        .filter((taskId): taskId is string => Boolean(taskId)),
-    )];
-    return port.queries.listIntegratedPublications(taskIds)
-      .map(publication => {
-        const task = port.queries.findTask(publication.taskId);
-        const subtask = port.queries.findSubtask(publication.subtaskId);
-        return {
-          schemaVersion: 1,
-          publicationId: publication.id,
-          taskId: publication.taskId,
-          taskTitle: task?.title ?? publication.taskId,
-          subtaskId: publication.subtaskId,
-          subtaskTitle: subtask?.title ?? publication.subtaskId,
-          attemptId: publication.sourceAttemptId,
-          executorName: publication.agentClassName,
-          report: publication.originalCompletion.body,
-          artifacts: [...publication.originalCompletion.artifacts],
-          warnings: [...publication.originalCompletion.warnings],
-          integrationCommit: publication.integrationCommit,
-          completedAt: publication.updatedAt,
-          reportTruncated: false,
-        };
-      });
-  }
-
-  getPlannerTuiPermissionRequests(): PlannerTuiPermissionRequest[] {
-    return this.deps.runtimePort.permissions?.listForSession(this.plannerSessionId) ?? [];
-  }
-
-  async resolvePlannerTuiPermission(
-    permissionRequestId: string,
-    resolution: 'approve' | 'deny',
-  ): Promise<PlannerTuiPermissionResolutionResult> {
-    try {
-      const result = await this.resolvePermission(permissionRequestId, resolution, 'button');
-      if (result.status === 'conflict' || result.resolution === null) {
-        return { status: 'conflict', resolution: null, message: result.message };
-      }
-      return {
-        status: result.status,
-        resolution: result.resolution,
-        message: result.message,
-      };
-    } catch (error) {
-      return {
-        status: 'conflict',
-        resolution: null,
-        message: (error as Error).message,
-      };
-    }
   }
 
   private async resolvePermission(
@@ -1793,23 +1646,18 @@ export class ConversationSession {
     return result;
   }
 
-  async submitPlannerTuiCommand(rawCommand: string): Promise<PlannerTuiCommandSubmissionResult> {
-    const command = rawCommand.trim();
-    if (!/^\/\S/u.test(command)) {
-      throw new Error('Planner TUI commands must start with /');
-    }
-    const outputStart = this.output.length;
-    const result = await this.submitUserInput(command);
-    await this.waitForBackgroundWork();
-    return {
-      exitRequested: result.exitRequested,
-      output: this.output.slice(outputStart),
-    };
-  }
-
   async submitPlannerProposal(
     submission: PlannerProposalSubmission,
     purpose: PlannerProposalPurpose = 'kernel',
+  ): Promise<PlannerProposalResult> {
+    const run = this.runInBinding;
+    return run ? run(() => this.runPlannerProposal(submission, purpose))
+      : this.runPlannerProposal(submission, purpose);
+  }
+
+  private async runPlannerProposal(
+    submission: PlannerProposalSubmission,
+    purpose: PlannerProposalPurpose,
   ): Promise<PlannerProposalResult> {
     const sessionId = submission.sessionId.trim();
     const turnId = submission.turnId.trim();
@@ -1834,20 +1682,6 @@ export class ConversationSession {
     const normalizedPlan = normalizePlanningAgentPlanInput(submission.plan, {
       configurationRevision: context?.configuration.revisionId,
     });
-    if (!this.allowLegacyDirectReply && isDirectReplyPlan(normalizedPlan)) {
-      return {
-        status: 'rejected',
-        turnId,
-        submissionId: submission.submissionId,
-        planId: typeof normalizedPlan.id === 'string' ? normalizedPlan.id : null,
-        rejectionType: 'validation',
-        issues: [
-          'Semantic Planner cannot use direct_reply; route task-like work through an Executor.',
-          'Slash-prefixed system commands must use the Application-Shell command path.',
-        ],
-        kernel: null,
-      };
-    }
     const parsed = PlanningAgentPlanSchema.safeParse(normalizedPlan);
     // Validation uses the same Turn facts the Planner was given. The admission
     // event itself no longer takes this context: `submitValidatedPlannerProposal`
@@ -2014,6 +1848,14 @@ export class ConversationSession {
     text: string,
     options: InputControllerSubmitOptions = {},
   ): Promise<{ exitRequested: boolean }> {
+    const run = this.runInBinding;
+    return run ? run(() => this.runUserInput(text, options)) : this.runUserInput(text, options);
+  }
+
+  private async runUserInput(
+    text: string,
+    options: InputControllerSubmitOptions,
+  ): Promise<{ exitRequested: boolean }> {
     const userInput = text.trim();
     this.workspacePath = (await this.getWorkspace())?.path ?? this.workspacePath;
     const startsTrace = shouldStartInteractionTrace(userInput);
@@ -2043,7 +1885,6 @@ export class ConversationSession {
           phase: 'delivery',
           actor: 'runtime',
           kind: 'command_completed',
-          status: 'completed',
           title: 'Command completed',
           summary: 'The control command replied; continuing execution is tracked by Task activity.',
           details: {},
@@ -2151,7 +1992,6 @@ export class ConversationSession {
         this.appendTrace({
           ...common,
           kind: 'planner_tool_completed',
-          status: progress.status,
           title: `Planner tool ${progress.status}: ${progress.toolName}`,
           summary: `Planner ${progress.status} ${progress.toolName}.`,
           details: {
@@ -2167,7 +2007,6 @@ export class ConversationSession {
         this.appendTrace({
           ...common,
           kind: 'planner_agent_completed',
-          status: 'completed',
           title: 'Planner handoff confirmed',
           summary: 'Planner completed the structured proposal handoff.',
         });
@@ -2178,12 +2017,34 @@ export class ConversationSession {
     const current = this.deps.interactionTraceStream?.getSnapshot();
     if (!current || current.status !== 'running') return;
     if (result.status === 'accepted') {
+      // Bounded proposal fact for the planning detail view. The plan body stays
+      // in storage; the client only needs the outcome and identity to explain
+      // what the Manager produced and how long it took.
+      this.appendTrace({
+        phase: 'planning',
+        actor: 'planner',
+        kind: 'planning_proposal_completed',
+        title: 'Structured plan completed',
+        summary: result.outcome === 'clarification_requested'
+          ? '需要用户澄清'
+          : result.outcome === 'task_authorized'
+            ? '计划已授权'
+            : result.outcome,
+        details: {
+          planId: result.planId,
+          outcome: result.outcome,
+          taskId: result.taskId,
+          kernelAction: result.kernel?.action ?? null,
+          decisionId: result.kernel?.decisionId ?? null,
+        },
+        eventKey: `${result.submissionId}:proposal`,
+        traceStatus: 'completed',
+      });
       if (result.outcome !== 'clarification_requested') return;
       this.appendTrace({
         phase: 'delivery',
         actor: 'runtime',
         kind: 'clarification_requested',
-        status: 'completed',
         title: 'Clarification requested',
         summary: result.displayText,
         details: {
@@ -2207,7 +2068,6 @@ export class ConversationSession {
           : result.status === 'convergence_exhausted'
             ? 'planner_convergence_exhausted'
             : 'proposal_rejected',
-      status,
       title: result.status === 'transport_uncertain'
         ? 'Planner handoff blocked'
         : result.status === 'conflict'
@@ -2256,6 +2116,12 @@ export class ConversationSession {
     const result = await commandCatalog.execute(input, this.getCommandContext());
     if (result.type === 'error') {
       throw commandError(result.code, result.content);
+    }
+    if ('relatedTaskId' in result && result.relatedTaskId) {
+      this.setCurrentTaskId(result.relatedTaskId);
+      this.appendTrace({ phase: 'execution', actor: 'runtime', kind: 'remaining_work_linked',
+        title: '关联续做任务', summary: result.content, taskId: result.relatedTaskId,
+        eventKey: `remaining_work_linked:${result.relatedTaskId}`, details: {} });
     }
     if (!(result.type === 'directive' && result.directive.kind === 'resume-task')) {
       this.appendOutput(result.content);
@@ -2333,7 +2199,7 @@ export class ConversationSession {
     const decision = await started.decision;
     if (!decision) {
       await started.completion;
-      this.appendOutput(`任务 #${taskId} 恢复请求未产生权威 Kernel 决策`);
+      this.appendOutput(`任务 #${taskId} 恢复请求未产生权威控制操作`);
       return;
     }
     this.appendOutput(formatTaskResumeDecision(taskId, decision, resumedTask.status));
@@ -2385,8 +2251,13 @@ export class ConversationSession {
       const detail = diagnosis
         ? ` -> ${diagnosis.family}/${diagnosis.verdict}: ${diagnosis.reason}`
         : '';
+      const action = diagnosis?.verdict === 'retry_safe'
+        ? `\n  可安全重试：/task recover ${taskId} ${item.id} retry`
+        : diagnosis?.verdict === 'applied'
+          ? `\n  已核实完成，可结清：/task recover ${taskId} ${item.id} assume-applied`
+          : '\n  请先核对实际结果；当前没有证明可安全重试的事实。';
       return `- ${item.id} [application/${item.status}] ${item.decision.action.type}: `
-        + `${item.errorSummary ?? 'no error summary'}${detail}`;
+        + `${item.errorSummary ?? 'no error summary'}${detail}${action}`;
     });
     const effects = port.queries.listRecoveryEffects(taskId).map(item =>
       `- ${item.id} [effect/${item.status}] ${item.effectType}: ${item.errorSummary ?? 'no error summary'}`
@@ -2395,6 +2266,7 @@ export class ConversationSession {
     if (items.length === 0) {
       const emptyRecovery = formatEmptyTaskRecovery(taskId, {
         status: task?.status,
+        canResume: port.queries.listSubtasks(taskId).some(subtask => ['ready', 'blocked'].includes(subtask.status)),
         blockerReason: task?.dependencies
           .filter(dependency => dependency.status === 'waiting')
           .map(dependency => dependency.description)
@@ -2404,14 +2276,14 @@ export class ConversationSession {
       if (emptyRecovery) return emptyRecovery;
     }
     return items.length > 0
-      ? `Task #${taskId} recovery items:\n${items.join('\n')}`
-      : `Task #${taskId} has no uncertain or failed recovery items.`;
+      ? `任务 #${taskId} 的恢复项：\n${items.join('\n')}`
+      : `任务 #${taskId} 没有待处理的恢复项。`;
   }
 
   private buildRecoverySnapshot(
     taskId: string,
     recoveryItemId: string,
-  ): Extract<KernelSnapshot, { type: 'recovery' }> {
+  ): Extract<ControlSnapshot, { type: 'recovery' }> {
     const port = this.deps.runtimePort;
     const task = port.queries.findTask(taskId);
     const application = port.queries.findRecoveryApplication(recoveryItemId);
@@ -2420,9 +2292,11 @@ export class ConversationSession {
       schemaVersion: 5,
       type: 'recovery',
       task: task ? { id: task.id, status: task.status } : null,
-      item: application
-        ? { id: application.id, kind: 'application', status: application.status as 'uncertain' | 'failed', retrySafe: true }
-        : effect && (effect.status === 'uncertain' || effect.status === 'failed')
+      item: application && 'taskId' in application.decision.action && application.decision.action.taskId === taskId
+        && ['pending', 'retry_authorized'].includes(application.status)
+        ? { id: application.id, kind: 'application', status: application.status as 'pending' | 'retry_authorized',
+            retrySafe: port.queries.diagnoseRecoveryApplication(application.decisionId)?.verdict === 'retry_safe' }
+        : effect && effect.taskId === taskId && (effect.status === 'uncertain' || effect.status === 'failed')
           ? { id: effect.id, kind: 'effect', status: effect.status, retrySafe: false }
           : null,
     };
@@ -2436,16 +2310,15 @@ export class ConversationSession {
     const port = this.deps.runtimePort;
     const application = port.queries.findRecoveryApplication(input.recoveryItemId);
     const effect = port.queries.findRecoveryEffect(input.recoveryItemId);
+    // The recovery item pins the configuration it was applied with; the effect
+    // row carries no revision and there is no ledger row to consult.
     const configurationRevision = application?.decision.configurationRevision
-      ?? (effect
-        ? port.queries.listKernelDecisionsByTask(input.taskId)
-            .find(record => record.id === effect.decisionId)
-            ?.configurationRevision
-        : null);
+      ?? (effect?.taskId === input.taskId
+        ? port.queries.findActiveWorkGraphRevision(input.taskId)?.configurationRevision : null);
     if (!configurationRevision) {
       throw new Error(`recovery item has no persisted configuration revision: ${input.recoveryItemId}`);
     }
-    const event: Extract<KernelEvent, { type: 'recovery_resolution_requested' }> = {
+    const event: Extract<ControlEvent, { type: 'recovery_resolution_requested' }> = {
       schemaVersion: 5,
       configurationRevision,
       type: 'recovery_resolution_requested',
@@ -2458,9 +2331,9 @@ export class ConversationSession {
       recoveryItemId: input.recoveryItemId,
       resolution: input.resolution,
     };
-    await port.commands.submitKernel(event, {
+    await port.commands.submitControl(event, {
       buildSnapshot: claimed => {
-        const recovery = claimed as Extract<KernelEvent, { type: 'recovery_resolution_requested' }>;
+        const recovery = claimed as Extract<ControlEvent, { type: 'recovery_resolution_requested' }>;
         return this.buildRecoverySnapshot(recovery.taskId!, recovery.recoveryItemId);
       },
       runtime: {
@@ -2522,36 +2395,32 @@ export class ConversationSession {
   }
 
   /**
-   * The only place a `plan_proposed` event is constructed.
+   * The only place a Conversation admission request is constructed.
    *
    * `attachmentIds` is a required input so no call site can silently drop the
    * Turn's eligible attachment set: an omitted set makes every
    * `{ kind: 'attachment' }` ContextRef fail Kernel admission, which is how the
    * bridge submission path used to lose current-Turn attachments.
    */
-  private buildPlanProposedEvent(input: {
+  private buildPlanProposal(input: {
     plan: PlanningAgentPlan;
     configurationRevision: string | null;
     attachmentIds: readonly string[];
     proposalSource: 'initial' | 'replan' | 'conflict_replan';
     eventId: string;
-    correlationId: string;
-    causationId: string | null;
     taskId?: string;
     workspaceId?: string;
     requestText: string;
     generationId: string;
     targetGraphRevision: number;
     availabilityExplanation?: string | null;
-  }): Extract<KernelEvent, { type: 'plan_proposed' }> {
+  }): PlanAdmissionRequest {
+    if (!input.configurationRevision) throw new Error('plan configuration revision is missing');
     return {
-      schemaVersion: 5,
       configurationRevision: input.configurationRevision,
-      type: 'plan_proposed',
       ...(this.activeInteractionTurnId ? { sourceTurnId: this.activeInteractionTurnId } : {}),
+      ...(this.activeQueryId ? { queryId: this.activeQueryId } : {}),
       id: input.eventId,
-      correlationId: input.correlationId,
-      causationId: input.causationId,
       occurredAt: new Date().toISOString(),
       sessionId: this.deps.plannerSessionId,
       conversationId: this.deps.conversationId,
@@ -2566,34 +2435,32 @@ export class ConversationSession {
       ...(input.availabilityExplanation !== undefined
         ? { availabilityExplanation: input.availabilityExplanation }
         : {}),
-    } as Extract<KernelEvent, { type: 'plan_proposed' }>;
+    };
   }
 
   /**
    * Attachment IDs a replan of this Task may still reference: the ones its
-   * originating admission was admitted with. The Kernel ledger is the durable
+   * originating proposal carried. The proposal owner is the durable
    * source, so a replan cannot invent new attachment references after a
    * restart and cannot silently lose the original ones.
    */
   private resolveTaskTurnAttachmentIds(taskId: string): string[] {
-    const decisions = this.deps.runtimePort.queries.listKernelDecisionsByTask(taskId);
-    const origin = decisions.find(record => record.eventType === 'plan_proposed');
-    if (!origin) return [];
-    const event = this.deps.runtimePort.queries.findKernelEvent(origin.eventId);
-    return event?.type === 'plan_proposed' ? [...(event.attachmentIds ?? [])] : [];
+    return [...(this.deps.runtimePort.proposals.findInitialForTask(taskId)?.request.attachmentIds ?? [])];
   }
 
-  private async requestKernelReplan(
-    decision: KernelDecision & {
-      action: Extract<KernelDecision['action'], { type: 'request_replan' }>;
+  private async requestControlReplan(
+    decision: ControlDecision & {
+      action: Extract<ControlDecision['action'], { type: 'request_replan' }>;
     },
-  ): Promise<Extract<KernelEvent, { type: 'plan_proposed' }> | null> {
+  ): Promise<Extract<ControlEvent, { type: 'plan_proposed' }> | null> {
     const signal = this.turnCancellation.signal;
     if (this.preparationCancelled({ proposalSource: 'replan' }, signal)) return null;
     const replay = await this.findDurableReplan(`replan_event_${decision.id}`, decision);
+    if (this.preparationCancelled({ proposalSource: 'replan' }, signal)) return null;
     if (replay) {
-      this.recordSpanRoutingTrace(replay);
-      return replay;
+
+      await this.admitPreparedReplan(replay);
+      return null;
     }
     const pinned = await this.loadConfigurationSnapshot(decision.configurationRevision);
     if (this.preparationCancelled({ proposalSource: 'replan' }, signal)) return null;
@@ -2645,51 +2512,88 @@ export class ConversationSession {
       throw new Error('replan configuration revision mismatch');
     }
     const plan = await this.runPlanningAgent(context);
-    const prepared = await this.preparePlanProposedEvent(this.buildPlanProposedEvent({
+    const prepared = await this.preparePlanProposal(this.buildPlanProposal({
       plan,
       configurationRevision: context.configuration.revisionId,
       attachmentIds: this.resolveTaskTurnAttachmentIds(task.id),
       proposalSource: 'replan',
       eventId: `replan_event_${decision.id}`,
-      correlationId: decision.eventId,
-      causationId: decision.id,
       taskId: task.id,
       requestText: redactSensitiveText(request),
       generationId: decision.action.generationId,
       targetGraphRevision: decision.action.sourceRevision + 1,
       availabilityExplanation: null,
-    }), signal);
-    if (prepared) this.recordSpanRoutingTrace(prepared);
-    return prepared;
+    }), signal, decision.id);
+    if (prepared) {
+
+      await this.admitPreparedReplan(prepared);
+    }
+    return null;
+  }
+
+  /**
+   * A replan effect still originates in a D5 Kernel decision, but its proposal
+   * is admitted directly: no plan event or plan decision is created.
+   */
+  private async admitPreparedReplan(prepared: PlanAdmissionRequest): Promise<void> {
+    const snapshot = this.buildPlanAdmissionSnapshot(prepared);
+    if (!snapshot) throw new Error('plan admission snapshot is unavailable for the replan');
+    const admission = (this.deps.evaluatePlanAdmission ?? evaluatePlanAdmission)(
+      prepared,
+      planAdmissionSnapshotFromControl(snapshot),
+    );
+    const runtime = this.sessionControlRuntime;
+    if (!runtime) throw new Error('session kernel runtime is unavailable for the replan');
+    await runtime.applyPlanAdmission(admission, {
+      proposalId: prepared.id,
+      userInput: prepared.requestText,
+      ...(prepared.conversationId ? { conversationId: prepared.conversationId } : {}),
+      queryId: prepared.queryId ?? null,
+    });
+    this.deps.runtimePort.proposals.markForwarded(prepared.id, new Date().toISOString());
   }
 
   private async findDurableReplan(
     eventId: string,
-    decision: KernelDecision,
-  ): Promise<PlanProposedEvent | null> {
-    const persisted = this.deps.runtimePort.queries.findKernelEvent?.(eventId);
-    if (!persisted) return null;
-    if (persisted.type !== 'plan_proposed' || persisted.causationId !== decision.id
+    decision: ControlDecision,
+  ): Promise<PlanAdmissionRequest | null> {
+    const saved = this.deps.runtimePort.proposals.find(eventId);
+    if (!saved) return null;
+    const persisted = saved.request;
+    if (saved.delivery === 'invalidated' || saved.triggerOperationId !== decision.id
       || persisted.configurationRevision !== decision.configurationRevision
       || persisted.sessionId !== this.deps.plannerSessionId
+      || persisted.conversationId !== this.deps.conversationId
+      || persisted.proposalSource !== (decision.action.type === 'request_merge_replan' ? 'conflict_replan' : 'replan')
+      || (decision.action.type === 'request_replan'
+        && (persisted.generationId !== decision.action.generationId
+          || persisted.targetGraphRevision !== decision.action.sourceRevision + 1))
       || !('taskId' in decision.action) || persisted.taskId !== decision.action.taskId) {
-      throw new Error('replan event identity conflict');
+      throw new Error('replan proposal identity conflict');
     }
     await this.loadConfigurationSnapshot(persisted.configurationRevision);
+    try {
+      this.deps.runtimePort.proposals.assertAdmissionOpen(eventId);
+    } catch (error) {
+      if (!(error instanceof PlanProposalUnavailableError)) throw error;
+      throw new ControlApplicationRejectionError(error.message, error.code);
+    }
     return persisted;
   }
 
-  private async requestKernelMergeReplan(
-    decision: KernelDecision & {
-      action: Extract<KernelDecision['action'], { type: 'request_merge_replan' }>;
+  private async requestControlMergeReplan(
+    decision: ControlDecision & {
+      action: Extract<ControlDecision['action'], { type: 'request_merge_replan' }>;
     },
-  ): Promise<Extract<KernelEvent, { type: 'plan_proposed' }> | null> {
+  ): Promise<Extract<ControlEvent, { type: 'plan_proposed' }> | null> {
     const signal = this.turnCancellation.signal;
     if (this.preparationCancelled({ proposalSource: 'conflict_replan' }, signal)) return null;
     const replay = await this.findDurableReplan(`merge_replan_event_${decision.id}`, decision);
+    if (this.preparationCancelled({ proposalSource: 'conflict_replan' }, signal)) return null;
     if (replay) {
-      this.recordSpanRoutingTrace(replay);
-      return replay;
+
+      await this.admitPreparedReplan(replay);
+      return null;
     }
     const pinned = await this.loadConfigurationSnapshot(decision.configurationRevision);
     if (this.preparationCancelled({ proposalSource: 'conflict_replan' }, signal)) return null;
@@ -2714,22 +2618,23 @@ export class ConversationSession {
       throw new Error('replan configuration revision mismatch');
     }
     const plan = await this.runPlanningAgent(context);
-    const prepared = await this.preparePlanProposedEvent(this.buildPlanProposedEvent({
+    const prepared = await this.preparePlanProposal(this.buildPlanProposal({
       plan,
       configurationRevision: context.configuration.revisionId,
       attachmentIds: this.resolveTaskTurnAttachmentIds(task.id),
       proposalSource: 'conflict_replan',
       eventId: `merge_replan_event_${decision.id}`,
-      correlationId: decision.eventId,
-      causationId: decision.id,
       taskId: task.id,
       requestText: redactSensitiveText(request),
       generationId: revision.generationId,
       targetGraphRevision: revision.revision + 1,
       availabilityExplanation: null,
-    }), signal);
-    if (prepared) this.recordSpanRoutingTrace(prepared);
-    return prepared;
+    }), signal, decision.id);
+    if (prepared) {
+
+      await this.admitPreparedReplan(prepared);
+    }
+    return null;
   }
 
   private appendTaskQueueSnapshot(trigger: string): void {
@@ -2782,7 +2687,9 @@ export class ConversationSession {
     if (this.lastBlockedRecheckAt !== null && nowMs - this.lastBlockedRecheckAt < intervalMs) {
       return false;
     }
-    const candidates = this.deps.runtimePort.queries.listCurrentKernelDecisions('wait_for_capacity');
+    // A capacity wait is an owner fact: the Task carries a `kernel_capacity`
+    // blocker, and its ready Subtask is the one to re-dispatch.
+    const candidates = this.deps.runtimePort.queries.listCapacityBlockedTasks();
     if (candidates.length === 0) {
       this.lastBlockedRecheckAt = nowMs;
       return false;
@@ -2795,8 +2702,8 @@ export class ConversationSession {
       return await this.kernelExecutionRuntime!.recheckCapacity({
         taskId: target.taskId,
         subtaskId: target.subtaskId,
-        blockedDecisionId: target.id,
-        blockedAt: target.createdAt,
+        blockedDecisionId: `capacity_wait:${target.taskId}:${target.blockedAt}`,
+        blockedAt: target.blockedAt,
         recheckAfterMs: intervalMs,
         occurredAt: new Date(nowMs).toISOString(),
       });
@@ -2841,10 +2748,10 @@ export class ConversationSession {
   }
 
   /** 装配账户级 Kernel 执行服务所需的三个 callbacks 对象（ADR-0031）。 */
-  getKernelExecutionCallbacks(): {
-    kernelExecutionCallbacks: KernelExecutionRuntimeCallbacks;
+  getControlExecutionCallbacks(): {
+    kernelExecutionCallbacks: ControlExecutionRuntimeCallbacks;
     taskExecutionCallbacks: TaskExecutionApplicationCallbacks;
-    sessionKernelCallbacks: SessionKernelRuntimeCallbacks;
+    sessionControlCallbacks: SessionControlRuntimeCallbacks;
   } {
     return {
       kernelExecutionCallbacks: {
@@ -2861,8 +2768,8 @@ export class ConversationSession {
         persistSessionState: changes => this.persistSessionState(changes),
         setLatestGuidance: (scene, suggestion) => this.setLatestGuidance(scene, suggestion)!,
         queueProposal: (scene, proposal) => this.queueProposal(scene, proposal),
-        requestReplan: decision => this.requestKernelReplan(decision),
-        requestMergeReplan: decision => this.requestKernelMergeReplan(decision),
+        requestReplan: decision => this.requestControlReplan(decision),
+        requestMergeReplan: decision => this.requestControlMergeReplan(decision),
         buildPlanAdmissionSnapshot: event => this.buildPlanAdmissionSnapshot(event)!,
       },
       taskExecutionCallbacks: {
@@ -2872,10 +2779,9 @@ export class ConversationSession {
         refreshRuntimeState: () => this.refreshRuntimeState(),
         startBackgroundExecution: (taskId, work) => this.startBackgroundExecution(taskId, work),
       },
-      sessionKernelCallbacks: {
+      sessionControlCallbacks: {
         appendOutput: (...lines: string[]) => this.appendOutput(...lines),
-        onDecisionApplying: decision => this.recordKernelDecisionTrace(decision),
-        deliverDirectReply: (userInput, reply) => this.deliverDirectReply(userInput, reply),
+        onDecisionApplying: decision => this.recordControlDecisionTrace(decision),
         prepareTaskExecution: (taskId, request) => this.prepareTaskExecution(taskId, request),
         refreshRuntimeState: () => this.refreshRuntimeState(),
         setCurrentTaskId: taskId => this.setCurrentTaskId(taskId),
@@ -2885,7 +2791,7 @@ export class ConversationSession {
         cancelTask: async (taskId, reason) => {
           const runtime = this.kernelExecutionRuntime;
           if (!runtime) {
-            throw new Error('Kernel execution runtime is unavailable');
+            throw new Error('Control execution runtime is unavailable');
           }
           return runtime.cancelTaskWithOutcome(taskId, reason);
         },
@@ -2955,27 +2861,6 @@ export class ConversationSession {
   }
 }
 
-function planEventIdentity(event: PlanProposedEvent): string {
-  // Server-projected facts (`occurredAt`, Span observation, Workspace
-  // admission) are not part of the Planner proposal identity: a replay of the
-  // same proposal may resolve them again without becoming a different event.
-  const {
-    occurredAt: _time,
-    spanRouting: _observation,
-    workspaceAdmission: _admission,
-    ...identity
-  } = event;
-  const canonical = (value: unknown): unknown => {
-    if (Array.isArray(value)) return value.map(canonical);
-    if (value && typeof value === 'object') {
-      return Object.fromEntries(Object.entries(value).sort(([a], [b]) => a.localeCompare(b))
-        .map(([key, nested]) => [key, canonical(nested)]));
-    }
-    return value;
-  };
-  return createHash('sha256').update(JSON.stringify(canonical(identity))).digest('hex');
-}
-
 function workspaceError(code: string, message: string): Error & { code: string } {
   const error = new Error(`${code}: ${message}`) as Error & { code: string };
   error.code = code;
@@ -2988,29 +2873,20 @@ function commandError(code: string, message: string): Error & { code: string } {
   return error;
 }
 
-function isDirectReplyPlan(value: unknown): value is { id?: unknown } & Record<string, unknown> {
-  return Boolean(value)
-    && typeof value === 'object'
-    && !Array.isArray(value)
-    && (value as Record<string, unknown>).action === 'direct_reply';
-}
-
 function shouldStartInteractionTrace(userInput: string): boolean {
   if (!userInput) return false;
   if (!userInput.startsWith('/')) return true;
-  return /^\/task\s+(?:resume|unblock|recover)\b/iu.test(userInput);
+  return /^\/task\s+(?:resume|unblock|recover|retry)\b/iu.test(userInput);
 }
 
 function plannerOutcome(
-  action: KernelDecision['action']['type'],
+  action: ControlDecision['action']['type'],
 ): Extract<PlannerProposalResult, { status: 'accepted' }>['outcome'] {
   switch (action) {
     case 'authorize_task_plan':
       return 'task_authorized';
     case 'authorize_task_control':
       return 'task_control_authorized';
-    case 'deliver_direct_reply':
-      return 'direct_reply_delivered';
     case 'request_clarification':
       return 'clarification_requested';
     case 'record_permission_resolution':
@@ -3020,11 +2896,57 @@ function plannerOutcome(
   }
 }
 
-function plannerDecisionDisplayText(
-  decision: KernelDecision,
+function plannerAdmissionOutcome(
+  status: PlanAdmissionAppliedResult['status'],
+): Extract<PlannerProposalResult, { status: 'accepted' }>['outcome'] {
+  switch (status) {
+    case 'authorized':
+    case 'queued':
+    case 'deferred':
+      return 'task_authorized';
+    case 'task_control':
+      return 'task_control_authorized';
+    case 'clarification':
+      return 'clarification_requested';
+    case 'permission_resolution':
+      return 'authorization_recorded';
+    default:
+      return 'no_action';
+  }
+}
+
+function plannerAdmissionAction(
+  status: PlanAdmissionAppliedResult['status'],
+): ControlDecision['action']['type'] {
+  switch (status) {
+    case 'authorized':
+    case 'queued':
+    case 'deferred':
+      return 'authorize_task_plan';
+    case 'task_control':
+      return 'authorize_task_control';
+    case 'clarification':
+      return 'request_clarification';
+    case 'permission_resolution':
+      return 'record_permission_resolution';
+    default:
+      return 'no_op';
+  }
+}
+
+function plannerAdmissionDisplayText(
+  applied: PlanAdmissionAppliedResult,
+  admission: PlanAdmissionResult,
   latestOutput: string | undefined,
 ): string {
-  if (decision.action.type === 'deliver_direct_reply') return decision.action.response;
+  if (admission.status === 'clarification') return admission.question;
+  return latestOutput ?? applied.reason;
+}
+
+function plannerDecisionDisplayText(
+  decision: ControlDecision,
+  latestOutput: string | undefined,
+): string {
   if (decision.action.type === 'request_clarification') return decision.action.question;
   return latestOutput ?? decision.reason;
 }

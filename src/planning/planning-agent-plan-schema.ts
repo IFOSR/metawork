@@ -5,7 +5,6 @@ import { isValidFileOutput } from '../work-graph/file-outputs.js';
 export const PLANNER_SOURCE = 'anyfusion-planner';
 
 const ACTION_VALUES = [
-  'direct_reply',
   'clarification',
   'task_control',
   'plan_work_graph',
@@ -29,11 +28,6 @@ const TASK_PRIORITY_VALUES = ['normal', 'high', 'urgent'] as const;
 const DELIVERY_KIND_VALUES = ['edit', 'report'] as const;
 const WORK_GRAPH_ITEM_TYPE_VALUES = ['text', 'artifact'] as const;
 const WORK_GRAPH_KEY = /^[a-z][a-z0-9_-]{0,63}$/;
-const CONFIGURATION_REFERENCE = /^[a-z][a-z0-9-]{0,63}$/;
-
-const ResponseSchema = z.object({
-  directReply: z.string().nullable(),
-}).strict();
 
 const TaskSchema = z.object({
   publicProjectDirectory: z.string().min(1).max(500).nullable().optional().describe('Only for an explicitly user-selected existing project: a Workspace-relative directory, never absolute or traversing. Immutable after Task creation.'),
@@ -101,27 +95,6 @@ const AcceptanceSchema = z.object({
   requiredEvidence: z.array(z.string().trim().min(1).max(500)).max(4),
 }).strict();
 
-const ConfigurationReferenceSchema = z.string().regex(CONFIGURATION_REFERENCE);
-
-const ModelSelectionSchema = z.union([
-  z.object({
-    mode: z.literal('fixed-by-agent-class'),
-  }).strict(),
-  z.object({
-    mode: z.literal('proposed'),
-    modelRef: ConfigurationReferenceSchema,
-    reason: z.string().trim().min(1).max(500),
-  }).strict(),
-  z.object({
-    mode: z.literal('agent-class-default'),
-  }).strict(),
-]);
-
-const ExecutorBindingSchema = z.object({
-  agentClassRef: ConfigurationReferenceSchema,
-  modelSelection: ModelSelectionSchema,
-}).strict();
-
 const SubtaskSchema = z.object({
   id: z.string(),
   title: z.string(),
@@ -129,11 +102,8 @@ const SubtaskSchema = z.object({
   dependencies: z.array(DependencySchema),
   contextRefs: z.array(ContextRefSchema).max(12),
   requiredCapabilities: z.array(z.enum(ROUTING_CAPABILITY_IDS)).min(1),
-  // Planner may omit concrete bindings. Candidate Builder then enumerates all
-  // enabled AgentClasses that satisfy the declared capabilities.
-  executorBindings: z.array(ExecutorBindingSchema).max(32),
   workspaceEffect: z.enum(['read_only', 'write', 'unknown']).optional().describe(
-    'Effect of this node on business Workspace files. read_only allows shared reads and private scratch writes; write includes code edits without downloadable files. unknown executes exclusively. This does not select Harness tools.',
+    'Workspace access this node needs. read_only: pure reads, analysis or reports that may share the Workspace with other readers (private scratch writes only). write: exclusive Workspace access - file edits, OR running/terminating a process or service. A command that changes no files still needs write, because it must not run beside other attempts. unknown: exclusive. This does not select Harness tools.',
   ),
   deliveryKind: z.enum(DELIVERY_KIND_VALUES).describe(
     'edit: the subtask primarily delivers workspace/file changes; report: the subtask primarily delivers a report or answer. Both delivery kinds may create ordinary user-space files while executing.',
@@ -187,10 +157,11 @@ const ConflictResolutionSchema = z.object({
 const WorkspaceIntentSchema = z.object({
   targetWorkspaceId: z.string().trim().min(1).max(240).nullable(),
   targetPaths: z.array(
+    // `fileOutputs` may name a dedicated directory prefix ending in `/`; an
+    // intent target uses the same Workspace-relative grammar so one declaration
+    // covers the other instead of rejecting the directory spelling.
     z.string().trim().min(1).max(500).refine(
-      value => !value.startsWith('/')
-        && !value.includes('\\')
-        && !value.split('/').some(part => !part || part === '.' || part === '..'),
+      isValidFileOutput,
       'Use Workspace-relative paths without absolute roots, backslashes, empty or traversing segments.',
     ),
   ).max(50),
@@ -201,8 +172,7 @@ const WorkspaceIntentSchema = z.object({
     'run_in_target',
     'read_only',
     'ambiguous',
-  ]).describe('modify_existing: change an existing target file; continue_existing_edit: keep editing a file this Conversation already changed; create_in_target: add a new file in the target Workspace; run_in_target: run a command or process in the target Workspace; read_only: answer without workspace writes; ambiguous: the side effect needs a user decision.'),
-  originalFilePolicy: z.enum(['may_replace', 'must_preserve', 'unknown']),
+  ]).describe('modify_existing: change an existing target file; continue_existing_edit: keep editing a file this Conversation already changed; create_in_target: add a new file in the target Workspace; run_in_target: run or terminate a command/process/service in the target Workspace (requires at least one subtask with workspaceEffect write); read_only: answer without workspace writes; ambiguous: the side effect needs a user decision.'),
   confidence: z.number().min(0).max(1),
   reason: z.string().trim().min(1).max(1000),
 }).strict();
@@ -215,7 +185,6 @@ const PlanFieldsSchema = z.object({
   confidence: z.number().min(0).max(1),
   reason: z.string(),
   clarificationQuestion: z.string().nullable(),
-  response: ResponseSchema,
   task: TaskSchema,
   risk: RiskSchema,
   authorizationResolution: AuthorizationResolutionSchema.nullable(),
@@ -275,30 +244,14 @@ const PlanShapeV9Schema = PlanShapeV9FieldsSchema.strict().superRefine((plan, co
   }
 });
 
-/** Legacy schema 8: no Workspace intent; Kernel keeps the isolated safe default. */
-const PlanShapeSchema = PlanFieldsSchema.extend({
-  schemaVersion: z.literal(8),
-}).strict().superRefine((plan, context) => {
-  applyPlanCoherence(plan, context);
-});
-
 /**
- * Canonical structured-output contract shared by AnyFusion Planner transports.
- * A union is used because Responses structured output accepts `anyOf` but
- * rejects the `oneOf` emitted by `discriminatedUnion`.
+ * One canonical contract. The former v8/v9 union made every unknown root key
+ * fail both members and surfaced only "(root): Invalid input", which the Manager
+ * cannot repair. `schemaVersion` is host-owned (see the normalizer) and is
+ * overwritten before validation.
  */
-const PlanVersionedShapeSchema = z.union([PlanShapeV9Schema, PlanShapeSchema]);
+export const PlanningAgentPlanSchema = PlanShapeV9Schema;
 
-/**
- * Supported plan versions are checked first so an unsupported version is
- * reported as a `schemaVersion` problem instead of an opaque union failure.
- * The output contract above stays a plain `anyOf` for the tool schema.
- */
-export const PlanningAgentPlanSchema = z
-  .object({ schemaVersion: z.union([z.literal(9), z.literal(8)]) })
-  .loose()
-  .pipe(PlanVersionedShapeSchema);
-
-export const PlanningAgentPlanOutputSchema = PlanVersionedShapeSchema;
+export const PlanningAgentPlanOutputSchema = PlanShapeV9Schema;
 
 export type PlanningAgentPlanCandidate = z.infer<typeof PlanningAgentPlanSchema>;

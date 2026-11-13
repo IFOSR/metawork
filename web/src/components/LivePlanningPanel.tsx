@@ -5,8 +5,8 @@ import type { InteractionTraceEvent } from '../api/types';
 /**
  * 规划阶段的活动卡片。
  *
- * Planner 解析需求期间对话 tab 原本没有任何变化，用户无法判断是"在思考"还是
- * "卡住了"。这里把 InteractionTrace 中已公开的 Planner 里程碑投影成与 Executor
+ * Manager 解析需求期间对话 tab 原本没有任何变化，用户无法判断是"在思考"还是
+ * "卡住了"。这里把 InteractionTrace 中已公开的 Manager 里程碑投影成与 Executor
  * 执行卡片同形的卡片：阶段、当前步骤、工具调用与耗时都随事件实时更新。
  */
 
@@ -104,21 +104,21 @@ function stepLabelFor(event: InteractionTraceEvent): string {
     case 'planner_started':
       return '正在理解请求并生成计划…';
     case 'planner_process_started':
-      return '正在启动 Planner 进程…';
+      return '正在启动 Manager 进程…';
     case 'planner_prompt_accepted':
-      return 'Planner 已接收请求，正在分析…';
+      return 'Manager 已接收请求，正在分析…';
     case 'planner_agent_started':
-      return 'Planner 已开始推理…';
+      return 'Manager 已开始推理…';
     case 'planner_turn_started':
-      return 'Planner 正在生成计划…';
+      return 'Manager 正在生成计划…';
     case 'planner_model_stream_started':
-      return 'Planner 模型正在输出…';
+      return 'Manager 模型正在输出…';
     case 'planner_model_waiting':
-      return 'Planner 模型仍在处理，等待输出…';
+      return 'Manager 模型仍在处理，等待输出…';
     case 'planner_tool_started':
-      return toolName ? `调用工具 ${toolName}…` : 'Planner 正在调用工具…';
+      return toolName ? `调用工具 ${toolName}…` : 'Manager 正在调用工具…';
     case 'planner_tool_completed':
-      return toolName ? `工具 ${toolName} 已返回` : 'Planner 工具调用已返回';
+      return toolName ? `工具 ${toolName} 已返回` : 'Manager 工具调用已返回';
     case 'planner_agent_completed':
       return '计划已生成，正在准备执行…';
     case 'planner_completed':
@@ -130,7 +130,7 @@ function stepLabelFor(event: InteractionTraceEvent): string {
     case 'resume_not_executed':
       return event.summary || '任务未重新执行。';
     case 'planner_failed':
-      return 'Planner 执行失败。';
+      return 'Manager 执行失败。';
     default:
       return event.summary || event.title;
   }
@@ -157,7 +157,12 @@ function hasRenderableExecutionFacts(turn: ConversationTurnProjection): boolean 
   ));
 }
 
-export function LivePlanningPanel({ turn }: { turn: ConversationTurnProjection }) {
+export function LivePlanningPanel({ turn, expanded, onToggle }: {
+  turn: ConversationTurnProjection;
+  /** Expands the planning process inline; the card stays a status card without it. */
+  expanded?: boolean;
+  onToggle?: () => void;
+}) {
   const [, setNowMs] = useState(() => Date.now());
   const activity = plannerActivity(turn);
   const live = activity?.state === 'running' && turn.status === 'running';
@@ -169,12 +174,36 @@ export function LivePlanningPanel({ turn }: { turn: ConversationTurnProjection }
   }, [turn.id, live]);
 
   if (!activity) return null;
+  // A sealed Turn keeps no planning card: Q&A and clarification turns end
+  // without an executor fact, so the last planning event would otherwise pin a
+  // "规划中 0s" card forever (observed 2026-11-11, including after reload).
+  // Planning failures stay visible; a running Turn keeps the card for the
+  // plan-accepted / execution-not-yet-projected handoff.
+  if (turn.status !== 'running' && activity.state !== 'failed') return null;
 
   return (
-    <section className="live-execution-panel live-planning-panel" aria-label="规划状态">
+    <section className="live-execution-panel live-planning-panel" aria-label="规划状态"
+      data-testid={onToggle ? 'planning-open' : undefined}
+      role={onToggle ? 'button' : undefined}
+      tabIndex={onToggle ? 0 : undefined}
+      aria-expanded={onToggle ? Boolean(expanded) : undefined}
+      onClick={onToggle}
+      onKeyDown={event => {
+        if (!onToggle) return;
+        if (event.key === 'Enter' || event.key === ' ') {
+          event.preventDefault();
+          onToggle();
+        }
+      }}>
       <header>
         <span>PLANNING</span>
         {live && <em data-pulse aria-hidden />}
+        {onToggle && (
+          <span className="planning-card-open">
+            {expanded ? '收起规划过程' : '展开规划过程'}
+            <span aria-hidden> {expanded ? '⌃' : '⌄'}</span>
+          </span>
+        )}
       </header>
       <div className="live-execution-cards">
         <article className="execution-card" data-status={live ? 'running' : 'settled'}>

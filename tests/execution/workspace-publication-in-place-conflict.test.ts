@@ -4,7 +4,7 @@ import { SqliteResourceLeaseRepository } from '../../src/storage/resource-lease-
 import { workspacePathClaim, workspaceRootClaim } from '../../src/resource/workspace-claim.js';
 import { publicTaskRelativeDirectory } from '../../src/task/public-task-directory.js';
 import Database from 'better-sqlite3';
-import { runMigrations } from '../../src/storage/migrations.js';
+import { initializeDatabaseSchema } from '../../src/storage/schema.js';
 import { seedAgentClasses } from '../support/seed-agent-classes.js';
 
 /** Minimal durable rows so ResourceLease foreign keys can resolve. */
@@ -43,7 +43,7 @@ function seedLeaseOwners(db: Database.Database, taskIds: readonly string[]): voi
 describe('in-place Attempt versus worktree publication', () => {
   function services() {
     const db = new Database(':memory:');
-    runMigrations(db);
+    initializeDatabaseSchema(db);
     seedLeaseOwners(db, ['task_attempt', 'task_publication']);
     const repository = new SqliteResourceLeaseRepository(db);
     return { db, repository, leases: new ResourceLeaseService(repository) };

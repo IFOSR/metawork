@@ -9,7 +9,7 @@ import Database from 'better-sqlite3';
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { runMigrations } from '../../src/storage/migrations.js';
+import { initializeDatabaseSchema } from '../../src/storage/schema.js';
 import { MemoryRuntime } from '../../src/memory/memory-runtime.js';
 import { MemoryRuntimeController } from '../../src/memory/memory-runtime-controller.js';
 import { MemorySidecar } from '../../src/memory/memory-sidecar.js';
@@ -33,7 +33,7 @@ afterEach(() => {
 function createDb(): Database.Database {
   const db = new Database(':memory:');
   db.pragma('foreign_keys = ON');
-  runMigrations(db);
+  initializeDatabaseSchema(db);
   return db;
 }
 

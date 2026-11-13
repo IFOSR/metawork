@@ -1,7 +1,7 @@
 import Database from 'better-sqlite3';
 import { afterEach, describe, expect, it } from 'vitest';
 import { TaskResidueReader } from '../../src/execution/task-residue-reader.js';
-import { runMigrations } from '../../src/storage/migrations.js';
+import { initializeDatabaseSchema } from '../../src/storage/schema.js';
 
 const databases: Database.Database[] = [];
 const TASK_ID = 'task_residue';
@@ -16,7 +16,7 @@ function fixture(claimed = false) {
   const db = new Database(':memory:');
   databases.push(db);
   db.pragma('foreign_keys = ON');
-  runMigrations(db);
+  initializeDatabaseSchema(db);
   db.prepare(`
     INSERT INTO tasks (
       id, title, goal, status, created_at, updated_at,

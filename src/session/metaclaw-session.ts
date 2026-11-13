@@ -1,3 +1,11 @@
+import {
+  evaluatePlanAdmission,
+  planAdmissionSnapshotFromControl,
+} from '../execution/plan-admission-entry.js';
+import type { PlanAdmissionAppliedResult } from '../execution/plan-admission-applier.js';
+import type { PlanAdmissionRequest } from '../execution/plan-admission-policy.js';
+import { planAdmissionRequest, planProposalIdentity } from '../execution/plan-proposal-store.js';
+import type { ControlDecider } from '../control/control-workflow.js';
 // Session facade that wires MetaClaw's task OS modules and exposes the user-facing session snapshot.
 import type Database from 'better-sqlite3';
 import { join, resolve } from 'node:path';
@@ -29,7 +37,6 @@ import { WorkUnitClaimService } from '../execution/work-unit-claim-service.js';
 import { WorkspaceStore } from '../execution/workspace-store.js';
 import { canonicalizeWorkspacePath } from '../workspace/workspace-path.js';
 import { WorkspaceRetentionService } from '../execution/workspace-retention-service.js';
-import { DockerCliAttemptExecutionBackend } from '../execution/docker-cli-attempt-execution-backend.js';
 import { NativeAttemptExecutionBackend } from '../execution/native-attempt-execution-backend.js';
 import type { AttemptExecutionBackend } from '../execution/attempt-execution-backend.js';
 import { ResourceLeaseService } from '../execution/resource-lease-service.js';
@@ -43,6 +50,7 @@ import {
   isPermissionRequestActive,
   permissionRequestExpiresAt,
   PermissionWorkflowService,
+  type ManagerPermissionJudge,
 } from '../execution/permission-workflow-service.js';
 import { RegisteredCapabilityResourceResolver } from '../execution/capability-resource-resolver.js';
 import { buildPermissionRules } from '../resource/index.js';
@@ -50,7 +58,7 @@ import { AttemptExecutionBackendReconciler } from '../execution/attempt-executio
 import { InputController } from './input-controller.js';
 import { SessionPresentationService, type GuidanceState } from './session-presentation-service.js';
 import { formatEmptyTaskRecovery } from '../task/task-blocker-guidance.js';
-import { KernelExecutionRuntime } from '../execution/kernel-execution-runtime.js';
+import { ControlExecutionRuntime } from '../execution/control-execution-runtime.js';
 import {
   formatTaskResumeDecision,
   SessionTaskExecutionApplicationService,
@@ -68,11 +76,7 @@ import { buildEligibleContextRefKeys } from '../work-graph/index.js';
 import { SubtaskHandoffRepo } from '../storage/subtask-handoff-repo.js';
 import type { PlanningAgent } from '../planning/planning-agent.js';
 import { PlanningContextBuilder } from '../planning/planning-context-builder.js';
-import { createDefaultPlanningAgent } from '../planning/anyfusion-planning-agent.js';
-import {
-  getDefaultPlannerProcessSupervisor,
-  type PlannerProcessController,
-} from '../planning/planner-process-supervisor.js';
+import type { ManagerTransportInput } from '../planning/manager-host/session-transport.js';
 import {
   collectDecompositionRejections,
   collectWorkGraphQualityWarnings,
@@ -86,7 +90,7 @@ import type {
   PlannerImageAttachment,
 } from '../planning/planning-types.js';
 import type {
-  KernelConfigurationView,
+  ControlConfigurationView,
   PlannerConfigurationView,
   RuntimePrivateConfigurationBinding,
 } from '../configuration/index.js';
@@ -100,20 +104,18 @@ import {
   type AuthorizedExecutorBinding,
   type RevisionedAgentBinding,
 } from '../core/authorized-executor-binding.js';
-import type { KernelExecutorStatusProjection } from '../kernel/executor-status-projection.js';
+import type { ControlExecutorStatusProjection } from '../control/executor-status-projection.js';
 import {
-  ControlKernel,
-  type KernelAttemptKind,
-  type KernelDecision,
-  type KernelEvent,
-  type KernelSnapshot,
-} from '../kernel/control-kernel.js';
-import { DurableKernelWorkflow } from '../kernel/kernel-workflow.js';
-import { AccountKernelCoordinator } from '../account/account-kernel-coordinator.js';
-import { parseApplicationSettlement } from '../kernel/kernel-application-settlement.js';
-import { KernelDecisionRepo } from '../storage/kernel-decision-repo.js';
-import { KernelWorkflowRepo } from '../storage/kernel-workflow-repo.js';
-import { buildAccountKernelServices, type AccountKernelServices } from '../account/account-kernel-services.js';
+  type ControlAttemptKind,
+  type ControlDecision,
+  type ControlEvent,
+  type ControlSnapshot,
+} from '../control/control-contracts.js';
+import { AccountControlCoordinator } from '../account/account-control-coordinator.js';
+import { parseApplicationSettlement } from '../control/control-application-settlement.js';
+import { TaskControlWorkflow } from '../execution/task-control-workflow.js';
+import { TaskRecoveryItemRepo } from '../storage/task-recovery-item-repo.js';
+import { buildAccountControlServices, type AccountControlServices } from '../account/account-control-services.js';
 import { buildAccountRepositories, type AccountRepositories } from '../account/account-repositories.js';
 import { buildAccountWorkspaceServices, type AccountWorkspaceServices } from '../account/account-workspace-services.js';
 import { buildAccountExecutionServices, type AccountExecutionServices } from '../account/account-execution-services.js';
@@ -125,13 +127,14 @@ import {
 import { TaskOperationResultRepo } from '../storage/task-operation-result-repo.js';
 import { buildAccountCoordinatorServices, type AccountCoordinatorServices } from '../account/account-coordinator-services.js';
 import { buildAccountRuntimeExecutionServices, type AccountRuntimeExecutionServices } from '../account/account-runtime-execution-services.js';
-import { buildAccountKernelExecutionServices, type AccountKernelExecutionServices } from '../account/account-kernel-execution-services.js';
+import { buildAccountControlExecutionServices, type AccountControlExecutionServices } from '../account/account-control-execution-services.js';
 import { buildAccountPlannerServices, type AccountPlannerServices } from '../account/account-planner-services.js';
 import { ConversationSession } from './conversation-session.js';
+import { workspaceWriteStateOf } from '../core/workspace-execution.js';
 import { ConversationInputMailbox } from './conversation-input-mailbox.js';
 import type { ConversationRuntimePort } from './conversation-runtime-port.js';
 import type { GatewaySession } from './session-transport-adapter.js';
-import { KernelDispatchItemRepo } from '../storage/kernel-dispatch-item-repo.js';
+import { ControlDispatchItemRepo } from '../storage/dispatch-item-repo.js';
 import { WorkspacePublicationRepo } from '../storage/workspace-publication-repo.js';
 import { GenerationReplanRequestRepo } from '../storage/generation-replan-request-repo.js';
 import {
@@ -140,13 +143,13 @@ import {
 } from '../account/generation-replan-worker.js';
 import { RetryWakeWorker } from '../account/retry-wake-worker.js';
 import type { RetryWakeRepo } from '../storage/retry-wake-repo.js';
-import { inspectApplicationAgainstSources } from '../execution/kernel-application-recovery.js';
+import { inspectApplicationAgainstSources } from '../execution/control-application-recovery.js';
 import {
   createTaskLifecycleTransitionPort,
   type TaskLifecycleTransitionPort,
 } from '../task/task-lifecycle-transition-port.js';
 import { TaskCancellationCoordinator } from '../execution/task-cancellation-coordinator.js';
-import { SessionKernelRuntime } from './session-kernel-runtime.js';
+import { SessionControlRuntime } from './session-control-runtime.js';
 import { PlannerRunRepo } from '../storage/planner-run-repo.js';
 import { PlannerProposalRepo } from '../storage/planner-proposal-repo.js';
 import {
@@ -156,19 +159,17 @@ import {
   type PlannerProposalResult,
   type PlannerProposalSubmission,
 } from '../planning/planner-proposal.js';
-import { KernelExecutorStatusRepo } from '../storage/kernel-executor-status-repo.js';
-import { KernelExecutorStatusProjector } from '../execution/kernel-executor-status-projector.js';
+import { ControlExecutorStatusRepo } from '../storage/executor-status-repo.js';
+import { ControlExecutorStatusProjector } from '../execution/control-executor-status-projector.js';
 import { generateInteractionId } from '../utils/id.js';
 import { redactSensitiveText } from '../utils/redact-sensitive-text.js';
-import { KernelEffectOutboxRepo } from '../storage/kernel-effect-outbox-repo.js';
+import { ControlEffectOutboxRepo } from '../storage/effect-outbox-repo.js';
 import { ExecutorAttemptReceiptRepo } from '../storage/executor-attempt-receipt-repo.js';
 import { ConfigurationRevisionRepo } from '../storage/configuration-revision-repo.js';
 import { HarnessDriverRegistry } from '../executor/harness-driver-registry.js';
-import { CodexCliDriver } from '../executor/codex-cli-driver.js';
 import { PiCliDriver } from '../executor/pi-cli-driver.js';
 import type { ProbeCommandRunner } from '../executor/harness-driver.js';
 import { LocalCliExecutorAdapter } from '../executor/local-cli-executor-adapter.js';
-import { ContainerCompatibilityAdapter } from '../executor/container-compatibility-adapter.js';
 import { LOCAL_DEFAULT_ACCOUNT_ID } from '../account/account-id.js';
 import { resolveAccountPaths } from '../account/account-paths.js';
 import type { InteractionTrace, InteractionTraceStatus } from '../management/interaction-trace.js';
@@ -195,11 +196,10 @@ export interface MetaclawSessionDeps {
   managedLocalServices?: import('../execution/managed-local-service.js').ManagedLocalServices;
   attemptExecutionBackend?: AttemptExecutionBackend;
   plannerHost?: PlannerHostRegistrar;
-  plannerSupervisor?: PlannerProcessController;
   stagedConfiguration?: StagedLegacyConfiguration;
   probeCommand?: ProbeCommandRunner;
-  kernelCoordinator?: AccountKernelCoordinator;
-  kernelServices?: AccountKernelServices;
+  kernelCoordinator?: AccountControlCoordinator;
+  kernelServices?: AccountControlServices;
   accountRepositories?: AccountRepositories;
   accountWorkspaceServices?: AccountWorkspaceServices;
   accountExecutionServices?: AccountExecutionServices;
@@ -209,13 +209,24 @@ export interface MetaclawSessionDeps {
   taskStateAuthority?: import('../task/task-state-authority.js').TaskStateAuthority;
   accountCoordinatorServices?: AccountCoordinatorServices;
   accountRuntimeExecutionServices?: AccountRuntimeExecutionServices;
-  accountKernelExecutionServices?: AccountKernelExecutionServices;
+  accountControlExecutionServices?: AccountControlExecutionServices;
   accountPlannerServices?: AccountPlannerServices;
+  /**
+   * Router decision adapter (ADR-0055 D1). Server composition injects the Span
+   * advisor; the legacy facade has no credential of its own, so a caller states
+   * the decision model it wants instead of the Router silently defaulting.
+   */
+  spanRoutingEvaluator?: import('../routing/span-routing-types.js').SpanRoutingEvaluator | null;
+  /**
+   * Upstream-Pi Manager transport (ADR-0055 D6). Supplied by composition when
+   * `METAWORK_MANAGER_TRANSPORT=upstream-pi`; the session only forwards it.
+   */
+  managerTransport?: ManagerTransportInput;
+  managerPermissionJudge?: ManagerPermissionJudge;
   /**
    * Compatibility switch for historical low-level tests/replay fixtures.
    * Production semantic Planner ingress keeps this disabled.
    */
-  allowLegacyDirectReply?: boolean;
   getRuntimeBinding?(
     binding: AuthorizedExecutorBinding,
   ): Promise<RuntimePrivateConfigurationBinding> | RuntimePrivateConfigurationBinding;
@@ -234,7 +245,7 @@ function resolveRuntimeBindingResolver(deps: MetaclawSessionDeps): RuntimeBindin
   throw new Error('runtime binding resolver is required');
 }
 
-function boundedKernelRequestText(value: string): string {
+function boundedControlRequestText(value: string): string {
   return redactSensitiveText(value).slice(0, 24_000);
 }
 
@@ -256,19 +267,6 @@ function plannerToolSummary(
     : `Planner ${state} ${action}.`;
 }
 
-/** Maps a legacy local-CLI harness driver to its retained Docker image for container compatibility. */
-function containerCompatibilityImage(driverId: string): string {
-  const legacyContainerImages: Record<string, string> = {
-    'codex-cli': 'metaclaw-executor-codex:phase5',
-    'pi-cli': 'metaclaw-executor-pi:phase5',
-  };
-  const image = legacyContainerImages[driverId];
-  if (!image) {
-    throw new Error(`No container compatibility image for harness driver: ${driverId}`);
-  }
-  return image;
-}
-
 function startupOrphanEvent(input: {
   sessionId: string;
   task: Task;
@@ -276,10 +274,10 @@ function startupOrphanEvent(input: {
   attemptId: string;
   authorizedBinding: AuthorizedExecutorBinding;
   bindingFingerprint: string;
-  attemptKind: KernelAttemptKind;
+  attemptKind: ControlAttemptKind;
   sourceAttemptId: string | null;
   occurredAt: string;
-}): Extract<KernelEvent, { type: 'execution_outcome' }> {
+}): Extract<ControlEvent, { type: 'execution_outcome' }> {
   return {
     schemaVersion: 5,
     configurationRevision: input.authorizedBinding.configurationRevision,
@@ -309,21 +307,11 @@ function startupOrphanEvent(input: {
 import type {
   SessionSnapshot,
   SessionSwitchingState,
-  PlannerTuiSnapshot,
-  PlannerTuiExecutorResult,
-  PlannerTuiPermissionRequest,
-  PlannerTuiPermissionResolutionResult,
-  PlannerTuiCommandSubmissionResult,
 } from './session-types.js';
 
 export type {
   SessionSnapshot,
   SessionSwitchingState,
-  PlannerTuiSnapshot,
-  PlannerTuiExecutorResult,
-  PlannerTuiPermissionRequest,
-  PlannerTuiPermissionResolutionResult,
-  PlannerTuiCommandSubmissionResult,
 };
 
 interface FocusContext {
@@ -337,11 +325,10 @@ interface FocusContext {
 const DEFAULT_PLANNER_TIMEOUT_MS = 180_000;
 
 function createDefaultAttemptExecutionBackend(): AttemptExecutionBackend {
-  const backend = (process.env.METACLAW_EXECUTOR_BACKEND ?? 'in_place').trim().toLowerCase();
-  if (backend === 'docker' || backend === 'container') return new DockerCliAttemptExecutionBackend();
+  const backend = (process.env.METAWORK_EXECUTOR_BACKEND ?? 'native').trim().toLowerCase();
   if (backend === 'in_place' || backend === 'native' || backend === '') return new NativeAttemptExecutionBackend();
-  if (backend === 'worktree') throw new Error('METACLAW_EXECUTOR_BACKEND=worktree has been retired; use native');
-  throw new Error(`Unsupported METACLAW_EXECUTOR_BACKEND: ${backend}`);
+  if (backend === 'worktree') throw new Error('METAWORK_EXECUTOR_BACKEND=worktree has been retired; use native');
+  throw new Error(`Unsupported METAWORK_EXECUTOR_BACKEND: ${backend}`);
 }
 
 /** Wires the session-facing services and exposes the server-side session API. */
@@ -387,14 +374,13 @@ export class MetaclawSession {
   private readonly executionProgressService: ExecutionProgressService;
   private readonly planningContextBuilder: PlanningContextBuilder;
   private readonly planningAgent: PlanningAgent;
-  private readonly plannerSupervisor: PlannerProcessController | null;
-  private readonly controlKernel: ControlKernel;
-  private readonly kernelDecisionRepo: KernelDecisionRepo;
-  private readonly kernelWorkflowRepo: KernelWorkflowRepo;
-  private readonly kernelCoordinator: AccountKernelCoordinator;
+
+  private readonly controlLoop: ControlDecider;
+  private readonly recoveryItems: TaskRecoveryItemRepo;
+  private readonly kernelCoordinator: AccountControlCoordinator;
   private readonly workGraphRuntimeService: WorkGraphRuntimeService;
   private readonly workGraphRevisionRepo: WorkGraphRevisionRepo;
-  private readonly effectOutboxRepo: KernelEffectOutboxRepo;
+  private readonly effectOutboxRepo: ControlEffectOutboxRepo;
   private readonly taskExecutionEvidenceRepo: TaskExecutionEvidenceRepo;
   private readonly attemptReceiptRepo: ExecutorAttemptReceiptRepo;
   private readonly subtaskRepo: SubtaskRepo;
@@ -405,25 +391,26 @@ export class MetaclawSession {
   /** Read-only Workspace root this legacy facade executes against. */
   private readonly sourceRoot: string;
   private readonly workspaceRetentionService: WorkspaceRetentionService;
+  private readonly workspaceGitRepo: AccountWorkspaceServices['workspaceGitRepo'];
   private workspaceRetentionSweep: Promise<void> | null = null;
   private readonly attemptExecutionBackend: AttemptExecutionBackend;
   private readonly permissionRepository: SqlitePermissionRepository;
   private readonly attemptExecutionRepository: SqliteAttemptExecutionRepository;
   private readonly workspaceRepository: SqliteWorkspaceRepository;
-  private readonly kernelExecutionRuntime: KernelExecutionRuntime;
+  private readonly kernelExecutionRuntime: ControlExecutionRuntime;
   private readonly taskExecutionApplicationService: SessionTaskExecutionApplicationService;
-  private readonly sessionKernelRuntime: SessionKernelRuntime;
-  private readonly kernelExecutorStatusRepo: KernelExecutorStatusRepo;
+  private readonly sessionControlRuntime: SessionControlRuntime;
+  private readonly kernelExecutorStatusRepo: ControlExecutorStatusRepo;
   private readonly conversationTaskSchedulerRepo: AccountRepositories['conversationTaskSchedulerRepo'];
   private readonly executorRecoveryRefreshService: ExecutorRecoveryRefreshService;
   private readonly plannerProposalRepo: PlannerProposalRepo;
   private readonly publicationRepo: WorkspacePublicationRepo;
   private readonly generationReplanRepo: GenerationReplanRequestRepo;
   private readonly retryWakeRepo: RetryWakeRepo;
-  private readonly dispatchItemRepo: KernelDispatchItemRepo;
+  private readonly dispatchItemRepo: ControlDispatchItemRepo;
   private lifecycle: TaskLifecycleTransitionPort | null = null;
   private readonly plannerConfiguration: PlannerConfigurationView;
-  private readonly kernelConfiguration: KernelConfigurationView;
+  private readonly kernelConfiguration: ControlConfigurationView;
   private readonly plannerBinding: RevisionedAgentBinding;
   private readonly plannerBindingFingerprint: string;
   /** Turns that already got one repairable decomposition rejection. */
@@ -431,7 +418,6 @@ export class MetaclawSession {
   private readonly interactionTraceStream: InteractionTraceStream;
   private unregisterPlannerHost: (() => void) | null = null;
   private disposePromise: Promise<void> | null = null;
-  private readonly allowLegacyDirectReply: boolean;
   private retryWakeWorker: RetryWakeWorker | null = null;
   private readonly taskLifecyclePort: import('../task/task-lifecycle-transition-port.js').TaskLifecycleTransitionPort;
   private readonly taskOperationResults: import('../storage/task-operation-result-repo.js').TaskOperationResultRepo;
@@ -439,7 +425,6 @@ export class MetaclawSession {
   private taskStateAuthority!: import('../task/task-state-authority.js').TaskStateAuthority;
 
   constructor(private deps: MetaclawSessionDeps) {
-    this.allowLegacyDirectReply = deps.allowLegacyDirectReply ?? process.env.NODE_ENV === 'test';
     const getRuntimeBinding = resolveRuntimeBindingResolver(deps);
     const stagedConfiguration = deps.stagedConfiguration
       ?? buildStagedLegacyConfiguration();
@@ -477,6 +462,7 @@ export class MetaclawSession {
     this.workspaceRepository = workspaceServices.workspaceRepository;
     this.workspaceStore = workspaceServices.workspaceStore;
     this.workspaceRetentionService = workspaceServices.workspaceRetentionService;
+    this.workspaceGitRepo = workspaceServices.workspaceGitRepo;
     const executionServices = deps.accountExecutionServices ?? buildAccountExecutionServices({
       stagedConfiguration,
       getRuntimeBinding,
@@ -493,7 +479,7 @@ export class MetaclawSession {
     this.verificationAndDeliveryService = new VerificationAndDeliveryService();
     this.persistenceService = new SessionPersistenceService(deps.db);
     this.presentation = new SessionPresentationService();
-    const repositories = deps.accountRepositories ?? buildAccountRepositories(deps.db);
+    const repositories = deps.accountRepositories ?? buildAccountRepositories(deps.db, LOCAL_DEFAULT_ACCOUNT_ID);
     this.executionProgressService = repositories.executionProgressService;
     this.subtaskRepo = repositories.subtaskRepo;
     this.taskEventRepo = repositories.taskEventRepo;
@@ -525,18 +511,14 @@ export class MetaclawSession {
       },
     });
     this.executorRecoveryRefreshService = coordinatorServices.executorRecoveryRefreshService;
-    const kernelExecutorStatusProjector = new KernelExecutorStatusProjector(this.kernelExecutorStatusRepo);
+    const kernelExecutorStatusProjector = new ControlExecutorStatusProjector(this.kernelExecutorStatusRepo);
     const plannerModel = stagedConfiguration.snapshot.config.models[this.plannerBinding.modelRef];
     if (!plannerModel) {
       throw new Error(`Planner Model is unavailable: ${this.plannerBinding.modelRef}`);
     }
     const plannerServices = deps.accountPlannerServices ?? buildAccountPlannerServices({
-      db: deps.db,
-      plannerBinding: this.plannerBinding,
-      plannerBindingFingerprint: this.plannerBindingFingerprint,
-      plannerModelId: plannerModel.modelId,
-      plannerSupervisor: deps.plannerSupervisor,
-      planningAgent: deps.planningAgent,
+      ...(deps.planningAgent ? { planningAgent: deps.planningAgent } : {}),
+      ...(deps.managerTransport ? { managerTransport: deps.managerTransport } : {}),
     });
     this.planningContextBuilder = new PlanningContextBuilder({
       sessionId: deps.sessionId,
@@ -545,19 +527,16 @@ export class MetaclawSession {
       getTimeoutMs: () => this.getPlannerTimeoutMs(),
       getPlannerConfiguration: () => this.plannerConfiguration,
     });
-    this.plannerSupervisor = plannerServices.plannerSupervisor;
     this.planningAgent = plannerServices.planningAgent;
-    const kernelServices = deps.kernelServices ?? buildAccountKernelServices(deps.db);
-    this.controlKernel = kernelServices.controlKernel;
-    this.kernelDecisionRepo = kernelServices.kernelDecisionRepo;
-    this.kernelWorkflowRepo = kernelServices.kernelWorkflowRepo;
-    this.kernelCoordinator = deps.kernelCoordinator ?? new AccountKernelCoordinator({
-      kernel: this.controlKernel,
-      store: this.kernelWorkflowRepo,
+    const kernelServices = deps.kernelServices ?? buildAccountControlServices(deps.db);
+    this.controlLoop = kernelServices.controlLoop;
+    this.recoveryItems = kernelServices.recoveryItems;
+    this.kernelCoordinator = deps.kernelCoordinator ?? new AccountControlCoordinator({
+      kernel: this.controlLoop,
       clock: { now: () => new Date().toISOString() },
       acceptedEventTypes: ['plan_proposed'],
       acceptedActions: [
-        'reject_request', 'request_clarification', 'deliver_direct_reply', 'no_op',
+        'reject_request', 'request_clarification', 'no_op',
         'authorize_task_plan', 'authorize_task_control', 'block_work', 'park_for_replan',
         'record_permission_resolution',
       ],
@@ -597,8 +576,8 @@ export class MetaclawSession {
       conversationWorktrees: workspaceServices.conversationWorktrees,
       serviceWorktrees: workspaceServices.serviceWorktrees,
       workspaceMergeWorker: workspaceServices.workspaceMergeWorker,
+      managerPermissionJudge: deps.managerPermissionJudge ?? deps.accountPlannerServices?.managerPermissionJudge,
       permissionRepository: this.permissionRepository,
-      kernelWorkflowRepo: this.kernelWorkflowRepo,
       workspaceRepository: this.workspaceRepository,
       attemptExecutionRepository: this.attemptExecutionRepository,
       conversationTaskSchedulerRepo: this.conversationTaskSchedulerRepo,
@@ -614,7 +593,8 @@ export class MetaclawSession {
     const cancellationCoordinator = runtimeExecutionServices.cancellationCoordinator;
     this.cancellationCoordinator = cancellationCoordinator;
     this.attemptRunner = runtimeExecutionServices.attemptRunner;
-    const kernelExecutionServices = deps.accountKernelExecutionServices ?? buildAccountKernelExecutionServices({
+    const kernelExecutionServices = deps.accountControlExecutionServices ?? buildAccountControlExecutionServices({
+      recoveryItems: this.recoveryItems,
       accountId: LOCAL_DEFAULT_ACCOUNT_ID,
       managedLocalServices: deps.managedLocalServices,
       userArtifactPublication: deps.userArtifactPublication ?? new UserArtifactPublicationService({
@@ -631,6 +611,14 @@ export class MetaclawSession {
       notifier: this.notifier,
       maxAttemptsPerTask: deps.config.orchestration.max_concurrent_attempts,
       getConfigurationRevision: () => this.kernelConfiguration.revisionId,
+      // The Kernel projects executor display names from the pinned revision; without
+      // this it falls back to a ref-derived name for any class the public catalog
+      // does not know.
+      getRuntimeConfiguration: (revisionId: string) => (
+        revisionId === stagedConfiguration.snapshot.revisionId
+          ? buildRuntimeConfigurationView(stagedConfiguration.snapshot)
+          : null
+      ),
       taskRuntimeService: this.taskRuntimeService,
       taskStateAuthority: this.taskStateAuthority,
       conversationTaskSchedulerRepo: this.conversationTaskSchedulerRepo,
@@ -643,9 +631,8 @@ export class MetaclawSession {
       taskEventRepo: this.taskEventRepo,
       workUnitClaimService: this.workUnitClaimService,
       attemptRunner: this.attemptRunner,
-      controlKernel: this.controlKernel,
-      kernelWorkflowRepo: this.kernelWorkflowRepo,
-      kernelDecisionRepo: this.kernelDecisionRepo,
+      controlLoop: this.controlLoop,
+      ...(deps.spanRoutingEvaluator ? { spanRoutingEvaluator: deps.spanRoutingEvaluator } : {}),
       dispatchItemRepo,
       publicationRepo: this.publicationRepo,
       generationReplanRepo,
@@ -680,7 +667,7 @@ export class MetaclawSession {
         requestReplan: async () => {
           throw new Error('legacy request_replan requires the ConversationSession Planner boundary');
         },
-        requestMergeReplan: decision => this.requestKernelMergeReplan(decision),
+        requestMergeReplan: decision => this.requestControlMergeReplan(decision),
         buildPlanAdmissionSnapshot: event => this.buildPlanAdmissionSnapshot(event),
       },
       taskExecutionCallbacks: {
@@ -690,18 +677,16 @@ export class MetaclawSession {
         refreshRuntimeState: () => this.refreshRuntimeState(),
         startBackgroundExecution: (taskId, work) => this.startBackgroundExecution(taskId, work),
       },
-      sessionKernelCallbacks: {
+      sessionControlCallbacks: {
         appendOutput: (...lines: string[]) => this.appendOutput(...lines),
-        onDecisionApplying: decision => this.recordKernelDecisionTrace(decision),
-        deliverDirectReply: (userInput, reply) => this.deliverDirectReply(userInput, reply),
+        onDecisionApplying: decision => this.recordControlDecisionTrace(decision),
         prepareTaskExecution: (taskId, request) => this.prepareTaskExecution(taskId, request),
         refreshRuntimeState: () => this.refreshRuntimeState(),
         setCurrentTaskId: taskId => this.setCurrentTaskId(taskId),
         getCurrentTaskId: () => this.getCurrentTaskId(),
         setFocusContext: focus => this.setFocusContext(focus),
         resolveRequestText: eventId => {
-          const event = this.kernelWorkflowRepo.findEvent(eventId);
-          return event?.type === 'plan_proposed' ? event.requestText : '';
+          return this.generationReplanRepo.proposals.find(eventId)?.request.requestText ?? '';
         },
         cancelTask: (taskId, reason) =>
           this.kernelExecutionRuntime.cancelTaskWithOutcome(taskId, reason),
@@ -711,18 +696,21 @@ export class MetaclawSession {
       },
     });
     this.kernelExecutionRuntime = kernelExecutionServices.kernelExecutionRuntime;
-    coordinatorServices.bindKernelExecutionRuntime(this.kernelExecutionRuntime);
+    coordinatorServices.bindControlExecutionRuntime(this.kernelExecutionRuntime);
     this.taskExecutionApplicationService = kernelExecutionServices.taskExecutionApplicationService;
-    this.sessionKernelRuntime = kernelExecutionServices.sessionKernelRuntime;
+    this.sessionControlRuntime = kernelExecutionServices.sessionControlRuntime;
 
     this.unregisterPlannerHost = deps.plannerHost?.registerSession(deps.sessionId, this) ?? null;
   }
 
   async dispose(): Promise<void> {
     this.disposePromise ??= (async () => {
+      // Startup recovery owns the session's repositories until it settles.
+      // Wait for it before unregistering the host so callers can safely close
+      // the account database after dispose, even when recovery failed.
+      await this.initialization?.catch(() => undefined);
       this.unregisterPlannerHost?.();
       this.unregisterPlannerHost = null;
-      await this.plannerSupervisor?.stopSession(this.deps.sessionId);
     })();
     await this.disposePromise;
   }
@@ -790,173 +778,9 @@ export class MetaclawSession {
   }
 
   /**
-   * Returns presentation-only state for the native Planner TUI. This deliberately
-   * reads through existing Session services; the bridge has no repository, Kernel,
-   * scheduling, or executor write surface.
-   */
-  getPlannerTuiSnapshot(): PlannerTuiSnapshot {
-    const snapshot = this.getSnapshot();
-    return {
-      schemaVersion: 1,
-      session: {
-        id: this.deps.sessionId,
-        focusedTask: snapshot.currentTask ? { ...snapshot.currentTask } : null,
-        runtimeState: {
-          ...snapshot.runtimeState,
-          queuedTaskIds: [...snapshot.runtimeState.queuedTaskIds],
-          needsActionTaskIds: [...snapshot.runtimeState.needsActionTaskIds],
-        },
-        plannerState: { ...snapshot.plannerState },
-        recentOutput: snapshot.output.slice(-100),
-      },
-      taskPool: this.listLocalTasks()
-        .slice(0, 100).map(task => ({
-        id: task.id,
-        title: task.title,
-        goal: task.goal,
-        status: task.status,
-        blockingReason: (task.lastInterruptionReason
-          || task.dependencies.find(dependency => dependency.status === 'waiting')?.description
-          || '').slice(0, 500) || null,
-        subtasks: this.subtaskRepo.listByTask(task.id).slice(0, 100).map(subtask => ({
-          id: subtask.id,
-          title: subtask.title,
-          status: subtask.status,
-          preferredAgentClassList: subtask.executorBindings.map(
-            binding => binding.agentClassRef,
-          ),
-        })),
-      })),
-      executorStatuses: this.kernelExecutorStatusRepo.list(
-        this.kernelConfiguration.revisionId,
-      ),
-    };
-  }
-
-  getPlannerTuiExecutorResults(): PlannerTuiExecutorResult[] {
-    const taskIds = [...new Set(
-      this.kernelDecisionRepo.listBySession(this.deps.sessionId)
-        .map(decision => decision.taskId)
-        .filter((taskId): taskId is string => Boolean(taskId)),
-    )];
-    return this.publicationRepo.listIntegratedByTaskIds(taskIds).map(publication => {
-      const task = this.taskRuntimeService.findTask(publication.taskId);
-      const subtask = this.subtaskRepo.findById(publication.subtaskId);
-      return {
-        schemaVersion: 1,
-        publicationId: publication.id,
-        taskId: publication.taskId,
-        taskTitle: task?.title ?? publication.taskId,
-        subtaskId: publication.subtaskId,
-        subtaskTitle: subtask?.title ?? publication.subtaskId,
-        attemptId: publication.sourceAttemptId,
-        executorName: publication.agentClassName,
-        report: publication.originalCompletion.body,
-        artifacts: [...publication.originalCompletion.artifacts],
-        warnings: [...publication.originalCompletion.warnings],
-        integrationCommit: publication.integrationCommit,
-        completedAt: publication.updatedAt,
-        reportTruncated: false,
-      };
-    });
-  }
-
-  getPlannerTuiPermissionRequests(): PlannerTuiPermissionRequest[] {
-    const now = new Date().toISOString();
-    const decisions = this.kernelDecisionRepo.listBySession(this.deps.sessionId);
-    const appliedEscalations = new Map(decisions
-      .filter(record => record.action === 'escalate_capability'
-        && this.kernelWorkflowRepo.isDecisionApplied(record.id))
-      .map(record => [record.correlationId, record]));
-    return this.permissionRepository.listEscalated()
-      .filter(record => appliedEscalations.has(record.request.id))
-      .filter(record => !this.kernelDecisionRepo.listByCorrelation(record.request.id)
-        .some(decision => decision.event.type === 'permission_resolution_received'
-          && this.kernelWorkflowRepo.isDecisionApplied(decision.id)))
-      .filter(record => isPermissionRequestActive(record.createdAt, now))
-      .map(record => {
-        const escalation = appliedEscalations.get(record.request.id)!;
-        return {
-          schemaVersion: 1,
-          permissionRequestId: record.request.id,
-          taskId: record.request.taskId,
-          taskTitle: this.taskRuntimeService.findTask(record.request.taskId)?.title ?? record.request.taskId,
-          generationId: record.request.generationId,
-          subtaskId: record.request.subtaskId,
-          subtaskTitle: this.subtaskRepo.findById(record.request.subtaskId)?.title ?? record.request.subtaskId,
-          attemptId: record.request.attemptId,
-          executorName: record.request.agentClassName,
-          permissionProfileId: record.request.permissionProfileId,
-          capability: record.request.capability,
-          resource: record.request.resource,
-          operation: record.request.operation,
-          reason: record.request.reason,
-          suggestedScope: record.request.suggestedScope,
-          escalationReason: escalation.reason,
-          createdAt: record.createdAt,
-          expiresAt: permissionRequestExpiresAt(record.createdAt)!,
-        };
-      });
-  }
-
-  async resolvePlannerTuiPermission(
-    permissionRequestId: string,
-    resolution: 'approve' | 'deny',
-  ): Promise<PlannerTuiPermissionResolutionResult> {
-    await this.initialization;
-    const decisions = this.kernelDecisionRepo.listByCorrelation(permissionRequestId);
-    const escalation = decisions.find(record => record.sessionId === this.deps.sessionId
-      && record.action === 'escalate_capability'
-      && this.kernelWorkflowRepo.isDecisionApplied(record.id));
-    if (!escalation) {
-      return { status: 'conflict', resolution: null, message: 'Permission request does not belong to this session.' };
-    }
-    const appliedResolution = decisions.find(record => record.event.type === 'permission_resolution_received'
-      && this.kernelWorkflowRepo.isDecisionApplied(record.id));
-    if (appliedResolution?.event.type === 'permission_resolution_received') {
-      if (appliedResolution.sessionId === this.deps.sessionId
-        && appliedResolution.event.resolution === resolution
-        && appliedResolution.event.source === 'button') {
-        return { status: 'replayed', resolution, message: 'Permission resolution was already recorded.' };
-      }
-      return { status: 'conflict', resolution: null, message: 'Permission request was already resolved.' };
-    }
-    const record = this.permissionRepository.findRequest(permissionRequestId);
-    if (!record || record.status !== 'escalated') {
-      return { status: 'conflict', resolution: null, message: 'Permission request is no longer escalated.' };
-    }
-    if (!isPermissionRequestActive(record.createdAt, new Date().toISOString())) {
-      return { status: 'conflict', resolution: null, message: 'Permission request has expired.' };
-    }
-    await this.resolvePermission({ requestId: permissionRequestId, resolution, source: 'button' });
-    this.notify();
-    return { status: 'resolved', resolution, message: 'Permission resolution recorded.' };
-  }
-
-  /**
-   * Executes an explicit slash command from the native Planner TUI through the
-   * existing Application-Shell command path. The Pi process only transports the
-   * user's command; CommandCatalog and MetaclawSession retain all validation and
-   * state-changing authority.
-   */
-  async submitPlannerTuiCommand(rawCommand: string): Promise<PlannerTuiCommandSubmissionResult> {
-    await this.initialization;
-    const command = rawCommand.trim();
-    if (!/^\/\S/u.test(command)) {
-      throw new Error('Planner TUI commands must start with /');
-    }
-    const outputStart = this.output.length;
-    const result = await this.inputController.submit(command, { awaitAsyncWork: true });
-    return {
-      exitRequested: result.exitRequested,
-      output: this.output.slice(outputStart),
-    };
-  }
-
-  /**
    * Accepts a Planner proposal emitted by the AnyFusion-Pi host protocol. The Planner
    * remains untrusted with respect to state: schema and semantic validation happen
-   * here, then the existing plan_proposed -> DurableKernelWorkflow path remains the
+   * here, then the existing plan_proposed -> TaskControlWorkflow path remains the
    * only state-changing route.
    */
   async submitPlannerProposal(
@@ -1010,20 +834,6 @@ export class MetaclawSession {
     const normalizedPlan = normalizePlanningAgentPlanInput(submission.plan, {
       configurationRevision: this.kernelConfiguration.revisionId,
     });
-    if (!this.allowLegacyDirectReply && isDirectReplyPlan(normalizedPlan)) {
-      return {
-        status: 'rejected',
-        turnId: normalizedTurnId,
-        submissionId: submission.submissionId,
-        planId: typeof normalizedPlan.id === 'string' ? normalizedPlan.id : null,
-        rejectionType: 'validation',
-        issues: [
-          'Semantic Planner cannot use direct_reply; route task-like work through an Executor.',
-          'Slash-prefixed system commands must use the Application-Shell command path.',
-        ],
-        kernel: null,
-      };
-    }
     if (submission.runtimeMode === 'interactive'
       && typeof normalizedPlan === 'object' && normalizedPlan !== null
       && 'action' in normalizedPlan && normalizedPlan.action === 'authorization_resolution') {
@@ -1164,7 +974,6 @@ export class MetaclawSession {
       phase: 'planning',
       actor: 'planner',
       kind: 'planning_proposal_completed',
-      status: 'completed',
       title: 'Structured plan completed',
       summary: plan.reason,
       details: {
@@ -1198,10 +1007,8 @@ export class MetaclawSession {
       const kernelResult = await this.submitValidatedPlanningAgentPlan(
         normalizedInput, plan, context, eventId!,
       );
-      const application = kernelResult.decision
-        ? this.kernelWorkflowRepo.findApplicationByDecisionId(kernelResult.decision.id)
-        : null;
-      if (!kernelResult.decision || application?.status !== 'applied') {
+      const applied = kernelResult.applied;
+      if (!applied) {
         this.plannerProposalRepo.markUncertain(
           normalizedSessionId, normalizedTurnId, submission.submissionId,
         );
@@ -1210,45 +1017,23 @@ export class MetaclawSession {
           turnId: normalizedTurnId,
           submissionId: submission.submissionId,
           retryableByReplay: true,
-          message: 'MetaClaw has not yet confirmed the authoritative Kernel application; replay the same submission.',
+          message: 'MetaClaw has not yet confirmed the authoritative control application; replay the same submission.',
         };
         this.recordPlannerProposalTerminalTrace(uncertain);
         return uncertain;
       }
-      if (kernelResult.decision.action.type === 'reject_request') {
+      if (applied.status === 'rejected') {
         const rejected: PlannerProposalResult & { status: 'rejected' } = {
           status: 'rejected',
           turnId: normalizedTurnId,
           submissionId: submission.submissionId,
           planId: plan.id,
           rejectionType: 'kernel',
-          issues: [kernelResult.decision.reason],
+          issues: [applied.reason],
           kernel: {
-            decisionId: kernelResult.decision.id,
+            decisionId: applied.operationId,
             action: 'reject_request',
-            reason: kernelResult.decision.reason,
-          },
-        };
-        this.plannerProposalRepo.completeSubmission(
-          normalizedSessionId, normalizedTurnId, submission.submissionId, rejected,
-        );
-        this.recordPlannerProposalTerminalTrace(rejected);
-        return rejected;
-      }
-      const settlement = parseApplicationSettlement(application?.errorSummary);
-      if (settlement) {
-        const reason = settlement.detail || `${settlement.kind}:${settlement.code}`;
-        const rejected: PlannerProposalResult & { status: 'rejected' } = {
-          status: 'rejected',
-          turnId: normalizedTurnId,
-          submissionId: submission.submissionId,
-          planId: plan.id,
-          rejectionType: 'kernel',
-          issues: [reason],
-          kernel: {
-            decisionId: kernelResult.decision.id,
-            action: kernelResult.decision.action.type,
-            reason,
+            reason: applied.reason,
           },
         };
         this.plannerProposalRepo.completeSubmission(
@@ -1258,7 +1043,7 @@ export class MetaclawSession {
         return rejected;
       }
       const accepted = this.toAcceptedPlannerProposalResult(
-        normalizedTurnId, submission.submissionId, plan, kernelResult.decision,
+        normalizedTurnId, submission.submissionId, plan, applied,
         this.output.slice(outputStart),
       );
       this.plannerProposalRepo.completeSubmission(
@@ -1301,8 +1086,8 @@ export class MetaclawSession {
     }
   }
 
-  initialize(options: { resumeStartupTasks?: boolean; showDashboard?: boolean } = {}): void {
-    if (this.initialized) return;
+  initialize(options: { resumeStartupTasks?: boolean; showDashboard?: boolean } = {}): Promise<void> {
+    if (this.initialized) return this.initialization ?? Promise.resolve();
 
     const resumeStartupTasks = options.resumeStartupTasks ?? true;
     const showDashboard = options.showDashboard ?? true;
@@ -1350,15 +1135,20 @@ export class MetaclawSession {
       ? this.recoverDurableStartup().then(async recovered => {
           for (const task of recovered) {
             this.appendOutput(
-              `→ 检测到上次异常退出，任务 #${task.id} 需要处理（由 Kernel 持久恢复收敛）`,
+              `→ 检测到上次异常退出，任务 #${task.id} 需要处理（由控制循环的恢复项收敛）`,
               `→ 可执行 /task recovery ${task.id} 查看不确定项`,
             );
           }
           await this.executorRecoveryRefreshService.refresh({ trigger: 'session_start' });
         })
       : this.executorRecoveryRefreshService.refresh({ trigger: 'session_start' }).then(() => undefined);
+    // Most shell entry points historically called initialize() without await.
+    // Observe the rejection immediately to preserve diagnostics without
+    // converting a failed recovery into a successful session state.
+    void this.initialization.catch(() => undefined);
     this.refreshRuntimeState();
     this.notify();
+    return this.initialization;
   }
 
   async submit(
@@ -1390,13 +1180,15 @@ export class MetaclawSession {
       planningContextBuilder: this.planningContextBuilder,
       db: this.deps.db,
       kernelConfiguration: this.kernelConfiguration,
-      sessionKernelRuntime: this.sessionKernelRuntime,
+      sessionControlRuntime: this.sessionControlRuntime,
       commandCatalog: this.commandCatalog,
       commandReadServices: this.commandReadServices,
       taskEngine: this.deps.taskEngine,
       orchestration: this.deps.orchestration,
       config: this.deps.config,
       taskExecutionApplicationService: this.taskExecutionApplicationService,
+      resolveWorkspaceWriteState: workspaceId =>
+        workspaceWriteStateOf(this.workspaceGitRepo.root(workspaceId)),
     });
   }
 
@@ -1485,8 +1277,18 @@ export class MetaclawSession {
       return false;
     }
 
-    const candidates = this.kernelDecisionRepo.listCurrentByAction('wait_for_capacity');
-    if (candidates.length === 0) {
+    // A capacity wait is an owner fact: the Task carries a `kernel_capacity`
+    // blocker, and its ready Subtask is the one to re-dispatch.
+    const target = this.taskRuntimeService.listTasksByStatus('needs_action')
+      .flatMap(task => task.dependencies
+        .filter(dependency => dependency.type === 'kernel_capacity' && dependency.status === 'waiting')
+        .map(dependency => ({ task, dependency })))
+      .flatMap(({ task, dependency }) => {
+        const subtask = this.subtaskRepo.listActiveByTask(task.id)
+          .find(item => item.status === 'ready');
+        return subtask ? [{ task, dependency, subtask }] : [];
+      })[0];
+    if (!target) {
       this.lastBlockedRecheckAt = nowMs;
       return false;
     }
@@ -1494,13 +1296,11 @@ export class MetaclawSession {
     this.lastBlockedRecheckAt = nowMs;
     this.blockedRecheckInFlight = true;
     try {
-      const target = candidates[0];
-      if (!target?.taskId || !target.subtaskId) return false;
       return this.kernelExecutionRuntime.recheckCapacity({
-        taskId: target.taskId,
-        subtaskId: target.subtaskId,
-        blockedDecisionId: target.id,
-        blockedAt: target.createdAt,
+        taskId: target.task.id,
+        subtaskId: target.subtask.id,
+        blockedDecisionId: `capacity_wait:${target.task.id}:${target.dependency.createdAt}`,
+        blockedAt: target.dependency.createdAt,
         recheckAfterMs: intervalMs,
         occurredAt: new Date(nowMs).toISOString(),
       });
@@ -1534,8 +1334,6 @@ export class MetaclawSession {
   private getRetryWakeWorker(): RetryWakeWorker {
     return this.retryWakeWorker ??= new RetryWakeWorker({
       retryWakeRepo: this.retryWakeRepo,
-      kernelWorkflowStore: this.kernelWorkflowRepo,
-      findSessionId: decisionId => this.kernelDecisionRepo.findById(decisionId)?.sessionId ?? null,
       processTimer: (event, reason) => this.kernelExecutionRuntime.recoverRetryWake(event, reason),
       now: () => new Date().toISOString(),
     });
@@ -1716,35 +1514,55 @@ export class MetaclawSession {
     plan: PlanningAgentPlan,
     context: PlanningContext,
     eventId = `plan_event_${plan.id}_${generateInteractionId()}`,
-  ): Promise<{ decision: KernelDecision | null }> {
-    const event: KernelEvent = {
-      schemaVersion: 5,
-      configurationRevision: context.configuration.revisionId,
-      type: 'plan_proposed',
+  ): Promise<{ applied: PlanAdmissionAppliedResult | null }> {
+    const event: PlanAdmissionRequest = {
       id: eventId,
-      correlationId: plan.id,
-      causationId: null,
+      configurationRevision: context.configuration.revisionId,
       occurredAt: new Date().toISOString(),
       sessionId: this.deps.sessionId,
-      taskId: plan.task.taskId ?? undefined,
+      ...(this.interactionTraceStream.getSnapshot()?.turnId
+        ? { sourceTurnId: this.interactionTraceStream.getSnapshot()!.turnId } : {}),
+      ...(plan.task.taskId ? { taskId: plan.task.taskId } : {}),
       proposal: plan,
-      requestText: boundedKernelRequestText(userInput),
+      requestText: boundedControlRequestText(userInput),
       generationId: `generation_${eventId}`,
       proposalSource: 'initial',
       targetGraphRevision: 1,
-      workspaceAdmission: await this.buildWorkspaceAdmission(plan),
     };
-    const workflowResult = await this.kernelCoordinator.submit(event, {
-      buildSnapshot: claimed => this.buildPlanAdmissionSnapshot(
-        claimed as Extract<KernelEvent, { type: 'plan_proposed' }>,
-        context.configuration,
-        userInput,
-      ),
-      runtime: this.sessionKernelRuntime.forInput(userInput),
+    const saved = this.generationReplanRepo.proposals.find(eventId);
+    if (saved && (saved.delivery === 'invalidated' || saved.triggerOperationId !== null
+      || planProposalIdentity(saved.request) !== planProposalIdentity(event))) {
+      throw new Error('plan proposal identity conflict');
+    }
+    const proposal = saved ? { ...event, ...saved.request }
+      : { ...event, workspaceAdmission: await this.buildWorkspaceAdmission(plan) };
+    this.generationReplanRepo.proposals.save({ request: planAdmissionRequest(proposal) });
+    this.generationReplanRepo.proposals.assertAdmissionOpen(proposal.id);
+    // The snapshot builder still speaks the Kernel snapshot shape; only the
+    // evaluated policy result travels any further.
+    const snapshot = this.buildPlanAdmissionSnapshot(
+      {
+        ...proposal,
+        schemaVersion: 5,
+        type: 'plan_proposed',
+        correlationId: plan.id,
+        causationId: null,
+      } as unknown as Extract<ControlEvent, { type: 'plan_proposed' }>,
+      context.configuration,
+      userInput,
+    );
+    const admission = evaluatePlanAdmission(
+      proposal,
+      planAdmissionSnapshotFromControl(snapshot),
+    );
+    const applied = await this.sessionControlRuntime.applyPlanAdmission(admission, {
+      proposalId: eventId,
+      userInput: proposal.requestText,
+      ...(proposal.conversationId ? { conversationId: proposal.conversationId } : {}),
+      queryId: proposal.queryId ?? null,
     });
-    const decision = workflowResult.decisions.find(candidate => candidate.eventId === eventId)
-      ?? this.kernelDecisionRepo.findByEventId(eventId)?.decision
-      ?? null;
+    // A failed application leaves the proposal pending for the same replay.
+    this.generationReplanRepo.proposals.markForwarded(eventId, new Date().toISOString());
     if (plan.action === 'authorization_resolution' && plan.authorizationResolution) {
       await this.resolvePermission({
         requestId: plan.authorizationResolution.requestId,
@@ -1753,36 +1571,31 @@ export class MetaclawSession {
         plannerPlanId: plan.id,
       });
     }
-    return { decision };
+    return { applied };
   }
 
   private toAcceptedPlannerProposalResult(
     turnId: string,
     submissionId: string,
     plan: PlanningAgentPlan,
-    decision: KernelDecision,
+    applied: PlanAdmissionAppliedResult,
     outputLines: string[],
   ): Extract<PlannerProposalResult, { status: 'accepted' }> {
-    const outcome = decision.action.type === 'authorize_task_plan'
+    const outcome = applied.status === 'authorized' || applied.status === 'queued'
+      || applied.status === 'deferred'
       ? 'task_authorized'
-      : decision.action.type === 'authorize_task_control'
+      : applied.status === 'task_control'
         ? 'task_control_authorized'
-        : decision.action.type === 'deliver_direct_reply'
-          ? 'direct_reply_delivered'
-          : decision.action.type === 'request_clarification'
+        : applied.status === 'clarification'
             ? 'clarification_requested'
-            : decision.action.type === 'record_permission_resolution'
+            : applied.status === 'permission_resolution'
               ? 'authorization_recorded'
               : 'no_action';
-    const displayText = outputLines.join('\n').trim() || (
-      decision.action.type === 'deliver_direct_reply'
-        ? decision.action.response
-        : decision.action.type === 'request_clarification'
-          ? decision.action.question
-          : decision.action.type === 'authorize_task_plan'
-            ? `规划已通过 MetaClaw 授权，任务 ${decision.action.taskId} 已创建。`
-            : '规划提案已由 MetaClaw 接受。'
-    );
+    const displayText = outputLines.join('\n').trim()
+      || applied.displayText
+      || (outcome === 'task_authorized'
+        ? `规划已通过 MetaClaw 授权，任务 ${applied.taskId ?? plan.task.taskId} 已创建。`
+        : '规划提案已由 MetaClaw 接受。');
     return {
       status: 'accepted',
       turnId,
@@ -1790,12 +1603,16 @@ export class MetaclawSession {
       planId: plan.id,
       outcome,
       displayText,
-      taskId: 'taskId' in decision.action ? decision.action.taskId : plan.task.taskId,
-      kernel: { decisionId: decision.id, action: decision.action.type, reason: decision.reason },
+      taskId: applied.taskId ?? plan.task.taskId,
+      kernel: {
+        decisionId: applied.operationId,
+        action: planAdmissionActionName(applied.status),
+        reason: applied.reason,
+      },
     };
   }
 
-  private async handlePlanningKernelDecision(
+  private async handlePlanningControlDecision(
     userInput: string,
     images?: PlannerImageAttachment[],
   ): Promise<boolean> {
@@ -1805,7 +1622,6 @@ export class MetaclawSession {
       phase: 'planning',
       actor: 'planner',
       kind: 'planner_started',
-      status: 'running',
       title: 'Planner started',
       summary: 'Parsing the request and preparing a structured proposal.',
       details: {
@@ -1835,7 +1651,6 @@ export class MetaclawSession {
         phase: 'planning',
         actor: 'planner',
         kind: 'planner_failed',
-        status: 'failed',
         title: 'Planner failed',
         summary: (error as Error).message,
         details: {},
@@ -1848,9 +1663,12 @@ export class MetaclawSession {
       this.notify();
     }
     this.recordPlannerProposalTerminalTrace(result, turnId);
-    if (result.status === 'accepted') return true;
+    if (result.status === 'accepted') {
+      if (result.outcome === 'no_action') this.appendOutput(result.displayText);
+      return true;
+    }
     if (result.status === 'rejected') {
-      this.appendOutput(this.presentation.formatKernelRejection(result.issues.join('; ')));
+      this.appendOutput(this.presentation.formatControlRejection(result.issues.join('; ')));
       return true;
     }
     if (result.status === 'conflict') {
@@ -1858,7 +1676,7 @@ export class MetaclawSession {
       return true;
     }
     this.appendOutput(
-      `Planner 未能完成到 Kernel 的交接，未进入 Kernel，也没有启动 Executor。${result.message}`,
+      `Planner 未能完成到控制循环的交接，未进入 Runtime，也没有启动 Executor。${result.message}`,
     );
     return true;
   }
@@ -1877,7 +1695,6 @@ export class MetaclawSession {
           phase: 'planning',
           actor: 'planner',
           kind: 'planner_process_started',
-          status: 'running',
           title: 'Planner process started',
           summary: 'The isolated Planner RPC process is running.',
           details: baseDetails,
@@ -1889,7 +1706,6 @@ export class MetaclawSession {
           phase: 'planning',
           actor: 'planner',
           kind: 'planner_prompt_accepted',
-          status: 'running',
           title: 'Planner accepted the request',
           summary: 'The request entered the Planner agent loop.',
           details: baseDetails,
@@ -1901,7 +1717,6 @@ export class MetaclawSession {
           phase: 'planning',
           actor: 'planner',
           kind: 'planner_agent_started',
-          status: 'running',
           title: 'Planner agent loop started',
           summary: 'Planner is preparing the next structured action.',
           details: baseDetails,
@@ -1913,7 +1728,6 @@ export class MetaclawSession {
           phase: 'planning',
           actor: 'planner',
           kind: 'planner_turn_started',
-          status: 'running',
           title: `Planner processing cycle ${progress.turn}`,
           summary: 'Planner is evaluating available context and the next tool action.',
           details: { ...baseDetails, turn: progress.turn },
@@ -1925,7 +1739,6 @@ export class MetaclawSession {
           phase: 'planning',
           actor: 'planner',
           kind: 'planner_model_stream_started',
-          status: 'running',
           title: 'Planner model response started',
           summary: 'The model is generating a structured action; hidden reasoning is not exposed.',
           details: { ...baseDetails, turn: progress.turn },
@@ -1937,7 +1750,6 @@ export class MetaclawSession {
           phase: 'planning',
           actor: 'planner',
           kind: 'planner_model_waiting',
-          status: 'running',
           title: 'Planner is waiting for the model',
           summary: 'The Planner request is still active, but no model output has arrived yet.',
           details: {
@@ -1953,7 +1765,6 @@ export class MetaclawSession {
           phase: 'planning',
           actor: 'planner',
           kind: 'planner_tool_started',
-          status: 'running',
           title: `Planner tool started: ${progress.toolName}`,
           summary: plannerToolSummary(progress.toolName, 'started'),
           details: {
@@ -1970,7 +1781,6 @@ export class MetaclawSession {
           phase: 'planning',
           actor: 'planner',
           kind: 'planner_tool_completed',
-          status: progress.status,
           title: `Planner tool ${progress.status}: ${progress.toolName}`,
           summary: plannerToolSummary(progress.toolName, progress.status),
           details: {
@@ -1988,9 +1798,8 @@ export class MetaclawSession {
           phase: 'planning',
           actor: 'planner',
           kind: 'planner_agent_completed',
-          status: 'completed',
           title: 'Planner handoff confirmed',
-          summary: 'Planner received the structured proposal result; Kernel/Runtime now owns the next action.',
+          summary: 'Planner received the structured proposal result; the Task Runtime now owns the next action.',
           details: baseDetails,
           eventKey,
         });
@@ -2002,7 +1811,6 @@ export class MetaclawSession {
       phase: 'planning',
       actor: 'planner',
       kind: 'intent_classified',
-      status: 'completed',
       title: `Intent classified: ${plan.action}`,
       summary: plan.reason,
       details: {
@@ -2023,7 +1831,6 @@ export class MetaclawSession {
         phase: 'planning',
         actor: 'planner',
         kind: 'dag_quality_warning',
-        status: 'completed',
         title: 'Work Graph 拆解质量提示',
         summary: qualityWarnings.join('；'),
         details: { warnings: qualityWarnings, planId: plan.id },
@@ -2047,7 +1854,6 @@ export class MetaclawSession {
         phase: 'delivery',
         actor: 'runtime',
         kind: 'delivery_completed',
-        status: 'completed',
         title: 'Response delivered',
         summary: result.displayText,
         details: {
@@ -2104,7 +1910,6 @@ export class MetaclawSession {
       phase: 'planning',
       actor: 'planner',
       kind: mapped.kind,
-      status: mapped.eventStatus,
       title: mapped.title,
       summary,
       details: {
@@ -2119,6 +1924,7 @@ export class MetaclawSession {
         ...(result.turnId !== effectiveTurnId
           ? { reportedTurnId: result.turnId }
           : {}),
+      conversationId: this.deps.sessionId,
         ...(result.status === 'transport_uncertain'
           ? {
               retryableByReplay: result.retryableByReplay,
@@ -2144,14 +1950,13 @@ export class MetaclawSession {
     });
   }
 
-  private recordKernelDecisionTrace(decision: KernelDecision): void {
+  private recordControlDecisionTrace(decision: ControlDecision): void {
     const taskId = 'taskId' in decision.action ? decision.action.taskId : null;
     this.interactionTraceStream.append({
       phase: 'authorization',
       actor: 'kernel',
       kind: 'kernel_decision',
-      status: decision.action.type === 'reject_request' ? 'failed' : 'completed',
-      title: `Kernel decision: ${decision.action.type}`,
+      title: `Control operation: ${decision.action.type}`,
       summary: decision.reason,
       details: {
         decisionId: decision.id,
@@ -2172,7 +1977,6 @@ export class MetaclawSession {
           phase: 'routing',
           actor: 'kernel',
           kind: 'executor_routed',
-          status: 'completed',
           title: fallbackOrder === 0 ? 'Primary Executor authorized' : 'Fallback Executor authorized',
           summary:
             `${binding.agentClassRef} via ${binding.harnessRef} `
@@ -2204,6 +2008,14 @@ export class MetaclawSession {
     await this.initialization;
     const report = await new GenerationReplanWorker({
       replanRepo: this.generationReplanRepo,
+      // An automatic replan continues the Task's admitted Workspace; it is not a
+      // new client selection.
+      resolveTaskWorkspace: task => {
+        if (!task.workspaceId) return null;
+        const root = this.workspaceGitRepo.root(task.workspaceId);
+        if (!root) return null;
+        return { workspaceId: task.workspaceId, canonicalPath: root.userRoot };
+      },
       planner: {
         plan: context => this.runPlanningAgent(context),
         buildPlanningContext: input => this.planningContextBuilder.build({
@@ -2217,39 +2029,61 @@ export class MetaclawSession {
         ),
         listAttemptReceipts: taskId => this.attemptReceiptRepo.listByTask(taskId),
         resolveTurnAttachmentIds: taskId => {
-          const origin = this.kernelDecisionRepo.listByTask(taskId)
-            .find(record => record.eventType === 'plan_proposed');
-          if (!origin) return [];
-          const event = this.kernelWorkflowRepo.findEvent(origin.eventId);
-          return event?.type === 'plan_proposed' ? [...(event.attachmentIds ?? [])] : [];
+          return [...(this.generationReplanRepo.proposals.findInitialForTask(taskId)?.request.attachmentIds ?? [])];
         },
-        findPersistedProposal: eventId => {
-          const event = this.kernelWorkflowRepo.findEvent(eventId);
-          return event?.type === 'plan_proposed' ? event : null;
-        },
-        drainKernel: async ({ userInput, event }) => {
-          await this.kernelCoordinator.submit(event, {
-            buildSnapshot: claimed => this.buildPlanAdmissionSnapshot(
-              claimed as Extract<KernelEvent, { type: 'plan_proposed' }>,
-            ),
-            runtime: this.sessionKernelRuntime.forInput(userInput),
+        findActiveGraph: taskId => this.workGraphRevisionRepo.findActive(taskId),
+        submitProposal: async ({ proposal }) => {
+          this.generationReplanRepo.proposals.assertAdmissionOpen(proposal.id);
+          const snapshot = this.buildPlanAdmissionSnapshot(
+            {
+              ...proposal,
+              schemaVersion: 5,
+              type: 'plan_proposed',
+              correlationId: proposal.proposal.id,
+              causationId: null,
+            } as unknown as Extract<ControlEvent, { type: 'plan_proposed' }>,
+          );
+          const admission = evaluatePlanAdmission(
+            proposal,
+            planAdmissionSnapshotFromControl(snapshot),
+          );
+          this.generationReplanRepo.proposals.markForwarded(proposal.id, new Date().toISOString());
+          await this.sessionControlRuntime.applyPlanAdmission(admission, {
+            proposalId: proposal.id,
+            userInput: proposal.requestText,
+            ...(proposal.conversationId ? { conversationId: proposal.conversationId } : {}),
+            queryId: proposal.queryId ?? null,
           });
         },
       },
       findTask: taskId => this.taskRuntimeService.findTask(taskId),
       now: () => new Date().toISOString(),
     }).run();
+    await this.kernelCoordinator.recover({
+      buildSnapshot: event => this.buildPlanAdmissionSnapshot(event as Extract<ControlEvent, { type: 'plan_proposed' }>),
+      runtime: this.sessionControlRuntime.forInput(),
+    });
     // An activated replan revision starts its own background execution; the
     // legacy facade owns that work, so it is awaited before the next period.
-    if (report.submitted > 0) await this.waitForAsyncWork();
+    await this.waitForAsyncWork();
     return report;
   }
 
-  private async requestKernelMergeReplan(
-    decision: KernelDecision & {
-      action: Extract<KernelDecision['action'], { type: 'request_merge_replan' }>;
+  private async requestControlMergeReplan(
+    decision: ControlDecision & {
+      action: Extract<ControlDecision['action'], { type: 'request_merge_replan' }>;
     },
-  ): Promise<Extract<KernelEvent, { type: 'plan_proposed' }> | null> {
+  ): Promise<Extract<ControlEvent, { type: 'plan_proposed' }> | null> {
+    const saved = this.generationReplanRepo.proposals.find(`merge_replan_event_${decision.id}`);
+    if (saved) {
+      const request = saved.request;
+      if (saved.delivery === 'invalidated' || saved.triggerOperationId !== decision.id
+        || request.configurationRevision !== decision.configurationRevision
+        || request.sessionId !== this.deps.sessionId || request.taskId !== decision.action.taskId
+        || request.proposalSource !== 'conflict_replan') throw new Error('replan proposal identity conflict');
+      await this.admitPreparedReplan(request);
+      return null;
+    }
     const task = this.taskRuntimeService.findTask(decision.action.taskId);
     const revision = this.workGraphRevisionRepo.findActive(decision.action.taskId);
     if (!task || !revision) return null;
@@ -2267,8 +2101,11 @@ export class MetaclawSession {
     const context = this.planningContextBuilder.build({
       userInput: request,
     });
+    if (context.configuration.revisionId !== decision.configurationRevision) {
+      throw new Error('replan configuration revision mismatch');
+    }
     const plan = await this.runPlanningAgent(context);
-    return {
+    const event: Extract<ControlEvent, { type: 'plan_proposed' }> = {
       schemaVersion: 5,
       configurationRevision: context.configuration.revisionId,
       type: 'plan_proposed',
@@ -2277,21 +2114,52 @@ export class MetaclawSession {
       causationId: decision.id,
       occurredAt: new Date().toISOString(),
       sessionId: this.deps.sessionId,
+      conversationId: task.conversationId ?? this.deps.sessionId,
       taskId: task.id,
       proposal: plan,
-      requestText: boundedKernelRequestText(request),
+      requestText: boundedControlRequestText(request),
       generationId: revision.generationId,
       proposalSource: 'conflict_replan',
       targetGraphRevision: revision.revision + 1,
       availabilityExplanation: null,
+      attachmentIds: [...(this.generationReplanRepo.proposals.findInitialForTask(task.id)?.request.attachmentIds ?? [])],
+      workspaceAdmission: await this.buildWorkspaceAdmission(plan),
     };
+    const prepared = planAdmissionRequest(event);
+    this.generationReplanRepo.proposals.save({ request: prepared, triggerOperationId: decision.id });
+    await this.admitPreparedReplan(prepared);
+    return null;
+  }
+
+  /** Replan effects are Kernel-triggered but admitted directly, with no plan event. */
+  private async admitPreparedReplan(prepared: PlanAdmissionRequest): Promise<void> {
+    const snapshot = this.buildPlanAdmissionSnapshot(
+      {
+        ...prepared,
+        schemaVersion: 5,
+        type: 'plan_proposed',
+        correlationId: prepared.proposal.id,
+        causationId: null,
+      } as unknown as Extract<ControlEvent, { type: 'plan_proposed' }>,
+    );
+    const admission = evaluatePlanAdmission(
+      prepared,
+      planAdmissionSnapshotFromControl(snapshot),
+    );
+    await this.sessionControlRuntime.applyPlanAdmission(admission, {
+      proposalId: prepared.id,
+      userInput: prepared.requestText,
+      ...(prepared.conversationId ? { conversationId: prepared.conversationId } : {}),
+      queryId: prepared.queryId ?? null,
+    });
+    this.generationReplanRepo.proposals.markForwarded(prepared.id, new Date().toISOString());
   }
 
   private buildPlanAdmissionSnapshot(
-    event: Extract<KernelEvent, { type: 'plan_proposed' }>,
+    event: Extract<ControlEvent, { type: 'plan_proposed' }>,
     plannerConfiguration = this.planningContextBuilder.getPlannerConfiguration(),
     userInput = event.proposal.task.goal ?? '',
-  ): Extract<KernelSnapshot, { type: 'plan_admission' }> {
+  ): Extract<ControlSnapshot, { type: 'plan_admission' }> {
     if (
       event.configurationRevision !== plannerConfiguration.revisionId
       || event.configurationRevision !== this.kernelConfiguration.revisionId
@@ -2491,6 +2359,7 @@ export class MetaclawSession {
       await this.executorRecoveryRefreshService.refresh({ trigger: 'task_recovery' });
     }
     const result = await this.commandCatalog.execute(userInput, this.getCommandContext());
+    if ('relatedTaskId' in result && result.relatedTaskId) this.setCurrentTaskId(result.relatedTaskId);
     this.appendOutput(result.content);
     if (/^\/executor\s+(register|unregister)\b/iu.test(userInput)) {
       await this.executorRecoveryRefreshService.refresh({ trigger: 'executor_changed' });
@@ -2529,7 +2398,7 @@ export class MetaclawSession {
         const decision = await started.decision;
         if (!decision) {
           await started.completion;
-          this.appendOutput(`任务 #${resumedTask.id} 恢复请求未产生权威 Kernel 决策`);
+          this.appendOutput(`任务 #${resumedTask.id} 恢复请求未产生权威控制操作`);
         } else {
           this.appendOutput(formatTaskResumeDecision(resumedTask.id, decision, resumedTask.status));
           if (decision.action.type !== 'resume_task') await started.completion;
@@ -2569,7 +2438,7 @@ export class MetaclawSession {
     const record = this.permissionRepository.findRequest(input.requestId);
     if (!record) throw new Error(`permission request not found: ${input.requestId}`);
     const attemptExecution = this.attemptExecutionRepository.find(record.request.attemptId);
-    const dispatchItem = new KernelDispatchItemRepo(this.deps.db)
+    const dispatchItem = new ControlDispatchItemRepo(this.deps.db)
       .find(record.request.attemptId);
     if (!dispatchItem) {
       throw new Error(
@@ -2601,11 +2470,11 @@ export class MetaclawSession {
       repository: this.permissionRepository,
       resolver: new RegisteredCapabilityResourceResolver(resourceRegistrations),
       executionBackend: this.attemptExecutionBackend,
-      workflowStore: this.kernelWorkflowRepo,
       rules: buildPermissionRules({
         permissionProfileId: record.request.permissionProfileId,
         additionalReadPartitions: resourceRegistrations.values(),
       }),
+      ...(this.deps.managerPermissionJudge ? { manager: this.deps.managerPermissionJudge } : {}),
       hooks: {
         checkpoint: async () => null,
         onEscalation: async () => undefined,
@@ -2716,53 +2585,57 @@ export class MetaclawSession {
     return this.lifecycle ??= this.taskLifecyclePort;
   }
 
+  private diagnoseRecoveryApplication(item: import('../execution/control-application-recovery.js').RecoveryApplicationFact) {
+    return inspectApplicationAgainstSources(item, {
+      findTask: id => {
+        const record = this.taskRuntimeService.findTask(id);
+        return record
+          ? {
+              id: record.id,
+              status: record.status,
+              dependencies: record.dependencies.map(dependency => ({
+                type: dependency.type,
+                status: dependency.status,
+              })),
+            }
+          : null;
+      },
+      listSubtasks: id => this.subtaskRepo.listByTask(id)
+        .map(subtask => ({ id: subtask.id, status: subtask.status })),
+      listDispatchItems: id => this.dispatchItemRepo.listByTask(id).map(dispatch => ({
+        attemptId: dispatch.attemptId,
+        decisionId: dispatch.decisionId,
+        causationId: null,
+        subtaskId: dispatch.subtaskId,
+        generationId: dispatch.generationId,
+        attemptKind: dispatch.attemptKind,
+        bindingFingerprint: dispatch.bindingFingerprint,
+        configurationRevision: dispatch.configurationRevision,
+        sourceAttemptId: dispatch.sourceAttemptId,
+        status: dispatch.status,
+      })),
+      findWorkGraphRevision: (id, revision) => {
+        const record = this.workGraphRevisionRepo.find(id, revision);
+        return record
+          ? {
+              revision: record.revision,
+              generationId: record.generationId,
+              authorizedOperationId: record.authorizedOperationId,
+              status: record.status,
+            }
+          : null;
+      },
+      findReplanRequest: (id, generationId, sourceRevision) => (
+        this.generationReplanRepo.findByGeneration(id, generationId, sourceRevision)
+      ),
+      findReplanRequestById: id => this.generationReplanRepo.find(id),
+    });
+  }
+
   private formatTaskRecovery(taskId: string): string {
     const task = this.findLocalTask(taskId);
-    const applications = this.kernelWorkflowRepo.listRecoveryItems(taskId).map(item => {
-      const diagnosis = inspectApplicationAgainstSources(item, {
-        findTask: id => {
-          const record = this.taskRuntimeService.findTask(id);
-          return record
-            ? {
-                id: record.id,
-                status: record.status,
-                dependencies: record.dependencies.map(dependency => ({
-                  type: dependency.type,
-                  status: dependency.status,
-                })),
-              }
-            : null;
-        },
-        listSubtasks: id => this.subtaskRepo.listByTask(id)
-          .map(subtask => ({ id: subtask.id, status: subtask.status })),
-        listDispatchItems: id => this.dispatchItemRepo.listByTask(id).map(dispatch => ({
-          attemptId: dispatch.attemptId,
-          decisionId: dispatch.decisionId,
-          causationId: this.kernelDecisionRepo.findById(dispatch.decisionId)?.causationId ?? null,
-          subtaskId: dispatch.subtaskId,
-          generationId: dispatch.generationId,
-          attemptKind: dispatch.attemptKind,
-          bindingFingerprint: dispatch.bindingFingerprint,
-          configurationRevision: dispatch.configurationRevision,
-          sourceAttemptId: dispatch.sourceAttemptId,
-          status: dispatch.status,
-        })),
-        findWorkGraphRevision: (id, revision) => {
-          const record = this.workGraphRevisionRepo.find(id, revision);
-          return record
-            ? {
-                revision: record.revision,
-                generationId: record.generationId,
-                authorizedDecisionId: record.authorizedDecisionId,
-                status: record.status,
-              }
-            : null;
-        },
-        findReplanRequest: (id, generationId, sourceRevision) => (
-          this.generationReplanRepo.findByGeneration(id, generationId, sourceRevision)
-        ),
-        findReplanRequestById: id => this.generationReplanRepo.find(id),
-      });
+    const applications = this.recoveryItems.listRecoveryItems(taskId).map(item => {
+      const diagnosis = this.diagnoseRecoveryApplication(item);
       return `- ${item.id} [application/${item.status}] ${item.decision.action.type}: `
         + `${item.errorSummary ?? 'no error summary'}`
         + ` -> ${diagnosis.family}/${diagnosis.verdict}: ${diagnosis.reason}`;
@@ -2774,6 +2647,7 @@ export class MetaclawSession {
     if (items.length === 0) {
       const emptyRecovery = formatEmptyTaskRecovery(taskId, {
         status: task?.status,
+        canResume: this.subtaskRepo.listActiveByTask(taskId).some(subtask => ['ready', 'blocked'].includes(subtask.status)),
         blockerReason: task?.dependencies
           .filter(dependency => dependency.status === 'waiting')
           .map(dependency => dependency.description)
@@ -2792,22 +2666,19 @@ export class MetaclawSession {
     recoveryItemId: string;
     resolution: 'assume_applied' | 'retry';
   }): Promise<void> {
-    const application = this.kernelWorkflowRepo.findRecoveryItem(
-      input.recoveryItemId,
-    );
+    const application = this.recoveryItems.findRecoveryItem(input.recoveryItemId);
     const effect = this.effectOutboxRepo.find(input.recoveryItemId);
+    // The active graph revision pins the configuration for this Task; a recovery
+    // item may pin an older one when the revision was replaced.
     const configurationRevision = application?.decision.configurationRevision
-      ?? (effect
-        ? this.kernelDecisionRepo.listByTask(input.taskId)
-            .find(record => record.id === effect.decisionId)
-            ?.configurationRevision
-        : null);
+      ?? this.workGraphRevisionRepo.findActive(input.taskId)?.configurationRevision
+      ?? null;
     if (!configurationRevision) {
       throw new Error(
         `recovery item has no persisted configuration revision: ${input.recoveryItemId}`,
       );
     }
-    const event: Extract<KernelEvent, { type: 'recovery_resolution_requested' }> = {
+    const event: Extract<ControlEvent, { type: 'recovery_resolution_requested' }> = {
       schemaVersion: 5,
       configurationRevision,
       type: 'recovery_resolution_requested',
@@ -2820,20 +2691,31 @@ export class MetaclawSession {
       recoveryItemId: input.recoveryItemId,
       resolution: input.resolution,
     };
-    const workflow = new DurableKernelWorkflow({
-      kernel: this.controlKernel,
+    const workflow = new TaskControlWorkflow({
+      recordUncertain: input => {
+        if (!input.taskId) return;
+        const message = input.error instanceof Error ? input.error.message : String(input.error);
+        this.recoveryItems.record({
+          operation: input.operation,
+          taskId: input.taskId,
+          subtaskId: input.subtaskId,
+          attemptId: input.attemptId,
+          errorSummary: message.replace(/[\r\n]+/gu, ' ').slice(0, 320),
+          createdAt: new Date().toISOString(),
+        });
+      },
+      kernel: this.controlLoop,
       buildSnapshot: claimed => {
-        const recovery = claimed as Extract<KernelEvent, { type: 'recovery_resolution_requested' }>;
+        const recovery = claimed as Extract<ControlEvent, { type: 'recovery_resolution_requested' }>;
         return this.buildRecoverySnapshot(recovery.taskId!, recovery.recoveryItemId);
       },
-      store: this.kernelWorkflowRepo,
       clock: { now: () => new Date().toISOString() },
       runtime: {
         apply: async decision => {
           if (decision.action.type === 'resolve_recovery') {
             const now = new Date().toISOString();
-            if (this.kernelWorkflowRepo.findRecoveryItem(decision.action.recoveryItemId)) {
-              this.kernelWorkflowRepo.resolveRecoveryItem(
+            if (this.recoveryItems.findRecoveryItem(decision.action.recoveryItemId)) {
+              this.recoveryItems.resolveRecoveryItem(
                 decision.action.recoveryItemId, decision.action.resolution, now,
               );
             } else {
@@ -2861,17 +2743,19 @@ export class MetaclawSession {
   private buildRecoverySnapshot(
     taskId: string,
     recoveryItemId: string,
-  ): Extract<KernelSnapshot, { type: 'recovery' }> {
+  ): Extract<ControlSnapshot, { type: 'recovery' }> {
     const task = this.taskRuntimeService.findTask(taskId);
-    const application = this.kernelWorkflowRepo.findRecoveryItem(recoveryItemId);
+    const application = this.recoveryItems.findRecoveryItem(recoveryItemId);
     const effect = this.effectOutboxRepo.find(recoveryItemId);
     return {
       schemaVersion: 5,
       type: 'recovery',
       task: task ? { id: task.id, status: task.status } : null,
-      item: application
-        ? { id: application.id, kind: 'application', status: application.status as 'uncertain' | 'failed', retrySafe: true }
-        : effect && (effect.status === 'uncertain' || effect.status === 'failed')
+      item: application && 'taskId' in application.decision.action && application.decision.action.taskId === taskId
+        && ['pending', 'retry_authorized'].includes(application.status)
+        ? { id: application.id, kind: 'application', status: application.status as 'pending' | 'retry_authorized',
+            retrySafe: this.diagnoseRecoveryApplication(application).verdict === 'retry_safe' }
+        : effect && effect.taskId === taskId && (effect.status === 'uncertain' || effect.status === 'failed')
           ? { id: effect.id, kind: 'effect', status: effect.status, retrySafe: false }
           : null,
     };
@@ -2900,12 +2784,12 @@ export class MetaclawSession {
     userInput: string,
     images?: PlannerImageAttachment[],
   ): Promise<void> {
-    if (await this.handlePlanningKernelDecision(userInput, images)) {
+    if (await this.handlePlanningControlDecision(userInput, images)) {
       return;
     }
 
     this.appendOutput(
-      '-> ControlKernel did not produce a runtime action.',
+      '-> Task Runtime produced no action for this turn.',
       'Please clarify whether you want to chat, create a new task, resume an existing task, or dispatch an executor.',
     );
   }
@@ -2917,63 +2801,6 @@ export class MetaclawSession {
       : DEFAULT_PLANNER_TIMEOUT_MS;
   }
 
-  // Delivers the PlanningAgent's own answer for a direct_reply turn. The planner
-  // runs read-only and already produced the user-visible reply, so we surface it
-  // directly and record the interaction — no second (writable) executor call.
-  // While the reply is being delivered we surface the planner as the active
-  // executor in runtimeState (mirrors the conversation-runtime status main kept
-  // for TUI/Feishu), then restore the scheduler-backed state afterwards.
-  private deliverDirectReply(userInput: string, reply: string): void {
-    this.setDirectReplyRuntimeState('planning-agent');
-    try {
-      this.interactionTraceStream.append({
-        phase: 'delivery',
-        actor: 'runtime',
-        kind: 'delivery_completed',
-        status: 'completed',
-        title: 'Final answer delivered',
-        summary: 'The Planner answer passed Kernel authorization and was delivered.',
-        details: {
-          executor: 'planning-agent',
-        },
-        eventKey: 'direct_reply',
-        traceStatus: 'completed',
-      });
-      this.appendOutput(reply);
-      this.persistenceService.recordInteraction({
-        taskId: null,
-        sessionId: this.deps.sessionId,
-        userInput,
-        systemOutput: reply,
-        executorUsed: 'planning-agent',
-      });
-      this.setFocusContext({ kind: 'conversation', taskId: null });
-    } finally {
-      this.setDirectReplyRuntimeState(null);
-    }
-  }
-
-  // Sets/clears the runtime state for a direct-reply turn. When a durable task
-  // is running we leave its state untouched (refresh only); otherwise we pin the
-  // replying executor name and a descriptive lastEvent so the TUI status bar and
-  // Feishu can show who is answering. Clearing passes null to restore.
-  private setDirectReplyRuntimeState(executorName: string | null): void {
-    this.refreshRuntimeState();
-    const schedulerState = this.runtimeState;
-    if (schedulerState.runningTaskId) {
-      this.refreshRuntimeState();
-      return;
-    }
-
-    this.runtimeState = {
-      ...schedulerState,
-      runningExecutorName: executorName,
-      lastEvent: executorName
-        ? `普通对话由 ${executorName} 生成回答`
-        : schedulerState.lastEvent,
-    };
-    this.notify();
-  }
 
   private setFocusContext(focus: FocusContext | null): void {
     this.focusContext = focus ? { ...focus } : null;
@@ -2990,7 +2817,7 @@ export class MetaclawSession {
     const now = new Date().toISOString();
     const backendLossAttemptIds = new Set<string>();
     const claimedOrphans = this.workUnitClaimService.listOrphanedClaims();
-    const dispatchItems = new KernelDispatchItemRepo(this.deps.db);
+    const dispatchItems = new ControlDispatchItemRepo(this.deps.db);
     const requiresAttemptReconciliation = claimedOrphans.length > 0
       || this.attemptExecutionRepository.listActive().length > 0
       || this.taskRuntimeService.listTasksByStatus('running').some(task =>
@@ -3055,7 +2882,7 @@ export class MetaclawSession {
             `execution backend ${record.containerId} was reconciled during startup`,
             now,
           );
-          this.kernelWorkflowRepo.enqueue({
+          await this.kernelExecutionRuntime.submitControlEvent({
             schemaVersion: 5,
             configurationRevision: dispatchItem.configurationRevision,
             type: 'sandbox_lost',
@@ -3075,7 +2902,7 @@ export class MetaclawSession {
             attemptKind: dispatchItem.attemptKind,
             sourceAttemptId: dispatchItem.sourceAttemptId,
             recoveryMode: dispatchItem.recoveryMode,
-          });
+          }, 'startup sandbox loss recovery');
         }
       }
       await this.kernelExecutionRuntime.recoverCancellations();
@@ -3084,7 +2911,8 @@ export class MetaclawSession {
     }
     if (recoveryBlockedReason) {
       const blocked: Task[] = [];
-      for (const task of this.listLocalTasksByStatus('running')) {
+      const runningTasks = this.listLocalTasksByStatus('running');
+      for (const task of runningTasks) {
         try {
           this.markStartupRecoveryBlocked(task.id, `startup recovery requires handling: ${recoveryBlockedReason}`, task);
         } catch {
@@ -3094,37 +2922,47 @@ export class MetaclawSession {
         if (current) blocked.push(current);
       }
       this.appendOutput(
-        `恢复任务：无法安全对账 Docker、Git 或持久状态（${recoveryBlockedReason}）。`,
+        `恢复任务：无法安全对账原生进程、Git 或持久状态（${recoveryBlockedReason}）。`,
         '已保留现有执行后端实例、WorkUnit claim 与 resource lease；恢复对账成功前不会启动 attempt。',
       );
       return blocked;
     }
     this.effectOutboxRepo.reconcileSending(now);
-    this.kernelWorkflowRepo.reconcileProcessing();
     for (const effect of this.effectOutboxRepo.listPending(now)) {
-      if (effect.effectType !== 'task_completion_notification') continue;
-      await this.effectOutboxRepo.deliver(effect.id, async record => {
-        await this.verificationAndDeliveryService.deliverTaskCompletion(
-          this.notifier,
-          record.payload as unknown as Parameters<VerificationAndDeliveryService['deliverTaskCompletion']>[1],
-        );
-        return effect.id;
-      }, () => new Date().toISOString());
+        if (effect.effectType !== 'task_completion_notification') continue;
+        await this.effectOutboxRepo.deliver(effect.id, async record => {
+          await this.verificationAndDeliveryService.deliverTaskCompletion(
+            this.notifier,
+            record.payload as unknown as Parameters<VerificationAndDeliveryService['deliverTaskCompletion']>[1],
+          );
+          return effect.id;
+        }, () => new Date().toISOString());
     }
 
-    const planningWorkflow = new DurableKernelWorkflow({
-      kernel: this.controlKernel,
-      buildSnapshot: event => this.buildPlanAdmissionSnapshot(
-        event as Extract<KernelEvent, { type: 'plan_proposed' }>,
-      ),
-      store: this.kernelWorkflowRepo,
-      runtime: this.sessionKernelRuntime.forInput(),
-      clock: { now: () => new Date().toISOString() },
-      acceptedEventTypes: ['plan_proposed'],
-      acceptedActions: [
-        'reject_request', 'request_clarification', 'deliver_direct_reply', 'no_op',
-        'authorize_task_plan', 'authorize_task_control', 'block_work', 'park_for_replan',
-      ],
+    const planningWorkflow = new TaskControlWorkflow({
+        recordUncertain: input => {
+          if (!input.taskId) return;
+          const message = input.error instanceof Error ? input.error.message : String(input.error);
+          this.recoveryItems.record({
+            operation: input.operation,
+            taskId: input.taskId,
+            subtaskId: input.subtaskId,
+            attemptId: input.attemptId,
+            errorSummary: message.replace(/[\r\n]+/gu, ' ').slice(0, 320),
+            createdAt: new Date().toISOString(),
+          });
+        },
+        kernel: this.controlLoop,
+        buildSnapshot: event => this.buildPlanAdmissionSnapshot(
+          event as Extract<ControlEvent, { type: 'plan_proposed' }>,
+        ),
+          runtime: this.sessionControlRuntime.forInput(),
+        clock: { now: () => new Date().toISOString() },
+        acceptedEventTypes: ['plan_proposed'],
+        acceptedActions: [
+          'reject_request', 'request_clarification', 'no_op',
+          'authorize_task_plan', 'authorize_task_control', 'block_work', 'park_for_replan',
+        ],
     });
     await planningWorkflow.recover();
 
@@ -3164,7 +3002,8 @@ export class MetaclawSession {
           attemptId: workUnit.claimedAttemptId,
         });
       }
-      if (taskClaims.length === 0 && !this.kernelWorkflowRepo.hasRecoverableWork(task.id)) {
+      if (taskClaims.length === 0 && this.recoveryItems.countPending(task.id) === 0
+        && this.retryWakeRepo.findBlockingByTask(task.id).length === 0) {
         const orphan = subtasks.find(subtask => !['done', 'cancelled'].includes(subtask.status));
         if (orphan) {
           const dispatchItem = dispatchItems.listByTask(task.id)
@@ -3177,7 +3016,7 @@ export class MetaclawSession {
               `startup task has active Subtask without authorized dispatch: ${orphan.id}`,
             );
           }
-          this.kernelWorkflowRepo.enqueue(startupOrphanEvent({
+          await this.kernelExecutionRuntime.submitControlEvent(startupOrphanEvent({
             sessionId: this.deps.sessionId,
             task,
             subtaskId: orphan.id,
@@ -3187,7 +3026,7 @@ export class MetaclawSession {
             attemptKind: dispatchItem.attemptKind,
             sourceAttemptId: dispatchItem.sourceAttemptId,
             occurredAt: now,
-          }));
+          }), 'startup orphan dispatch recovery');
         }
       }
       await this.kernelExecutionRuntime.recoverDue(task.id, 'startup durable recovery');
@@ -3197,7 +3036,8 @@ export class MetaclawSession {
     } catch (error) {
       const reason = error instanceof Error ? error.message : String(error);
       const blocked: Task[] = [];
-      for (const task of this.listLocalTasksByStatus('running')) {
+      const runningTasks = this.listLocalTasksByStatus('running');
+      for (const task of runningTasks) {
         try {
           this.markStartupRecoveryBlocked(task.id, `startup recovery blocked: ${reason}`, task);
         } catch {
@@ -3271,9 +3111,21 @@ export class MetaclawSession {
 
 }
 
-function isDirectReplyPlan(value: unknown): value is { id?: unknown } & Record<string, unknown> {
-  return Boolean(value)
-    && typeof value === 'object'
-    && !Array.isArray(value)
-    && (value as Record<string, unknown>).action === 'direct_reply';
+function planAdmissionActionName(
+  status: PlanAdmissionAppliedResult['status'],
+): ControlDecision['action']['type'] {
+  switch (status) {
+    case 'authorized':
+    case 'queued':
+    case 'deferred':
+      return 'authorize_task_plan';
+    case 'task_control':
+      return 'authorize_task_control';
+    case 'clarification':
+      return 'request_clarification';
+    case 'permission_resolution':
+      return 'record_permission_resolution';
+    default:
+      return 'no_op';
+  }
 }

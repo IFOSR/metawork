@@ -2,8 +2,9 @@ import { describe, expect, it, vi } from 'vitest';
 import { recordingTaskStateAuthority } from '../support/task-state-fixture.js';
 import type { AuthorizedExecutorBinding } from '../../src/core/authorized-executor-binding.js';
 import { authorizedExecutorBindingFingerprint } from '../../src/core/authorized-executor-binding.js';
-import { KernelExecutionRuntime } from '../../src/execution/kernel-execution-runtime.js';
-import { ControlKernel, type KernelEvent, type KernelSnapshot } from '../../src/kernel/control-kernel.js';
+import { ControlExecutionRuntime } from '../../src/execution/control-execution-runtime.js';
+import { ControlLoopPolicy } from '../../src/execution/control-loop-policy.js';
+import type { ControlEvent, ControlSnapshot } from '../../src/control/control-contracts.js';
 import type { LocalServiceSpecification } from '../../src/task/local-service.js';
 import { localServiceSpecificationRevision } from '../../src/core/local-service-revision.js';
 
@@ -44,10 +45,10 @@ function runtimeWith(overrides: {
   const traces: Array<Record<string, unknown>> = [];
   const outputs: string[] = [];
   const transitions: Array<{ to: string }> = [];
-  const submitted: KernelEvent[] = [];
+  const submitted: ControlEvent[] = [];
   const taskState = recordingTaskStateAuthority();
   let subtaskStatus = overrides.subtaskStatus ?? 'done';
-  const runtime = new KernelExecutionRuntime({
+  const runtime = new ControlExecutionRuntime({
     callbacks: {
       appendOutput: (...parts: string[]) => { outputs.push(parts.join(' ')); },
       appendExecutionTrace: (input: Record<string, unknown>) => { traces.push(input); },
@@ -175,7 +176,7 @@ describe('service repair continuation', () => {
       requestServiceRepair(input: Record<string, unknown>): Promise<boolean>;
     };
     const workflow = {
-      submit: vi.fn(async (event: KernelEvent) => {
+      submit: vi.fn(async (event: ControlEvent) => {
         submitted.push(event);
         return {
           decisions: [{
@@ -198,7 +199,7 @@ describe('service repair continuation', () => {
     // applied. The workflow event is the durable recovery boundary.
     expect(transitions).toEqual([]);
     expect(drain).toHaveBeenCalledWith('task-1');
-    const event = submitted[0] as Extract<KernelEvent, { type: 'dispatch_requested' }>;
+    const event = submitted[0] as Extract<ControlEvent, { type: 'dispatch_requested' }>;
     expect(event.type).toBe('dispatch_requested');
     expect(event.subtaskId).toBe('subtask-1');
     expect(event.recovery).toMatchObject({
@@ -277,7 +278,7 @@ describe('service repair continuation', () => {
 });
 
 describe('Kernel authorization of a service repair round', () => {
-  function dispatchSnapshot(repairAttempts: Record<string, number>): KernelSnapshot {
+  function dispatchSnapshot(repairAttempts: Record<string, number>): ControlSnapshot {
     return {
       schemaVersion: 5,
       type: 'dispatch',
@@ -310,10 +311,10 @@ describe('Kernel authorization of a service repair round', () => {
       completionBlockedReasons: [],
       generationReplanRequest: null,
       generationQuiescent: true,
-    } as unknown as KernelSnapshot;
+    } as unknown as ControlSnapshot;
   }
 
-  function repairEvent(ordinal: number): KernelEvent {
+  function repairEvent(ordinal: number): ControlEvent {
     return {
       schemaVersion: 5,
       configurationRevision: 'revision-1',
@@ -353,11 +354,11 @@ describe('Kernel authorization of a service repair round', () => {
           unknownItems: [],
         },
       },
-    } as KernelEvent;
+    } as ControlEvent;
   }
 
   it('authorizes exactly the next repair round', () => {
-    const decision = new ControlKernel().decide(repairEvent(0), dispatchSnapshot({}));
+    const decision = new ControlLoopPolicy().decide(repairEvent(0), dispatchSnapshot({}));
     expect(decision.action).toMatchObject({
       type: 'dispatch_batch',
       items: [{ subtaskId: 'subtask-1', attemptKind: 'continuation', sourceAttemptId: 'attempt-producer' }],
@@ -365,7 +366,7 @@ describe('Kernel authorization of a service repair round', () => {
   });
 
   it('refuses an out-of-order or exhausted repair round', () => {
-    const kernel = new ControlKernel();
+    const kernel = new ControlLoopPolicy();
     expect(kernel.decide(repairEvent(1), dispatchSnapshot({ 'subtask-1': 0 })).action)
       .toMatchObject({ type: 'block_work' });
     const exhausted = kernel.decide(repairEvent(3), dispatchSnapshot({ 'subtask-1': 3 }));
@@ -374,7 +375,7 @@ describe('Kernel authorization of a service repair round', () => {
   });
 
   it('accepts a completed Subtask only for service repair and still requires its binding', () => {
-    const kernel = new ControlKernel();
+    const kernel = new ControlLoopPolicy();
     const stale = dispatchSnapshot({});
     (stale as unknown as { subtasks: Array<{ status: string }> }).subtasks[0]!.status = 'done';
     expect(kernel.decide(repairEvent(0), stale).action).toMatchObject({ type: 'dispatch_batch' });
@@ -390,10 +391,10 @@ describe('Kernel authorization of a service repair round', () => {
     const { runtime, transitions } = runtimeWith({});
     const enqueue = vi.fn();
     Object.defineProperty(runtime, 'attemptSupervisor', { value: { enqueue } });
-    const decision = new ControlKernel().decide(repairEvent(0), dispatchSnapshot({}));
+    const decision = new ControlLoopPolicy().decide(repairEvent(0), dispatchSnapshot({}));
     expect(decision.action.type).toBe('dispatch_batch');
     await (runtime as unknown as {
-      applyExecutionDecision(input: Record<string, unknown>): Promise<KernelEvent | null>;
+      applyExecutionDecision(input: Record<string, unknown>): Promise<ControlEvent | null>;
     }).applyExecutionDecision({
       decision,
       executionId: 'execution-service-repair',
@@ -409,11 +410,28 @@ describe('Kernel authorization of a service repair round', () => {
 });
 
 describe('service verification loop', () => {
-  function loopRuntime() {
+  it('prepares and explicitly updates a changed contract inherited from an earlier Task', async () => {
+    const operations: string[] = [];
+    const runtime = Object.create(ControlExecutionRuntime.prototype);
+    runtime.deps = { managedLocalServices: {
+      resolveServiceSpecification: async () => ({ specification }),
+      resolveServiceWorkspaceId: async () => 'workspace-1',
+      findForWorkspace: () => ({ specification: { ...specification, taskId: 'older-task' }, specificationRevision: 'old-revision' }),
+      prepareVersion: async () => { operations.push('prepare'); return null; },
+    } };
+    runtime.serviceProcessAlive = async () => true;
+    runtime.manageLocalService = async (_id: string, operation: string) => {
+      operations.push(operation);
+      return { state: 'healthy' };
+    };
+    expect((await runtime.verifyRequestedService('task-1', 'task-1')).view.state).toBe('healthy');
+    expect(operations).toEqual(['prepare', 'stop', 'update', 'start']);
+  });
+  function loopRuntime(subtaskStatus = 'done') {
     const operations: Array<Record<string, unknown>> = [];
     const outputs: string[] = [];
     const taskState = recordingTaskStateAuthority();
-    const runtime = new KernelExecutionRuntime({
+    const runtime = new ControlExecutionRuntime({
       callbacks: {
         appendOutput: (...parts: string[]) => { outputs.push(parts.join(' ')); },
         appendExecutionTrace: () => undefined,
@@ -432,7 +450,7 @@ describe('service verification loop', () => {
       },
       subtaskRepo: {
         findById: () => ({ id: 'subtask-1', taskId: 'task-1', status: 'done', generationId: 'generation-1', executorBindings: [binding] }),
-        listActiveByTask: () => [{ id: 'subtask-1', status: 'done' }],
+        listActiveByTask: () => [{ id: 'subtask-1', status: subtaskStatus }],
         updateStatus: () => undefined,
       },
       workGraphRevisionRepo: { findActive: () => ({ generationId: 'generation-1', revision: 1, configurationRevision: 'revision-1' }) },
@@ -446,6 +464,41 @@ describe('service verification loop', () => {
     } as never);
     return { runtime, operations, outputs };
   }
+
+  it('does not start a second verification while the first is repairing the service', async () => {
+    const { runtime, operations } = loopRuntime();
+    const projection = runtime as unknown as {
+      startRequestedPublishedService(taskId: string): Promise<void>;
+      verifyRequestedService(): Promise<unknown>;
+      recordServiceStarted(): void;
+    };
+    let calls = 0;
+    projection.verifyRequestedService = async () => {
+      calls++;
+      if (calls > 1) throw new Error('duplicate verification observed an in-flight repair');
+      await projection.startRequestedPublishedService('task-1');
+      return { spec: specification, workspaceId: 'workspace-1', view: { ...view, state: 'healthy' } };
+    };
+    const started = vi.fn();
+    projection.recordServiceStarted = started;
+    await projection.startRequestedPublishedService('task-1');
+    expect(calls).toBe(1);
+    expect(started).toHaveBeenCalledOnce();
+    expect(operations).toEqual([]);
+  });
+
+  it.each(['running', 'ready', 'blocked'])('waits for %s producer work instead of recording a terminal service failure', async status => {
+    const { runtime, operations } = loopRuntime(status);
+    const projection = runtime as unknown as {
+      startRequestedPublishedService(taskId: string): Promise<void>;
+      verifyRequestedService(): Promise<unknown>;
+    };
+    const verify = vi.fn();
+    projection.verifyRequestedService = verify;
+    await projection.startRequestedPublishedService('task-1');
+    expect(verify).not.toHaveBeenCalled();
+    expect(operations).toEqual([]);
+  });
 
   it('re-verifies after each authorized round and reports the real error at the budget', async () => {
     const { runtime, operations, outputs } = loopRuntime();
@@ -559,7 +612,7 @@ describe('service repair source Attempt resolution', () => {
 });
 
 describe('service repair authorization outcomes', () => {
-  function projectionOf(runtime: KernelExecutionRuntime) {
+  function projectionOf(runtime: ControlExecutionRuntime) {
     return runtime as unknown as {
       requestServiceRepair(input: Record<string, unknown>): Promise<boolean>;
     };
@@ -568,7 +621,7 @@ describe('service repair authorization outcomes', () => {
   it('leaves the completed Subtask unchanged and reports the Kernel reason when the round is refused', async () => {
     const { runtime, operations, outputs, transitions } = runtimeWith({});
     const workflow = {
-      submit: vi.fn(async (event: KernelEvent) => ({
+      submit: vi.fn(async (event: ControlEvent) => ({
         decisions: [{ eventId: event.id, action: { type: 'block_work', taskId: 'task-1', subtaskId: 'subtask-1' }, reason: 'service repair budget exhausted after 3 rounds' }],
       })),
     };
@@ -607,7 +660,7 @@ describe('service repair authorization outcomes', () => {
   it('does not reopen the Subtask when the submission is refused after dispatch authorization', async () => {
     const { runtime, transitions } = runtimeWith({});
     const workflow = {
-      submit: vi.fn(async (event: KernelEvent) => ({
+      submit: vi.fn(async (event: ControlEvent) => ({
         decisions: [{
           eventId: event.id,
           action: { type: 'dispatch_batch', taskId: 'task-1', items: [{ subtaskId: 'other-subtask' }] },
@@ -659,7 +712,7 @@ describe('service repair budget accounting', () => {
 });
 
 describe('service repair target identity', () => {
-  function targetOf(runtime: KernelExecutionRuntime) {
+  function targetOf(runtime: ControlExecutionRuntime) {
     return runtime as unknown as {
       serviceRepairTarget(taskId: string): { subtaskId: string; attemptId: string } | null;
     };
@@ -724,7 +777,7 @@ describe('automatic remaining-work recovery', () => {
   }) {
     const outputs: string[] = [];
     const taskState = recordingTaskStateAuthority();
-    const runtime = new KernelExecutionRuntime({
+    const runtime = new ControlExecutionRuntime({
       callbacks: {
         appendOutput: (...parts: string[]) => { outputs.push(parts.join(' ')); },
         refreshRuntimeState: () => undefined,
@@ -814,7 +867,7 @@ describe('remaining work reads the latest service outcome', () => {
       { operationKey: 'service:start:backend:old:attempt-0:0', operationKind: 'service', outcome: 'definite_failure' },
       { operationKey: 'service:start:backend:new:attempt-1:1', operationKind: 'service', outcome: 'success' },
     ];
-    const runtime = new KernelExecutionRuntime({
+    const runtime = new ControlExecutionRuntime({
       callbacks: { appendOutput: () => undefined, refreshRuntimeState: () => undefined },
       taskStateAuthority: taskState.authority,
       taskOperationResults: {

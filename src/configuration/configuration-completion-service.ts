@@ -32,10 +32,9 @@ export interface ConfigurationCompletionModel {
   capabilities: string[];
   capabilityState: CompletionFieldState;
   contextLimit?: number;
-  costInputPerMillion?: number;
-  costOutputPerMillion?: number;
+
   publicFacts?: OpenRouterModelMetadata['publicFacts'];
-  pricing?: OpenRouterModelMetadata['pricing'];
+
   latencyTier?: string;
   qualityTier?: string;
 }
@@ -177,21 +176,7 @@ export class ConfigurationCompletionService {
         ...(numberValue(configured.contextLimit) !== undefined
           ? { contextLimit: numberValue(configured.contextLimit) }
           : {}),
-        ...(numberValue(configured.costInputPerMillion) !== undefined
-          ? { costInputPerMillion: numberValue(configured.costInputPerMillion) }
-          : {}),
-        ...(numberValue(configured.costOutputPerMillion) !== undefined
-          ? { costOutputPerMillion: numberValue(configured.costOutputPerMillion) }
-          : openRouterModel?.costOutputPerMillion !== undefined
-            ? { costOutputPerMillion: openRouterModel.costOutputPerMillion }
-          : {}),
-        ...(numberValue(configured.costInputPerMillion) === undefined
-          && openRouterModel?.costInputPerMillion !== undefined
-          ? { costInputPerMillion: openRouterModel.costInputPerMillion }
-          : {}),
-        ...(configured.pricing && typeof configured.pricing === 'object'
-          ? { pricing: configured.pricing as ConfigurationCompletionModel['pricing'] }
-          : openRouterModel?.pricing ? { pricing: openRouterModel.pricing } : {}),
+
         ...(text(configured.latencyTier) ? { latencyTier: text(configured.latencyTier)! } : {}),
         ...(text(configured.qualityTier) ? { qualityTier: text(configured.qualityTier)! } : {}),
       };

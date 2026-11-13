@@ -217,7 +217,6 @@ export class LegacyConfigurationReader {
       add(join(root, 'planner', 'settings.json')),
       add(join(root, 'pi-home', '.pi', 'agent', 'models.json')),
       add(join(root, 'pi-home', '.pi', 'agent', 'settings.json')),
-      add(join(root, 'codex', 'config.toml')),
     ]);
     const entries = await readdir(root, { withFileTypes: true }).catch(() => []);
     await Promise.all(entries
@@ -367,17 +366,7 @@ export class LegacyConfigurationReader {
         supportsContinuation: true,
         enabled: true,
       },
-      'codex-cli': {
-        kind: 'executor',
-        transport: 'local-cli',
-        command: 'codex',
-        args: [],
-        driverId: 'codex-cli',
-        supportsProbe: true,
-        supportsAbort: true,
-        supportsContinuation: true,
-        enabled: true,
-      },
+
       'pi-cli': {
         kind: 'executor',
         transport: 'local-cli',
@@ -405,22 +394,7 @@ export class LegacyConfigurationReader {
         generatedRuntimeRef: 'planner',
         enabled: true,
       },
-      'codex-cli': {
-        displayName: '智能体 2',
-        kind: 'executor',
-        harnessRef: 'codex-cli',
-        modelPolicy: { mode: 'fixed', modelRef: defaultModelRef },
-        permissionProfileRef: 'workspace-engineering',
-        routingCapabilities: ['workspace-engineering', 'document-processing'],
-        primaryUseCases: ['repository implementation', 'tests', 'engineering documentation', 'image generation', 'image editing'],
-        avoidUseCases: ['current public-web research requiring source-backed delivery'],
-        plannerAffordances: ['workspace-read-write', 'workspace-command-validation'],
-        skills: [],
-        mcpServers: [],
-        plugins: [],
-        generatedRuntimeRef: 'codex-cli',
-        enabled: true,
-      },
+
       'pi-agent': {
         displayName: '智能体 1',
         kind: 'executor',
@@ -480,7 +454,7 @@ export class LegacyConfigurationReader {
         continue;
       }
       const command = record.command ?? (record.kind === 'planner' ? 'planner' : undefined);
-      if (record.kind === 'executor' && command !== 'codex' && command !== 'pi') {
+      if (record.kind === 'executor' && command !== 'pi') {
         conflicts.push({
           path: `agentClasses.${record.id}.command`,
           code: 'unknown_custom_command',
@@ -509,7 +483,7 @@ export class LegacyConfigurationReader {
           transport: 'local-cli',
           command: command!,
           args: [],
-          driverId: isPi ? 'pi-cli' : 'codex-cli',
+          driverId: 'pi-cli',
           supportsProbe: true,
           supportsAbort: true,
           supportsContinuation: true,

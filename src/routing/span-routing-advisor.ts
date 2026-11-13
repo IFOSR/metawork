@@ -36,8 +36,7 @@ export function isSystemOneDecisionModel(input: {
 }): boolean {
   const supportsSystemOne = input.outputModalities?.some(modality => modality.toLowerCase() === 'decisions')
     || /(?:\/v1\/systemone|system\s*one|systemone|typesafe[\s\S]{0,80}\bjev\b|\bjev\b[\s\S]{0,80}(?:interface|protocol|接口|契约|共用))/iu.test(input.description ?? '')
-    || input.modelId === 'inception/mercury-decide:free'
-    || /(?:^|[/:_-])mercury-decide(?:$|[/:_-])/iu.test(input.modelId);
+    ;
   return Boolean(supportsSystemOne);
 }
 
@@ -441,20 +440,17 @@ function combineAbortSignals(
 function aggregateUsage(subtasks: readonly SpanSubtaskObservation[]): SpanUsage | undefined {
   let inputTokens = 0;
   let outputTokens = 0;
-  let cost = 0;
   let observed = false;
   for (const subtask of subtasks) {
     if (subtask.status !== 'advised' || !subtask.usage) continue;
     observed = true;
     inputTokens += subtask.usage.inputTokens ?? 0;
     outputTokens += subtask.usage.outputTokens ?? 0;
-    cost += subtask.usage.cost ?? 0;
   }
   return observed
     ? {
       ...(inputTokens > 0 ? { inputTokens } : {}),
       ...(outputTokens > 0 ? { outputTokens } : {}),
-      ...(cost > 0 ? { cost } : {}),
     }
     : undefined;
 }

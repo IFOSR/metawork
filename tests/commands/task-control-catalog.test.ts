@@ -3,14 +3,14 @@ import Database from 'better-sqlite3';
 import { createDefaultCommandCatalog } from '../../src/commands/command-tree.js';
 import { TaskEngine } from '../../src/task/task-engine.js';
 import { TaskRepo } from '../../src/storage/task-repo.js';
-import { runMigrations } from '../../src/storage/migrations.js';
+import { initializeDatabaseSchema } from '../../src/storage/schema.js';
 import { seedAgentClasses } from '../support/seed-agent-classes.js';
 import { setTaskStatus, withReason } from '../support/task-state-fixture.js';
 
 function createHarness() {
   const db = new Database(':memory:');
   db.pragma('foreign_keys = ON');
-  runMigrations(db);
+  initializeDatabaseSchema(db);
   seedAgentClasses(db);
   const taskRepo = new TaskRepo(db);
   const taskEngine = new TaskEngine(taskRepo, '/tmp/metaclaw-command-control');

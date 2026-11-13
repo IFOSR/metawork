@@ -1485,7 +1485,7 @@ function deferred<T>() {
 // ===== 可见账单：Turn 三态账单卡与账单页（账单简化设计 §3/§4） =====
 
 import Database from 'better-sqlite3';
-import { runMigrations } from '../../src/storage/migrations.js';
+import { initializeDatabaseSchema } from '../../src/storage/schema.js';
 import { SqliteQueryContextStore } from '../../src/storage/query-usage-context-repo.js';
 import { SqliteMeteringStore } from '../../src/storage/metering-repo.js';
 import {
@@ -1511,7 +1511,7 @@ function createRuntimeBillingService(): {
   close: () => void;
 } {
   const db = new Database(':memory:');
-  runMigrations(db);
+  initializeDatabaseSchema(db);
   const contexts = new SqliteQueryContextStore(db);
   const metering = new SqliteMeteringStore(db);
   const prices = new SqlitePriceStore(db);

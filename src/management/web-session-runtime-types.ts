@@ -15,7 +15,6 @@ import type {
 } from './web-session-types.js';
 import type { WorkspaceSummary } from '../workspace/workspace-directory-service.js';
 import type { ArtifactProjection } from '../delivery/user-artifact-types.js';
-import type { BillQueryService } from '../billing/bill-query-service.js';
 
 export interface WebDirectoryPage<T = WebSessionDirectoryMetadataProjection> {
   items: T[];
@@ -160,13 +159,6 @@ export type WebSessionRuntimeEvent =
     taskId: string;
     artifacts: ArtifactProjection[];
   }
-  | {
-    type: 'billing';
-    turnId: string;
-    queryBill: import('../billing/bill-query-service.js').QueryBillProjection | null;
-    taskUsageSummary: import('../billing/bill-query-service.js').TaskUsageSummary | null;
-    turnBilling: import('../billing/bill-query-service.js').TurnBillUserView | null;
-  }
   | { type: 'conversation_snapshot'; turn: ConversationTurnProjection }
   | { type: 'turn_updated'; turn: ConversationTurnProjection }
   | {
@@ -206,24 +198,5 @@ export interface ManagementWebSessionRuntime {
   clearAllSessions(clientId: string): Promise<{ deleted: number; deletedIds: string[]; skipped: number }>;
   subscribe(clientId: string, listener: (event: WebSessionRuntimeEvent) => void): () => void;
   getReplayEvents(clientId: string): WebSessionRuntimeEvent[];
-  /**
-   * 只读账单页：分页历史账单 + 会话目录联合出的请求摘要/Task 标题。
-   * 不创建 Turn，不改变账单状态，金额与状态全部来自 Server 投影。
-   */
-  listBillingRecords(
-    clientId: string,
-    input?: {
-      readonly cursor?: string;
-      readonly filter?: import('./web-session-types.js').BillingStatusFilter;
-      readonly limit?: number;
-    },
-  ): Promise<import('./web-session-types.js').BillingRecordPageView>;
-  /** Task 详情的关联 Query 展示；无事实时返回空 items，由页面显示未建立计量记录。 */
-  getTaskBillingDetail(
-    clientId: string,
-    taskId: string,
-  ): Promise<import('./web-session-types.js').TaskBillingDetailView | null>;
-  listBillingTasks?(
-    clientId: string,
-  ): Promise<readonly import('./web-session-types.js').BillingTaskView[]>;
+
 }

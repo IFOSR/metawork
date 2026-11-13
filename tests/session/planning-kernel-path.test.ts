@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from 'vitest';
 import Database from 'better-sqlite3';
 import { existsSync } from 'node:fs';
 import { join } from 'node:path';
-import { runMigrations } from '../../src/storage/migrations.js';
+import { initializeDatabaseSchema } from '../../src/storage/schema.js';
 import { TaskRepo } from '../../src/storage/task-repo.js';
 import { KernelDecisionRepo } from '../../src/storage/kernel-decision-repo.js';
 import { TaskEngine } from '../../src/task/task-engine.js';
@@ -96,7 +96,7 @@ function createSession(
 ) {
   const db = new Database(':memory:');
   db.pragma('foreign_keys = ON');
-  runMigrations(db);
+  initializeDatabaseSchema(db);
   const taskRepo = new TaskRepo(db);
   const taskEngine = new TaskEngine(taskRepo, `/tmp/metaclaw-planning-kernel-path/${sessionId}`);
   const attemptExecutionBackend = new FakeAttemptExecutionBackend(

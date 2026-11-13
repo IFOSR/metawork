@@ -1,6 +1,6 @@
 import Database from 'better-sqlite3';
 import { describe, expect, it } from 'vitest';
-import { runMigrations } from '../../src/storage/migrations.js';
+import { initializeDatabaseSchema } from '../../src/storage/schema.js';
 import { SqlitePermissionRepository } from '../../src/storage/permission-repo.js';
 import type { NormalizedCapabilityRequest } from '../../src/resource/index.js';
 
@@ -19,7 +19,7 @@ function request(id = 'request-1'): NormalizedCapabilityRequest {
 describe('SqlitePermissionRepository grant budgets', () => {
   it('atomically enforces attempt, TTL, call, and byte bounds', () => {
     const db = new Database(':memory:');
-    runMigrations(db);
+    initializeDatabaseSchema(db);
     db.pragma('foreign_keys = OFF');
     const repo = new SqlitePermissionRepository(db);
     const normalized = request();
@@ -39,7 +39,7 @@ describe('SqlitePermissionRepository grant budgets', () => {
 
   it('lists only escalated requests in stable created-at and request-id order', () => {
     const db = new Database(':memory:');
-    runMigrations(db);
+    initializeDatabaseSchema(db);
     db.pragma('foreign_keys = OFF');
     const repo = new SqlitePermissionRepository(db);
     for (const [id, createdAt] of [

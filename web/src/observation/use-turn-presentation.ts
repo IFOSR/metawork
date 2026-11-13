@@ -3,7 +3,7 @@ import { useEffect, useState, useCallback } from 'react';
 import type { ConversationTurnView } from '../../../src/session/conversation-read-types';
 import type { HttpClient } from '../api/http';
 import type { WsClient } from '../api/ws';
-import type { ConversationTurnProjection, TurnBillUserView } from '../api/session-types';
+import type { ConversationTurnProjection } from '../api/session-types';
 import { turnStatusFromTimeline } from '../conversation-live-turn';
 
 function turnStatusFromTaskStatus(status: unknown): ConversationTurnProjection['status'] | null {
@@ -15,7 +15,7 @@ function turnStatusFromTaskStatus(status: unknown): ConversationTurnProjection['
   return null;
 }
 
-type Presentation = Pick<ConversationTurnProjection, 'traceEvents' | 'executionTimeline' | 'artifacts' | 'turnBilling'>
+type Presentation = Pick<ConversationTurnProjection, 'traceEvents' | 'executionTimeline' | 'artifacts'>
   & Partial<Pick<ConversationTurnProjection, 'status' | 'completedAt'>>
   & {
     taskLifecycle?: GatewayTaskViewSnapshot['lifecycle'];
@@ -36,7 +36,7 @@ interface TaskResource {
   timeline: ConversationTurnProjection['executionTimeline'];
   artifacts: ConversationTurnProjection['artifacts'];
 }
-const EMPTY: Presentation = { traceEvents: [], executionTimeline: null, artifacts: [], turnBilling: null };
+const EMPTY: Presentation = { traceEvents: [], executionTimeline: null, artifacts: [] };
 // These are disposable resource responses, not a second reducer for shared facts.
 const caches = new WeakMap<WsClient, Map<string, Presentation>>();
 const queues = new WeakMap<WsClient, { active: number; waiting: Array<() => void> }>();
@@ -98,7 +98,7 @@ export function useTurnPresentation(ws: WsClient, http: HttpClient, conversation
       if (busy) { refreshAgain = true; return; }
       busy = true;
       await schedule(ws, current, async () => {
-        // Independent resources: missing billing must not suppress execution/artifacts.
+        // Independent resources: a missing trace must not suppress execution/artifacts.
         const jobs: Promise<unknown>[] = [];
         if (showExecution) jobs.push(http.getConversationTrace(conversationId, turn.id, undefined, true)
           .then(page => commit({ traceEvents: page.events })));
@@ -132,11 +132,6 @@ export function useTurnPresentation(ws: WsClient, http: HttpClient, conversation
               completedAt: projectedStatus === 'running' ? null : turn.completedAt,
             } : {}),
           });
-        }));
-        if (turn.interactionKind !== 'system_command') jobs.push(ws.query<{ turnId: string; turnBill: TurnBillUserView }>(conversationId,
-          { kind: 'get_query_bill_for_turn', turnId: turn.id }).then(result => {
-          if (result.turnId === turn.id && result.turnBill?.turnId === turn.id
-            && result.turnBill.conversationId === conversationId) commit({ turnBilling: result.turnBill });
         }));
         await Promise.allSettled(jobs);
       });

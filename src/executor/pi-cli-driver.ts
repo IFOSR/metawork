@@ -13,6 +13,7 @@ import {
 } from '../configuration/agent-runtime-renderer.js';
 import { redactSensitiveText } from '../utils/redact-sensitive-text.js';
 import { RuntimeHomeMaterializer } from './runtime-home-materializer.js';
+import { normalizePiUsage } from './pi-usage.js';
 import { PI_PROVIDER_OPTIONS_EXTENSION_SOURCE } from './pi-provider-options.js';
 import {
   TOOL_STALL_FACTS_FILE,
@@ -31,7 +32,6 @@ import type {
   HarnessResultStreamSnapshot,
   HarnessResultStreamTracker,
   HarnessResultInput,
-  HarnessUsageCounter,
   HarnessUsageEvent,
   MaterializedRuntimeHome,
   ProbeCommandRunner,
@@ -306,21 +306,20 @@ export class PiCliDriver implements HarnessDriver {
       .digest('hex')
       .slice(0, 24)}`;
     const callId = explicitCallId ?? fallbackCallId;
-    const counters = piUsageCounters(usage);
+    const normalized = normalizePiUsage({
+      input: usage?.input, output: usage?.output,
+      cacheRead: usage?.cacheRead !== undefined ? usage.cacheRead : usage?.cache_read,
+      cacheWrite: usage?.cacheWrite !== undefined ? usage.cacheWrite : usage?.cache_write,
+      reasoning: usage?.reasoning,
+    });
     return {
       sourceEventKey: callId.startsWith('message_end:')
         ? callId
         : `message_end:${callId}`,
       callId,
-      counters,
-      ...(counters.length === 0
-        ? {
-            missing: [
-              { resource: 'model_tokens', metric: 'input', unit: 'token' },
-              { resource: 'model_tokens', metric: 'output', unit: 'token' },
-            ],
-          }
-        : {}),
+      occurredAtUtc: new Date().toISOString(),
+      providerResponseId: explicitCallId ?? null,
+      ...normalized,
     };
   }
 
@@ -428,6 +427,17 @@ export class PiCliDriver implements HarnessDriver {
   ): Promise<void> {
     if (!this.webExtensionSourcePath
       || (!hasWebResearchAffordances(affordances) && !evidenceToolsAvailable)) return;
+    // A previous partial build (`tsup` clears dist/ and the generated
+    // extension is a separate step) used to surface here as a generic
+    // ENOENT "configuration" failure, which the user cannot act on. Fail with
+    // the actual repair instruction instead.
+    if (!existsSync(this.webExtensionSourcePath)) {
+      throw new Error(
+        'MetaWork runtime is incomplete: missing generated Pi extension '
+        + `${this.webExtensionSourcePath}. Rebuild the complete runtime `
+        + '(npm run build, or run tsup plus the schema and pi-attempt-extension generators).',
+      );
+    }
     const extensionsDir = join(homePath, '.pi', 'agent', 'extensions');
     await mkdir(extensionsDir, { recursive: true, mode: 0o700 });
     const target = join(extensionsDir, 'metawork-web-tools.ts');
@@ -563,33 +573,6 @@ function findPiTerminalError(events: Record<string, unknown>[]): string | null {
       return event.errorMessage.trim();
     }
   }
-  return null;
-}
-
-function piUsageCounters(usage: Record<string, unknown> | null): HarnessUsageCounter[] {
-  if (!usage) return [];
-  const counters: HarnessUsageCounter[] = [];
-  const input = integerString(usage.input);
-  const output = integerString(usage.output);
-  const cacheRead = integerString(usage.cacheRead ?? usage.cache_read);
-  const cacheWrite = integerString(usage.cacheWrite ?? usage.cache_write);
-  if (input !== null) counters.push({ resource: 'model_tokens', metric: 'input', unit: 'token', kind: 'delta', value: input });
-  if (output !== null) counters.push({ resource: 'model_tokens', metric: 'output', unit: 'token', kind: 'delta', value: output });
-  if (cacheRead !== null) counters.push({ resource: 'model_tokens', metric: 'cache_read', unit: 'token', kind: 'delta', value: cacheRead, subsetOf: 'input' });
-  if (cacheWrite !== null) counters.push({
-    resource: 'model_tokens',
-    metric: 'cache_write',
-    unit: 'token',
-    kind: 'delta',
-    value: cacheWrite,
-    subsetOf: 'input',
-  });
-  return counters;
-}
-
-function integerString(value: unknown): string | null {
-  if (typeof value === 'number' && Number.isSafeInteger(value) && value >= 0) return String(value);
-  if (typeof value === 'string' && /^\d+$/u.test(value)) return value;
   return null;
 }
 

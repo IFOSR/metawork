@@ -131,6 +131,7 @@ describe('normalizeExecutorFailure', () => {
       kind: 'configuration',
       scope: 'task',
       code: 'workspace_contains_runtime_root',
+      summary: 'refusing to import workspace source into itself: /Users/jialundu contains /Users/jialundu/.metawork/plain-import-x',
       stage: 'workspace_preflight',
       label: 'Workspace 配置无效',
     });
@@ -143,6 +144,7 @@ describe('normalizeExecutorFailure', () => {
       kind: 'configuration',
       scope: 'task',
       code: 'workspace_binding_missing',
+      summary: 'attempt a1 has no workspace source: dispatch payload is missing its workspacePath',
       stage: 'workspace_preflight',
     });
   });

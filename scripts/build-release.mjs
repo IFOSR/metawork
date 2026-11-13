@@ -1,8 +1,9 @@
 #!/usr/bin/env node
 import { spawnSync } from 'node:child_process';
-import { existsSync } from 'node:fs';
-import { resolve } from 'node:path';
+import { existsSync, mkdirSync, writeFileSync } from 'node:fs';
+import { join, resolve } from 'node:path';
 import { architectureName, platformName } from './package-release.mjs';
+import { assertPiRuntimePin } from './lib/pi-runtime-pin.mjs';
 
 function parseArguments(argv) {
   const options = {
@@ -15,6 +16,7 @@ function parseArguments(argv) {
     signingKey: undefined,
     artifactBaseUrl: undefined,
     packageOnly: false,
+    piCommand: undefined,
   };
   for (let index = 0; index < argv.length; index += 1) {
     const argument = argv[index];
@@ -34,6 +36,7 @@ function parseArguments(argv) {
       case '--signing-key': options.signingKey = resolve(requireValue()); break;
       case '--artifact-base-url': options.artifactBaseUrl = requireValue(); break;
       case '--package-only': options.packageOnly = true; break;
+      case '--pi-command': options.piCommand = requireValue(); break;
       default: throw new Error(`unknown option: ${argument}`);
     }
   }
@@ -41,10 +44,7 @@ function parseArguments(argv) {
 }
 
 function run(command, args, cwd = process.cwd()) {
-  // npm and bun are .cmd shims on Windows; Node ≥18.20 refuses to spawn them
-  // without a shell.
-  const shims = command === 'npm' || command === 'bun';
-  const executable = process.platform === 'win32' && shims ? `${command}.cmd` : command;
+  const executable = process.platform === 'win32' && command === 'npm' ? 'npm.cmd' : command;
   const result = spawnSync(executable, args, {
     cwd,
     stdio: 'inherit',
@@ -99,18 +99,9 @@ function assertNativeTarget(options) {
   }
 }
 
-// npm -g installs bun as .cmd/sh shims on Windows; a bare spawnSync misses
-// them, so fall back to a shell-resolved probe there.
-function bunAvailable() {
-  if (spawnSync('bun', ['--version'], { stdio: 'ignore' }).status === 0) return true;
-  if (process.platform !== 'win32') return false;
-  return spawnSync('bun', ['--version'], { stdio: 'ignore', shell: true }).status === 0;
-}
-
 function main() {
   const options = parseArguments(process.argv.slice(2));
   assertNativeTarget(options);
-  const plannerRoot = resolve('planner', 'AnyFusion-Pi');
   const packageArgs = [
     'scripts/package-release.mjs',
     '--platform',
@@ -126,25 +117,24 @@ function main() {
     ...(options.artifactBaseUrl ? ['--artifact-base-url', options.artifactBaseUrl] : []),
   ];
 
+  // ADR-0055 D6: the packaged Manager and Executor run the upstream Pi version
+  // installed on this packaging host. Record exactly which one and fail fast
+  // when it is missing, mismatched or needs a newer Node than MetaWork supports.
+  const piPin = assertPiRuntimePin({ ...(options.piCommand ? { command: options.piCommand } : {}) });
+  const pinPath = join(options.outDir ?? resolve('dist-release'), 'pi-runtime-pin.json');
+  mkdirSync(join(pinPath, '..'), { recursive: true });
+  writeFileSync(pinPath, `${JSON.stringify({
+    ...piPin,
+    pinnedAt: new Date().toISOString(),
+    host: { platform: process.platform, arch: process.arch, node: process.versions.node },
+  }, null, 2)}\n`);
+  packageArgs.push('--pi-command', piPin.commandPath, '--pi-pin', pinPath);
+  process.stdout.write(`packaged Pi pin: ${piPin.version} (${piPin.releaseDir})\n`);
+
   if (!options.packageOnly) {
     run('npm', ['ci']);
     run('npm', ['run', 'build']);
-    run('npm', ['ci', '--ignore-scripts'], plannerRoot);
-    run('npm', ['run', 'build:offline'], plannerRoot);
-    // Bundle a native Pi Executor compiled from the same vendored fork when
-    // bun is available; the packaging allowlist picks up dist/pi(.exe) and
-    // launchers point METAWORK_MANAGED_PI at it. Optional: builds without bun
-    // keep working, only without the managed executor binary. The package
-    // builds have already produced dist/bun/cli.js; the full build:binary
-    // chain is not used because packages/ai carries pre-existing type errors.
-    if (bunAvailable()) {
-      run('bun', ['build', '--compile', './dist/bun/cli.js', './src/utils/image-resize-worker.ts', '--outfile', 'dist/pi'],
-        resolve(plannerRoot, 'packages', 'coding-agent'));
-    } else {
-      process.stdout.write('bun not found; skipping the bundled Pi executor binary\n');
-    }
     run('npm', ['ci', '--omit=dev']);
-    run('npm', ['ci', '--omit=dev'], plannerRoot);
     assertBetterSqlite3Runtime(process.cwd());
   }
   run(process.execPath, packageArgs);

@@ -2,36 +2,35 @@ import { AsyncLocalStorage } from 'node:async_hooks';
 import type { SessionPersistenceService } from '../session/session-persistence-service.js';
 import type { SessionPresentationService } from '../session/session-presentation-service.js';
 import type {
-  AccountKernelExecutionServices,
-  KernelExecutionRuntimeCallbacks,
-  SessionKernelRuntimeCallbacks,
+  AccountControlExecutionServices,
+  ControlExecutionRuntimeCallbacks,
+  SessionControlRuntimeCallbacks,
   TaskExecutionApplicationCallbacks,
-} from './account-kernel-execution-services.js';
+} from './account-control-execution-services.js';
 
 export interface ConversationExecutionBinding {
   readonly sessionId: string;
   readonly conversationId?: string;
   readonly persistenceService: SessionPersistenceService;
   readonly presentation: SessionPresentationService;
-  readonly kernelExecutionCallbacks: KernelExecutionRuntimeCallbacks;
+  readonly kernelExecutionCallbacks: ControlExecutionRuntimeCallbacks;
   readonly taskExecutionCallbacks: TaskExecutionApplicationCallbacks;
-  readonly sessionKernelCallbacks: SessionKernelRuntimeCallbacks;
+  readonly sessionControlCallbacks: SessionControlRuntimeCallbacks;
 }
 
 export interface AccountConversationExecutionBinder {
-  bind(input: ConversationExecutionBinding): AccountKernelExecutionServices;
   runWith<T>(input: ConversationExecutionBinding, operation: () => Promise<T>): Promise<T>;
   currentSessionId(): string | null;
   routedPersistenceService(): SessionPersistenceService;
-  routedKernelCallbacks(): KernelExecutionRuntimeCallbacks;
+  routedControlCallbacks(): ControlExecutionRuntimeCallbacks;
   routedTaskCallbacks(): TaskExecutionApplicationCallbacks;
-  routedSessionKernelCallbacks(): SessionKernelRuntimeCallbacks;
-  bindSharedServices(services: AccountKernelExecutionServices): void;
+  routedSessionControlCallbacks(): SessionControlRuntimeCallbacks;
+  bindSharedServices(services: AccountControlExecutionServices): void;
 }
 
 export function createAccountConversationExecutionBinder(): AccountConversationExecutionBinder {
   const storage = new AsyncLocalStorage<ConversationExecutionBinding>();
-  let shared: AccountKernelExecutionServices | null = null;
+  let shared: AccountControlExecutionServices | null = null;
   const current = (): ConversationExecutionBinding => {
     const binding = storage.getStore();
     if (!binding) throw new Error('account execution is not bound to a Conversation');
@@ -43,7 +42,7 @@ export function createAccountConversationExecutionBinder(): AccountConversationE
       sessionId: current().sessionId,
     }),
   } as SessionPersistenceService;
-  const routedKernelCallbacks = routeCallbacks(
+  const routedControlCallbacks = routeCallbacks(
     storage,
     binding => binding.kernelExecutionCallbacks,
   );
@@ -51,9 +50,9 @@ export function createAccountConversationExecutionBinder(): AccountConversationE
     storage,
     binding => binding.taskExecutionCallbacks,
   );
-  const routedSessionKernelCallbacks = routeCallbacks(
+  const routedSessionControlCallbacks = routeCallbacks(
     storage,
-    binding => binding.sessionKernelCallbacks,
+    binding => binding.sessionControlCallbacks,
   );
 
   return {
@@ -61,53 +60,13 @@ export function createAccountConversationExecutionBinder(): AccountConversationE
       if (shared) throw new Error('account execution services are already bound');
       shared = services;
     },
-    bind(input) {
-      if (!shared) throw new Error('account execution services are unavailable');
-      return {
-        kernelExecutionRuntime: bindObject(storage, input, shared.kernelExecutionRuntime),
-        taskExecutionApplicationService: bindObject(
-          storage,
-          input,
-          shared.taskExecutionApplicationService,
-        ),
-        sessionKernelRuntime: {
-          forInput(userInput?: string, conversationId?: string, queryId?: string | null) {
-            const runtime = shared!.sessionKernelRuntime.forInput(
-              userInput,
-              conversationId ?? input.conversationId ?? input.sessionId,
-              queryId,
-            );
-            return {
-              apply: decision => storage.run(input, () => runtime.apply(decision)),
-            };
-          },
-        } as AccountKernelExecutionServices['sessionKernelRuntime'],
-      };
-    },
     runWith: (input, operation) => storage.run(input, operation),
     currentSessionId: () => storage.getStore()?.sessionId ?? null,
     routedPersistenceService: () => routedPersistence,
-    routedKernelCallbacks: () => routedKernelCallbacks,
+    routedControlCallbacks: () => routedControlCallbacks,
     routedTaskCallbacks: () => routedTaskCallbacks,
-    routedSessionKernelCallbacks: () => routedSessionKernelCallbacks,
+    routedSessionControlCallbacks: () => routedSessionControlCallbacks,
   };
-}
-
-function bindObject<T extends object>(
-  storage: AsyncLocalStorage<ConversationExecutionBinding>,
-  input: ConversationExecutionBinding,
-  target: T,
-): T {
-  return new Proxy(target, {
-    get(object, property, receiver) {
-      const value = Reflect.get(object, property, receiver);
-      if (typeof value !== 'function') return value;
-      return (...args: unknown[]) => storage.run(
-        input,
-        () => Reflect.apply(value, object, args),
-      );
-    },
-  });
 }
 
 /** Callbacks a binding may legitimately omit; calling them is a no-op. */

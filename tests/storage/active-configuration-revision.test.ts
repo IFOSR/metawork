@@ -1,6 +1,6 @@
 import Database from 'better-sqlite3';
 import { describe, expect, it } from 'vitest';
-import { runMigrations } from '../../src/storage/migrations.js';
+import { initializeDatabaseSchema } from '../../src/storage/schema.js';
 import {
   ensureActiveConfigurationRevision,
 } from '../../src/storage/active-configuration-revision.js';
@@ -8,7 +8,7 @@ import {
 describe('ensureActiveConfigurationRevision', () => {
   it('registers the active revision before foreign-keyed Kernel writes', () => {
     const db = new Database(':memory:');
-    runMigrations(db);
+    initializeDatabaseSchema(db);
 
     ensureActiveConfigurationRevision(db, {
       revisionId: 'revision-active',
@@ -29,7 +29,7 @@ describe('ensureActiveConfigurationRevision', () => {
 
   it('preserves an imported identity when the active revision already exists', () => {
     const db = new Database(':memory:');
-    runMigrations(db);
+    initializeDatabaseSchema(db);
     db.prepare(`
       INSERT INTO configuration_revisions (
         revision_id, content_hash, source_kind, imported_at

@@ -55,7 +55,7 @@
 - prompt: server503.js on 9346 with /health always 503
 - service row: server503 state=unhealthy health_message="服务已启动，健康检查返回 503" (503 retained)
 - after ~3.5 min silent wait the task failed: "service_health_timeout，serviceId=server503，state=failed，进程已退出，健康检查=503"
-- surfaced 重试未完成部分 / 取消任务 buttons; 3 service_repair continuation attempts existed in kernel_dispatch_items
+- surfaced 重试未完成部分 / 取消任务 buttons; 3 service_repair continuation attempts existed in dispatch_items
 - A9 relevance: no explicit "已尝试 N 轮" count shown to user
 
 ## A2 root cause (detailed)

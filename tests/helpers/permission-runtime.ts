@@ -1,5 +1,5 @@
 import Database from 'better-sqlite3';
-import { runMigrations } from '../../src/storage/migrations.js';
+import { initializeDatabaseSchema } from '../../src/storage/schema.js';
 import { KernelWorkflowRepo } from '../../src/storage/kernel-workflow-repo.js';
 import { KernelDecisionRepo } from '../../src/storage/kernel-decision-repo.js';
 import { SqlitePermissionRepository } from '../../src/storage/permission-repo.js';
@@ -11,7 +11,7 @@ import type { NormalizedCapabilityRequest } from '../../src/resource/index.js';
 // deliberately absent: permission continuation must be durable without any client.
 export function permissionFixture() {
   const db = new Database(':memory:');
-  runMigrations(db);
+  initializeDatabaseSchema(db);
   db.pragma('foreign_keys = OFF');
   const store = new KernelWorkflowRepo(db);
   const permissions = new SqlitePermissionRepository(db);

@@ -1,5 +1,6 @@
 # Architecture Decision Records
 
+- [ADR-0055: No-Kernel Target Architecture And Contract Reset](0055-no-kernel-target-architecture-and-contract-reset.md) — **accepted 2026-11-07 (product-owner waiver of the cross-review)**; Manager/Router/Executor target, Router direct dispatch, permission ownership, durable facts, fresh schema, Pi/naming/Docker/Windows decisions in its Decision ledger.
 - [ADR-0054: Conversation Turn Content Authority](0054-conversation-turn-content-authority.md) — accepted; SQLite正文真源、运行副本与迁移删除边界。
 
 This directory contains current architecture decisions and explicitly marked proposed decisions under review. Proposed decisions are not implementation authority. Superseded proposals and fully absorbed decisions live under [the ADR archive](../archive/adr/README.md) and are historical context, not implementation authority.
@@ -9,7 +10,8 @@ This directory contains current architecture decisions and explicitly marked pro
 For architecture or roadmap work, read the smallest applicable set in this order:
 
 1. [ADR-0020: Core Module Ownership And Dependency Direction](0020-core-module-ownership-and-dependency-direction.md) — normative module ownership, public seams and dependency direction.
-2. Select only the topic ADRs needed from the table below.
+2. [ADR-0055](0055-no-kernel-target-architecture-and-contract-reset.md) — the accepted no-Kernel target that replaces the Kernel control spindle; its Decision ledger is the authority for the Router, permission, Pi, schema, client and cleanup batches.
+3. Select only the topic ADRs needed from the table below.
 
 Do not bulk-load archived ADRs. Open one only when investigating why an older design existed or when a current ADR explicitly cites it as historical context.
 

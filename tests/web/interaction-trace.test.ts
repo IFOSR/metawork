@@ -27,7 +27,9 @@ describe('Web interaction trace panel', () => {
     expect(app).not.toContain('<InteractionTracePanel');
     expect(chat).not.toContain('ExecutionTrace');
     expect(styles).toContain('@media (max-width: 820px)');
-    expect(styles).toContain('@keyframes trace-pulse');
+    // Recorded steps are static: no pulse animation may survive in the trace UI.
+    expect(styles).not.toContain('@keyframes trace-pulse');
+    expect(styles).toContain('.interaction-event[data-active]');
     const routing = await readFile(new URL('components/RoutingDecisionCard.tsx', root), 'utf8');
     expect(routing).toContain('最终选择');
     expect(routing).toContain('<strong>决策模型</strong>');

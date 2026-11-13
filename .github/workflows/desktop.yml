@@ -2,11 +2,13 @@ name: Desktop validation
 on:
   workflow_dispatch:
   pull_request:
-    paths: ['apps/desktop/**', 'web/**', 'src/client/**', 'src/gateway/**', 'src/management/**', 'src/installation/**', 'src/server/**', 'src/storage/**', 'src/desktop-*.ts', 'tests/installation/**', 'package*.json', 'tsup.config.ts', 'scripts/dev-desktop.mjs', '.github/workflows/desktop.yml']
+    paths: ['apps/desktop/**', 'web/**', 'src/client/**', 'src/gateway/**', 'src/management/**', 'src/installation/**', 'src/server/**', 'src/storage/**', 'src/desktop-*.ts', 'tests/installation/**', 'package*.json', 'tsup.config.ts', 'scripts/**', 'tools/pi-runtime/**', '.github/workflows/desktop.yml']
 permissions:
   contents: read
 jobs:
   macos:
+    env:
+      METAWORK_PI_COMMAND: ${{ github.workspace }}/.tmp/pi-build-host/bin/pi
     strategy:
       fail-fast: false
       matrix:
@@ -21,7 +23,11 @@ jobs:
       - run: npm ci
       - run: npm ci --prefix web --ignore-scripts
       - run: npm ci --prefix apps/desktop
-      - run: npm ci --prefix planner/AnyFusion-Pi --ignore-scripts
+      - run: node scripts/prepare-pi-build-host.mjs
+      - name: Verify packaged upstream Pi Manager and Executor
+        run: npx vitest run tests/e2e/packaged-pi-native.test.ts
+        env:
+          RUN_PACKAGED_PI_E2E: '1'
       - run: npm run lint && npm run lint:desktop && npx tsc --noEmit -p web/tsconfig.json
       - run: npm run test:desktop
       - run: npx vitest run tests/management/desktop-session.test.ts tests/management/server.test.ts tests/gateway/client-notification-feed.test.ts tests/installation/desktop-activation.test.ts tests/installation/desktop-update-transaction.test.ts tests/installation/desktop-update-diagnostics.test.ts tests/installation/desktop-shell-health.test.ts tests/installation/desktop-release.test.ts tests/installation/source-native-installer.test.ts tests/installation/source-native-updater.test.ts

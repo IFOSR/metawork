@@ -273,7 +273,7 @@ executionId（复用现有执行标识，不强制新增实体）
   `origin: 'manifest' | 'discovered'` 进入 revision；发现契约不声明端口与健康检查，
   Runtime 分配回环端口、仅在有端口时传 `HOST`/`PORT`，进程状态记为 `running`，
   公开视图不伪造 URL。目标项目内规格 / 该项目既有记录 / 发现结果的优先级已固化。
-- **执行事实契约**：`kernel_dispatch_items.terminal` 明确为“该调度项不再活动”；
+- **执行事实契约**：`dispatch_items.terminal` 明确为“该调度项不再活动”；
   schema 61 新增 `terminal_disposition`（`executed` / `not_started`）。
   `AttemptSupervisor` 对资源分区/容量让位调用 `markNotStarted()`，没有 receipt、
   Attempt runtime、Work Unit 或耗时。`ExecutionProjector` 的 Attempt 展示状态与结果

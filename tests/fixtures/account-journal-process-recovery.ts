@@ -7,7 +7,7 @@ import { createAccountEventJournal } from '../../src/server/account-event-journa
 import { FileEventJournal } from '../../src/gateway/file-event-journal.js';
 import { SqliteEventJournalSegmentIndex } from '../../src/storage/event-journal-segment-index-repo.js';
 import { DatabaseBackup } from '../../src/installation/database-backup.js';
-import { runMigrations } from '../../src/storage/migrations.js';
+import { initializeDatabaseSchema } from '../../src/storage/schema.js';
 import type { GatewayEventEnvelope } from '../../src/gateway/client-events.js';
 
 const accountId = 'local-default';
@@ -100,7 +100,7 @@ async function diskState() {
 
 async function main() {
   if (action === 'seed') {
-    runMigrations(db);
+    initializeDatabaseSchema(db);
     await legacy.appendBatch([1, 2, 3].map(event));
     if (operation !== 'import') {
       await runtime.journal.snapshot(accountId, conversationId);

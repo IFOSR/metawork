@@ -1,5 +1,5 @@
 // Normalizes executor errors and progress lines by filtering internal noise and classifying recoverable failures.
-import { kernelFailure, type KernelFailure, type KernelFailureActor, type KernelFailureOrigin } from '../core/kernel-failure.js';
+import { kernelFailure, type ControlFailure, type ControlFailureActor, type ControlFailureOrigin } from '../core/kernel-failure.js';
 import { redactSensitiveText } from '../utils/redact-sensitive-text.js';
 import { truncateText } from '../utils/truncate-text.js';
 const EXECUTOR_NOISE_PATTERNS = [
@@ -100,15 +100,15 @@ export function isRecoverableExecutorFailure(raw?: string): boolean {
 export interface ExecutorFailureContext {
   /** Raw harness tail (e.g. stderr) preserved alongside the summary. */
   detail?: string;
-  origin?: KernelFailureOrigin;
+  origin?: ControlFailureOrigin;
   stage?: string;
-  actor?: KernelFailureActor;
+  actor?: ControlFailureActor;
   step?: string;
 }
 
 /** Optional passthrough facts layered onto the classified failure. */
 type FailurePassthrough = Pick<
-  KernelFailure,
+  ControlFailure,
   'label' | 'detail' | 'origin' | 'stage' | 'actor' | 'step' | 'provider'
 >;
 
@@ -117,7 +117,7 @@ export function normalizeExecutorFailure(
   raw?: string,
   interrupted = false,
   context: ExecutorFailureContext = {},
-): KernelFailure {
+): ControlFailure {
   const rawText = raw?.trim() ?? '';
   // Passthrough: `summary` stays the upstream text. A localized headline is
   // attached as `label` instead of replacing what actually happened.
@@ -175,7 +175,10 @@ export function normalizeExecutorFailure(
       kind: 'configuration',
       scope: 'task',
       code: 'workspace_contains_runtime_root',
-      summary: 'Workspace 包含 MetaWork 运行目录，系统已在 Executor 启动前停止任务',
+      // Keep the workspace service's exact diagnostic in `summary`. The
+      // localized explanation is an optional label and must not hide the
+      // paths that tell the user which directories conflict.
+      summary,
       label: 'Workspace 配置无效',
       stage: 'workspace_preflight',
       ...passthrough,
@@ -186,7 +189,7 @@ export function normalizeExecutorFailure(
       kind: 'configuration',
       scope: 'task',
       code: 'workspace_binding_missing',
-      summary: '任务没有有效 Workspace 绑定，系统未启动 Executor',
+      summary,
       label: 'Workspace 配置缺失',
       stage: 'workspace_preflight',
       ...passthrough,
@@ -231,7 +234,7 @@ function firstMeaningfulRawLine(raw: string): string | undefined {
 }
 
 /** Provider facts parsed from the passthrough text, for operator diagnosis. */
-function providerFacts(raw: string): Pick<KernelFailure, 'provider'> {
+function providerFacts(raw: string): Pick<ControlFailure, 'provider'> {
   if (!raw) return {};
   const status = /\b(?:status\s+)?(4\d{2}|5\d{2})\b[^\n]*?(?:forbidden|unauthorized|too\s+many|payment|quota|balance|额度|余额)/iu.exec(raw)
     ?? /\bstatus\s+(4\d{2}|5\d{2})\b/iu.exec(raw);

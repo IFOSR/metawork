@@ -2,7 +2,7 @@ import Database from 'better-sqlite3';
 import { mkdtemp, mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { runMigrations } from '../../src/storage/migrations.js';
+import { initializeDatabaseSchema } from '../../src/storage/schema.js';
 import { TaskRepo } from '../../src/storage/task-repo.js';
 import { TaskEngine } from '../../src/task/task-engine.js';
 import { WorkspaceGitRepo } from '../../src/storage/workspace-git-repo.js';
@@ -14,7 +14,7 @@ describe('Workspace Task FIFO delivery',()=>{
   let directory:string,userRoot:string,db:Database.Database,repo:WorkspaceGitRepo,git:WorkspaceGitService,conversations:ConversationWorktreeService,worker:WorkspaceMergeWorker;
   beforeEach(async()=>{
     directory=await mkdtemp(join(tmpdir(),'metawork-merge-'));userRoot=join(directory,'user');await mkdir(userRoot);
-    db=new Database(':memory:');runMigrations(db);repo=new WorkspaceGitRepo(db);
+    db=new Database(':memory:');initializeDatabaseSchema(db);repo=new WorkspaceGitRepo(db);
     git=new WorkspaceGitService({internalRoot:join(directory,'runtime')});conversations=new ConversationWorktreeService(git,repo);worker=new WorkspaceMergeWorker(git,repo);
   });
   afterEach(async()=>{db.close();await rm(directory,{recursive:true,force:true});});

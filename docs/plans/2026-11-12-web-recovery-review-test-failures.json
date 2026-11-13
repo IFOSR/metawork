@@ -1,0 +1,3148 @@
+{
+  "date": "2026-11-12",
+  "command": "npx vitest run --testTimeout=60000 --hookTimeout=60000 --reporter=default --reporter=json",
+  "note": "完整源代码套件，显式 opt-in 浏览器/native 测试另行验证。失败保留，未将所有断言失败判为旧测试问题。",
+  "files": {
+    "total": 718,
+    "passed": 479,
+    "failed": 216,
+    "skipped": 23
+  },
+  "tests": {
+    "total": 4233,
+    "passed": 3769,
+    "failed": 427,
+    "skipped": 37
+  },
+  "failures": [
+    {
+      "file": "tests/acceptance/navigation-performance.test.ts",
+      "kind": "assertion_failure",
+      "message": "",
+      "failures": [
+        {
+          "name": "production-shaped navigation HTTP acceptance selects, pages, attaches and creates without directory replay or catalog scans",
+          "message": "AssertionError: expected 200 to be 404 // Object.is equality"
+        }
+      ]
+    },
+    {
+      "file": "tests/acceptance/query-billing-lifecycle.test.ts",
+      "kind": "suite_load_failure",
+      "message": "Cannot find module '../../src/storage/migrations.js' imported from /Users/yuanjubian/program/metawork/tests/acceptance/query-billing-lifecycle.test.ts",
+      "failures": []
+    },
+    {
+      "file": "tests/account/account-conversation-execution-binder.test.ts",
+      "kind": "assertion_failure",
+      "message": "",
+      "failures": [
+        {
+          "name": "AccountConversationExecutionBinder keeps concurrent Conversation callbacks and session identities isolated",
+          "message": "TypeError: binder.bind is not a function"
+        },
+        {
+          "name": "AccountConversationExecutionBinder forwards the Query identity used to attribute Executor usage",
+          "message": "TypeError: binder.bind is not a function"
+        }
+      ]
+    },
+    {
+      "file": "tests/account/account-execution-services.test.ts",
+      "kind": "assertion_failure",
+      "message": "",
+      "failures": [
+        {
+          "name": "AccountExecutionServices builds the pi-agent Executor as a composite standard-Pi/image adapter",
+          "message": "Error: MetaWork requires the native bundled Pi Executor runtime"
+        }
+      ]
+    },
+    {
+      "file": "tests/account/account-kernel-coordinator.test.ts",
+      "kind": "suite_load_failure",
+      "message": "Cannot find module '../../src/account/account-kernel-coordinator.js' imported from /Users/yuanjubian/program/metawork/tests/account/account-kernel-coordinator.test.ts",
+      "failures": []
+    },
+    {
+      "file": "tests/account/account-kernel-services.test.ts",
+      "kind": "suite_load_failure",
+      "message": "Cannot find module '../../src/account/account-kernel-services.js' imported from /Users/yuanjubian/program/metawork/tests/account/account-kernel-services.test.ts",
+      "failures": []
+    },
+    {
+      "file": "tests/account/account-planner-services.test.ts",
+      "kind": "suite_load_failure",
+      "message": "Cannot find module '../../src/planning/planner-process-supervisor.js' imported from /Users/yuanjubian/program/metawork/tests/account/account-planner-services.test.ts",
+      "failures": []
+    },
+    {
+      "file": "tests/account/account-recovery-isolation.test.ts",
+      "kind": "assertion_failure",
+      "message": "",
+      "failures": [
+        {
+          "name": "account recovery isolation quarantines a failed account without affecting another account",
+          "message": "TypeError: this.deps.buildControlCoordinator is not a function"
+        }
+      ]
+    },
+    {
+      "file": "tests/account/account-runtime.test.ts",
+      "kind": "assertion_failure",
+      "message": "",
+      "failures": [
+        {
+          "name": "AccountRuntime runs startup recovery exactly once per account",
+          "message": "TypeError: this.deps.buildControlCoordinator is not a function"
+        },
+        {
+          "name": "AccountRuntime shares one kernel coordinator across all conversation ports",
+          "message": "TypeError: this.deps.buildControlCoordinator is not a function"
+        },
+        {
+          "name": "AccountRuntime factory builds the coordinator once per account activation",
+          "message": "TypeError: this.deps.buildControlCoordinator is not a function"
+        },
+        {
+          "name": "AccountRuntime publishes Conversation-owned planning activity through the factory callback",
+          "message": "TypeError: this.deps.buildControlCoordinator is not a function"
+        },
+        {
+          "name": "AccountRuntime does not treat generic account work as an active Planner turn",
+          "message": "TypeError: this.deps.buildControlCoordinator is not a function"
+        }
+      ]
+    },
+    {
+      "file": "tests/account/account-startup-recovery-service.test.ts",
+      "kind": "suite_load_failure",
+      "message": "Cannot find module '../../src/storage/kernel-dispatch-item-repo.js' imported from /Users/yuanjubian/program/metawork/tests/account/account-startup-recovery-service.test.ts",
+      "failures": []
+    },
+    {
+      "file": "tests/account/attempt-execution-backend-selection.test.ts",
+      "kind": "assertion_failure",
+      "message": "",
+      "failures": [
+        {
+          "name": "attempt execution backend selection maps docker to the docker backend",
+          "message": "AssertionError: expected 'NativeAttemptExecutionBackend' to be 'DockerCliAttemptExecutionBackend' // Object.is equality"
+        },
+        {
+          "name": "attempt execution backend selection maps container to the docker backend",
+          "message": "AssertionError: expected 'NativeAttemptExecutionBackend' to be 'DockerCliAttemptExecutionBackend' // Object.is equality"
+        },
+        {
+          "name": "attempt execution backend selection still rejects values that never named a backend",
+          "message": "AssertionError: expected [Function] to throw an error"
+        }
+      ]
+    },
+    {
+      "file": "tests/account/generation-replan-worker.test.ts",
+      "kind": "assertion_failure",
+      "message": "",
+      "failures": [
+        {
+          "name": "GenerationReplanWorker keeps scheduled jobs durable without claiming Planner work until authorization is restored",
+          "message": "AssertionError: expected +0 to be 1 // Object.is equality"
+        },
+        {
+          "name": "GenerationReplanWorker consumes a scheduled Replan Job without any foreground Conversation",
+          "message": "AssertionError: expected { claimed: 1, submitted: +0, …(2) } to deeply equal { claimed: 1, submitted: 1, …(2) }"
+        },
+        {
+          "name": "GenerationReplanWorker does not create a second Planner turn for an already submitted Job",
+          "message": "AssertionError: expected +0 to be 1 // Object.is equality"
+        },
+        {
+          "name": "GenerationReplanWorker reuses a persisted proposal instead of running a second Planner turn",
+          "message": "Error: expected { claimed: 1, submitted: +0, …(2) } to deeply equal { claimed: 1, submitted: 1, …(2) }"
+        },
+        {
+          "name": "GenerationReplanWorker retries the same Job identity after a Planner transport failure",
+          "message": "AssertionError: expected { …(15) } to match object { status: 'planning', …(1) }"
+        },
+        {
+          "name": "GenerationReplanWorker re-claims an abandoned in-flight Planner turn after its lease expires",
+          "message": "AssertionError: expected +0 to be 1 // Object.is equality"
+        },
+        {
+          "name": "GenerationReplanWorker fails the Job closed as planner_unavailable once the retry budget is exhausted",
+          "message": "AssertionError: expected { claimed: 1, submitted: +0, …(2) } to deeply equal { claimed: 1, submitted: +0, …(2) }"
+        },
+        {
+          "name": "GenerationReplanWorker fences out a worker whose claim was taken over by another worker",
+          "message": "TypeError: (0 , __vite_ssr_import_2__.buildGenerationReplanProposedEvent) is not a function"
+        },
+        {
+          "name": "GenerationReplanWorker fails a Job pinned to a configuration revision that is no longer current",
+          "message": "AssertionError: expected { claimed: 1, submitted: +0, …(2) } to deeply equal { claimed: 1, submitted: +0, …(2) }"
+        }
+      ]
+    },
+    {
+      "file": "tests/account/permission-continuation.test.ts",
+      "kind": "suite_load_failure",
+      "message": "Cannot find module '../../src/storage/kernel-workflow-repo.js' imported from /Users/yuanjubian/program/metawork/tests/helpers/permission-runtime.ts",
+      "failures": []
+    },
+    {
+      "file": "tests/account/retry-wake-worker.test.ts",
+      "kind": "suite_load_failure",
+      "message": "Cannot find module '../../src/storage/kernel-workflow-repo.js' imported from /Users/yuanjubian/program/metawork/tests/account/retry-wake-worker.test.ts",
+      "failures": []
+    },
+    {
+      "file": "tests/account/runtime-registry.test.ts",
+      "kind": "assertion_failure",
+      "message": "",
+      "failures": [
+        {
+          "name": "RuntimeRegistry activates the same account once under concurrent requests",
+          "message": "TypeError: this.deps.buildControlCoordinator is not a function"
+        },
+        {
+          "name": "RuntimeRegistry isolates a failed account from another loaded account",
+          "message": "TypeError: this.deps.buildControlCoordinator is not a function"
+        },
+        {
+          "name": "RuntimeRegistry returns the loaded runtime from getIfLoaded",
+          "message": "TypeError: this.deps.buildControlCoordinator is not a function"
+        },
+        {
+          "name": "RuntimeRegistry disposes each loaded runtime exactly once on shutdown",
+          "message": "TypeError: this.deps.buildControlCoordinator is not a function"
+        },
+        {
+          "name": "RuntimeRegistry fails shutdown instead of silently dropping a busy runtime",
+          "message": "TypeError: this.deps.buildControlCoordinator is not a function"
+        }
+      ]
+    },
+    {
+      "file": "tests/architecture/current-client-runtime-topology.test.ts",
+      "kind": "assertion_failure",
+      "message": "",
+      "failures": [
+        {
+          "name": "current client runtime topology composes one account runtime and one gateway command plane in production",
+          "message": "AssertionError: expected 'import { createUsagePayerResolver } f…' to contain 'plannerHost.registerSession'"
+        },
+        {
+          "name": "current client runtime topology launches the native Planner TUI as a Gateway-only client",
+          "message": "AssertionError: expected 'import { spawn } from \\'node:child_pr…' to contain 'new TuiClientLauncher'"
+        }
+      ]
+    },
+    {
+      "file": "tests/architecture/maintenance-ownership.test.ts",
+      "kind": "assertion_failure",
+      "message": "",
+      "failures": [
+        {
+          "name": "maintenance and reconciliation ownership converges a deterministic refusal through the durable settlement seam",
+          "message": "Error: ENOENT: no such file or directory, open '/Users/yuanjubian/program/metawork/src/execution/kernel-execution-runtime.ts'"
+        }
+      ]
+    },
+    {
+      "file": "tests/architecture/no-direct-client-session-paths.test.ts",
+      "kind": "assertion_failure",
+      "message": "",
+      "failures": [
+        {
+          "name": "no direct client session paths keeps Workspace Catalog persistence behind Server composition",
+          "message": "Error: ENOENT: no such file or directory, scandir '/Users/yuanjubian/program/metawork/src/tui-bridge'"
+        },
+        {
+          "name": "no direct client session paths keeps Workspace Directory independent from Kernel, Executor, and Gateway protocol",
+          "message": "Error: ENOENT: no such file or directory, scandir '/Users/yuanjubian/program/metawork/src/kernel'"
+        },
+        {
+          "name": "no direct client session paths extracts runtime-wide service construction into account factories",
+          "message": "AssertionError: expected 'import {\\n  evaluatePlanAdmission,\\n …' to contain 'buildAccountKernelServices'"
+        }
+      ]
+    },
+    {
+      "file": "tests/architecture/production-composition.test.ts",
+      "kind": "assertion_failure",
+      "message": "",
+      "failures": [
+        {
+          "name": "production composition root runs account recovery timers and drains commands before runtime disposal",
+          "message": "AssertionError: expected 166532 to be less than -1"
+        }
+      ]
+    },
+    {
+      "file": "tests/architecture/unified-server-composition.test.ts",
+      "kind": "assertion_failure",
+      "message": "",
+      "failures": [
+        {
+          "name": "unified server composition hosts one gateway core, adapters, registry and account runtime together",
+          "message": "TypeError: this.deps.buildControlCoordinator is not a function"
+        },
+        {
+          "name": "unified server composition has zero client-owned runtime instances in the composition model",
+          "message": "Error: ENOENT: no such file or directory, scandir '/Users/yuanjubian/program/metawork/src/tui-bridge'"
+        }
+      ]
+    },
+    {
+      "file": "tests/billing/bill-finality.test.ts",
+      "kind": "suite_load_failure",
+      "message": "Cannot find module '../../src/storage/billing-repo.js' imported from /Users/yuanjubian/program/metawork/tests/billing/harness.ts",
+      "failures": []
+    },
+    {
+      "file": "tests/billing/bill-user-projection.test.ts",
+      "kind": "suite_load_failure",
+      "message": "Cannot find module '../../src/storage/billing-repo.js' imported from /Users/yuanjubian/program/metawork/tests/billing/harness.ts",
+      "failures": []
+    },
+    {
+      "file": "tests/billing/configured-price-book.test.ts",
+      "kind": "suite_load_failure",
+      "message": "Cannot find module '../../src/billing/configured-price-book.js' imported from /Users/yuanjubian/program/metawork/tests/billing/configured-price-book.test.ts",
+      "failures": []
+    },
+    {
+      "file": "tests/billing/consumption-outbox-recovery.test.ts",
+      "kind": "suite_load_failure",
+      "message": "Cannot find module '../../src/storage/billing-repo.js' imported from /Users/yuanjubian/program/metawork/tests/billing/harness.ts",
+      "failures": []
+    },
+    {
+      "file": "tests/billing/external-consumption-contract.test.ts",
+      "kind": "suite_load_failure",
+      "message": "Cannot find module '../../src/billing/consumption-contract.js' imported from /Users/yuanjubian/program/metawork/tests/billing/external-consumption-contract.test.ts",
+      "failures": []
+    },
+    {
+      "file": "tests/billing/history-page-batch.test.ts",
+      "kind": "suite_load_failure",
+      "message": "Cannot find module '../../src/server/billing-composition.js' imported from /Users/yuanjubian/program/metawork/tests/billing/history-page-batch.test.ts",
+      "failures": []
+    },
+    {
+      "file": "tests/billing/money.test.ts",
+      "kind": "suite_load_failure",
+      "message": "Cannot find module '../../src/billing/money.js' imported from /Users/yuanjubian/program/metawork/tests/billing/money.test.ts",
+      "failures": []
+    },
+    {
+      "file": "tests/billing/payer-policy.test.ts",
+      "kind": "suite_load_failure",
+      "message": "Cannot find module '../../src/billing/cost-policy.js' imported from /Users/yuanjubian/program/metawork/tests/billing/payer-policy.test.ts",
+      "failures": []
+    },
+    {
+      "file": "tests/billing/pricing.test.ts",
+      "kind": "suite_load_failure",
+      "message": "Cannot find module '../../src/billing/money.js' imported from /Users/yuanjubian/program/metawork/tests/billing/pricing.test.ts",
+      "failures": []
+    },
+    {
+      "file": "tests/billing/query-bill.test.ts",
+      "kind": "suite_load_failure",
+      "message": "Cannot find module '../../src/storage/billing-repo.js' imported from /Users/yuanjubian/program/metawork/tests/billing/harness.ts",
+      "failures": []
+    },
+    {
+      "file": "tests/billing/review-regressions.test.ts",
+      "kind": "suite_load_failure",
+      "message": "Cannot find module '../../src/storage/billing-repo.js' imported from /Users/yuanjubian/program/metawork/tests/billing/harness.ts",
+      "failures": []
+    },
+    {
+      "file": "tests/billing/runtime-composition.test.ts",
+      "kind": "suite_load_failure",
+      "message": "Cannot find module '../../src/storage/billing-repo.js' imported from /Users/yuanjubian/program/metawork/tests/billing/harness.ts",
+      "failures": []
+    },
+    {
+      "file": "tests/billing/task-bill-rollup.test.ts",
+      "kind": "suite_load_failure",
+      "message": "Cannot find module '../../src/billing/bill-query-service.js' imported from /Users/yuanjubian/program/metawork/tests/billing/task-bill-rollup.test.ts",
+      "failures": []
+    },
+    {
+      "file": "tests/cli/args.test.ts",
+      "kind": "assertion_failure",
+      "message": "",
+      "failures": [
+        {
+          "name": "parseCliArgs treats the bare command as the TUI client",
+          "message": "AssertionError: expected { kind: 'web' } to deeply equal { kind: 'tui' }"
+        },
+        {
+          "name": "parseCliArgs parses TUI client selection without Server surface flags",
+          "message": "AssertionError: expected { kind: 'tui-retired' } to deeply equal { kind: 'tui' }"
+        },
+        {
+          "name": "parseCliArgs rejects malformed or unknown Client and Server arguments",
+          "message": "AssertionError: expected [Function] to throw an error"
+        },
+        {
+          "name": "parseCliArgs rejects removed lifecycle commands with canonical replacements",
+          "message": "AssertionError: expected [Function] to throw error including '请使用 `metawork tui`' but got '`--connect` 已移除；请使用 `metawork server …'"
+        },
+        {
+          "name": "parseCliArgs explains Server before Clients without exposing internal product names",
+          "message": "AssertionError: expected -1 to be greater than 39"
+        }
+      ]
+    },
+    {
+      "file": "tests/client/executor-tool-path.test.ts",
+      "kind": "suite_load_failure",
+      "message": "Cannot find module '../../src/executor/codex-cli-driver.js' imported from /Users/yuanjubian/program/metawork/tests/client/executor-tool-path.test.ts",
+      "failures": []
+    },
+    {
+      "file": "tests/commands/command-read-services.test.ts",
+      "kind": "assertion_failure",
+      "message": "",
+      "failures": [
+        {
+          "name": "command fact queries groups persisted planner, kernel, WorkUnit, and executor facts by task",
+          "message": "SqliteError: no such table: kernel_decisions"
+        },
+        {
+          "name": "command fact queries displays v8 bindings while retaining legacy terminal routing as audit-only history",
+          "message": "SqliteError: no such table: kernel_decisions"
+        }
+      ]
+    },
+    {
+      "file": "tests/commands/configuration-admin.test.ts",
+      "kind": "assertion_failure",
+      "message": "",
+      "failures": [
+        {
+          "name": "runConfigurationAdmin reports invalid configuration issues",
+          "message": "AssertionError: expected false to be true // Object.is equality"
+        }
+      ]
+    },
+    {
+      "file": "tests/commands/executor-router-commands.test.ts",
+      "kind": "suite_load_failure",
+      "message": "Cannot find module '../../src/storage/kernel-executor-status-repo.js' imported from /Users/yuanjubian/program/metawork/tests/commands/executor-router-commands.test.ts",
+      "failures": []
+    },
+    {
+      "file": "tests/configuration/agent-runtime-renderer.test.ts",
+      "kind": "assertion_failure",
+      "message": "",
+      "failures": [
+        {
+          "name": "AgentRuntimeRenderer keeps generated launch bytes identical after sorted YAML persistence and reload",
+          "message": "Error: ENOENT: no such file or directory, open '/var/folders/jg/m0w89hxx0w79r3jrrs1f2n4w0000gn/T/runtime-order-5gny4E/reloaded/codex/config.toml'"
+        },
+        {
+          "name": "AgentRuntimeRenderer renders explicit transports into both Pi homes and excludes Anthropic from Codex",
+          "message": "Error: ENOENT: no such file or directory, open '/var/folders/jg/m0w89hxx0w79r3jrrs1f2n4w0000gn/T/protocol-renderer-JFdQAT/protocols/codex/config.toml'"
+        },
+        {
+          "name": "AgentRuntimeRenderer does not bake one built-in Executor model into a shared tool home",
+          "message": "Error: ENOENT: no such file or directory, open '/var/folders/jg/m0w89hxx0w79r3jrrs1f2n4w0000gn/T/anyfusion-renderer-n6gvCM/rev-shared/codex/config.toml'"
+        },
+        {
+          "name": "AgentRuntimeRenderer renders multi-provider codex config.toml with per-provider sections",
+          "message": "Error: ENOENT: no such file or directory, open '/var/folders/jg/m0w89hxx0w79r3jrrs1f2n4w0000gn/T/anyfusion-renderer-p8v8Z8/rev-1/codex/config.toml'"
+        }
+      ]
+    },
+    {
+      "file": "tests/configuration/application-config-projection.test.ts",
+      "kind": "assertion_failure",
+      "message": "",
+      "failures": [
+        {
+          "name": "application configuration projection derives Session and Gateway settings from the active schema-v2 snapshot",
+          "message": "AssertionError: expected 'pi' to be 'codex' // Object.is equality"
+        }
+      ]
+    },
+    {
+      "file": "tests/configuration/configuration-compiler.test.ts",
+      "kind": "assertion_failure",
+      "message": "",
+      "failures": [
+        {
+          "name": "ConfigurationCompiler generates isolated AgentClass runtime directories under one revision",
+          "message": "ZodError: ["
+        }
+      ]
+    },
+    {
+      "file": "tests/configuration/configuration-diff-classification.test.ts",
+      "kind": "assertion_failure",
+      "message": "",
+      "failures": [
+        {
+          "name": "configuration diff classification allows only a Codex executable binding change through the idle transaction",
+          "message": "TypeError: Cannot read properties of undefined (reading 'transport')"
+        }
+      ]
+    },
+    {
+      "file": "tests/configuration/configuration-module-boundary.test.ts",
+      "kind": "assertion_failure",
+      "message": "",
+      "failures": [
+        {
+          "name": "configuration module architecture boundaries exposes only type-only ports without concrete runtime dependencies",
+          "message": "AssertionError: expected 'export type ConfigurationRevisionId =…' to match /export\\s+type\\s+KernelConfigurationVi…/"
+        }
+      ]
+    },
+    {
+      "file": "tests/configuration/configuration-runtime-coordinator.test.ts",
+      "kind": "assertion_failure",
+      "message": "",
+      "failures": [
+        {
+          "name": "ConfigurationRuntimeCoordinator publishes a settings Workspace-concurrency change through the same hot activation transaction",
+          "message": "TypeError: coordinator.getKernelView is not a function"
+        },
+        {
+          "name": "ConfigurationRuntimeCoordinator does not deadlock when ConfigurationService owns the activation mutex",
+          "message": "AssertionError: {\"ok\":false,\"code\":\"invalid_configuration\",\"activeRevisionId\":\"revision-1\",\"issues\":[\"harnesses.h.driverId: Invalid option: expected one of \\\"a2a-v1\\\"|\\\"anyfusion-planner-host-v2\\\"|\\\"pi-cli\\\"\"]}: expected { ok: false, …(3) } to match object { ok: true }"
+        },
+        {
+          "name": "ConfigurationRuntimeCoordinator registers the activated revision before revision-keyed Kernel writes",
+          "message": "AssertionError: expected [Function] to not throw an error but 'SqliteError: no such table: kernel_ev…' was thrown"
+        }
+      ]
+    },
+    {
+      "file": "tests/configuration/configuration-schema-migration.test.ts",
+      "kind": "assertion_failure",
+      "message": "",
+      "failures": [
+        {
+          "name": "configuration schema migration preserves stable identities and marks legacy prices as user supplied",
+          "message": "AssertionError: expected undefined to match object { source: 'user', exchangeRate: 7 }"
+        }
+      ]
+    },
+    {
+      "file": "tests/configuration/configuration-service.test.ts",
+      "kind": "assertion_failure",
+      "message": "",
+      "failures": [
+        {
+          "name": "ConfigurationService activates and renders a complete Chinese manual larger than 24000 bytes",
+          "message": "AssertionError: expected { ok: false, issues: [ { …(3) } ] } to match object { ok: true }"
+        },
+        {
+          "name": "ConfigurationService fails closed when no configuration probe is provided",
+          "message": "Error: configuration draft must be validated before compile"
+        },
+        {
+          "name": "ConfigurationService runs the exact draft lifecycle and activates with optimistic concurrency",
+          "message": "AssertionError: expected { ok: false, issues: [ { …(3) } ] } to match object { ok: true }"
+        },
+        {
+          "name": "ConfigurationService activates unrelated changes while a disabled AgentClass has stale bindings",
+          "message": "AssertionError: expected { ok: false, issues: [ { …(3) } ] } to match object { ok: true }"
+        },
+        {
+          "name": "ConfigurationService applies a Planner-normalized Executor manual to a draft without changing authority fields",
+          "message": "AssertionError: expected false to be true // Object.is equality"
+        },
+        {
+          "name": "ConfigurationService accepts a user-confirmed registered capability for an allowed model",
+          "message": "AssertionError: expected false to be true // Object.is equality"
+        },
+        {
+          "name": "ConfigurationService trusts normalized capability policy assertions during activation",
+          "message": "AssertionError: expected false to be true // Object.is equality"
+        },
+        {
+          "name": "ConfigurationService activates source-preserved natural-language guidance without compiled assertions",
+          "message": "Error: configuration draft must be validated before compile"
+        },
+        {
+          "name": "ConfigurationService keeps source-preserved guidance independently activatable for multiple Executors",
+          "message": "Error: configuration draft must be validated before compile"
+        },
+        {
+          "name": "ConfigurationService rejects activation when changed guidance reuses assertions compiled from older source text",
+          "message": "AssertionError: expected false to be true // Object.is equality"
+        },
+        {
+          "name": "ConfigurationService rejects client-edited assertions even when the source text is unchanged",
+          "message": "AssertionError: expected false to be true // Object.is equality"
+        },
+        {
+          "name": "ConfigurationService rejects client-injected assertions when source text is empty",
+          "message": "Error: configuration draft must be validated before compile"
+        },
+        {
+          "name": "ConfigurationService allows the trusted semantic path to clear existing Executor guidance",
+          "message": "Error: configuration draft must be validated before compile"
+        },
+        {
+          "name": "ConfigurationService leaves active unchanged after validation failure and rollback creates a new revision",
+          "message": "Error: configuration draft must be validated before compile"
+        }
+      ]
+    },
+    {
+      "file": "tests/configuration/enabled-model-price-validation.test.ts",
+      "kind": "suite_load_failure",
+      "message": "Cannot find module '../../src/configuration/enabled-model-price-validation.js' imported from /Users/yuanjubian/program/metawork/tests/configuration/enabled-model-price-validation.test.ts",
+      "failures": []
+    },
+    {
+      "file": "tests/configuration/executor-configuration.test.ts",
+      "kind": "assertion_failure",
+      "message": "",
+      "failures": [
+        {
+          "name": "parseExecutorConfigurationChange preserves the full existing Auto objective when editing",
+          "message": "ExecutorConfigurationError: 执行助手配置输入无效：fields.modelPolicy Invalid input"
+        },
+        {
+          "name": "resolveExecutorToolHarness projects model choices from real tools, including Auto compatibility",
+          "message": "ZodError: ["
+        },
+        {
+          "name": "resolveExecutorToolHarness resolves by real driverId, not by harness key name",
+          "message": "ZodError: ["
+        },
+        {
+          "name": "resolveExecutorToolHarness fails closed when the tool has no reusable harness",
+          "message": "ZodError: ["
+        },
+        {
+          "name": "resolveExecutorToolHarness reports ambiguity unless the driver-named template exists",
+          "message": "ZodError: ["
+        },
+        {
+          "name": "buildExecutorConfigurationCandidate prepares a baseline migration on a name-only edit with an aliased standard profile",
+          "message": "ZodError: ["
+        },
+        {
+          "name": "buildExecutorConfigurationCandidate creates an executor with server-filled controlled fields",
+          "message": "ZodError: ["
+        },
+        {
+          "name": "buildExecutorConfigurationCandidate does not touch other agentClasses, models, providers or the Planner",
+          "message": "ZodError: ["
+        },
+        {
+          "name": "buildExecutorConfigurationCandidate allows duplicate display names but never duplicate internal IDs",
+          "message": "ZodError: ["
+        },
+        {
+          "name": "buildExecutorConfigurationCandidate rejects missing model references and user-supplied permission fields",
+          "message": "AssertionError: expected error to match asymmetric matcher"
+        },
+        {
+          "name": "buildExecutorConfigurationCandidate rejects credential-like manual source text",
+          "message": "AssertionError: expected error to match asymmetric matcher"
+        },
+        {
+          "name": "buildExecutorConfigurationCandidate updates editable fields but never the harness binding",
+          "message": "ZodError: ["
+        },
+        {
+          "name": "buildExecutorConfigurationCandidate clears stale semantic assertions when the manual source text changes",
+          "message": "ZodError: ["
+        },
+        {
+          "name": "buildExecutorConfigurationCandidate rejects operations targeting the Planner or an unknown assistant",
+          "message": "AssertionError: expected error to match asymmetric matcher"
+        },
+        {
+          "name": "buildExecutorConfigurationCandidate enables, disables and removes executors, including the last one",
+          "message": "ZodError: ["
+        },
+        {
+          "name": "buildExecutorConfigurationCandidate enables the referenced tool with its executor without enabling siblings or mutating the base",
+          "message": "ZodError: ["
+        },
+        {
+          "name": "ConfigurationService.prepareExecutorDraft prepares without activation, then validates and activates through the page flow",
+          "message": "ZodError: ["
+        },
+        {
+          "name": "ConfigurationService.prepareExecutorDraft rejects invalid candidates without leaving a draft behind",
+          "message": "ZodError: ["
+        },
+        {
+          "name": "ConfigurationService.prepareExecutorDraft uses unactivated models and agents without compiling prices or changing active state",
+          "message": "ZodError: ["
+        },
+        {
+          "name": "ConfigurationService.prepareExecutorDraft allows draft editing while busy without changing the active configuration",
+          "message": "ZodError: ["
+        }
+      ]
+    },
+    {
+      "file": "tests/configuration/executor-manual-preview-service.test.ts",
+      "kind": "assertion_failure",
+      "message": "",
+      "failures": [
+        {
+          "name": "Settings activation and previews without a Planner previews natural-language duties without an LLM, preserving text and execution authority",
+          "message": "AssertionError: expected false to be true // Object.is equality"
+        },
+        {
+          "name": "Settings activation and previews without a Planner saves multiple changed duties and model facts with no Planner or internal LLM dependencies",
+          "message": "AssertionError: expected false to be true // Object.is equality"
+        },
+        {
+          "name": "Settings activation and previews without a Planner preserves persisted assertions only for unchanged source and does not accept client-injected assertions",
+          "message": "AssertionError: expected false to be true // Object.is equality"
+        },
+        {
+          "name": "Settings activation and previews without a Planner can preview disabled assistants and clear source without synthetic semantic receipts",
+          "message": "AssertionError: expected false to be true // Object.is equality"
+        },
+        {
+          "name": "Settings activation and previews without a Planner rejects stale revisions instead of silently rebasing onto other settings",
+          "message": "AssertionError: expected false to be true // Object.is equality"
+        },
+        {
+          "name": "Settings activation and previews without a Planner rejects credential-like text and unknown Agents before compiling",
+          "message": "AssertionError: expected false to be true // Object.is equality"
+        }
+      ]
+    },
+    {
+      "file": "tests/configuration/local-agent-credentials.test.ts",
+      "kind": "assertion_failure",
+      "message": "",
+      "failures": [
+        {
+          "name": "local Agent credential import imports a Codex credential for the configured Provider without replacing an existing secret",
+          "message": "Error: promise rejected \"Error: missing\" instead of resolving"
+        },
+        {
+          "name": "local Agent credential import imports the Codex env_key credential from the process environment",
+          "message": "Error: promise rejected \"Error: missing\" instead of resolving"
+        },
+        {
+          "name": "local Agent credential import imports a Codex environment credential without requiring auth.json",
+          "message": "Error: promise rejected \"Error: missing\" instead of resolving"
+        }
+      ]
+    },
+    {
+      "file": "tests/configuration/openrouter-model-catalog.test.ts",
+      "kind": "assertion_failure",
+      "message": "",
+      "failures": [
+        {
+          "name": "OpenRouterModelCatalog converts USD per token to CNY per million tokens at the fixed rate",
+          "message": "TypeError: (0 , __vite_ssr_import_1__.usdPerTokenToCnyPerMillion) is not a function"
+        },
+        {
+          "name": "OpenRouterModelCatalog parses public model facts, pricing and image modalities",
+          "message": "AssertionError: expected { modelId: 'demo/vision', …(5) } to match object { contextLimit: 128000, …(5) }"
+        }
+      ]
+    },
+    {
+      "file": "tests/configuration/production-configuration-probe.test.ts",
+      "kind": "assertion_failure",
+      "message": "",
+      "failures": [
+        {
+          "name": "production configuration probe does not require an unused tool to be installed",
+          "message": "AssertionError: expected { ok: false, issues: [ …(2) ] } to deeply equal { ok: true }"
+        },
+        {
+          "name": "production configuration probe checks referenced secrets, the Planner artifact, and enabled Executor commands",
+          "message": "Error: expected { ok: false, …(1) } to deeply equal { ok: true }"
+        },
+        {
+          "name": "production configuration probe accepts the vendored Planner layout used by a source checkout",
+          "message": "Error: expected { ok: false, …(1) } to deeply equal { ok: true }"
+        },
+        {
+          "name": "production configuration probe returns every blocking issue instead of silently activating",
+          "message": "AssertionError: expected [ …(4) ] to deeply equal ArrayContaining{…}"
+        }
+      ]
+    },
+    {
+      "file": "tests/configuration/production-runtime-bindings.test.ts",
+      "kind": "assertion_failure",
+      "message": "",
+      "failures": [
+        {
+          "name": "production runtime configuration bindings keeps old revision bindings while exposing an activated revision to new attempts",
+          "message": "AssertionError: expected 'workspace-engineering' to be 'standard-agent' // Object.is equality"
+        }
+      ]
+    },
+    {
+      "file": "tests/configuration/projections.test.ts",
+      "kind": "assertion_failure",
+      "message": "",
+      "failures": [
+        {
+          "name": "configuration projections builds a Planner-safe immutable view without launch or credential material",
+          "message": "ZodError: ["
+        },
+        {
+          "name": "configuration projections builds a Kernel-safe immutable view without secrets, commands, or raw endpoints",
+          "message": "ZodError: ["
+        },
+        {
+          "name": "configuration projections uses the profile-derived routable capabilities in both Planner and Kernel views",
+          "message": "ZodError: ["
+        },
+        {
+          "name": "configuration projections projects user-confirmed model capability evidence per Executor",
+          "message": "ZodError: ["
+        },
+        {
+          "name": "configuration projections retains private launch and credential references only in the Runtime view",
+          "message": "ZodError: ["
+        },
+        {
+          "name": "configuration projections projects the Executor idle timeout without an overall duration limit",
+          "message": "ZodError: ["
+        },
+        {
+          "name": "configuration projections projects auto modelPolicy candidates in order and excludes disabled agent classes",
+          "message": "ZodError: ["
+        }
+      ]
+    },
+    {
+      "file": "tests/configuration/provider-catalog-routing-contract.test.ts",
+      "kind": "assertion_failure",
+      "message": "",
+      "failures": [
+        {
+          "name": "Provider catalog routing contract allows the same model ID from different Providers",
+          "message": "AssertionError: expected false to be true // Object.is equality"
+        },
+        {
+          "name": "Provider catalog routing contract allows multiple internal refs for the same Provider model identity",
+          "message": "AssertionError: expected false to be true // Object.is equality"
+        }
+      ]
+    },
+    {
+      "file": "tests/configuration/public-routing-identity.test.ts",
+      "kind": "assertion_failure",
+      "message": "",
+      "failures": [
+        {
+          "name": "public routing identity resolves the missing codex-cli display name to 智能体 2",
+          "message": "AssertionError: expected 'Codex CLI' to be '智能体 2' // Object.is equality"
+        }
+      ]
+    },
+    {
+      "file": "tests/configuration/runtime-private-binding-resolver.test.ts",
+      "kind": "assertion_failure",
+      "message": "",
+      "failures": [
+        {
+          "name": "resolveRuntimePrivateConfigurationBinding resolves an exact authorized binding to an in-memory Provider environment",
+          "message": "AssertionError: expected undefined to match object { …(2) }"
+        },
+        {
+          "name": "resolveRuntimePrivateConfigurationBinding fails closed for 'unsupported Provider protocol' before reading a secret",
+          "message": "Error: promise resolved \"{ revisionId: 'revision-10', …(3) }\" instead of rejecting"
+        }
+      ]
+    },
+    {
+      "file": "tests/configuration/schema.test.ts",
+      "kind": "assertion_failure",
+      "message": "",
+      "failures": [
+        {
+          "name": "AnyFusion configuration schema v2 accepts explicit openai-compatible Provider protocol",
+          "message": "AssertionError: expected false to be true // Object.is equality"
+        },
+        {
+          "name": "AnyFusion configuration schema v2 accepts explicit openai-responses Provider protocol",
+          "message": "AssertionError: expected false to be true // Object.is equality"
+        },
+        {
+          "name": "AnyFusion configuration schema v2 rejects Anthropic Messages for an enabled Codex binding before activation",
+          "message": "AssertionError: expected false to be true // Object.is equality"
+        },
+        {
+          "name": "AnyFusion configuration schema v2 accepts system-managed Provider and Model metadata",
+          "message": "ZodError: ["
+        },
+        {
+          "name": "AnyFusion configuration schema v2 accepts user display names for Providers and AgentClasses",
+          "message": "ZodError: ["
+        },
+        {
+          "name": "AnyFusion configuration schema v2 reads an immutable revision that used the retired Span model as Mercury",
+          "message": "AssertionError: expected undefined to be 'inception/mercury-decide:free' // Object.is equality"
+        },
+        {
+          "name": "AnyFusion configuration schema v2 accepts Auto objectives for Executors and model economics metadata",
+          "message": "AssertionError: expected false to be true // Object.is equality"
+        },
+        {
+          "name": "AnyFusion configuration schema v2 defers broken bindings and capability contracts for disabled AgentClasses",
+          "message": "AssertionError: expected false to be true // Object.is equality"
+        },
+        {
+          "name": "AnyFusion configuration schema v2 defers internal Auto policy and manual semantic checks for disabled AgentClasses",
+          "message": "AssertionError: expected false to be true // Object.is equality"
+        },
+        {
+          "name": "AnyFusion configuration schema v2 requires registered tools and permits an absolute Codex executable",
+          "message": "AssertionError: expected false to be true // Object.is equality"
+        },
+        {
+          "name": "AnyFusion configuration schema v2 accepts only registered versioned Permission Profiles with bounded parameters",
+          "message": "AssertionError: expected false to be true // Object.is equality"
+        },
+        {
+          "name": "AnyFusion configuration schema v2 preserves stale manual model claims outside the AgentClass model policy",
+          "message": "AssertionError: expected false to be true // Object.is equality"
+        },
+        {
+          "name": "AnyFusion configuration schema v2 accepts a complete capability policy and rejects incomplete policy assertions",
+          "message": "AssertionError: expected false to be true // Object.is equality"
+        }
+      ]
+    },
+    {
+      "file": "tests/configuration/smoke-configuration.test.ts",
+      "kind": "assertion_failure",
+      "message": "",
+      "failures": [
+        {
+          "name": "prepareSmokeConfiguration builds one schema-v2 revision from distinct Planner and Executor providers",
+          "message": "Error: Native smoke supports only the packaged Pi Executor"
+        }
+      ]
+    },
+    {
+      "file": "tests/configuration/span-routing-config.test.ts",
+      "kind": "suite_load_failure",
+      "message": "[",
+      "failures": []
+    },
+    {
+      "file": "tests/configuration/staged-legacy-configuration.test.ts",
+      "kind": "assertion_failure",
+      "message": "",
+      "failures": [
+        {
+          "name": "buildStagedLegacyConfiguration keeps the configuration hash stable when optional fields are undefined",
+          "message": "TypeError: Cannot set properties of undefined (setting 'executorManual')"
+        }
+      ]
+    },
+    {
+      "file": "tests/configuration/standard-agent-configuration.test.ts",
+      "kind": "assertion_failure",
+      "message": "",
+      "failures": [
+        {
+          "name": "system-owned agent baseline migrates exact legacy definitions and aliases without mutating history or Planner",
+          "message": "TypeError: Cannot set properties of undefined (setting 'enabled')"
+        }
+      ]
+    },
+    {
+      "file": "tests/core/verification-and-delivery-boundary.test.ts",
+      "kind": "assertion_failure",
+      "message": "",
+      "failures": [
+        {
+          "name": "Phase 2 verification boundary verifies each completion before clean output reaches Session delivery",
+          "message": "Error: ENOENT: no such file or directory, open 'src/execution/kernel-execution-runtime.ts'"
+        }
+      ]
+    },
+    {
+      "file": "tests/docker/shell-schema-isolation.test.ts",
+      "kind": "assertion_failure",
+      "message": "",
+      "failures": [
+        {
+          "name": "Docker shell SQLite schema isolation builds one Node 22 runtime from the vendored planner sources",
+          "message": "Error: ENOENT: no such file or directory, open '/Users/yuanjubian/program/metawork/docker/Dockerfile.runtime'"
+        },
+        {
+          "name": "Docker shell SQLite schema isolation uses the Responses API with one supported model across Planner and Executors",
+          "message": "Error: ENOENT: no such file or directory, open '/Users/yuanjubian/program/metawork/docker/planner-pi-config/models.json'"
+        },
+        {
+          "name": "Docker shell SQLite schema isolation uses a data volume scoped to the current pre-release schema",
+          "message": "Error: ENOENT: no such file or directory, open '/Users/yuanjubian/program/metawork/src/storage/migrations.ts'"
+        },
+        {
+          "name": "Docker shell SQLite schema isolation uses the native backend without mounting the Docker socket",
+          "message": "Error: ENOENT: no such file or directory, open '/Users/yuanjubian/program/metawork/docker/shell.ps1'"
+        },
+        {
+          "name": "Docker shell SQLite schema isolation refreshes rendered provider configs from mounted env files before interactive entry",
+          "message": "Error: ENOENT: no such file or directory, open '/Users/yuanjubian/program/metawork/docker/shell.ps1'"
+        },
+        {
+          "name": "Docker shell SQLite schema isolation does not bootstrap sibling-container topology for the default demo",
+          "message": "Error: ENOENT: no such file or directory, open '/Users/yuanjubian/program/metawork/docker/shell.ps1'"
+        },
+        {
+          "name": "Docker shell SQLite schema isolation does not mutate persisted Executor image pins in native mode",
+          "message": "Error: ENOENT: no such file or directory, open '/Users/yuanjubian/program/metawork/docker/shell.ps1'"
+        }
+      ]
+    },
+    {
+      "file": "tests/docker/ssh-environment.test.ts",
+      "kind": "assertion_failure",
+      "message": "",
+      "failures": [
+        {
+          "name": "SSH login environment persists MetaClaw runtime paths for sessions started by sshd",
+          "message": "Error: Command failed: bash -c source \"$1\"; persist_ssh_environment \"$2\" bash /Users/yuanjubian/program/metawork/docker/persist-ssh-environment.sh /var/folders/jg/m0w89hxx0w79r3jrrs1f2n4w0000gn/T/metaclaw-ssh-environment-ubacS7/environment"
+        }
+      ]
+    },
+    {
+      "file": "tests/e2e/conversation-artifact-continuation.test.ts",
+      "kind": "assertion_failure",
+      "message": "",
+      "failures": [
+        {
+          "name": "Conversation historical artifact continuation bridges a prior image result from Planner selection to an attempt-local image input",
+          "message": "ZodError: ["
+        }
+      ]
+    },
+    {
+      "file": "tests/e2e/conversation-git-delivery-recovery.test.ts",
+      "kind": "assertion_failure",
+      "message": "",
+      "failures": [
+        {
+          "name": "Conversation Git delivery recovery delivers an authorized edit once and replays the merge without re-running the Executor",
+          "message": "TypeError: Cannot read properties of undefined (reading 'status')"
+        },
+        {
+          "name": "Conversation Git delivery recovery cancels before sealing and never publishes the private edits, including after restart",
+          "message": "AssertionError: expected \"vi.fn()\" to be called at least once"
+        }
+      ]
+    },
+    {
+      "file": "tests/e2e/declared-file-delivery.test.ts",
+      "kind": "assertion_failure",
+      "message": "",
+      "failures": [
+        {
+          "name": "Planner-declared delivery end-to-end 'inline answer'",
+          "message": "AssertionError: expected undefined to be defined"
+        },
+        {
+          "name": "Planner-declared delivery end-to-end 'browser action receipt'",
+          "message": "AssertionError: expected undefined to be defined"
+        },
+        {
+          "name": "Planner-declared delivery end-to-end 'unsolicited action reports'",
+          "message": "AssertionError: expected undefined to be defined"
+        },
+        {
+          "name": "Planner-declared delivery end-to-end 'Git edit without report delivery'",
+          "message": "AssertionError: expected undefined to be defined"
+        },
+        {
+          "name": "Planner-declared delivery end-to-end 'requested report with scratch files'",
+          "message": "AssertionError: expected undefined to be defined"
+        },
+        {
+          "name": "Planner-declared delivery end-to-end 'requested Office and HTML files'",
+          "message": "AssertionError: expected undefined to be defined"
+        },
+        {
+          "name": "Planner-declared delivery end-to-end 'dedicated directory'",
+          "message": "AssertionError: expected undefined to be defined"
+        },
+        {
+          "name": "Planner-declared delivery end-to-end 'missing required file'",
+          "message": "AssertionError: expected undefined to be defined"
+        },
+        {
+          "name": "Planner-declared delivery end-to-end 'declared artifact handoff'",
+          "message": "AssertionError: expected undefined to be defined"
+        },
+        {
+          "name": "Planner-declared delivery end-to-end 'missing file blocks downstream'",
+          "message": "AssertionError: expected undefined to be defined"
+        },
+        {
+          "name": "Planner-declared delivery end-to-end 'existing file delivery without rewrite'",
+          "message": "AssertionError: expected undefined to be defined"
+        }
+      ]
+    },
+    {
+      "file": "tests/e2e/executor-runtime-parity.test.ts",
+      "kind": "suite_load_failure",
+      "message": "Cannot find module '../../src/executor/codex-cli-driver.js' imported from /Users/yuanjubian/program/metawork/tests/e2e/executor-runtime-parity.test.ts",
+      "failures": []
+    },
+    {
+      "file": "tests/e2e/hot-activation-auto-routing.test.ts",
+      "kind": "assertion_failure",
+      "message": "",
+      "failures": [
+        {
+          "name": "hot activation, auto routing, and Work Graph presentation activates without restart, keeps old bindings pinned, routes image input, and projects the DAG",
+          "message": "AssertionError: expected { …(5) } to match object { policy: 'auto', selected: { …(2) } }"
+        }
+      ]
+    },
+    {
+      "file": "tests/e2e/read-only-workspace-boundary.test.ts",
+      "kind": "assertion_failure",
+      "message": "",
+      "failures": [
+        {
+          "name": "read-only Workspace authorization boundary runs the Attempt outside the Conversation Worktree and delivers nothing",
+          "message": "TypeError: Cannot read properties of undefined (reading 'status')"
+        },
+        {
+          "name": "read-only Workspace authorization boundary isolates a reader that writes the business tree instead of merging its files",
+          "message": "TypeError: Cannot read properties of undefined (reading 'status')"
+        }
+      ]
+    },
+    {
+      "file": "tests/e2e/span-recovery.test.ts",
+      "kind": "suite_load_failure",
+      "message": "Cannot find module '../../src/kernel/kernel-workflow.js' imported from /Users/yuanjubian/program/metawork/tests/e2e/span-recovery.test.ts",
+      "failures": []
+    },
+    {
+      "file": "tests/e2e/span-routing.test.ts",
+      "kind": "suite_load_failure",
+      "message": "Cannot find module '../../src/storage/kernel-workflow-repo.js' imported from /Users/yuanjubian/program/metawork/tests/e2e/span-routing.test.ts",
+      "failures": []
+    },
+    {
+      "file": "tests/e2e/task-state-recovery-journeys.test.ts",
+      "kind": "suite_load_failure",
+      "message": "Cannot find module '../../src/storage/kernel-effect-outbox-repo.js' imported from /Users/yuanjubian/program/metawork/tests/e2e/task-state-recovery-journeys.test.ts",
+      "failures": []
+    },
+    {
+      "file": "tests/executor/codex-cli-driver.test.ts",
+      "kind": "suite_load_failure",
+      "message": "Cannot find module '../../src/executor/codex-cli-driver.js' imported from /Users/yuanjubian/program/metawork/tests/executor/codex-cli-driver.test.ts",
+      "failures": []
+    },
+    {
+      "file": "tests/executor/container-compatibility-adapter.test.ts",
+      "kind": "suite_load_failure",
+      "message": "Cannot find module '../../src/executor/container-compatibility-adapter.js' imported from /Users/yuanjubian/program/metawork/tests/executor/container-compatibility-adapter.test.ts",
+      "failures": []
+    },
+    {
+      "file": "tests/executor/executor-module-boundary.test.ts",
+      "kind": "assertion_failure",
+      "message": "",
+      "failures": [
+        {
+          "name": "executor module architecture boundaries keeps executor service implementations in src/executor and out of core",
+          "message": "AssertionError: expected false to be true // Object.is equality"
+        }
+      ]
+    },
+    {
+      "file": "tests/executor/harness-driver-registry.test.ts",
+      "kind": "suite_load_failure",
+      "message": "Cannot find module '../../src/executor/codex-cli-driver.js' imported from /Users/yuanjubian/program/metawork/tests/executor/harness-driver-registry.test.ts",
+      "failures": []
+    },
+    {
+      "file": "tests/executor/harness-usage-parser.test.ts",
+      "kind": "suite_load_failure",
+      "message": "Cannot find module '../../src/executor/codex-cli-driver.js' imported from /Users/yuanjubian/program/metawork/tests/executor/harness-usage-parser.test.ts",
+      "failures": []
+    },
+    {
+      "file": "tests/executor/image-container-executor-adapter.test.ts",
+      "kind": "suite_load_failure",
+      "message": "Cannot find module '../../src/executor/image-container-executor-adapter.js' imported from /Users/yuanjubian/program/metawork/tests/executor/image-container-executor-adapter.test.ts",
+      "failures": []
+    },
+    {
+      "file": "tests/executor/runtime-binding-verification.test.ts",
+      "kind": "assertion_failure",
+      "message": "",
+      "failures": [
+        {
+          "name": "effective Executor runtime configuration ignores TOML formatting, comments, table order and unrelated Providers",
+          "message": "Error: ENOENT: no such file or directory, open '/var/folders/jg/m0w89hxx0w79r3jrrs1f2n4w0000gn/T/effective-config-XNKlYB/revision/codex/config.toml'"
+        },
+        {
+          "name": "effective Executor runtime configuration rejects an effective Codex change: service address",
+          "message": "Error: ENOENT: no such file or directory, open '/var/folders/jg/m0w89hxx0w79r3jrrs1f2n4w0000gn/T/effective-config-OVjtYa/revision/codex/config.toml'"
+        },
+        {
+          "name": "effective Executor runtime configuration rejects an effective Codex change: protocol",
+          "message": "Error: ENOENT: no such file or directory, open '/var/folders/jg/m0w89hxx0w79r3jrrs1f2n4w0000gn/T/effective-config-TrXKzN/revision/codex/config.toml'"
+        },
+        {
+          "name": "effective Executor runtime configuration rejects an effective Codex change: credential reference",
+          "message": "Error: ENOENT: no such file or directory, open '/var/folders/jg/m0w89hxx0w79r3jrrs1f2n4w0000gn/T/effective-config-rRzKMH/revision/codex/config.toml'"
+        },
+        {
+          "name": "effective Executor runtime configuration rejects an effective Codex change: authentication",
+          "message": "Error: ENOENT: no such file or directory, open '/var/folders/jg/m0w89hxx0w79r3jrrs1f2n4w0000gn/T/effective-config-8kbt4O/revision/codex/config.toml'"
+        },
+        {
+          "name": "effective Executor runtime configuration rejects an effective Codex change: provider removed",
+          "message": "Error: ENOENT: no such file or directory, open '/var/folders/jg/m0w89hxx0w79r3jrrs1f2n4w0000gn/T/effective-config-7I9rq6/revision/codex/config.toml'"
+        },
+        {
+          "name": "effective Executor runtime configuration rejects an effective Codex change: tool settings",
+          "message": "Error: ENOENT: no such file or directory, open '/var/folders/jg/m0w89hxx0w79r3jrrs1f2n4w0000gn/T/effective-config-OQ10Pg/revision/codex/config.toml'"
+        },
+        {
+          "name": "effective Executor runtime configuration rejects missing/malformed codex-cli configuration without echoing its contents",
+          "message": "Error: ENOENT: no such file or directory, open '/var/folders/jg/m0w89hxx0w79r3jrrs1f2n4w0000gn/T/effective-config-k0cRab/revision/codex/config.toml'"
+        }
+      ]
+    },
+    {
+      "file": "tests/executor/tool-validation.test.ts",
+      "kind": "suite_load_failure",
+      "message": "Cannot find module '../../src/executor/tool-validation.js' imported from /Users/yuanjubian/program/metawork/tests/executor/tool-validation.test.ts",
+      "failures": []
+    },
+    {
+      "file": "tests/execution/attempt-terminal-service.test.ts",
+      "kind": "suite_load_failure",
+      "message": "Cannot find module '../../src/storage/kernel-dispatch-item-repo.js' imported from /Users/yuanjubian/program/metawork/tests/execution/attempt-terminal-service.test.ts",
+      "failures": []
+    },
+    {
+      "file": "tests/execution/cancellation-reconciliation.test.ts",
+      "kind": "suite_load_failure",
+      "message": "Cannot find module '../../src/storage/kernel-workflow-repo.js' imported from /Users/yuanjubian/program/metawork/tests/execution/cancellation-reconciliation.test.ts",
+      "failures": []
+    },
+    {
+      "file": "tests/execution/cancellation-trace.test.ts",
+      "kind": "suite_load_failure",
+      "message": "Cannot find module '../../src/execution/kernel-execution-runtime.js' imported from /Users/yuanjubian/program/metawork/tests/execution/cancellation-trace.test.ts",
+      "failures": []
+    },
+    {
+      "file": "tests/execution/control-loop-policy.test.ts",
+      "kind": "suite_load_failure",
+      "message": "Cannot find module '../../src/kernel/control-kernel.js' imported from /Users/yuanjubian/program/metawork/tests/execution/control-loop-policy.test.ts",
+      "failures": []
+    },
+    {
+      "file": "tests/execution/execution-runtime-boundary.test.ts",
+      "kind": "suite_load_failure",
+      "message": "ENOENT: no such file or directory, open 'src/execution/kernel-execution-runtime.ts'",
+      "failures": []
+    },
+    {
+      "file": "tests/execution/execution-transparency.test.ts",
+      "kind": "assertion_failure",
+      "message": "",
+      "failures": [
+        {
+          "name": "execution transparency projection resolves the configured modelId instead of exposing the internal modelRef",
+          "message": "AssertionError: expected { …(5) } to deeply equal { executorDisplayName: '智能体 2', …(4) }"
+        }
+      ]
+    },
+    {
+      "file": "tests/execution/executor-recovery-refresh-service.test.ts",
+      "kind": "suite_load_failure",
+      "message": "Cannot find module '../../src/kernel/executor-status-projection.js' imported from /Users/yuanjubian/program/metawork/tests/execution/executor-recovery-refresh-service.test.ts",
+      "failures": []
+    },
+    {
+      "file": "tests/execution/kernel-execution-runtime-recovery.test.ts",
+      "kind": "suite_load_failure",
+      "message": "Cannot find module '../../src/execution/kernel-execution-runtime.js' imported from /Users/yuanjubian/program/metawork/tests/execution/kernel-execution-runtime-recovery.test.ts",
+      "failures": []
+    },
+    {
+      "file": "tests/execution/kernel-execution-runtime-replan.test.ts",
+      "kind": "suite_load_failure",
+      "message": "Cannot find module '../../src/execution/kernel-execution-runtime.js' imported from /Users/yuanjubian/program/metawork/tests/execution/kernel-execution-runtime-replan.test.ts",
+      "failures": []
+    },
+    {
+      "file": "tests/execution/permission-workflow-service.test.ts",
+      "kind": "assertion_failure",
+      "message": "",
+      "failures": [
+        {
+          "name": "PermissionWorkflowService evaluates Executor capability policy without invoking ControlKernel",
+          "message": "AssertionError: expected \"vi.fn()\" to be called at least once"
+        },
+        {
+          "name": "PermissionWorkflowService pauses the execution backend before checkpointing a permission suspension",
+          "message": "TypeError: this.deps.repository.escalate is not a function"
+        },
+        {
+          "name": "PermissionWorkflowService uses the persisted attempt revision for permission resolution events",
+          "message": "TypeError: this.deps.repository.recordAuthorization is not a function"
+        }
+      ]
+    },
+    {
+      "file": "tests/execution/plan-admission-application-service.test.ts",
+      "kind": "assertion_failure",
+      "message": "",
+      "failures": [
+        {
+          "name": "atomic plan admission application commits the Task, its initial origin, the graph revision and the applied outcome together",
+          "message": "TypeError: (0 , __vite_ssr_import_16__.authorizedBindingsFor) is not a function"
+        },
+        {
+          "name": "atomic plan admission application records queued admission without preparing execution or losing the graph",
+          "message": "TypeError: (0 , __vite_ssr_import_16__.authorizedBindingsFor) is not a function"
+        },
+        {
+          "name": "atomic plan admission application replays the durable outcome instead of applying a second Task or graph revision",
+          "message": "TypeError: (0 , __vite_ssr_import_16__.authorizedBindingsFor) is not a function"
+        },
+        {
+          "name": "atomic plan admission application rolls the Task and origin back when the authorized graph cannot be persisted",
+          "message": "AssertionError: expected [Function] to throw error including 'authorized Work Graph could not be pe…' but got '(0 , __vite_ssr_import_16__.authorize…'"
+        },
+        {
+          "name": "atomic plan admission application refuses to apply a proposal that was erased after preparation",
+          "message": "AssertionError: expected error to be instance of PlanProposalUnavailableError"
+        },
+        {
+          "name": "atomic plan admission application refuses a Turn cancelled between preparation and commit",
+          "message": "AssertionError: expected error to be instance of PlanProposalUnavailableError"
+        },
+        {
+          "name": "atomic plan admission application applies a replan to the existing Task without creating another one",
+          "message": "TypeError: (0 , __vite_ssr_import_16__.authorizedBindingsFor) is not a function"
+        }
+      ]
+    },
+    {
+      "file": "tests/execution/plan-admission-ledger-adapter.test.ts",
+      "kind": "assertion_failure",
+      "message": "",
+      "failures": [
+        {
+          "name": "transitional plan admission persistence adapter handles admission without calling ControlLoopPolicy and preserves the durable operation identity",
+          "message": "AssertionError: expected { schemaVersion: 5, …(5) } to deeply equal { schemaVersion: 5, …(5) }"
+        },
+        {
+          "name": "transitional plan admission persistence adapter preserves closed entitlement checks for productive plans and task controls",
+          "message": "AssertionError: expected { schemaVersion: 5, …(5) } to match object { action: { …(2) }, …(1) }"
+        }
+      ]
+    },
+    {
+      "file": "tests/execution/plan-admission-policy.test.ts",
+      "kind": "assertion_failure",
+      "message": "",
+      "failures": [
+        {
+          "name": "Task Runtime plan admission returns the same result without event or decision envelopes",
+          "message": "AssertionError: expected { status: 'rejected', …(1) } to deeply equal { status: 'no_action', …(1) }"
+        },
+        {
+          "name": "Task Runtime plan admission authorizes a replan as the next revision of the same generation",
+          "message": "AssertionError: expected { status: 'rejected', …(1) } to match object { status: 'authorized', …(4) }"
+        },
+        {
+          "name": "Task Runtime plan admission admits executable Tasks from different Conversations independently",
+          "message": "AssertionError: expected { status: 'rejected', …(1) } to match object { status: 'authorized', …(1) }"
+        },
+        {
+          "name": "Task Runtime plan admission authorizes a second initial Task from one Conversation as queued",
+          "message": "AssertionError: expected { status: 'rejected', …(1) } to match object { status: 'authorized', …(1) }"
+        },
+        {
+          "name": "Task Runtime plan admission rejects same-Conversation admission when the durable queue is full",
+          "message": "AssertionError: expected 'invalid PlanningAgentPlan: plan: Unre…' to contain 'queue limit reached'"
+        },
+        {
+          "name": "Task Runtime plan admission retains all hard-eligible models across Providers for Router selection",
+          "message": "AssertionError: expected { status: 'rejected', …(1) } to match object { status: 'authorized', …(2) }"
+        },
+        {
+          "name": "Task Runtime plan admission requires and selects an image-capable model for image generation work",
+          "message": "AssertionError: expected { status: 'rejected', …(1) } to match object { status: 'authorized', …(2) }"
+        },
+        {
+          "name": "Task Runtime plan admission does not require model tools capability for Pi current-web-research routing",
+          "message": "AssertionError: expected { status: 'rejected', …(1) } to match object { status: 'authorized', …(1) }"
+        },
+        {
+          "name": "Task Runtime plan admission does not reject a workspace model merely because its capability profile is empty",
+          "message": "AssertionError: expected { status: 'rejected', …(1) } to match object { status: 'authorized', …(1) }"
+        },
+        {
+          "name": "Task Runtime plan admission names an unqualified attachment reference as 附件 in the clarification",
+          "message": "AssertionError: expected { status: 'rejected', …(1) } to match object { status: 'clarification' }"
+        },
+        {
+          "name": "Task Runtime plan admission admits an attachment reference that belongs to the current Turn",
+          "message": "AssertionError: expected { status: 'rejected', …(1) } to match object { status: 'authorized' }"
+        },
+        {
+          "name": "Task Runtime plan admission rejects an empty non-null task reference instead of authorizing it as a new Task",
+          "message": "AssertionError: expected { status: 'rejected', …(1) } to match object { status: 'rejected', …(1) }"
+        },
+        {
+          "name": "Task Runtime plan admission defers an exhausted replan and activates it only after the current frontier is available",
+          "message": "AssertionError: expected { status: 'rejected', …(1) } to match object { status: 'deferred', …(2) }"
+        },
+        {
+          "name": "Plan admission abandon_task authorization (2026-09-06 plan §5.4) authorizes abandoning the slot-occupying Task of the current Conversation",
+          "message": "AssertionError: expected { status: 'rejected', …(1) } to match object { status: 'task_control', …(1) }"
+        },
+        {
+          "name": "Plan admission abandon_task authorization (2026-09-06 plan §5.4) authorizes abandoning a queued (non-slot) Task of the current Conversation",
+          "message": "AssertionError: expected { status: 'rejected', …(1) } to match object { status: 'task_control' }"
+        },
+        {
+          "name": "Plan admission abandon_task authorization (2026-09-06 plan §5.4) rejects abandoning a Task owned by another Conversation",
+          "message": "AssertionError: expected 'invalid PlanningAgentPlan: workspaceI…' to contain 'another Conversation'"
+        },
+        {
+          "name": "Plan admission abandon_task authorization (2026-09-06 plan §5.4) rejects abandoning an invented Task id",
+          "message": "AssertionError: expected 'invalid PlanningAgentPlan: workspaceI…' to contain 'task not found'"
+        },
+        {
+          "name": "Plan admission abandon_task authorization (2026-09-06 plan §5.4) still rejects a resume control while the slot is occupied by another Task",
+          "message": "AssertionError: expected 'invalid PlanningAgentPlan: workspaceI…' to contain 'slot is occupied'"
+        },
+        {
+          "name": "Plan admission conflictResolution (2026-09-06 plan §5.4 abandon-and-create) authorizes the new plan as queued and carries the old Task identity",
+          "message": "AssertionError: expected { status: 'rejected', …(1) } to match object { status: 'authorized', …(2) }"
+        },
+        {
+          "name": "Plan admission conflictResolution (2026-09-06 plan §5.4 abandon-and-create) rejects an unknown old Task id",
+          "message": "AssertionError: expected 'invalid PlanningAgentPlan: plan: Unre…' to contain 'unknown Task'"
+        },
+        {
+          "name": "Plan admission conflictResolution (2026-09-06 plan §5.4 abandon-and-create) rejects an already-terminal old Task",
+          "message": "AssertionError: expected 'invalid PlanningAgentPlan: plan: Unre…' to contain 'already-terminal'"
+        },
+        {
+          "name": "admission conclusions without a ledger preserves the explicit clarification and no-action conclusions",
+          "message": "AssertionError: expected { status: 'rejected', …(1) } to match object { status: 'clarification', …(1) }"
+        },
+        {
+          "name": "admission conclusions without a ledger asks for confirmation before admitting a risky or low-confidence change",
+          "message": "AssertionError: expected { status: 'rejected', …(1) } to match object { status: 'clarification', …(1) }"
+        },
+        {
+          "name": "admission conclusions without a ledger does not create a Task for missing or cross-Workspace access facts",
+          "message": "AssertionError: expected 'rejected' to be 'clarification' // Object.is equality"
+        },
+        {
+          "name": "admission conclusions without a ledger refuses initial execution when its only eligible AgentClass is disabled",
+          "message": "AssertionError: expected { status: 'rejected', …(1) } to match object { status: 'rejected', …(1) }"
+        },
+        {
+          "name": "admission conclusions without a ledger validates the exact pending permission identity before accepting its interpretation",
+          "message": "AssertionError: expected { status: 'rejected', …(1) } to match object { …(4) }"
+        }
+      ]
+    },
+    {
+      "file": "tests/execution/result-decision-recovery.test.ts",
+      "kind": "suite_load_failure",
+      "message": "Cannot find module '../../src/kernel/control-kernel.js' imported from /Users/yuanjubian/program/metawork/tests/execution/result-decision-recovery.test.ts",
+      "failures": []
+    },
+    {
+      "file": "tests/execution/resume-blocker-classification.test.ts",
+      "kind": "suite_load_failure",
+      "message": "Cannot find module '../../src/execution/kernel-execution-runtime.js' imported from /Users/yuanjubian/program/metawork/tests/execution/resume-blocker-classification.test.ts",
+      "failures": []
+    },
+    {
+      "file": "tests/execution/service-rejection-convergence.test.ts",
+      "kind": "suite_load_failure",
+      "message": "Cannot find module '../../src/kernel/control-kernel.js' imported from /Users/yuanjubian/program/metawork/tests/execution/service-rejection-convergence.test.ts",
+      "failures": []
+    },
+    {
+      "file": "tests/execution/subtask-attempt-runner.test.ts",
+      "kind": "suite_load_failure",
+      "message": "Cannot find module '../../src/storage/kernel-workflow-repo.js' imported from /Users/yuanjubian/program/metawork/tests/execution/subtask-attempt-runner.test.ts",
+      "failures": []
+    },
+    {
+      "file": "tests/execution/subtask-handoff-repair.test.ts",
+      "kind": "assertion_failure",
+      "message": "",
+      "failures": [
+        {
+          "name": "edge handoff backfill rebuilds the missing handoff from the upstream certified safe projection",
+          "message": "SqliteError: no such table: kernel_dispatch_items"
+        },
+        {
+          "name": "edge handoff backfill is idempotent and reports nothing to repair on a second run",
+          "message": "SqliteError: no such table: kernel_dispatch_items"
+        },
+        {
+          "name": "edge handoff backfill reports rather than guesses when the upstream attempt has no safe projection",
+          "message": "SqliteError: no such table: kernel_dispatch_items"
+        }
+      ]
+    },
+    {
+      "file": "tests/execution/task-cancellation-coordinator.test.ts",
+      "kind": "suite_load_failure",
+      "message": "Cannot find module '../../src/storage/kernel-dispatch-item-repo.js' imported from /Users/yuanjubian/program/metawork/tests/execution/task-cancellation-coordinator.test.ts",
+      "failures": []
+    },
+    {
+      "file": "tests/execution/task-completion-atomicity.test.ts",
+      "kind": "suite_load_failure",
+      "message": "Cannot find module '../../src/execution/kernel-execution-runtime.js' imported from /Users/yuanjubian/program/metawork/tests/execution/task-completion-atomicity.test.ts",
+      "failures": []
+    },
+    {
+      "file": "tests/execution/task-residue-reader.test.ts",
+      "kind": "assertion_failure",
+      "message": "",
+      "failures": [
+        {
+          "name": "TaskResidueReader treats pending, applying and uncertain Kernel applications as residue",
+          "message": "SqliteError: no such table: kernel_events"
+        },
+        {
+          "name": "TaskResidueReader ignores an applied application",
+          "message": "SqliteError: no such table: kernel_events"
+        },
+        {
+          "name": "TaskResidueReader treats a terminal dispatch item without a receipt as residue",
+          "message": "SqliteError: no such table: kernel_events"
+        },
+        {
+          "name": "TaskResidueReader honors an explicit excluded Decision instead of ignoring the whole category",
+          "message": "SqliteError: no such table: kernel_events"
+        },
+        {
+          "name": "TaskResidueReader reports a claimed WorkUnit, outstanding Replan Job and live lease",
+          "message": "SqliteError: no such table: kernel_dispatch_items"
+        },
+        {
+          "name": "TaskResidueReader treats a deferred-for-availability Replan Job as unfinished residue",
+          "message": "SqliteError: no such table: kernel_dispatch_items"
+        },
+        {
+          "name": "TaskResidueReader treats an armed or fired Retry Wake as unfinished residue until consumed",
+          "message": "SqliteError: no such table: kernel_dispatch_items"
+        }
+      ]
+    },
+    {
+      "file": "tests/execution/task-slot-cleanup-fence.test.ts",
+      "kind": "assertion_failure",
+      "message": "",
+      "failures": [
+        {
+          "name": "task slot cleanup fence releases the slot only after safe launch residue is closed",
+          "message": "SqliteError: no such table: kernel_dispatch_items"
+        },
+        {
+          "name": "task slot cleanup fence retains the slot while a cancellation fence is still converging",
+          "message": "SqliteError: no such table: kernel_dispatch_items"
+        },
+        {
+          "name": "task slot cleanup fence retains the slot while an uncertain side effect is unresolved",
+          "message": "SqliteError: no such table: kernel_dispatch_items"
+        },
+        {
+          "name": "task slot cleanup fence releases a cancelled Task held only by a quarantined legacy application",
+          "message": "SqliteError: no such table: kernel_events"
+        },
+        {
+          "name": "task slot cleanup fence releases stale capacity without reserving a successor it cannot launch",
+          "message": "SqliteError: no such table: kernel_dispatch_items"
+        },
+        {
+          "name": "task slot cleanup fence wakes a queued Task in another Conversation after capacity is released",
+          "message": "SqliteError: no such table: kernel_dispatch_items"
+        }
+      ]
+    },
+    {
+      "file": "tests/execution/terminal-task-supersede.test.ts",
+      "kind": "suite_load_failure",
+      "message": "Cannot find module '../../src/execution/kernel-execution-runtime.js' imported from /Users/yuanjubian/program/metawork/tests/execution/terminal-task-supersede.test.ts",
+      "failures": []
+    },
+    {
+      "file": "tests/execution/upstream-input-resume.test.ts",
+      "kind": "suite_load_failure",
+      "message": "Cannot find module '../../src/execution/kernel-execution-runtime.js' imported from /Users/yuanjubian/program/metawork/tests/execution/upstream-input-resume.test.ts",
+      "failures": []
+    },
+    {
+      "file": "tests/execution/work-graph-runtime-service.test.ts",
+      "kind": "assertion_failure",
+      "message": "",
+      "failures": [
+        {
+          "name": "WorkGraphRuntimeService applies follow-up graphs sharing an interaction and rebuilds their selected context on recovery",
+          "message": "SqliteError: no such table: kernel_decisions"
+        },
+        {
+          "name": "WorkGraphRuntimeService materializes only the full Kernel-authorized bindings for a v7 graph revision",
+          "message": "SqliteError: no such table: kernel_decisions"
+        },
+        {
+          "name": "WorkGraphRuntimeService persists historical artifact context refs across graph materialization and reload",
+          "message": "SqliteError: no such table: kernel_decisions"
+        },
+        {
+          "name": "WorkGraphRuntimeService rejects an authorized binding from a different configuration revision",
+          "message": "SqliteError: no such table: kernel_decisions"
+        },
+        {
+          "name": "WorkGraphRuntimeService projects persisted active work without making an orphan recovery decision",
+          "message": "SqliteError: no such table: kernel_decisions"
+        },
+        {
+          "name": "WorkGraphRuntimeService does not recover historical Subtasks without an active graph revision",
+          "message": "SqliteError: no such table: kernel_decisions"
+        },
+        {
+          "name": "WorkGraphRuntimeService reapplies the same authorized revision without changing in-flight Subtask state",
+          "message": "SqliteError: no such table: kernel_decisions"
+        },
+        {
+          "name": "WorkGraphRuntimeService defensively rejects a conflicting revision",
+          "message": "SqliteError: no such table: kernel_decisions"
+        },
+        {
+          "name": "WorkGraphRuntimeService applies one Kernel-authorized conflict replan as the next revision",
+          "message": "SqliteError: no such table: kernel_decisions"
+        },
+        {
+          "name": "WorkGraphRuntimeService keeps distinct completed nodes with long task IDs and preserves existing evidence references",
+          "message": "SqliteError: no such table: kernel_decisions"
+        },
+        {
+          "name": "WorkGraphRuntimeService supersedes unfinished work and exposes completed work as immutable task evidence",
+          "message": "SqliteError: no such table: kernel_decisions"
+        }
+      ]
+    },
+    {
+      "file": "tests/gateway/client-events.test.ts",
+      "kind": "assertion_failure",
+      "message": "",
+      "failures": [
+        {
+          "name": "gateway event protocol exports a complete event kind contract",
+          "message": "AssertionError: expected [ 'conversation_resource', …(26) ] to have a length of 26 but got 27"
+        }
+      ]
+    },
+    {
+      "file": "tests/gateway/client-gateway.test.ts",
+      "kind": "assertion_failure",
+      "message": "",
+      "failures": [
+        {
+          "name": "ClientGateway routes billing projections through the read-only branch without activating or submitting work",
+          "message": "AssertionError: expected { kind: 'invalid_command', …(3) } to match object { requestId: 'req_bill', …(1) }"
+        },
+        {
+          "name": "ClientGateway routes the Turn bill query through the read-only branch, not workspace admission",
+          "message": "AssertionError: expected { kind: 'invalid_command', …(3) } to match object { requestId: 'req_turn_bill', …(1) }"
+        }
+      ]
+    },
+    {
+      "file": "tests/gateway/indexed-turn-task-observation.test.ts",
+      "kind": "suite_load_failure",
+      "message": "Cannot find module '../../src/storage/migrations.js' imported from /Users/yuanjubian/program/metawork/tests/gateway/indexed-turn-task-observation.test.ts",
+      "failures": []
+    },
+    {
+      "file": "tests/gateway/read-only-query-handler.test.ts",
+      "kind": "assertion_failure",
+      "message": "",
+      "failures": [
+        {
+          "name": "gateway read-only query handler does not publish a query bill from another account",
+          "message": "AssertionError: expected { status: 'rejected', …(1) } to deeply equal { status: 'rejected', …(1) }"
+        },
+        {
+          "name": "gateway read-only query handler publishes the three-state Turn bill view for turn queries",
+          "message": "AssertionError: expected { status: 'rejected', …(1) } to deeply equal { status: 'accepted' }"
+        },
+        {
+          "name": "gateway read-only query handler uses the authenticated account for task and account summaries",
+          "message": "AssertionError: expected 'rejected' to be 'accepted' // Object.is equality"
+        }
+      ]
+    },
+    {
+      "file": "tests/gateway/trace-page.test.ts",
+      "kind": "assertion_failure",
+      "message": "",
+      "failures": [
+        {
+          "name": "trace page cursors rebuilds schema-46 trace history off the read path without overwriting a newer live update",
+          "message": "Error: runtime startup refuses legacy SQLite schema 46; back up the database (including -wal/-shm), then move the originals aside and create a fresh database for schema 68"
+        }
+      ]
+    },
+    {
+      "file": "tests/integration/executor-idle-management.integration.test.ts",
+      "kind": "suite_load_failure",
+      "message": "Cannot find module '../../src/executor/codex-cli-driver.js' imported from /Users/yuanjubian/program/metawork/tests/integration/executor-idle-management.integration.test.ts",
+      "failures": []
+    },
+    {
+      "file": "tests/integration/multi-client-control.integration.test.ts",
+      "kind": "suite_load_failure",
+      "message": "Cannot find module '../../src/storage/kernel-workflow-repo.js' imported from /Users/yuanjubian/program/metawork/tests/helpers/permission-runtime.ts",
+      "failures": []
+    },
+    {
+      "file": "tests/integration/unified-client-runtime.integration.test.ts",
+      "kind": "assertion_failure",
+      "message": "",
+      "failures": [
+        {
+          "name": "unified client runtime integration activates the account runtime once across surfaces",
+          "message": "AssertionError: expected +0 to be 1 // Object.is equality"
+        },
+        {
+          "name": "unified client runtime integration isolates conversations across surfaces",
+          "message": "AssertionError: expected +0 to be 2 // Object.is equality"
+        },
+        {
+          "name": "unified client runtime integration keeps a duplicate feishu event from creating a second turn",
+          "message": "AssertionError: expected { requestId: 'req_2', …(6) } to match object { status: 'duplicate' }"
+        }
+      ]
+    },
+    {
+      "file": "tests/installation/database-backup.test.ts",
+      "kind": "suite_load_failure",
+      "message": "Cannot find module '../../src/storage/migrations.js' imported from /Users/yuanjubian/program/metawork/tests/installation/database-backup.test.ts",
+      "failures": []
+    },
+    {
+      "file": "tests/installation/database-upgrade-transaction.test.ts",
+      "kind": "suite_load_failure",
+      "message": "Cannot find module '../../src/installation/database-upgrade-transaction.js' imported from /Users/yuanjubian/program/metawork/tests/installation/database-upgrade-transaction.test.ts",
+      "failures": []
+    },
+    {
+      "file": "tests/installation/desktop-clean-install.integration.test.ts",
+      "kind": "assertion_failure",
+      "message": "",
+      "failures": [
+        {
+          "name": "clean Desktop installer transaction handles clean with signed payloads and preserves existing account data",
+          "message": "Error: Required Desktop runtime dependency is missing"
+        },
+        {
+          "name": "clean Desktop installer transaction handles native-reuse with signed payloads and preserves existing account data",
+          "message": "Error: installation configuration probe failed: Packaged Manager Pi is missing; Executor command is unavailable: pi; Executor command is unavailable: pi"
+        },
+        {
+          "name": "clean Desktop installer transaction handles native-upgrade with signed payloads and preserves existing account data",
+          "message": "Error: installation configuration probe failed: Packaged Manager Pi is missing; Executor command is unavailable: pi; Executor command is unavailable: pi"
+        }
+      ]
+    },
+    {
+      "file": "tests/installation/desktop-payload-memory.test.ts",
+      "kind": "assertion_failure",
+      "message": "",
+      "failures": [
+        {
+          "name": "Desktop payload roots points at the memory engine itself, not its parent directory",
+          "message": "AssertionError: expected { …(2) } to deeply equal { …(3) }"
+        },
+        {
+          "name": "Desktop upgrade path passes the bundled memory engine to the Runtime update",
+          "message": "AssertionError: expected undefined to be '/var/folders/jg/m0w89hxx0w79r3jrrs1f2…' // Object.is equality"
+        }
+      ]
+    },
+    {
+      "file": "tests/installation/desktop-release.test.ts",
+      "kind": "assertion_failure",
+      "message": "",
+      "failures": [
+        {
+          "name": "Desktop release admission rejects even validly signed inventories that cannot install or update",
+          "message": "Error: expected [Function] to throw error including 'not executable' but got 'Required Desktop runtime dependency i…'"
+        },
+        {
+          "name": "Desktop release admission accepts a complete signed combination and detects changed or additional payload files",
+          "message": "Error: promise rejected \"Error: Required Desktop runtime dependenc…\" instead of resolving"
+        },
+        {
+          "name": "Desktop release admission rejects development packages in production, architecture mismatch, changed signatures and links",
+          "message": "Error: promise rejected \"Error: Required Desktop runtime dependenc…\" instead of resolving"
+        }
+      ]
+    },
+    {
+      "file": "tests/installation/doctor.test.ts",
+      "kind": "assertion_failure",
+      "message": "",
+      "failures": [
+        {
+          "name": "installation doctor checks required paths and detects commands without modifying them",
+          "message": "TypeError: Cannot read properties of undefined (reading 'ok')"
+        },
+        {
+          "name": "installation doctor reports missing required paths",
+          "message": "TypeError: Cannot read properties of undefined (reading 'ok')"
+        }
+      ]
+    },
+    {
+      "file": "tests/installation/native-install-cli.test.ts",
+      "kind": "assertion_failure",
+      "message": "",
+      "failures": [
+        {
+          "name": "native install CLI drives a real clean install under METAWORK_INSTALL_ROOT",
+          "message": "Error: installation configuration probe failed: Packaged Manager Pi is missing; Executor command is unavailable: pi; Executor command is unavailable: pi"
+        },
+        {
+          "name": "native install CLI collects provider configuration through the wizard when env is missing",
+          "message": "Error: installation configuration probe failed: Packaged Manager Pi is missing; Executor command is unavailable: pi; Executor command is unavailable: pi"
+        },
+        {
+          "name": "native install CLI installs a model-free login/settings shell without invoking the provider wizard",
+          "message": "Error: installation configuration probe failed: Packaged Manager Pi is missing"
+        },
+        {
+          "name": "native install CLI skips the wizard when provider environment variables are complete",
+          "message": "Error: promise rejected \"Error: installation configuration probe f…\" instead of resolving"
+        },
+        {
+          "name": "native install CLI accepts the existing ANYFUSION variables as compatibility inputs",
+          "message": "Error: promise rejected \"Error: installation configuration probe f…\" instead of resolving"
+        },
+        {
+          "name": "native install CLI infers the existing file SecretStore during update without environment hints",
+          "message": "Error: installation configuration probe failed: Packaged Manager Pi is missing; Executor command is unavailable: pi; Executor command is unavailable: pi"
+        },
+        {
+          "name": "native install CLI migrates a default legacy AnyFusion root before a real update commits",
+          "message": "Error: installation configuration probe failed: Packaged Manager Pi is missing; Executor command is unavailable: pi; Executor command is unavailable: pi"
+        }
+      ]
+    },
+    {
+      "file": "tests/installation/schema30-migration-context.test.ts",
+      "kind": "suite_load_failure",
+      "message": "Cannot find module '../../src/installation/schema30-migration-context.js' imported from /Users/yuanjubian/program/metawork/tests/installation/schema30-migration-context.test.ts",
+      "failures": []
+    },
+    {
+      "file": "tests/installation/source-native-installer.test.ts",
+      "kind": "suite_load_failure",
+      "message": "Cannot find module '../../src/storage/migrations.js' imported from /Users/yuanjubian/program/metawork/tests/installation/source-native-installer.test.ts",
+      "failures": []
+    },
+    {
+      "file": "tests/installation/source-native-updater.test.ts",
+      "kind": "suite_load_failure",
+      "message": "Cannot find module '../../src/storage/migrations.js' imported from /Users/yuanjubian/program/metawork/tests/installation/source-native-updater.test.ts",
+      "failures": []
+    },
+    {
+      "file": "tests/kernel/agent-availability.test.ts",
+      "kind": "suite_load_failure",
+      "message": "Cannot find module '../../src/kernel/agent-availability.js' imported from /Users/yuanjubian/program/metawork/tests/kernel/agent-availability.test.ts",
+      "failures": []
+    },
+    {
+      "file": "tests/kernel/control-kernel-architecture.test.ts",
+      "kind": "assertion_failure",
+      "message": "",
+      "failures": [
+        {
+          "name": "ControlKernel architecture does not import Session, Task Runtime, Execution, or Storage modules",
+          "message": "Error: ENOENT: no such file or directory, open 'src/kernel/control-kernel.ts'"
+        },
+        {
+          "name": "ControlKernel architecture keeps PlanningAgent implementation types out of Runtime",
+          "message": "Error: ENOENT: no such file or directory, open 'src/execution/kernel-execution-runtime.ts'"
+        }
+      ]
+    },
+    {
+      "file": "tests/kernel/kernel-application-settlement.test.ts",
+      "kind": "suite_load_failure",
+      "message": "Cannot find module '../../src/kernel/kernel-application-settlement.js' imported from /Users/yuanjubian/program/metawork/tests/kernel/kernel-application-settlement.test.ts",
+      "failures": []
+    },
+    {
+      "file": "tests/kernel/kernel-executor-status-projector.test.ts",
+      "kind": "suite_load_failure",
+      "message": "Cannot find module '../../src/execution/kernel-executor-status-projector.js' imported from /Users/yuanjubian/program/metawork/tests/kernel/kernel-executor-status-projector.test.ts",
+      "failures": []
+    },
+    {
+      "file": "tests/kernel/kernel-workflow.test.ts",
+      "kind": "suite_load_failure",
+      "message": "Cannot find module '../../src/kernel/kernel-workflow.js' imported from /Users/yuanjubian/program/metawork/tests/kernel/kernel-workflow.test.ts",
+      "failures": []
+    },
+    {
+      "file": "tests/kernel/span-routing-kernel.test.ts",
+      "kind": "suite_load_failure",
+      "message": "Cannot find module '../../src/kernel/control-kernel.js' imported from /Users/yuanjubian/program/metawork/tests/kernel/span-routing-kernel.test.ts",
+      "failures": []
+    },
+    {
+      "file": "tests/kernel/task-scheduler.test.ts",
+      "kind": "suite_load_failure",
+      "message": "Cannot find module '../../src/kernel/task-scheduler.js' imported from /Users/yuanjubian/program/metawork/tests/kernel/task-scheduler.test.ts",
+      "failures": []
+    },
+    {
+      "file": "tests/kernel/workspace-execution-admission.test.ts",
+      "kind": "suite_load_failure",
+      "message": "Cannot find module '../../src/kernel/workspace-execution-decision.js' imported from /Users/yuanjubian/program/metawork/tests/kernel/workspace-execution-admission.test.ts",
+      "failures": []
+    },
+    {
+      "file": "tests/kernel/workspace-execution-decision.test.ts",
+      "kind": "suite_load_failure",
+      "message": "Cannot find module '../../src/kernel/workspace-execution-decision.js' imported from /Users/yuanjubian/program/metawork/tests/kernel/workspace-execution-decision.test.ts",
+      "failures": []
+    },
+    {
+      "file": "tests/management/agent-installation-catalog.test.ts",
+      "kind": "assertion_failure",
+      "message": "",
+      "failures": [
+        {
+          "name": "agentClassRefForInstallation maps an installation to the AgentClass that runs its command",
+          "message": "AssertionError: expected null to be 'codex-engineering' // Object.is equality"
+        },
+        {
+          "name": "agentClassRefForInstallation resolves legacy AgentClass references that reuse the installation id",
+          "message": "AssertionError: expected null to be 'codex-cli' // Object.is equality"
+        }
+      ]
+    },
+    {
+      "file": "tests/management/agent-installation-readiness-service.test.ts",
+      "kind": "assertion_failure",
+      "message": "",
+      "failures": [
+        {
+          "name": "AgentInstallationReadinessService re-projects renamed agents without re-probing the installed processes",
+          "message": "AssertionError: expected 1 to be 2 // Object.is equality"
+        },
+        {
+          "name": "AgentInstallationReadinessService publishes renamed agents to subscribers without a new probe",
+          "message": "AssertionError: expected 1 to be 2 // Object.is equality"
+        },
+        {
+          "name": "AgentInstallationReadinessService distinguishes missing, timeout, non-zero, and launch-error probes",
+          "message": "AssertionError: expected undefined to match object { status: 'broken', …(1) }"
+        },
+        {
+          "name": "AgentInstallationReadinessService uses one probe per command for concurrent refreshes and honors the TTL",
+          "message": "AssertionError: expected [ 'pi' ] to deeply equal [ 'pi', 'codex' ]"
+        }
+      ]
+    },
+    {
+      "file": "tests/management/execution-projector-batch.test.ts",
+      "kind": "suite_load_failure",
+      "message": "Cannot find module '../../src/storage/kernel-decision-repo.js' imported from /Users/yuanjubian/program/metawork/tests/management/execution-projector-batch.test.ts",
+      "failures": []
+    },
+    {
+      "file": "tests/management/execution-projector.test.ts",
+      "kind": "assertion_failure",
+      "message": "",
+      "failures": [
+        {
+          "name": "ExecutionProjector 有 decisions 时 authorization done",
+          "message": "AssertionError: expected 'pending' to be 'done' // Object.is equality"
+        }
+      ]
+    },
+    {
+      "file": "tests/management/memory-management.test.ts",
+      "kind": "assertion_failure",
+      "message": "",
+      "failures": [
+        {
+          "name": "memory management view exposes models with their structured-output capability and price",
+          "message": "AssertionError: expected undefined to be 1 // Object.is equality"
+        }
+      ]
+    },
+    {
+      "file": "tests/management/server.test.ts",
+      "kind": "assertion_failure",
+      "message": "",
+      "failures": [
+        {
+          "name": "executor management API serves read-only billing records and task detail through the session runtime",
+          "message": "AssertionError: expected 404 to be 200 // Object.is equality"
+        },
+        {
+          "name": "ManagementServer WebSocket authentication explains a WebSocket origin mismatch through the diagnostic endpoint",
+          "message": "Error: expected { ok: false, …(2) } to deeply equal { ok: false, …(2) }"
+        }
+      ]
+    },
+    {
+      "file": "tests/management/web-gateway-session-runtime.test.ts",
+      "kind": "suite_load_failure",
+      "message": "Cannot find module '../../src/storage/billing-repo.js' imported from /Users/yuanjubian/program/metawork/tests/management/web-gateway-session-runtime.test.ts",
+      "failures": []
+    },
+    {
+      "file": "tests/management/work-graph-presentation-projector.test.ts",
+      "kind": "assertion_failure",
+      "message": "",
+      "failures": [
+        {
+          "name": "WorkGraphPresentationProjector projects dependency edges, parallel groups, frontier and concrete routing facts",
+          "message": "AssertionError: expected { id: 'task-1_r1_implement', …(11) } to match object { status: 'running', …(1) }"
+        }
+      ]
+    },
+    {
+      "file": "tests/memory/memory-context-boundary.test.ts",
+      "kind": "assertion_failure",
+      "message": "",
+      "failures": [
+        {
+          "name": "Phase 2 Executor context boundary removes Task-level memory/history construction from Session execution",
+          "message": "Error: ENOENT: no such file or directory, open 'src/execution/kernel-execution-runtime.ts'"
+        }
+      ]
+    },
+    {
+      "file": "tests/metering/usage-coverage.test.ts",
+      "kind": "suite_load_failure",
+      "message": "Cannot find module '../../src/billing/money.js' imported from /Users/yuanjubian/program/metawork/tests/metering/usage-coverage.test.ts",
+      "failures": []
+    },
+    {
+      "file": "tests/metering/usage-normalization.test.ts",
+      "kind": "suite_load_failure",
+      "message": "Cannot find module '../../src/billing/money.js' imported from /Users/yuanjubian/program/metawork/tests/metering/usage-normalization.test.ts",
+      "failures": []
+    },
+    {
+      "file": "tests/planning/planner-decomposition-policy.test.ts",
+      "kind": "assertion_failure",
+      "message": "",
+      "failures": [
+        {
+          "name": "Planner decomposition policy tells the Planner to split independent streams and add a synthesis node",
+          "message": "Error: ENOENT: no such file or directory, open '/Users/yuanjubian/program/metawork/planner/AnyFusion-Pi/packages/coding-agent/src/anyfusion/planner-system-prompt.ts'"
+        },
+        {
+          "name": "Planner decomposition policy keeps \"one graph per turn\" distinct from \"one node\"",
+          "message": "Error: ENOENT: no such file or directory, open '/Users/yuanjubian/program/metawork/planner/AnyFusion-Pi/packages/coding-agent/src/anyfusion/planner-system-prompt.ts'"
+        }
+      ]
+    },
+    {
+      "file": "tests/planning/planner-workspace-intent.test.ts",
+      "kind": "assertion_failure",
+      "message": "",
+      "failures": [
+        {
+          "name": "Planner Workspace intent contract (schema 9) rejects a declared writer even when its delivery is a text report",
+          "message": "AssertionError: expected 'plan: Unrecognized key: \"response\"\\nw…' to contain 'read-only Workspace intent'"
+        },
+        {
+          "name": "Planner Workspace intent contract (schema 9) accepts a plan that declares how it will execute in the target Workspace",
+          "message": "AssertionError: expected false to be true // Object.is equality"
+        },
+        {
+          "name": "Planner Workspace intent contract (schema 9) rejects a declared output that is outside the Workspace intent scope",
+          "message": "AssertionError: expected 'plan: Unrecognized key: \"response\"\\nw…' to contain 'secrets.env'"
+        },
+        {
+          "name": "Planner Workspace intent contract (schema 9) accepts a legacy schema-8 plan for replay validation",
+          "message": "AssertionError: expected { valid: false, errors: [ …(4) ] } to deeply equal { valid: true, errors: [] }"
+        },
+        {
+          "name": "Planner Workspace intent contract (schema 9) rejects an ambiguous intent that still authorizes work",
+          "message": "AssertionError: expected 'plan: Unrecognized key: \"response\"\\nw…' to contain 'ambiguous Workspace intent'"
+        },
+        {
+          "name": "Planner Workspace intent contract (schema 9) rejects a read-only intent that carries a write delivery",
+          "message": "AssertionError: expected 'plan: Unrecognized key: \"response\"\\nw…' to contain 'read-only Workspace intent'"
+        },
+        {
+          "name": "Planner Workspace intent contract (schema 9) allows a read-only intent when the plan only reports",
+          "message": "AssertionError: expected { valid: false, errors: [ …(2) ] } to deeply equal { valid: true, errors: [] }"
+        },
+        {
+          "name": "Planner Workspace intent contract (schema 9) rejects parallel text-only report roots that declare no Workspace effect",
+          "message": "AssertionError: expected 'plan: Unrecognized key: \"response\"\\nw…' to contain 'must declare workspaceEffect'"
+        },
+        {
+          "name": "Planner Workspace intent contract (schema 9) rejects a fabricated target Workspace identity",
+          "message": "AssertionError: expected 'plan: Unrecognized key: \"response\"\\nw…' to contain 'Workspace identity'"
+        },
+        {
+          "name": "Planner Workspace intent contract (schema 9) keeps Workspace intent out of the non-work action contract",
+          "message": "AssertionError: expected false to be true // Object.is equality"
+        },
+        {
+          "name": "Planner Workspace intent contract (schema 9) keeps the turn on the clarification path for an ambiguous request",
+          "message": "AssertionError: expected { valid: false, …(1) } to deeply equal { valid: true, errors: [] }"
+        }
+      ]
+    },
+    {
+      "file": "tests/planning/work-graph-structure-rules.test.ts",
+      "kind": "assertion_failure",
+      "message": "",
+      "failures": [
+        {
+          "name": "Work Graph v7 structural rules reports adjacent same-preferred work that one AgentClass should complete as one Subtask",
+          "message": "AssertionError: expected [] to deep equally contain ObjectContaining{…}"
+        },
+        {
+          "name": "Work Graph v7 structural rules applies the exact mergeable-chain rule: 'plain chain'",
+          "message": "AssertionError: expected false to be true // Object.is equality"
+        },
+        {
+          "name": "Work Graph v7 structural rules applies the exact mergeable-chain rule: 'upstream accepts a join'",
+          "message": "AssertionError: expected false to be true // Object.is equality"
+        },
+        {
+          "name": "Work Graph v7 structural rules applies the exact mergeable-chain rule: 'downstream fans out later'",
+          "message": "AssertionError: expected false to be true // Object.is equality"
+        }
+      ]
+    },
+    {
+      "file": "tests/routing/auto-model-resolver.test.ts",
+      "kind": "assertion_failure",
+      "message": "",
+      "failures": [
+        {
+          "name": "AutoModelResolver does not treat missing prices as free and refuses unknown costs with a hard budget",
+          "message": "AssertionError: expected undefined to be null"
+        },
+        {
+          "name": "AutoModelResolver uses the cost objective without rewarding generic capability labels",
+          "message": "AssertionError: expected 'fast' to be 'cheap' // Object.is equality"
+        }
+      ]
+    },
+    {
+      "file": "tests/routing/configuration-candidate-projection.test.ts",
+      "kind": "assertion_failure",
+      "message": "",
+      "failures": [
+        {
+          "name": "configuration candidate projection projects GPT candidates for Codex across enabled Providers without using Provider names",
+          "message": "AssertionError: expected { providerRef: 'secondary', …(10) } to match object { providerRef: 'secondary', …(1) }"
+        },
+        {
+          "name": "configuration candidate projection resolves Codex compatibility from the harness driverId, not from names",
+          "message": "AssertionError: expected { providerRef: 'primary', …(10) } to match object { harnessCompatible: true }"
+        }
+      ]
+    },
+    {
+      "file": "tests/routing/configuration-catalog.test.ts",
+      "kind": "assertion_failure",
+      "message": "",
+      "failures": [
+        {
+          "name": "configuration routing catalog projects deterministic Planner-safe capability and AgentClass facts",
+          "message": "ZodError: ["
+        },
+        {
+          "name": "configuration routing catalog derives image Routing Capabilities from the Executor model policy",
+          "message": "ZodError: ["
+        },
+        {
+          "name": "configuration routing catalog projects the same profile fingerprint as the Executor manual",
+          "message": "ZodError: ["
+        },
+        {
+          "name": "configuration routing catalog removes a user-disabled capability from the machine-readable projection",
+          "message": "ZodError: ["
+        }
+      ]
+    },
+    {
+      "file": "tests/routing/executor-capability-manual.test.ts",
+      "kind": "assertion_failure",
+      "message": "",
+      "failures": [
+        {
+          "name": "Executor capability manuals deduplicates system use cases after Chinese localization",
+          "message": "AssertionError: Target cannot be null or undefined."
+        }
+      ]
+    },
+    {
+      "file": "tests/routing/plan-routing-candidates.test.ts",
+      "kind": "assertion_failure",
+      "message": "",
+      "failures": [
+        {
+          "name": "shared plan routing candidates projects eligible candidates per proposed AgentClass in planner order",
+          "message": "AssertionError: expected [ 'pi-general' ] to deeply equal [ 'codex-fast', 'pi-general' ]"
+        },
+        {
+          "name": "shared plan routing candidates keeps a fixed policy to exactly one eligible candidate",
+          "message": "AssertionError: expected [ 'model-deep' ] to deeply equal [ 'model-fast' ]"
+        },
+        {
+          "name": "shared plan routing candidates fails closed for a disabled AgentClass instead of inventing candidates",
+          "message": "TypeError: Cannot read properties of undefined (reading 'eligible')"
+        },
+        {
+          "name": "shared plan routing candidates derives the preferred Model ref from the Planner selection and policy",
+          "message": "TypeError: (0 , __vite_ssr_import_2__.resolvePreferredModelRef) is not a function"
+        },
+        {
+          "name": "Span probability ordering in AutoModelResolver leaves the deterministic result untouched when no probabilities are supplied",
+          "message": "AssertionError: expected 'auto-model-routing-v3' to be 'auto-model-routing-v2' // Object.is equality"
+        },
+        {
+          "name": "Span probability ordering in AutoModelResolver prefers the higher validated probability among hard-eligible candidates only",
+          "message": "AssertionError: expected 'span-routing-v3' to be 'span-routing-v2' // Object.is equality"
+        },
+        {
+          "name": "Span probability ordering in AutoModelResolver keeps a fixed policy pinned even with a higher probability elsewhere",
+          "message": "AssertionError: expected 'span-routing-v3' to be 'span-routing-v2' // Object.is equality"
+        }
+      ]
+    },
+    {
+      "file": "tests/routing/span-routing-smoke-script.test.ts",
+      "kind": "assertion_failure",
+      "message": "",
+      "failures": [
+        {
+          "name": "Span routing smoke script sends string state through the SDK ({\"integration\":false,\"coloredOutput\":false})",
+          "message": "AssertionError: {"
+        },
+        {
+          "name": "Span routing smoke script fails when the provider returns no answers",
+          "message": "AssertionError: expected { ok: false, …(7) } to match object { ok: false, …(1) }"
+        },
+        {
+          "name": "Span routing smoke script passes only for a complete, finite, in-range choice probability set",
+          "message": "AssertionError: expected 1 to be +0 // Object.is equality"
+        },
+        {
+          "name": "Span routing smoke script reads the credential from the internal namespace of credentials.json",
+          "message": "AssertionError: expected 2 to be +0 // Object.is equality"
+        },
+        {
+          "name": "Span routing smoke script never falls back to a Provider credential named routing-span",
+          "message": "AssertionError: expected 'No decision model configured. Set --b…' to contain 'No Span credential'"
+        }
+      ]
+    },
+    {
+      "file": "tests/routing/span-routing.test.ts",
+      "kind": "assertion_failure",
+      "message": "",
+      "failures": [
+        {
+          "name": "Span question builder sends the real model identity and the pinned model facts, not only opaque refs",
+          "message": "AssertionError: expected { c000: { …(10) }, c001: { …(8) } } to match object { c000: { model: 'model-fast', …(4) } }"
+        },
+        {
+          "name": "Span question builder sends model descriptions, routing notes and public facts as soft fit evidence",
+          "message": "AssertionError: expected { agentClass: 'pi-general', …(11) } to match object { …(6) }"
+        },
+        {
+          "name": "Span question builder distinguishes unknown from free prices and preserves detailed duties beyond the old label-sized limit",
+          "message": "AssertionError: expected undefined to match object { input: +0, output: +0 }"
+        }
+      ]
+    },
+    {
+      "file": "tests/release/build-release-script.test.ts",
+      "kind": "assertion_failure",
+      "message": "",
+      "failures": [
+        {
+          "name": "release build entry points skips Planner development hooks without husky installed: {\"NODE_ENV\":\"production\",\"CI\":\"\"}",
+          "message": "Error: ENOENT: no such file or directory, open '/Users/yuanjubian/program/metawork/planner/AnyFusion-Pi/package.json'"
+        },
+        {
+          "name": "release build entry points skips Planner development hooks without husky installed: {\"NODE_ENV\":\"development\",\"CI\":\"true\"}",
+          "message": "Error: ENOENT: no such file or directory, open '/Users/yuanjubian/program/metawork/planner/AnyFusion-Pi/package.json'"
+        },
+        {
+          "name": "release build entry points builds target-native dependencies before packaging and rejects fake Linux builds",
+          "message": "AssertionError: expected '#!/usr/bin/env node\\nimport { spawnSy…' to contain '\\'run\\', \\'build:offline\\''"
+        }
+      ]
+    },
+    {
+      "file": "tests/scripts/bootstrap-install-trust.test.ts",
+      "kind": "assertion_failure",
+      "message": "",
+      "failures": [
+        {
+          "name": "bootstrap installer trust boundary checks target, trust, integrity, and vendored Planner identity contracts",
+          "message": "AssertionError: expected '#!/usr/bin/env bash\\nset -euo pipefai…' to contain 'vendored Planner source'"
+        },
+        {
+          "name": "bootstrap installer trust boundary executes a fully signed fixture only after every artifact verifies",
+          "message": "AssertionError: file:///Users/yuanjubian/program/metawork/[eval1]:34"
+        }
+      ]
+    },
+    {
+      "file": "tests/scripts/setup-product-environment.test.ts",
+      "kind": "assertion_failure",
+      "message": "",
+      "failures": [
+        {
+          "name": "source setup product environment promotes MetaWork variables while retaining bounded AnyFusion aliases",
+          "message": "AssertionError: expected '#!/usr/bin/env bash\\n\\nset -euo pipef…' to contain 'ANYFUSION_PI_SOURCE_ROOT'"
+        },
+        {
+          "name": "source setup product environment keeps the macOS installer aligned with the canonical product variables",
+          "message": "AssertionError: expected 'import { spawnSync } from \\'node:chil…' to contain 'ANYFUSION_PI_SOURCE_ROOT'"
+        }
+      ]
+    },
+    {
+      "file": "tests/scripts/smoke-metaclaw-real-task.test.ts",
+      "kind": "assertion_failure",
+      "message": "",
+      "failures": [
+        {
+          "name": "smoke-metaclaw-real-task helpers defaults to native mode and uses docker only when explicitly requested",
+          "message": "Error: Invalid smoke mode: docker. Only native is supported; Docker smoke is retired (ADR-0055 D12)."
+        },
+        {
+          "name": "smoke-metaclaw-real-task helpers builds the native overlay from the installed MetaWork configuration home",
+          "message": "Error: Native smoke requires /var/folders/jg/m0w89hxx0w79r3jrrs1f2n4w0000gn/T/metaclaw-smoke-test-iJ8pvQ/repo/desktop-tools/executor/bin/pi. Provide a dedicated METAWORK_CONFIG_HOME containing provider.env and separate Manager/Executor Pi models/settings fixtures. Set METAWORK_PI_COMMAND to an explicitly prepared packaged Pi when running from source."
+        },
+        {
+          "name": "smoke-metaclaw-real-task helpers fails native mode with an actionable error when the configuration home is incomplete",
+          "message": "AssertionError: expected [Function] to throw error matching /npm run setup:native/ but got 'Native smoke requires /var/folders/jg…'"
+        },
+        {
+          "name": "smoke-metaclaw-real-task helpers promotes MetaWork smoke help while documenting compatibility aliases",
+          "message": "AssertionError: expected 'Usage: npm run smoke:metawork -- [--m…' to contain 'AnyFusion-Pi'"
+        }
+      ]
+    },
+    {
+      "file": "tests/scripts/smoke-unified-gateway.test.ts",
+      "kind": "assertion_failure",
+      "message": "",
+      "failures": [
+        {
+          "name": "unified Gateway smoke command uses an isolated installation root and runs the production boundary acceptance files",
+          "message": "AssertionError: expected 'import { spawn, spawnSync } from \\'no…' to contain 'planner/AnyFusion-Pi'"
+        }
+      ]
+    },
+    {
+      "file": "tests/session/blocked-task-user-journey.test.ts",
+      "kind": "assertion_failure",
+      "message": "",
+      "failures": [
+        {
+          "name": "blocked task user journey resumes an incomplete response only on explicit request and delivers a certified report",
+          "message": "AssertionError: expected undefined to be truthy"
+        },
+        {
+          "name": "blocked task user journey lets the user inspect a fail-closed attempt and continues Workspace-only work on /task unblock",
+          "message": "AssertionError: expected undefined to be truthy"
+        }
+      ]
+    },
+    {
+      "file": "tests/session/clarification-slot-release.test.ts",
+      "kind": "assertion_failure",
+      "message": "",
+      "failures": [
+        {
+          "name": "Planner clarification releases the Conversation moves the owning Task to needs_action and frees the slot for the answer",
+          "message": "AssertionError: expected 'running' to be 'needs_action' // Object.is equality"
+        }
+      ]
+    },
+    {
+      "file": "tests/session/conversation-session.test.ts",
+      "kind": "assertion_failure",
+      "message": "",
+      "failures": [
+        {
+          "name": "ConversationSession projects routing traces with the modelId from the binding revision",
+          "message": "TypeError: session.recordKernelDecisionTrace is not a function"
+        },
+        {
+          "name": "ConversationSession projects only permission requests owned by its Planner session",
+          "message": "TypeError: session.getPlannerTuiPermissionRequests is not a function"
+        },
+        {
+          "name": "ConversationSession surfaces Planner transport failures instead of reporting a no-action fallback",
+          "message": "AssertionError: expected '错误: Cannot read properties of undefin…' to be '错误: Planner unavailable: bridge disco…' // Object.is equality"
+        },
+        {
+          "name": "ConversationSession fails closed on Planner convergence exhaustion without creating a task",
+          "message": "AssertionError: expected '错误: Cannot read properties of undefin…' to contain '本轮未创建任务'"
+        },
+        {
+          "name": "ConversationSession ends a clarification turn after notifying the user that more input is required",
+          "message": "AssertionError: expected { …(7) } to match object { …(4) }"
+        },
+        {
+          "name": "ConversationSession reopens the original Task trace before a result retry",
+          "message": "AssertionError: expected { …(14) } to match object { kind: 'execution_resumed', …(2) }"
+        },
+        {
+          "name": "ConversationSession keeps the current Turn attachments eligible when the Planner submits through the bridge",
+          "message": "Error: Cannot find module '/src/storage/migrations.js' imported from /Users/yuanjubian/program/metawork/tests/session/conversation-session.test.ts"
+        },
+        {
+          "name": "ConversationSession keeps the Turn attachments eligible when the bridge submission comes from a restarted process",
+          "message": "Error: Cannot find module '/src/storage/migrations.js' imported from /Users/yuanjubian/program/metawork/tests/session/conversation-session.test.ts"
+        },
+        {
+          "name": "ConversationSession reconstructs an accepted proposal from an already-applied Kernel decision after a completion crash",
+          "message": "Error: Cannot find module '/src/storage/migrations.js' imported from /Users/yuanjubian/program/metawork/tests/session/conversation-session.test.ts"
+        }
+      ]
+    },
+    {
+      "file": "tests/session/cross-session-kernel-drain.test.ts",
+      "kind": "suite_load_failure",
+      "message": "Cannot find module '../../src/account/account-kernel-coordinator.js' imported from /Users/yuanjubian/program/metawork/tests/session/cross-session-kernel-drain.test.ts",
+      "failures": []
+    },
+    {
+      "file": "tests/session/cross-session-last-task-round12-acceptance.test.ts",
+      "kind": "assertion_failure",
+      "message": "",
+      "failures": [
+        {
+          "name": "cross-session last-task continuation auto-creates a follow-up instead of asking for confirmation when the last focused task is done",
+          "message": "TypeError: Cannot read properties of undefined (reading 'id')"
+        },
+        {
+          "name": "cross-session last-task continuation resumes a planner-pinned parked task across sessions",
+          "message": "AssertionError: expected \"vi.fn()\" to be called 1 times, but got 0 times"
+        }
+      ]
+    },
+    {
+      "file": "tests/session/detached-recovery-planner.test.ts",
+      "kind": "assertion_failure",
+      "message": "",
+      "failures": [
+        {
+          "name": "validates through an isolated temporary host and unregisters after planning",
+          "message": "ZodError: ["
+        }
+      ]
+    },
+    {
+      "file": "tests/session/executor-router-command-acceptance.test.ts",
+      "kind": "assertion_failure",
+      "message": "",
+      "failures": [
+        {
+          "name": "planner-first executor command acceptance persists planner subtasks and work unit claims before execution",
+          "message": "AssertionError: expected [] to deeply equal [ ObjectContaining{…} ]"
+        },
+        {
+          "name": "planner-first executor command acceptance provisions the planner-selected executor class on demand without choosing peers",
+          "message": "AssertionError: expected \"vi.fn()\" to be called 1 times, but got 0 times"
+        },
+        {
+          "name": "planner-first executor command acceptance announces the executor that actually claims the approved preferred AgentClass",
+          "message": "AssertionError: expected '\\n> 执行带候选回退的任务\\n【MetaClaw｜理解用户请求】\\n当前…' to contain '【Executor: 智能体 2｜派发准备】\\n→ Executor: 智…'"
+        },
+        {
+          "name": "planner-first executor command acceptance blocks failed executor subtasks for planner recovery instead of platform fallback",
+          "message": "AssertionError: expected '\\n> 请实现一个 TypeScript 单元测试并修复代码\\n【Meta…' to contain 'unknown requires explicit recovery'"
+        }
+      ]
+    },
+    {
+      "file": "tests/session/global-style-scene-gating-round13-acceptance.test.ts",
+      "kind": "assertion_failure",
+      "message": "",
+      "failures": [
+        {
+          "name": "global style scene gating does not inject an unrelated global preference into Executor evidence",
+          "message": "AssertionError: expected \"vi.fn()\" to be called 1 times, but got 0 times"
+        },
+        {
+          "name": "global style scene gating 不再按场景关键词自动采用全局风格偏好（语义归 Planner）",
+          "message": "AssertionError: expected \"vi.fn()\" to be called 1 times, but got 0 times"
+        }
+      ]
+    },
+    {
+      "file": "tests/session/guidance-round2-acceptance.test.ts",
+      "kind": "assertion_failure",
+      "message": "",
+      "failures": [
+        {
+          "name": "Round 2 guidance acceptance clears stale guidance after a resumed parked task finishes with no next suggestion",
+          "message": "AssertionError: expected 'needs_action' to be 'succeeded' // Object.is equality"
+        }
+      ]
+    },
+    {
+      "file": "tests/session/inline-materials-round7-acceptance.test.ts",
+      "kind": "assertion_failure",
+      "message": "",
+      "failures": [
+        {
+          "name": "Round 7 inline materials acceptance creates a task with inline file paths and auto-attaches those materials",
+          "message": "AssertionError: ┌─ Metaclaw v1.0 ─────────────────────────────────┐"
+        }
+      ]
+    },
+    {
+      "file": "tests/session/inline-web-links-round8-acceptance.test.ts",
+      "kind": "assertion_failure",
+      "message": "",
+      "failures": [
+        {
+          "name": "Round 8 inline web links acceptance creates a task with both a local file and a web link as inline materials",
+          "message": "AssertionError: expected undefined to be defined"
+        }
+      ]
+    },
+    {
+      "file": "tests/session/interaction-trace-stream.test.ts",
+      "kind": "assertion_failure",
+      "message": "",
+      "failures": [
+        {
+          "name": "InteractionTraceStream projects explicit terminal statuses without exposing hidden reasoning",
+          "message": "AssertionError: expected { sessionId: 'session-terminal', …(6) } to match object { status: 'blocked', …(2) }"
+        }
+      ]
+    },
+    {
+      "file": "tests/session/kernel-capacity-control-loop.test.ts",
+      "kind": "suite_load_failure",
+      "message": "Cannot find module '../../src/execution/kernel-executor-status-projector.js' imported from /Users/yuanjubian/program/metawork/tests/session/kernel-capacity-control-loop.test.ts",
+      "failures": []
+    },
+    {
+      "file": "tests/session/kernel-execution-runtime-snapshot.test.ts",
+      "kind": "suite_load_failure",
+      "message": "Cannot find module '../../src/execution/kernel-execution-runtime.js' imported from /Users/yuanjubian/program/metawork/tests/session/kernel-execution-runtime-snapshot.test.ts",
+      "failures": []
+    },
+    {
+      "file": "tests/session/kernel-retry-control-loop.test.ts",
+      "kind": "assertion_failure",
+      "message": "",
+      "failures": [
+        {
+          "name": "Kernel durable retry control loop drains a persisted retry wake into one execution-backend recovery-packet attempt and completion",
+          "message": "TypeError: Cannot read properties of undefined (reading 'status')"
+        }
+      ]
+    },
+    {
+      "file": "tests/session/material-loop-round5-acceptance.test.ts",
+      "kind": "assertion_failure",
+      "message": "",
+      "failures": [
+        {
+          "name": "Round 5 material loop acceptance keeps multiple attached materials visible in the task view through the scripted flow",
+          "message": "Error: 测试脚本占位符 {{last_task_id}} 当前不可用"
+        }
+      ]
+    },
+    {
+      "file": "tests/session/plan-admission-result-recording.test.ts",
+      "kind": "assertion_failure",
+      "message": "",
+      "failures": [
+        {
+          "name": "plan admission outcome recording records an authorized outcome under the admission operation identity",
+          "message": "TypeError: (0 , __vite_ssr_import_13__.authorizedBindingsFor) is not a function"
+        },
+        {
+          "name": "plan admission outcome recording records a queued outcome with the scheduling reason",
+          "message": "TypeError: (0 , __vite_ssr_import_13__.authorizedBindingsFor) is not a function"
+        }
+      ]
+    },
+    {
+      "file": "tests/session/planner-process-lifecycle.test.ts",
+      "kind": "assertion_failure",
+      "message": "",
+      "failures": [
+        {
+          "name": "MetaclawSession Planner process lifecycle stops only its shared Planner session and makes disposal idempotent",
+          "message": "AssertionError: expected \"vi.fn()\" to be called 1 times, but got 0 times"
+        }
+      ]
+    },
+    {
+      "file": "tests/session/planning-agent-session-routing.test.ts",
+      "kind": "assertion_failure",
+      "message": "",
+      "failures": [
+        {
+          "name": "MetaclawSession planning-agent routing routes natural language through the injected PlanningAgent without touching legacy intent methods",
+          "message": "AssertionError: expected \"vi.fn()\" to be called 1 times, but got 0 times"
+        },
+        {
+          "name": "MetaclawSession planning-agent routing surfaces a clarification plan without creating or executing a task",
+          "message": "AssertionError: expected '┌─ Metaclaw v1.0 ────────────────────…' to contain '请明确是聊天还是创建任务。'"
+        },
+        {
+          "name": "MetaclawSession planning-agent routing does not apply removed text heuristics when structured acceptance evidence is present",
+          "message": "TypeError: Cannot read properties of undefined (reading 'status')"
+        }
+      ]
+    },
+    {
+      "file": "tests/session/planning-kernel-path.test.ts",
+      "kind": "suite_load_failure",
+      "message": "Cannot find module '../../src/storage/kernel-decision-repo.js' imported from /Users/yuanjubian/program/metawork/tests/session/planning-kernel-path.test.ts",
+      "failures": []
+    },
+    {
+      "file": "tests/session/query-usage-attribution.test.ts",
+      "kind": "assertion_failure",
+      "message": "",
+      "failures": [
+        {
+          "name": "Query attribution persists a Query before the first chargeable call and links the Task only from an authorized application",
+          "message": "AssertionError: expected undefined to be null"
+        },
+        {
+          "name": "Query attribution keeps a clarification Query without a Task and still accrues planner cost",
+          "message": "AssertionError: expected undefined to be null"
+        },
+        {
+          "name": "Query attribution gives an explanation request its own Query and does not rebind the original Task",
+          "message": "TypeError: service.bindCostTask is not a function"
+        },
+        {
+          "name": "Query attribution treats an explicit Resume as a new Query that may continue the same Task",
+          "message": "TypeError: service.bindCostTask is not a function"
+        },
+        {
+          "name": "Query attribution keeps attribution stable when the client switches Conversation or reconnects",
+          "message": "TypeError: service.bindCostTask is not a function"
+        },
+        {
+          "name": "Query attribution rejects an incomplete Query context before persisting it",
+          "message": "AssertionError: expected [Function] to throw an error"
+        }
+      ]
+    },
+    {
+      "file": "tests/session/resume-persisted-execution-context.test.ts",
+      "kind": "assertion_failure",
+      "message": "",
+      "failures": [
+        {
+          "name": "persisted task execution context on resume passes the persisted task-scoped context when resuming a parked task",
+          "message": "AssertionError: expected \"vi.fn()\" to be called at least once"
+        },
+        {
+          "name": "persisted task execution context on resume persists newly provided resources without injecting undeclared resources into context",
+          "message": "AssertionError: expected \"vi.fn()\" to be called at least once"
+        }
+      ]
+    },
+    {
+      "file": "tests/session/scripted-session.test.ts",
+      "kind": "assertion_failure",
+      "message": "",
+      "failures": [
+        {
+          "name": "scripted session resolves the last task id placeholder so scripted acceptance can open task detail after creation",
+          "message": "Error: 测试脚本占位符 {{last_task_id}} 当前不可用"
+        },
+        {
+          "name": "scripted session blocks risky external actions pending a planner-observed confirmation in scripted sessions",
+          "message": "AssertionError: expected '┌─ Metaclaw v1.0 ────────────────────…' to contain '该操作存在较高风险，请明确确认是否继续执行。'"
+        },
+        {
+          "name": "scripted session records file artifacts returned by the executor for workspace write tasks",
+          "message": "AssertionError: Target cannot be null or undefined."
+        },
+        {
+          "name": "scripted session shows file-task Executor final output once and does not repeat it in completion",
+          "message": "AssertionError: expected '┌─ Metaclaw v1.0 ────────────────────…' to contain 'completed 1 Subtask(s)'"
+        },
+        {
+          "name": "scripted session does not synthesize a fallback artifact when a valid text completion returns no artifact",
+          "message": "AssertionError: expected undefined to be truthy"
+        },
+        {
+          "name": "scripted session preserves safe uncertified output without authorizing completion instead of synthesizing a fallback Feishu Markdown artifact",
+          "message": "AssertionError: expected undefined to be truthy"
+        }
+      ]
+    },
+    {
+      "file": "tests/session/session-control-runtime.test.ts",
+      "kind": "assertion_failure",
+      "message": "",
+      "failures": [
+        {
+          "name": "SessionControlRuntime parallel admission resolves an existing project Workspace by Conversation id, not Planner session id",
+          "message": "TypeError: (0 , __vite_ssr_import_13__.authorizedBindingsFor) is not a function"
+        },
+        {
+          "name": "SessionControlRuntime parallel admission persists a same-Conversation queued Task without preparing execution",
+          "message": "TypeError: (0 , __vite_ssr_import_13__.authorizedBindingsFor) is not a function"
+        },
+        {
+          "name": "SessionControlRuntime parallel admission preserves an account-capacity queue reason when slot admission loses the race",
+          "message": "TypeError: (0 , __vite_ssr_import_13__.authorizedBindingsFor) is not a function"
+        },
+        {
+          "name": "SessionControlRuntime abandon-and-create (2026-09-06 plan §5.4) abandons the old Task first, then creates and queues the new Task",
+          "message": "TypeError: (0 , __vite_ssr_import_13__.authorizedBindingsFor) is not a function"
+        },
+        {
+          "name": "SessionControlRuntime abandon-and-create (2026-09-06 plan §5.4) holds the new Task with a named phase when the old cancellation is blocked",
+          "message": "TypeError: (0 , __vite_ssr_import_13__.authorizedBindingsFor) is not a function"
+        },
+        {
+          "name": "SessionControlRuntime abandon-and-create (2026-09-06 plan §5.4) rejects abandoning an old Task owned by another Conversation",
+          "message": "TypeError: (0 , __vite_ssr_import_13__.authorizedBindingsFor) is not a function"
+        },
+        {
+          "name": "SessionControlRuntime abandon-and-create holds during cleanup (closure round 3) never creates the new Task while the old cancellation is still cleaning up",
+          "message": "TypeError: (0 , __vite_ssr_import_13__.authorizedBindingsFor) is not a function"
+        }
+      ]
+    },
+    {
+      "file": "tests/session/session-kernel-runtime.test.ts",
+      "kind": "suite_load_failure",
+      "message": "Cannot find module '../../src/session/session-kernel-runtime.js' imported from /Users/yuanjubian/program/metawork/tests/session/session-kernel-runtime.test.ts",
+      "failures": []
+    },
+    {
+      "file": "tests/session/skill-usage-observability.test.ts",
+      "kind": "assertion_failure",
+      "message": "",
+      "failures": [
+        {
+          "name": "Session skill usage observability does not misclassify execution-backend lifecycle output as SkillUsageEvents or expose it to users",
+          "message": "TypeError: Cannot read properties of undefined (reading 'id')"
+        }
+      ]
+    },
+    {
+      "file": "tests/session/span-plan-preparation.test.ts",
+      "kind": "suite_load_failure",
+      "message": "Cannot find module '../../src/session/span-plan-preparation.js' imported from /Users/yuanjubian/program/metawork/tests/session/span-plan-preparation.test.ts",
+      "failures": []
+    },
+    {
+      "file": "tests/session/span-routing-session-integration.test.ts",
+      "kind": "assertion_failure",
+      "message": "",
+      "failures": [
+        {
+          "name": "ConversationSession Span integration skips Planner and Span when request_replan is already cancelled",
+          "message": "TypeError: Cannot read properties of undefined (reading 'request')"
+        },
+        {
+          "name": "ConversationSession Span integration skips Planner and Span when request_merge_replan is already cancelled",
+          "message": "TypeError: Cannot read properties of undefined (reading 'request')"
+        },
+        {
+          "name": "ConversationSession Span integration retains the prepared result while durable enqueue is still waiting",
+          "message": "AssertionError: expected \"vi.fn()\" to be called 1 times, but got 0 times"
+        },
+        {
+          "name": "ConversationSession Span integration coalesces concurrent submissions before the first event is durable",
+          "message": "Error: STACK_TRACE_ERROR"
+        },
+        {
+          "name": "ConversationSession Span integration rejects changed proposals reusing the same durable event id",
+          "message": "TypeError: Cannot read properties of undefined (reading 'isRequested')"
+        },
+        {
+          "name": "ConversationSession Span integration cannot revive a cancelled evaluation when the next Turn replaces its controller",
+          "message": "Error: STACK_TRACE_ERROR"
+        },
+        {
+          "name": "ConversationSession Span integration does not admit the proposal when the Turn is cancelled during Span evaluation",
+          "message": "Error: STACK_TRACE_ERROR"
+        },
+        {
+          "name": "ConversationSession Span integration scores a proposal once and reuses the durable event on uncertain resubmission",
+          "message": "TypeError: Cannot read properties of undefined (reading 'isRequested')"
+        },
+        {
+          "name": "ConversationSession Span integration passes the pinned configuration revision to the advisor",
+          "message": "TypeError: Cannot read properties of undefined (reading 'isRequested')"
+        },
+        {
+          "name": "ConversationSession Span integration abandons request_replan when the Turn is cancelled during Span evaluation",
+          "message": "TypeError: internal.requestKernelReplan is not a function"
+        },
+        {
+          "name": "ConversationSession Span integration abandons request_merge_replan when the Turn is cancelled during Span evaluation",
+          "message": "TypeError: internal.requestKernelMergeReplan is not a function"
+        },
+        {
+          "name": "ConversationSession Span integration aborts in-flight Span work and refuses admission once the Session is disposed",
+          "message": "Error: STACK_TRACE_ERROR"
+        },
+        {
+          "name": "ConversationSession Span integration does not admit the proposal when the advisor reports a cancelled request",
+          "message": "TypeError: Cannot read properties of undefined (reading 'isRequested')"
+        },
+        {
+          "name": "ConversationSession Span integration keeps the deterministic path when the advisor is aborted without a cancellation latch",
+          "message": "TypeError: Cannot read properties of undefined (reading 'isRequested')"
+        }
+      ]
+    },
+    {
+      "file": "tests/session/startup-running-reconciliation.test.ts",
+      "kind": "suite_load_failure",
+      "message": "Cannot find module '../../src/storage/kernel-dispatch-item-repo.js' imported from /Users/yuanjubian/program/metawork/tests/session/startup-running-reconciliation.test.ts",
+      "failures": []
+    },
+    {
+      "file": "tests/session/task-boundary-round3-acceptance.test.ts",
+      "kind": "assertion_failure",
+      "message": "",
+      "failures": [
+        {
+          "name": "Round 3 task boundary acceptance pins planning-agent as the active executor while delivering a direct reply, then restores state",
+          "message": "AssertionError: expected null to deeply equal ObjectContaining{…}"
+        },
+        {
+          "name": "Round 3 task boundary acceptance turns conversation-derived follow-up work into a new task without implicitly inheriting conversation history",
+          "message": "AssertionError: expected \"vi.fn()\" to be called 1 times, but got 0 times"
+        },
+        {
+          "name": "Round 3 task boundary acceptance handles natural language clearing of blocked tasks without creating a new task",
+          "message": "AssertionError: expected '┌─ Metaclaw v1.0 ────────────────────…' to contain '已清空待处理任务：取消 1 个任务'"
+        },
+        {
+          "name": "Round 3 task boundary acceptance answers blocked-task status queries from MetaClaw state without calling the executor",
+          "message": "AssertionError: expected '┌─ Metaclaw v1.0 ────────────────────…' to contain '当前有 1 个需要处理的任务'"
+        },
+        {
+          "name": "Round 3 task boundary acceptance answers no blocked tasks from MetaClaw state without creating a task",
+          "message": "AssertionError: expected '┌─ Metaclaw v1.0 ────────────────────…' to contain '当前没有需要处理的任务。'"
+        },
+        {
+          "name": "Round 3 task boundary acceptance answers completion checks from MetaClaw state when no task is running",
+          "message": "AssertionError: expected '┌─ Metaclaw v1.0 ────────────────────…' to contain '当前没有正在执行的任务。'"
+        },
+        {
+          "name": "Round 3 task boundary acceptance routes semantic scheduler-state questions to MetaClaw without requiring keyword coverage",
+          "message": "AssertionError: expected '┌─ Metaclaw v1.0 ────────────────────…' to contain '当前没有正在执行的任务。'"
+        },
+        {
+          "name": "Round 3 task boundary acceptance keeps deliverable-content checks on the Executor side even when task words appear",
+          "message": "AssertionError: expected '┌─ Metaclaw v1.0 ────────────────────…' to contain '【Executor: 智能体 2｜派发准备】'"
+        },
+        {
+          "name": "Round 3 task boundary acceptance keeps continuation/generation work on the Executor side instead of treating it as status",
+          "message": "AssertionError: expected '┌─ Metaclaw v1.0 ────────────────────…' to contain '已继续生成预览版。'"
+        },
+        {
+          "name": "Round 3 task boundary acceptance handles natural language clearing of all manageable tasks and aborts running work",
+          "message": "AssertionError: expected '┌─ Metaclaw v1.0 ────────────────────…' to contain '已清空所有未完成任务：取消 2 个任务'"
+        },
+        {
+          "name": "Round 3 task boundary acceptance resumes an explicitly requested parked task instead of creating a new task when intent is misclassified",
+          "message": "AssertionError: expected \"vi.fn()\" to be called 1 times, but got 0 times"
+        },
+        {
+          "name": "Round 3 task boundary acceptance unblocks and resumes an explicitly requested blocked task instead of creating a new task",
+          "message": "AssertionError: expected \"vi.fn()\" to be called 1 times, but got 0 times"
+        }
+      ]
+    },
+    {
+      "file": "tests/session/task-view-round4-acceptance.test.ts",
+      "kind": "assertion_failure",
+      "message": "",
+      "failures": [
+        {
+          "name": "Round 4 task view acceptance surfaces a readable task workspace after completion instead of forcing users to parse only transcript logs",
+          "message": "AssertionError: expected undefined to be defined"
+        }
+      ]
+    },
+    {
+      "file": "tests/session/turn-cancellation-admission.test.ts",
+      "kind": "assertion_failure",
+      "message": "",
+      "failures": [
+        {
+          "name": "durable lifecycle fencing at proposal application rejects cancelled authorize_task_plan before presentation or Task effects",
+          "message": "TypeError: (0 , __vite_ssr_import_15__.authorizedBindingsFor) is not a function"
+        },
+        {
+          "name": "durable lifecycle fencing at proposal application rejects cancelled deliver_direct_reply before presentation or Task effects",
+          "message": "TypeError: (0 , __vite_ssr_import_15__.authorizedBindingsFor) is not a function"
+        },
+        {
+          "name": "durable lifecycle fencing at proposal application rejects cancelled request_clarification before presentation or Task effects",
+          "message": "TypeError: (0 , __vite_ssr_import_15__.authorizedBindingsFor) is not a function"
+        },
+        {
+          "name": "durable lifecycle fencing at proposal application rechecks cancel during Workspace IO before creating or queueing a Task",
+          "message": "TypeError: (0 , __vite_ssr_import_15__.authorizedBindingsFor) is not a function"
+        },
+        {
+          "name": "durable lifecycle fencing at proposal application rechecks delete during Workspace IO before creating or queueing a Task",
+          "message": "TypeError: (0 , __vite_ssr_import_15__.authorizedBindingsFor) is not a function"
+        },
+        {
+          "name": "durable lifecycle fencing at proposal application rechecks erase during Workspace IO before creating or queueing a Task",
+          "message": "TypeError: (0 , __vite_ssr_import_15__.authorizedBindingsFor) is not a function"
+        },
+        {
+          "name": "durable lifecycle fencing at proposal application records an already applied abandonment as settled when cancellation arrives during later IO",
+          "message": "TypeError: (0 , __vite_ssr_import_15__.authorizedBindingsFor) is not a function"
+        },
+        {
+          "name": "durable lifecycle fencing at proposal application does not replay an erased proposal as an unowned raw plan",
+          "message": "TypeError: (0 , __vite_ssr_import_15__.authorizedBindingsFor) is not a function"
+        }
+      ]
+    },
+    {
+      "file": "tests/session/turn-cancellation.test.ts",
+      "kind": "assertion_failure",
+      "message": "",
+      "failures": [
+        {
+          "name": "turn cancellation targets the Task linked to the Turn instead of the Conversation slot fallback",
+          "message": "TypeError: Cannot read properties of undefined (reading 'request')"
+        },
+        {
+          "name": "turn cancellation closes an orphan command Turn without cancelling unrelated background work",
+          "message": "TypeError: Cannot read properties of undefined (reading 'request')"
+        },
+        {
+          "name": "turn cancellation aborts the Planner run, marks the turn cancelled and drops the late proposal",
+          "message": "TypeError: Cannot read properties of undefined (reading 'request')"
+        },
+        {
+          "name": "turn cancellation closes the active Turn as soon as Task cancellation is accepted",
+          "message": "TypeError: Cannot read properties of undefined (reading 'request')"
+        }
+      ]
+    },
+    {
+      "file": "tests/utils/config.test.ts",
+      "kind": "assertion_failure",
+      "message": "",
+      "failures": [
+        {
+          "name": "loadConfig defaults uses codex as the default executor command",
+          "message": "AssertionError: expected 'pi' to be 'codex' // Object.is equality"
+        }
+      ]
+    },
+    {
+      "file": "tests/storage/conversation-activity-source.test.ts",
+      "kind": "suite_load_failure",
+      "message": "Cannot find module '../../src/storage/kernel-dispatch-item-repo.js' imported from /Users/yuanjubian/program/metawork/tests/storage/conversation-activity-source.test.ts",
+      "failures": []
+    },
+    {
+      "file": "tests/storage/conversation-attempt-owner-migration.test.ts",
+      "kind": "suite_load_failure",
+      "message": "Cannot find module '../../src/storage/migrations.js' imported from /Users/yuanjubian/program/metawork/tests/storage/conversation-attempt-owner-migration.test.ts",
+      "failures": []
+    },
+    {
+      "file": "tests/storage/deferred-plan-proposal.test.ts",
+      "kind": "assertion_failure",
+      "message": "",
+      "failures": [
+        {
+          "name": "durable deferred proposal owner persists activation facts without a Kernel envelope and reconstructs after connection replacement",
+          "message": "AssertionError: expected [ { name: 'kernel_decisions' }, …(1) ] to deeply equal []"
+        }
+      ]
+    },
+    {
+      "file": "tests/storage/file-outputs-migration.test.ts",
+      "kind": "suite_load_failure",
+      "message": "Cannot find module '../../src/storage/migrations.js' imported from /Users/yuanjubian/program/metawork/tests/storage/file-outputs-migration.test.ts",
+      "failures": []
+    },
+    {
+      "file": "tests/storage/gateway-command-admission-migrations.test.ts",
+      "kind": "suite_load_failure",
+      "message": "Cannot find module '../../src/installation/database-upgrade-transaction.js' imported from /Users/yuanjubian/program/metawork/tests/storage/gateway-command-admission-migrations.test.ts",
+      "failures": []
+    },
+    {
+      "file": "tests/storage/generation-replan-request-repo.test.ts",
+      "kind": "assertion_failure",
+      "message": "",
+      "failures": [
+        {
+          "name": "GenerationReplanRequestRepo commits the submitted request and Planner result inbox in one transaction",
+          "message": "AssertionError: expected [Function] to throw error including 'injected replan inbox failure' but got 'repo.submitPlan is not a function'"
+        }
+      ]
+    },
+    {
+      "file": "tests/storage/kernel-decision-repo.test.ts",
+      "kind": "suite_load_failure",
+      "message": "Cannot find module '../../src/storage/kernel-decision-repo.js' imported from /Users/yuanjubian/program/metawork/tests/storage/kernel-decision-repo.test.ts",
+      "failures": []
+    },
+    {
+      "file": "tests/storage/kernel-dispatch-disposition.test.ts",
+      "kind": "suite_load_failure",
+      "message": "Cannot find module '../../src/storage/migrations.js' imported from /Users/yuanjubian/program/metawork/tests/storage/kernel-dispatch-disposition.test.ts",
+      "failures": []
+    },
+    {
+      "file": "tests/storage/kernel-dispatch-item-repo.test.ts",
+      "kind": "suite_load_failure",
+      "message": "Cannot find module '../../src/storage/kernel-dispatch-item-repo.js' imported from /Users/yuanjubian/program/metawork/tests/storage/kernel-dispatch-item-repo.test.ts",
+      "failures": []
+    },
+    {
+      "file": "tests/storage/kernel-effect-outbox-repo.test.ts",
+      "kind": "suite_load_failure",
+      "message": "Cannot find module '../../src/storage/kernel-effect-outbox-repo.js' imported from /Users/yuanjubian/program/metawork/tests/storage/kernel-effect-outbox-repo.test.ts",
+      "failures": []
+    },
+    {
+      "file": "tests/storage/kernel-workflow-repo.test.ts",
+      "kind": "suite_load_failure",
+      "message": "Cannot find module '../../src/storage/kernel-workflow-repo.js' imported from /Users/yuanjubian/program/metawork/tests/storage/kernel-workflow-repo.test.ts",
+      "failures": []
+    },
+    {
+      "file": "tests/storage/managed-services-migration.test.ts",
+      "kind": "suite_load_failure",
+      "message": "Cannot find module '../../src/storage/migrations.js' imported from /Users/yuanjubian/program/metawork/tests/storage/managed-services-migration.test.ts",
+      "failures": []
+    },
+    {
+      "file": "tests/storage/migrations.test.ts",
+      "kind": "suite_load_failure",
+      "message": "Cannot find module '../../src/storage/migrations.js' imported from /Users/yuanjubian/program/metawork/tests/storage/migrations.test.ts",
+      "failures": []
+    },
+    {
+      "file": "tests/storage/publication-delivery-migration.test.ts",
+      "kind": "suite_load_failure",
+      "message": "Cannot find module '../../src/storage/migrations.js' imported from /Users/yuanjubian/program/metawork/tests/storage/publication-delivery-migration.test.ts",
+      "failures": []
+    },
+    {
+      "file": "tests/storage/revisioned-executor-binding-repos.test.ts",
+      "kind": "suite_load_failure",
+      "message": "Cannot find module '../../src/storage/kernel-binding-status-repos.js' imported from /Users/yuanjubian/program/metawork/tests/storage/revisioned-executor-binding-repos.test.ts",
+      "failures": []
+    },
+    {
+      "file": "tests/storage/runtime-database-opening.test.ts",
+      "kind": "suite_load_failure",
+      "message": "Cannot find module '../../src/storage/migrations.js' imported from /Users/yuanjubian/program/metawork/tests/storage/runtime-database-opening.test.ts",
+      "failures": []
+    },
+    {
+      "file": "tests/storage/schema-52-upgrade.test.ts",
+      "kind": "suite_load_failure",
+      "message": "Cannot find module '../../src/storage/migrations.js' imported from /Users/yuanjubian/program/metawork/tests/storage/schema-52-upgrade.test.ts",
+      "failures": []
+    },
+    {
+      "file": "tests/storage/schema-59-retirement.test.ts",
+      "kind": "suite_load_failure",
+      "message": "Cannot find module '../../src/storage/migrations.js' imported from /Users/yuanjubian/program/metawork/tests/storage/schema-59-retirement.test.ts",
+      "failures": []
+    },
+    {
+      "file": "tests/storage/shared-evidence-migration.test.ts",
+      "kind": "suite_load_failure",
+      "message": "Cannot find module '../../src/storage/migrations.js' imported from /Users/yuanjubian/program/metawork/tests/storage/shared-evidence-migration.test.ts",
+      "failures": []
+    },
+    {
+      "file": "tests/storage/workspace-directory-projection-migrations.test.ts",
+      "kind": "suite_load_failure",
+      "message": "Cannot find module '../../src/storage/migrations.js' imported from /Users/yuanjubian/program/metawork/tests/storage/workspace-directory-projection-migrations.test.ts",
+      "failures": []
+    },
+    {
+      "file": "tests/storage/workspace-execution-persistence.test.ts",
+      "kind": "suite_load_failure",
+      "message": "Cannot find module '../../src/storage/migrations.js' imported from /Users/yuanjubian/program/metawork/tests/storage/workspace-execution-persistence.test.ts",
+      "failures": []
+    },
+    {
+      "file": "tests/work-graph/workspace-effect.test.ts",
+      "kind": "assertion_failure",
+      "message": "",
+      "failures": [
+        {
+          "name": "Workspace read admission retains exclusive admission for unknown effects, file delivery and artifact handoffs",
+          "message": "AssertionError: expected true to be false // Object.is equality"
+        }
+      ]
+    }
+  ],
+  "unhandledErrors": 5,
+  "failureKinds": {
+    "suite_load_failure": 96,
+    "assertion_failure": 120
+  }
+}

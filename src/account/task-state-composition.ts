@@ -19,7 +19,7 @@ import { WorkGraphRevisionRepo } from '../storage/work-graph-revision-repo.js';
 import { SubtaskRepo } from '../storage/subtask-repo.js';
 import { readPendingTaskResult } from '../storage/pending-task-result.js';
 import { TaskOperationResultRepo } from '../storage/task-operation-result-repo.js';
-import { KernelDispatchItemRepo } from '../storage/kernel-dispatch-item-repo.js';
+import { ControlDispatchItemRepo } from '../storage/dispatch-item-repo.js';
 import { WorkspacePublicationRepo } from '../storage/workspace-publication-repo.js';
 import type { WorkUnitClaimService } from '../execution/work-unit-claim-service.js';
 import { TaskStateAuthority } from '../task/task-state-authority.js';
@@ -30,7 +30,7 @@ export interface TaskStateStackDeps {
   readonly taskRepo?: TaskRepo;
   readonly subtaskRepo?: SubtaskRepo;
   readonly workGraphRevisionRepo?: WorkGraphRevisionRepo;
-  readonly dispatchItemRepo?: KernelDispatchItemRepo;
+  readonly dispatchItemRepo?: ControlDispatchItemRepo;
   readonly publicationRepo?: WorkspacePublicationRepo;
   readonly workUnitClaimService: Pick<WorkUnitClaimService, 'hasClaimedByTask'>;
   /**
@@ -74,7 +74,7 @@ export function createTaskStateAuthority(deps: TaskStateStackDeps): TaskStateAut
   const subtaskRepo = deps.subtaskRepo ?? new SubtaskRepo(deps.db);
   const workGraphRevisionRepo = deps.workGraphRevisionRepo
     ?? new WorkGraphRevisionRepo(deps.db);
-  const dispatchItemRepo = deps.dispatchItemRepo ?? new KernelDispatchItemRepo(deps.db);
+  const dispatchItemRepo = deps.dispatchItemRepo ?? new ControlDispatchItemRepo(deps.db);
   const publicationRepo = deps.publicationRepo ?? new WorkspacePublicationRepo(deps.db);
   const residue = new TaskResidueReader({
     db: deps.db,

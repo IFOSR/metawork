@@ -23,7 +23,6 @@ function workGraphPlan(configurationRevision: string | null) {
     confidence: 0.9,
     reason: '调研两个独立事实流',
     clarificationQuestion: null,
-    response: { directReply: null },
     task: {
       binding: 'new',
       taskId: null,
@@ -32,7 +31,7 @@ function workGraphPlan(configurationRevision: string | null) {
       title: '办公 Agent 形态调研',
       goal: '调研办公类 Agent 的运行形态并给出建议',
       includeRecentConversationContext: false,
-      priority: null,
+      priority: { level: 'normal', reason: 'normal scheduling' },
     },
     risk: { level: 'low', requiresConfirmation: false, reasons: [] },
     authorizationResolution: null,
@@ -47,7 +46,6 @@ function workGraphPlan(configurationRevision: string | null) {
         dependencies: [],
         contextRefs: [{ kind: 'current_user_input' }],
         requiredCapabilities: ['current-web-research'],
-        executorBindings: [{ agentClassRef: 'pi-research', modelSelection: { mode: 'fixed-by-agent-class' } }],
         deliveryKind: 'report',
         fileOutputs: [],
         acceptance: [{ key: 'evidence', description: '给出可追溯来源', requiredEvidence: [] }],
@@ -60,7 +58,6 @@ function workGraphPlan(configurationRevision: string | null) {
         dependencies: [{ fromSubtaskId: 'research-cn', requiredItems: [{ key: 'findings', type: 'text', description: '国内调研结论' }] }],
         contextRefs: [{ kind: 'current_user_input' }],
         requiredCapabilities: ['current-web-research'],
-        executorBindings: [{ agentClassRef: 'pi-research', modelSelection: { mode: 'fixed-by-agent-class' } }],
         deliveryKind: 'report',
         fileOutputs: [],
         acceptance: [{ key: 'verdict', description: '给出取舍建议', requiredEvidence: [] }],
@@ -73,7 +70,55 @@ function workGraphPlan(configurationRevision: string | null) {
   };
 }
 
+function currentSchemaPlan() {
+  return workGraphPlan(null) as Record<string, unknown> & {
+    workGraph: { subtasks: Array<Record<string, unknown>> };
+  };
+}
+
 describe('runtime-owned configuration revision', () => {
+  it('reports the invalid graph key without asking the Manager to remove valid workspaceIntent', () => {
+    const plan = currentSchemaPlan();
+    Object.assign(plan.workGraph, { subtasksOrderHint: [] });
+    const normalized = normalizePlanningAgentPlanInput(plan, { configurationRevision: DOTTED_REVISION });
+    const result = validatePlanningAgentPlan(normalized, {} as PlannerConfigurationView);
+    expect(result.valid).toBe(false);
+    expect(result.errors.join('\n')).toContain('subtasksOrderHint');
+    expect(result.errors.join('\n')).not.toContain('workspaceIntent');
+  });
+
+  it('defaults an omitted nullable clarification question to null', () => {
+    const plan = currentSchemaPlan();
+    delete (plan as { clarificationQuestion?: string | null }).clarificationQuestion;
+    const normalized = normalizePlanningAgentPlanInput(plan, {
+      configurationRevision: DOTTED_REVISION,
+    });
+    expect(normalized).toMatchObject({ clarificationQuestion: null });
+    expect(PlanningAgentPlanSchema.safeParse(normalized).success).toBe(true);
+  });
+
+  it('keeps clarification actions subject to the semantic question requirement', () => {
+    const plan = currentSchemaPlan();
+    plan.action = 'clarification';
+    plan.workGraph = null;
+    plan.workspaceIntent = null;
+    const normalized = normalizePlanningAgentPlanInput(plan, {
+      configurationRevision: DOTTED_REVISION,
+    });
+    const parsed = PlanningAgentPlanSchema.safeParse(normalized);
+    expect(parsed.success).toBe(true);
+    const configuration = {
+      revisionId: DOTTED_REVISION,
+      routingCatalog: {
+        configurationRevision: DOTTED_REVISION,
+        capabilities: [{ id: 'current-web-research' }],
+        agentClasses: [{ id: 'pi-research', routingCapabilities: ['current-web-research'] }],
+      },
+    } as unknown as PlannerConfigurationView;
+    expect(validatePlanningAgentPlan(parsed.data, configuration).errors)
+      .toContain('clarification requires clarificationQuestion');
+  });
+
   it('replaces whatever the model sent with the active revision', () => {
     const normalized = normalizePlanningAgentPlanInput(workGraphPlan('some-model-guess'), {
       configurationRevision: DOTTED_REVISION,
@@ -118,9 +163,12 @@ describe('runtime-owned configuration revision', () => {
     expect(validation.errors.join('\n')).not.toMatch(/configurationRevision/u);
   });
 
-  it('leaves plans untouched when no revision is supplied', () => {
+  it('does not replace the graph revision when no active revision is supplied', () => {
     const plan = workGraphPlan('model-value');
-    expect(normalizePlanningAgentPlanInput(plan, {})).toBe(plan);
+    const normalized = normalizePlanningAgentPlanInput(plan, {}) as {
+      workGraph: { configurationRevision: string };
+    };
+    expect(normalized.workGraph.configurationRevision).toBe('model-value');
   });
 
   it('keeps normalizing the task id alongside the revision', () => {

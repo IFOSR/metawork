@@ -461,7 +461,16 @@ export async function retryRemainingWork(args: ResolvedCommandArgs, context: Com
   try {
     if (!context.taskControl.retryRemainingWork) throw new Error('当前 Runtime 不支持剩余工作重试');
     const result = await context.taskControl.retryRemainingWork(stringArg(args, 'taskId'));
-    return { type: 'text', content: `已创建关联重试任务 #${result.taskId}，原任务结论与成果保留。` };
+    const task = context.taskEngine.getTaskRepo().findById(result.taskId);
+    const reason = task?.stateDetail?.reason.message;
+    const outcome = task?.status === 'failed'
+      ? `关联续做任务 #${result.taskId} 已失败${reason ? `：${reason}` : '。'}\n请在输入框说明需要修复的内容，系统将重新规划；重复提交相同重试命令不会重新执行这个已结束的任务。`
+      : task?.status === 'cancelled'
+        ? `关联续做任务 #${result.taskId} 已取消。请重新说明需要完成的工作。`
+        : task?.status === 'succeeded'
+          ? `关联续做任务 #${result.taskId} 已完成，无需重复执行。`
+          : `已关联续做任务 #${result.taskId}，只处理剩余交付或服务启动；请查看该任务的实时状态。`;
+    return { type: 'text', content: outcome, relatedTaskId: result.taskId };
   } catch (error) {
     return { type: 'text', content: `操作失败: ${(error as Error).message}` };
   }

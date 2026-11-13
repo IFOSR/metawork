@@ -4,8 +4,8 @@ export type ConfigurationSnapshot =
   import('./types.js').ConfigurationSnapshot;
 export type PlannerConfigurationView =
   import('./types.js').PlannerConfigurationView;
-export type KernelConfigurationView =
-  import('./types.js').KernelConfigurationView;
+export type ControlConfigurationView =
+  import('./types.js').ControlConfigurationView;
 export type RuntimePrivateConfigurationBinding =
   import('./types.js').RuntimePrivateConfigurationBinding;
 export type ConfigurationServicePort =
@@ -15,13 +15,12 @@ export type {
   A2aHarnessDefinition,
   AgentClassDefinition,
   AnyFusionConfigurationV2,
-  ContainerHarnessDefinition,
   GatewayConfig,
   HarnessDefinition,
   HarnessDriverId,
   HarnessExecutionProtocolId,
   HarnessKind,
-  KernelAgentClassConfiguration,
+  ControlAgentClassConfiguration,
   LocalCliHarnessDefinition,
   LocalProcessHarnessDefinition,
   AutoModelObjective,
@@ -55,7 +54,7 @@ export {
   parseAnyFusionConfigurationV2,
 } from './schema.js';
 export {
-  buildKernelConfigurationView,
+  buildControlConfigurationView,
   buildPlannerConfigurationView,
   buildRuntimeConfigurationView,
 } from './projections.js';
@@ -139,7 +138,6 @@ export {
   resolvePublicRoutingIdentity,
   type PublicRoutingIdentity,
 } from './public-routing-identity.js';
-export { validateEnabledModelPrices } from './enabled-model-price-validation.js';
 export { matchOpenRouterModel } from './openrouter-model-catalog.js';
 export {
   migrateConfigurationV2ToV3,

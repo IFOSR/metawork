@@ -3,7 +3,7 @@ import { mkdtemp, mkdir, readFile, readdir, rm, unlink, writeFile, realpath } fr
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { runMigrations } from '../../src/storage/migrations.js';
+import { initializeDatabaseSchema } from '../../src/storage/schema.js';
 import { createAccountEventJournal } from '../../src/server/account-event-journal.js';
 import { backupGatewayJournal } from '../../src/installation/gateway-journal-backup.js';
 import { developmentDatabaseHolders, repairDevelopmentDirectoryJournal, stopDevelopmentDatabaseHolders } from '../../apps/desktop/packaging/development-recovery.js';
@@ -34,7 +34,7 @@ async function fixture() {
   await writeFile(join(data, 'database-revisions/fixture.db'), '');
   const path = join(data, 'anyfusion.db');
   const db = new Database(path);
-  runMigrations(db);
+  initializeDatabaseSchema(db);
   const runtime = createAccountEventJournal({ db, root: events, accountId, onError: error => { throw error; } });
   const append = async (conversationId: string, kind: 'workspace_activity_changed' | 'final_answer', n: number) => runtime.journal.append({
     protocolVersion: 2, accountId, conversationId, eventId: `event_${n}`, sequence: 0,

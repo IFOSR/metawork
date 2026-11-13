@@ -51,7 +51,6 @@ const previousReleaseId = JSON.parse(
 await new SourceNativeInstaller({ paths, secretStore, detectCommand, installLaunchers: false }).install({
   releaseId: previousReleaseId,
   sourceRoot: join(previousRoot, 'app/current'),
-  plannerRoot: join(previousRoot, 'app/current/planner'),
   executorPreset: 'desktop-pi',
   provider: {
     baseUrl: 'https://provider.example.invalid/v1', modelId: 'deepseek-chat', apiKey: 'gate-fixture',
@@ -64,7 +63,6 @@ const result = await new SourceNativeUpdater({
 }).update({
   releaseId: candidateReleaseId,
   sourceRoot: join(resources, 'payload', 'metawork'),
-  plannerRoot: join(resources, 'payload', 'planner'),
   memoryRoot: join(resources, 'payload', 'memory', 'tdai'),
 });
 if (!isValidConfigurationRevisionId(result.upgradeId)) {

@@ -370,7 +370,7 @@ MetaWork 依据：
 
 ### 14.1 对薄壳草案的结论
 
-已阅读 [2026-10-06 薄壳草案](2026-10-06-electron-desktop-app-thin-shell-design.md)。采用它提出的 **单 Git 仓库、多应用入口、共享 Web 与后端能力、Electron 薄壳、渐进迁移** 方向。第 9 节相应将新增入口统一为 `apps/desktop/`。
+已阅读 [2026-10-06 薄壳草案](../archive/plans/2026-10-06-electron-desktop-app-thin-shell-design.md)。采用它提出的 **单 Git 仓库、多应用入口、共享 Web 与后端能力、Electron 薄壳、渐进迁移** 方向。第 9 节相应将新增入口统一为 `apps/desktop/`。
 
 共享需要覆盖三层：源码模块、正式构建产物、运行时协议/启动行为。同仓解决协同修改与版本对齐；同一 UI 构建和同一 Server/Gateway 路径才让新 Web 功能自然进入 Desktop。`apps`/`packages` 目录本身不能保证兼容。
 

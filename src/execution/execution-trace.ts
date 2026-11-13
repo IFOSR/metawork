@@ -6,7 +6,6 @@ export type ExecutionTracePhase =
   | 'delivery';
 
 export type ExecutionTraceActor = 'kernel' | 'runtime' | 'executor';
-export type ExecutionTraceEventStatus = 'pending' | 'running' | 'completed' | 'failed' | 'blocked';
 export type ExecutionTraceStatus = 'running' | 'completed' | 'failed' | 'blocked' | 'cancelled';
 
 /** Presentation-safe execution facts emitted by the Runtime to a Conversation. */
@@ -14,7 +13,6 @@ export interface ExecutionTraceAppendInput {
   phase: ExecutionTracePhase;
   actor: ExecutionTraceActor;
   kind: string;
-  status: ExecutionTraceEventStatus;
   title: string;
   summary: string;
   details: Record<string, unknown>;

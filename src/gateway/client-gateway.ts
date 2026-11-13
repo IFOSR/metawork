@@ -89,11 +89,9 @@ export type GatewayReadOnlyQuery = Extract<GatewayCommand, {
     | 'get_task_view'
     | 'get_pending_interactions'
     | 'get_conversation_resource'
-    | 'get_query_bill'
-    | 'get_query_bill_for_turn'
-    | 'get_task_usage_summary'
-    | 'list_query_bills'
-    | 'get_usage_summary';
+    | 'get_usage_summary'
+    | 'get_token_usage'
+    | 'get_quota_guidance';
 }>;
 
 export interface GatewayReadOnlyQueryContext {
@@ -121,7 +119,7 @@ export type NewWorkAdmissionResult =
   | {
       readonly allowed: false;
       readonly reason: 'required_agent_unavailable' | 'no_enabled_executor' | 'configuration_invalid' | 'official_authorization_required';
-      readonly agentId?: 'pi-agent' | 'codex-cli';
+      readonly agentId?: 'pi-agent';
     };
 
 export interface NewWorkAdmission {
@@ -595,11 +593,8 @@ function isReadOnlyQuery(command: GatewayCommand): command is GatewayReadOnlyQue
     || command.kind === 'get_conversation_resource'
     || command.kind === 'get_pending_interactions'
     || command.kind === 'get_task_view'
-    || command.kind === 'get_query_bill'
-    || command.kind === 'get_query_bill_for_turn'
-    || command.kind === 'get_task_usage_summary'
-    || command.kind === 'list_query_bills'
-    || command.kind === 'get_usage_summary';
+    || command.kind === 'get_token_usage'
+    || command.kind === 'get_quota_guidance';
 }
 
 function requestIdFromUntrustedEnvelope(input: unknown): string | null {

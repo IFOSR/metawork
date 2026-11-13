@@ -7,7 +7,7 @@ import { GatewaySubscriptions } from '../../src/gateway/gateway-subscriptions.js
 import { ClientActionReferences } from '../../src/gateway/client-action-reference.js';
 import { SqliteClientActionReferences } from '../../src/storage/client-action-reference-repo.js';
 import { SqliteConversationReadModel } from '../../src/storage/conversation-read-model-repo.js';
-import { runMigrations } from '../../src/storage/migrations.js';
+import { initializeDatabaseSchema } from '../../src/storage/schema.js';
 import type { NotificationJob } from '../../src/delivery/notification-routing.js';
 import type { FeishuGatewayDelivery } from '../../src/integrations/feishu-app.js';
 import type { FeishuConversationRouteResult } from '../../src/gateway/feishu-conversation-routing.js';
@@ -16,7 +16,7 @@ import type { GatewayEventEnvelope } from '../../src/gateway/client-events.js';
 const databases: Database.Database[] = [];
 afterEach(() => databases.splice(0).forEach(db => db.close()));
 function fixture() {
-  const db = new Database(':memory:'); databases.push(db); runMigrations(db);
+  const db = new Database(':memory:'); databases.push(db); initializeDatabaseSchema(db);
   const model = new SqliteConversationReadModel(db);
   const actions = new ClientActionReferences(new SqliteClientActionReferences(db));
   const subscriptions = new GatewaySubscriptions();

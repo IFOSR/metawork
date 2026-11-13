@@ -20,6 +20,7 @@ import type {
   MemoryAsset,
   MemoryAssetSummary,
   MemoryEngineHealth,
+  MemoryEngineUsage,
   MemoryFlushBatch,
   MemoryMaterialization,
   MemoryPortError,
@@ -40,6 +41,16 @@ export interface MemoryPort {
   deposit(batch: MemoryFlushBatch, scope: MemoryScope): Promise<{ accepted: number }>;
 
   deleteConversation?(conversationId: string, scope: MemoryScope): Promise<boolean>;
+
+  /**
+   * Drain the model calls the engine finished since the last drain.
+   *
+   * The engine owns the only extraction/scene/persona model call site, so it is
+   * the only source of their token counts. Draining clears the engine ledger:
+   * each call is reported once. Optional so a deployment with an engine that
+   * predates the usage route simply reports no memory usage.
+   */
+  drainUsage?(): Promise<readonly MemoryEngineUsage[]>;
 
   /** S2 — recall candidate memory atoms for the account scope. */
   search(input: {
@@ -63,6 +74,7 @@ export interface MemoryPort {
     limit: number;
     offset: number;
     includeDisabled: boolean;
+    signal?: AbortSignal;
   }, scope: MemoryScope): Promise<{ items: readonly MemoryAsset[]; total: number }>;
 
   /** S4 — update the engine-side content of one memory atom. */

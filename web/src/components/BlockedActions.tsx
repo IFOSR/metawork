@@ -86,7 +86,10 @@ export function BlockedActions({ ws, http, conversationId, taskId, fallbackStatu
   // that the Kernel must reject because there is no recoverable Subtask.
   const canResume = Boolean(taskId) && !pendingDecision && !canAcceptCandidate && needsAction
     && lifecycle?.nextAuthorizedAction === 'explicit_resume_required';
-  const canRetryRemaining = Boolean(taskId) && !pendingDecision && failed;
+  const canRetryRemaining = Boolean(taskId) && !pendingDecision && failed
+    && !lifecycle?.retryOfTaskId
+    && ['delivery_failed', 'service_start_failed', 'service_health_timeout', 'port_in_use'].includes(lifecycle?.reason?.code ?? '')
+    && (!lifecycle?.cleanup || lifecycle.cleanup.state === 'none') && !lifecycle?.blockingResidue?.length;
   const canResolveRecovery = Boolean(taskId) && (Boolean(recoveryAction) || Boolean(legacy?.recoveryDiagnosis));
   const actionableNeedsAction = needsAction && (
     pendingActions.length > 0 || canResume || canResolveRecovery || canRetryRemaining
@@ -99,7 +102,9 @@ export function BlockedActions({ ws, http, conversationId, taskId, fallbackStatu
     canRetryRemaining,
     canResolveRecovery,
   });
-  const recommendation = recommendationFor(primaryAction);
+  const recommendation = primaryAction === 'accept_candidate' && !candidateAction?.publicationId
+    ? '下一步：检查已有结果后，点「接受部分结果并继续」。'
+    : recommendationFor(primaryAction);
 
   const resolvePermission = async (resolution: 'approve' | 'deny'): Promise<void> => {
     if (!permission?.requestRevision || !permission.generationId) {
@@ -192,7 +197,7 @@ export function BlockedActions({ ws, http, conversationId, taskId, fallbackStatu
     }
   };
 
-  if (!hasPermission && !pendingDecision && !actionableNeedsAction && !canRetryRemaining) return null;
+  if (!hasPermission && !pendingDecision && !actionableNeedsAction && !canRetryRemaining && !failed) return null;
 
   return (
     <section className="blocked-actions" data-kind={hasPermission ? 'permission' : pendingDecision ? 'decision' : 'recovery'}>
@@ -216,7 +221,7 @@ export function BlockedActions({ ws, http, conversationId, taskId, fallbackStatu
           )}
         </>
       )}
-      {!hasPermission && (pendingDecision || actionableNeedsAction || canRetryRemaining) && (
+      {!hasPermission && (pendingDecision || actionableNeedsAction || canRetryRemaining || failed) && (
         <>
           <p className="blocked-actions-title">{failed ? '任务失败，需要处理' : '需要你的处理才能继续'}</p>
           {reason && <p className="blocked-actions-hint">{reason}</p>}
@@ -265,7 +270,7 @@ export function BlockedActions({ ws, http, conversationId, taskId, fallbackStatu
                 disabled={busy}
                 onClick={() => runCommand(`/task recovery ${taskId}`)}>查看恢复项</button>
             )}
-            {taskId && lifecycle?.executionGeneration && (
+            {taskId && !failed && lifecycle?.executionGeneration && (
               <button type="button" disabled={busy} onClick={() => void cancelTask()}>取消任务</button>
             )}
           </div>
@@ -331,7 +336,7 @@ function recommendationFor(action: BlockedPrimaryAction): string {
     case 'resume':
       return '下一步：点「继续未完成部分」，已完成的部分不会重跑。';
     case 'resolve_recovery':
-      return '下一步：点「查看恢复项」，先确认上次执行是否留下了外部影响。';
+      return '下一步：点「查看恢复项」，查看未完成的步骤及可用的恢复操作。';
     case 'retry_remaining':
       return '下一步：点「重试未完成部分」。已完成的代码不会重新执行，只补做失败的交付或服务启动。';
     default:

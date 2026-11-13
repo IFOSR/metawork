@@ -3,7 +3,7 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { runMigrations } from '../../src/storage/migrations.js';
+import { initializeDatabaseSchema } from '../../src/storage/schema.js';
 import { TaskRepo } from '../../src/storage/task-repo.js';
 import { TaskEngine } from '../../src/task/task-engine.js';
 import { TaskExecutionEvidenceRepo, ScopedExecutionEvidencePort } from '../../src/execution/execution-evidence-port.js';
@@ -23,7 +23,7 @@ describe('shared conversation interaction evidence', () => {
     root = mkdtempSync(join(tmpdir(), 'metawork-shared-evidence-'));
     db = new Database(join(root, 'test.db'));
     db.pragma('foreign_keys = ON');
-    runMigrations(db);
+    initializeDatabaseSchema(db);
     const engine = new TaskEngine(new TaskRepo(db), join(root, 'snapshots'));
     tasks = ['a', 'b', 'c'].map(id => engine.create({
       id, title: id, goal: 'Use the previous test number', conversationId: 'conversation',
@@ -45,7 +45,7 @@ describe('shared conversation interaction evidence', () => {
     }
     db.close();
     db = new Database(join(root, 'test.db'));
-    runMigrations(db);
+    initializeDatabaseSchema(db);
     repo = new TaskExecutionEvidenceRepo(db);
     for (const taskId of ['b', 'c']) {
       expect(repo.findForTask(taskId, 'evidence_user_interaction_source')).toMatchObject({

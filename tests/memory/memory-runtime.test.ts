@@ -3,7 +3,7 @@ import Database from 'better-sqlite3';
 import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { runMigrations } from '../../src/storage/migrations.js';
+import { initializeDatabaseSchema } from '../../src/storage/schema.js';
 import { MemoryRuntime, MEMORY_KERNEL_AUTH_SECRET_REFERENCE } from '../../src/memory/memory-runtime.js';
 import { MemorySidecar } from '../../src/memory/memory-sidecar.js';
 import { MemoryFlushScheduler } from '../../src/memory/memory-flush-scheduler.js';
@@ -81,7 +81,7 @@ describe('MemoryRuntime', () => {
   function createDb(): Database.Database {
     const db = new Database(':memory:');
     db.pragma('foreign_keys = ON');
-    runMigrations(db);
+    initializeDatabaseSchema(db);
     return db;
   }
 

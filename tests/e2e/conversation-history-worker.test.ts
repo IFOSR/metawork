@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { describe, expect, it } from 'vitest';
-import { runMigrations } from '../../src/storage/migrations.js';
+import { initializeDatabaseSchema } from '../../src/storage/schema.js';
 import { ConversationHistoryWorkerClient } from '../../src/server/conversation-history-worker-client.js';
 import { SqliteConversationHistoryRepo } from '../../src/storage/conversation-history-repo.js';
 import { SqliteConversationReadModel } from '../../src/storage/conversation-read-model-repo.js';
@@ -16,7 +16,7 @@ acceptance('built history maintenance worker', () => {
   it('projects a giant legacy record off the request thread and resumes a staged rebuild', async () => {
     const root = await mkdtemp(join(tmpdir(), 'mw-history-worker-'));
     const database = join(root, 'account.db');
-    const db = new Database(database); db.pragma('journal_mode = WAL'); runMigrations(db);
+    const db = new Database(database); db.pragma('journal_mode = WAL'); initializeDatabaseSchema(db);
     const model = new SqliteConversationReadModel(db);
     const answer = '完整结果🙂\n'.repeat(100_000);
     new SqliteConversationHistoryRepo<ConversationTurn>(db, 'account', 'conversation').importOnce('conversation', [{

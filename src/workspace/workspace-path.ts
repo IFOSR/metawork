@@ -148,6 +148,12 @@ export function isWorkspaceRelativePath(value: string): boolean {
 /**
  * Normalizes declared Workspace-relative target paths (NFC, `/` separators) and
  * rejects anything that is not strictly inside the Workspace.
+ *
+ * A target may name a dedicated directory with a trailing `/`, which is the same
+ * spelling `fileOutputs` uses for a directory prefix (ADR-0032 amendment). This
+ * is the single production normalization entry point: the canonical form never
+ * keeps the trailing slash, so a Planner value of `site/` and a persisted target
+ * of `site` are the same scope everywhere downstream (convergence review B-03).
  */
 export function normalizeWorkspaceTargetPaths(paths: readonly string[]): string[] {
   const normalized: string[] = [];
@@ -156,7 +162,8 @@ export function normalizeWorkspaceTargetPaths(paths: readonly string[]): string[
     if (typeof path !== 'string') {
       throw new WorkspacePathError('escape', 'workspace target path must be a string');
     }
-    const value = relativeSegments(path).join('/');
+    const trimmed = path.endsWith('/') ? path.slice(0, -1) : path;
+    const value = relativeSegments(trimmed).join('/');
     if (seen.has(value)) continue;
     seen.add(value);
     normalized.push(value);

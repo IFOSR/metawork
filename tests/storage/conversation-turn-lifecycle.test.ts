@@ -3,7 +3,7 @@ import { MemorySanitizer } from '../../src/memory/memory-sanitizer.js';
 import { SessionPersistenceService } from '../../src/session/session-persistence-service.js';
 import { storeDerivedContent, resolveDerivedContent } from '../../src/storage/conversation-content-references.js';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { runMigrations } from '../../src/storage/migrations.js';
+import { initializeDatabaseSchema } from '../../src/storage/schema.js';
 import { SqliteConversationTurnStore } from '../../src/storage/conversation-turn-repo.js';
 import { SqliteConversationReadModel } from '../../src/storage/conversation-read-model-repo.js';
 import { SqliteConversationHistorySearch } from '../../src/storage/conversation-history-search-repo.js';
@@ -23,7 +23,7 @@ function event(kind: 'turn_started' | 'final_answer', id: string, turnId = 'turn
 }
 describe('conversation content lifecycle', () => {
   let db: Database.Database; let store: SqliteConversationTurnStore;
-  beforeEach(() => { db = new Database(':memory:'); db.pragma('foreign_keys = ON'); runMigrations(db); store = new SqliteConversationTurnStore(db); });
+  beforeEach(() => { db = new Database(':memory:'); db.pragma('foreign_keys = ON'); initializeDatabaseSchema(db); store = new SqliteConversationTurnStore(db); });
   afterEach(() => db.close());
   function accept(turnId = 'turn') {
     return store.accept({ ...identity, turnId, userInput: 'original user input', requestKey: turnId, event: event('turn_started', `s:${turnId}`, turnId) });

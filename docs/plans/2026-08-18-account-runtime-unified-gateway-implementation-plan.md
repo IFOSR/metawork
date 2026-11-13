@@ -352,7 +352,7 @@ git commit -m "feat: migrate local state into default account"
 - Modify: `src/kernel/kernel-workflow.ts`
 - Modify: `src/storage/kernel-workflow-repo.ts`
 - Modify: `src/session/metaclaw-session.ts`
-- Test: `tests/account/account-kernel-coordinator.test.ts`
+- Test: `tests/account/account-control-coordinator.test.ts`
 - Modify: `tests/storage/kernel-workflow-repo.test.ts`
 - Unskip and modify: `tests/session/cross-session-kernel-drain.test.ts`
 
@@ -371,7 +371,7 @@ Test:
 
 ```bash
 npx vitest run \
-  tests/account/account-kernel-coordinator.test.ts \
+  tests/account/account-control-coordinator.test.ts \
   tests/storage/kernel-workflow-repo.test.ts \
   tests/session/cross-session-kernel-drain.test.ts
 ```
@@ -405,7 +405,7 @@ The previously skipped cross-session test must PASS.
 ```bash
 git add src/account/account-kernel-coordinator.ts src/kernel/kernel-workflow.ts \
   src/storage/kernel-workflow-repo.ts src/session/metaclaw-session.ts \
-  tests/account/account-kernel-coordinator.test.ts \
+  tests/account/account-control-coordinator.test.ts \
   tests/storage/kernel-workflow-repo.test.ts \
   tests/session/cross-session-kernel-drain.test.ts
 git commit -m "fix: centralize account kernel coordination"

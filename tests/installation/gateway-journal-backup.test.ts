@@ -6,7 +6,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   backupGatewayJournal, restoreGatewayJournal,
 } from '../../src/installation/gateway-journal-backup.js';
-import { runMigrations } from '../../src/storage/migrations.js';
+import { initializeDatabaseSchema } from '../../src/storage/schema.js';
 import { createAccountEventJournal } from '../../src/server/account-event-journal.js';
 import { SqliteEventJournalSegmentIndex } from '../../src/storage/event-journal-segment-index-repo.js';
 
@@ -28,7 +28,7 @@ async function fixture(legacy = false) {
   const backupRoot = join(root, 'backup', 'gateway-events');
   const db = new Database(databasePath);
   if (legacy) db.exec('CREATE TABLE schema_version (version INTEGER); INSERT INTO schema_version VALUES (42)');
-  else runMigrations(db);
+  else initializeDatabaseSchema(db);
   const runtime = createAccountEventJournal({
     db, root: journalRoot, accountId: 'local-default', onError: error => { throw error; },
   });

@@ -13,10 +13,10 @@
 
 import type { SubtaskStatus, TaskStatus } from '../core/types.js';
 import type { PendingResultIdentity } from './safe-result-identity.js';
-import type { KernelAttemptKind, KernelSubtaskStatus } from '../kernel/control-kernel.js';
-import type { KernelFailure } from '../core/kernel-failure.js';
+import type { ControlAttemptKind, ControlSubtaskStatus } from '../control/control-contracts.js';
+import type { ControlFailure } from '../core/kernel-failure.js';
 import type { ExecutorAttemptTerminalState } from '../storage/executor-attempt-receipt-repo.js';
-import type { KernelDispatchItemStatus } from '../kernel/control-kernel.js';
+import type { ControlDispatchItemStatus } from '../control/control-contracts.js';
 import type { GenerationReplanRequestStatus } from '../storage/generation-replan-request-repo.js';
 import {
   isActiveDispatchStatus,
@@ -43,8 +43,8 @@ import {
 export interface TaskViewAttemptFact {
   readonly attemptId: string;
   readonly subtaskId: string;
-  readonly attemptKind: KernelAttemptKind;
-  readonly dispatchStatus: KernelDispatchItemStatus;
+  readonly attemptKind: ControlAttemptKind;
+  readonly dispatchStatus: ControlDispatchItemStatus;
   readonly lifecycle: AttemptLifecycleState;
   readonly outcome: AttemptOutcome | null;
   readonly createdAt: string;
@@ -96,20 +96,20 @@ export interface TaskViewFacts {
   };
   readonly subtasks: readonly {
     readonly id: string;
-    readonly status: KernelSubtaskStatus | SubtaskStatus;
+    readonly status: ControlSubtaskStatus | SubtaskStatus;
   }[];
   readonly dispatches: readonly {
     readonly attemptId: string;
     readonly subtaskId: string;
-    readonly status: KernelDispatchItemStatus;
-    readonly attemptKind: KernelAttemptKind;
+    readonly status: ControlDispatchItemStatus;
+    readonly attemptKind: ControlAttemptKind;
     readonly createdAt: string;
     readonly updatedAt: string;
   }[];
   readonly receipts: readonly {
     readonly attemptId: string;
     readonly terminalState: ExecutorAttemptTerminalState;
-    readonly failure: KernelFailure | null;
+    readonly failure: ControlFailure | null;
     readonly completedAt: string;
   }[];
   readonly replanJobs: readonly TaskViewReplanJobFact[];
@@ -144,7 +144,7 @@ export interface TaskView {
   readonly activeAttempt: {
     readonly attemptId: string;
     readonly subtaskId: string;
-    readonly attemptKind: KernelAttemptKind;
+    readonly attemptKind: ControlAttemptKind;
     readonly ordinal: number;
     readonly lifecycle: AttemptLifecycleState;
     readonly outcome: AttemptOutcome | null;

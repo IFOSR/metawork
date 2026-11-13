@@ -1,5 +1,4 @@
 import { isDeepStrictEqual } from 'node:util';
-import { isAbsolute } from 'node:path';
 import { prepareStandardAgentConfiguration, STANDARD_AGENT_PROFILES } from './standard-agent-configuration.js';
 import { redactSensitiveText } from '../utils/redact-sensitive-text.js';
 import { AnyFusionConfigurationV2Schema } from './schema.js';
@@ -71,20 +70,6 @@ function boundedExecutorChanges(before: unknown, after: unknown): { agents: Set<
   let old: AnyFusionConfigurationV2;
   try { old = prepareStandardAgentConfiguration(original); } catch { return result; }
   const next = nextParsed.data as AnyFusionConfigurationV2;
-  // A Codex executable is selected per revision/attempt, never held by a live daemon.
-  // The existing strict-idle gate and command probe authorize this narrow update.
-  for (const [ref, harness] of Object.entries(next.harnesses)) {
-    const previous = original.harnesses[ref];
-    if (harness.transport === 'local-cli' && harness.driverId === 'codex-cli'
-      && previous?.transport === 'local-cli' && previous.driverId === 'codex-cli'
-      && (harness.command === 'codex' || isAbsolute(harness.command))
-      && !/[\r\n\0]/u.test(harness.command)
-      && isDeepStrictEqual({ ...previous, command: harness.command, enabled: harness.enabled }, harness)) {
-      result.harnessPaths.add(`harnesses.${ref}.command`);
-      // Keep the existing bounded agent lifecycle classifier usable in the same draft.
-      old.harnesses[ref] = { ...old.harnesses[ref]!, command: harness.command } as typeof harness;
-    }
-  }
   let normalizedNext: AnyFusionConfigurationV2;
   try { normalizedNext = prepareStandardAgentConfiguration(next); } catch { return result; }
   for (const [ref, profile] of Object.entries(STANDARD_AGENT_PROFILES)) {
@@ -107,7 +92,7 @@ function boundedExecutorChanges(before: unknown, after: unknown): { agents: Set<
     const enablingTool = Boolean(candidate?.enabled && harness && !harness.enabled
       && nextHarness?.enabled && stableJson({ ...harness, enabled: true }) === stableJson(nextHarness));
     if (!harness || harness.kind !== 'executor'
-      || !['pi-cli', 'codex-cli'].includes(harness.driverId)
+      || harness.driverId !== 'pi-cli'
       || (!enablingTool && stableJson(harness) !== stableJson(nextHarness))) continue;
     if (!candidate) {
       result.agents.add(ref);
@@ -126,7 +111,7 @@ function boundedExecutorChanges(before: unknown, after: unknown): { agents: Set<
         { revisionId: 'classification', contentHash: '', config: { ...old, models: next.models } },
         previous
           ? { operation: 'update', agentClassRef: ref, fields }
-          : { operation: 'create', tool: harness.driverId === 'pi-cli' ? 'pi' : 'codex', fields },
+          : { operation: 'create', tool: 'pi', fields },
         () => ref,
       ).config.agentClasses[ref]!;
       // Manual semantics and routing hints have their own existing validation path.

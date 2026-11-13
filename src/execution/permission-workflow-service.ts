@@ -9,15 +9,16 @@ import {
   type NormalizedCapabilityRequest,
   type PermissionRequestRecord,
   type PermissionRepositoryPort,
+  type PermissionResolutionRecord,
   type PermissionRule,
 } from '../resource/index.js';
-import type { ControlKernel, KernelDecision, KernelEvent, KernelSnapshot } from '../kernel/control-kernel.js';
+import type { ControlDecision, ControlEvent, ControlSnapshot } from '../control/control-contracts.js';
 import {
-  DurableKernelWorkflow,
-  type KernelWorkflowStore,
   type PermissionResolutionEvent,
-} from '../kernel/kernel-workflow.js';
-import { evaluateCapabilityRequest } from '../resource/permission-policy.js';
+} from '../control/control-workflow.js';
+import { defaultGrantLimits, evaluateCapabilityRequest } from '../resource/permission-policy.js';
+import type { ManagerPermissionJudge } from '../resource/manager-permission-judge.js';
+export type { ManagerPermissionJudge } from '../resource/manager-permission-judge.js';
 
 export interface PermissionAttemptContext {
   sessionId: string;
@@ -38,13 +39,40 @@ export interface PermissionAttemptContext {
 export interface PermissionWorkflowHooks {
   checkpoint(reason: 'permission_suspended'): Promise<string | null>;
   onEscalation(request: NormalizedCapabilityRequest, reason: string): Promise<void>;
-  onRecoveryAuthorized(input: { request: NormalizedCapabilityRequest | null; workspaceId: string; checkpointId: string | null; decision?: KernelDecision }): Promise<KernelEvent | void>;
+  onRecoveryAuthorized(input: { request: NormalizedCapabilityRequest | null; workspaceId: string; checkpointId: string | null; decision?: ControlDecision }): Promise<ControlEvent | void>;
 }
 
+/**
+ * Optional Manager decision seam. The Host policy still owns hard-deny and
+ * explicit profile rules; only an otherwise undecidable request reaches this
+ * callback. Invalid, timed-out, or scope-expanding answers are treated as an
+ * escalation so the user remains the final decision maker.
+ */
 export const PERMISSION_REQUEST_MAX_AGE_MS = 24 * 60 * 60 * 1000;
 
 function capabilityDecisionId(requestId: string, outcome: 'grant' | 'deny' | 'escalate'): string {
   return `executor_capability_${outcome}_${requestId}`;
+}
+
+const MANAGER_PERMISSION_TIMEOUT_MS = 10_000;
+
+async function withManagerTimeout<T>(operation: (signal: AbortSignal) => Promise<T>): Promise<T> {
+  const controller = new AbortController();
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([
+      Promise.resolve().then(() => operation(controller.signal)),
+      new Promise<T>((_, reject) => {
+        timer = setTimeout(() => {
+          controller.abort();
+          reject(new Error('manager_permission_timeout'));
+        }, MANAGER_PERMISSION_TIMEOUT_MS);
+      }),
+    ]);
+  } finally {
+    if (timer) clearTimeout(timer);
+    controller.abort();
+  }
 }
 
 export function permissionRequestExpiresAt(createdAt: string): string | null {
@@ -67,14 +95,16 @@ export class PermissionWorkflowService {
     repository: PermissionRepositoryPort;
     resolver: CapabilityResourceResolverPort;
     executionBackend: AttemptExecutionBackend;
-    workflowStore: KernelWorkflowStore;
     /**
-     * Legacy test/integration seam. Production must omit this field: capability
-     * policy belongs to the Executor/Host path, not ControlKernel.
+     * Applies the post-grant continuation (`task_resume_requested`) on the Task's
+     * own control loop. Every path that can authorize a recovery attempt wires it.
      */
-    kernel?: Pick<ControlKernel, 'decide'>;
+    deliverContinuation?: (event: ControlEvent) => Promise<void>;
     rules: PermissionRule[];
     hooks: PermissionWorkflowHooks;
+    manager?: ManagerPermissionJudge;
+    /** Runtime cancellation/claim fence, checked again after model IO. */
+    isAttemptCurrent?: () => boolean;
     clock?: { now(): string };
   }) {}
 
@@ -88,6 +118,7 @@ export class PermissionWorkflowService {
     status: string;
     reason: string | null;
   }> {
+    if (this.deps.isAttemptCurrent?.() === false) throw new Error('permission_attempt_stale');
     const now = this.now();
     const ordinal = this.deps.repository.countDistinctForAttempt(this.deps.context.attemptId) + 1;
     const request: NormalizedCapabilityRequest = {
@@ -106,15 +137,7 @@ export class PermissionWorkflowService {
     request.fingerprint = capabilityRequestFingerprint(request);
     const record = this.deps.repository.createRequest(request, now);
     if (record.status !== 'pending') return this.requestResult(record);
-    await this.deps.executionBackend.pause(this.deps.context.containerId);
-    try {
-      const checkpointId = await this.deps.hooks.checkpoint('permission_suspended');
-      this.deps.context.checkpointId = checkpointId;
-    } catch (error) {
-      await this.resumeIfPresent().catch(() => undefined);
-      throw error;
-    }
-    const event: Extract<KernelEvent, { type: 'permission_requested' }> = {
+    const event: Extract<ControlEvent, { type: 'permission_requested' }> = {
       schemaVersion: 5,
       configurationRevision: this.deps.context.configurationRevision,
       type: 'permission_requested',
@@ -128,28 +151,37 @@ export class PermissionWorkflowService {
       attemptId: record.request.attemptId,
       request: record.request,
     };
-    if (this.deps.kernel) {
-      // Compatibility path for old embedded integrations. The production
-      // composition no longer supplies `kernel`.
-      const result = await this.legacyWorkflow(record.request.id).submit(event);
-      const latest = this.deps.repository.findRequest(record.request.id);
-      if (latest) return this.requestResult(latest);
-      return {
-        requestId: record.request.id,
-        grantId: null,
-        status: result.pendingRecovery > 0 ? 'uncertain' : 'pending',
-        reason: null,
-      };
+    // Persist before pause/checkpoint/model IO. Startup may recover a claimed
+    // work item, but a periodic worker must not race a live Manager judgment.
+    this.enqueuePermissionWork(event);
+    if (!this.claimPermissionWork(event.id, now)) {
+      return this.requestResult(this.deps.repository.findRequest(record.request.id) ?? record);
     }
-    this.deps.workflowStore.enqueue(event, now);
-    this.deps.workflowStore.markPermissionEventApplied?.(event.id, now);
-    await this.applyCapabilityPolicy(record.request, null);
+    try {
+      await this.deps.executionBackend.pause(this.deps.context.containerId);
+      const checkpointId = await this.deps.hooks.checkpoint('permission_suspended');
+      this.deps.context.checkpointId = checkpointId;
+    } catch (error) {
+      this.releasePermissionWork(event.id, this.now());
+      await this.resumeIfPresent().catch(() => undefined);
+      throw error;
+    }
+    try {
+      await this.applyCapabilityPolicy(record.request, null);
+      this.markPermissionWorkApplied(event.id, this.now());
+    } catch (error) {
+      this.releasePermissionWork(event.id, this.now());
+      throw error;
+    }
     const latest = this.deps.repository.findRequest(record.request.id);
     if (latest) return this.requestResult(latest);
     return this.requestResult(record);
   }
 
   use(input: CapabilityUseInput): CapabilityUseResult {
+    if (this.deps.isAttemptCurrent?.() === false) {
+      return { status: 'denied', grantId: input.grantId, reason: 'permission attempt is no longer current' };
+    }
     const bytes = Buffer.byteLength(input.payload, 'utf8');
     const grant = this.deps.repository.consumeGrant(
       input.grantId,
@@ -182,7 +214,7 @@ export class PermissionWorkflowService {
     plannerPlanId?: string | null;
     actor?: { readonly principalId: string; readonly commandRequestId: string | null };
   }): Promise<{ status: 'accepted' | 'replayed' | 'conflict'; resolution: 'approve' | 'deny' }> {
-    const previous = this.deps.workflowStore.findPermissionResolution(input.requestId);
+    const previous = this.deps.repository.findResolution?.(input.requestId) ?? null;
     if (previous) {
       if (previous.sessionId !== this.deps.context.sessionId || previous.taskId !== this.deps.context.taskId) {
         throw new Error('permission decision belongs to another Conversation or Task');
@@ -217,40 +249,60 @@ export class PermissionWorkflowService {
       plannerPlanId: input.plannerPlanId ?? null,
       ...(input.actor ? { actor: input.actor } : {}),
     };
-    const admission = this.deps.workflowStore.admitPermissionResolution(event);
-    if (!admission.accepted) {
-      return { status: admission.event.resolution === input.resolution ? 'replayed' : 'conflict',
-        resolution: admission.event.resolution };
+    const recorded = this.deps.repository.recordResolution?.(permissionResolutionRecord(event));
+    if (recorded === 'replayed' || recorded === 'conflict') {
+      return { status: recorded === 'replayed' ? 'replayed' : 'conflict', resolution: event.resolution };
     }
-    if (this.deps.kernel) {
-      await this.legacyWorkflow(input.requestId).submit(admission.event);
-    } else {
+    this.enqueuePermissionWork(event);
+    if (!this.claimPermissionWork(event.id, this.now())) {
+      return { status: 'accepted', resolution: event.resolution };
+    }
+    {
       const recordAfterAdmission = this.deps.repository.findRequest(input.requestId);
       if (!recordAfterAdmission) throw new Error('permission request disappeared during resolution');
       this.deps.repository.recordAuthorization(recordAfterAdmission.request, {
-        receivedEventId: admission.event.id,
-        resolution: admission.event.resolution,
-        source: admission.event.source,
-        plannerPlanId: admission.event.plannerPlanId,
+        receivedEventId: event.id,
+        resolution: event.resolution,
+        source: event.source,
+        plannerPlanId: event.plannerPlanId,
       }, this.now());
-      const continuation = await this.applyCapabilityPolicy(recordAfterAdmission.request, admission.event);
-      if (continuation) this.deps.workflowStore.enqueue(continuation, continuation.occurredAt);
-      this.deps.workflowStore.markPermissionEventApplied?.(admission.event.id, this.now());
+      try {
+        const continuation = await this.applyCapabilityPolicy(recordAfterAdmission.request, event);
+        if (continuation) await this.deliverContinuation(continuation);
+        this.markPermissionWorkApplied(event.id, this.now());
+      } catch (error) {
+        this.releasePermissionWork(event.id, this.now());
+        throw error;
+      }
     }
     return { status: 'accepted', resolution: input.resolution };
   }
 
-  async recover(event: KernelEvent): Promise<void> {
+  async recover(event: ControlEvent): Promise<void> {
     if ((event.type !== 'permission_requested' && event.type !== 'permission_resolution_received')
       || event.sessionId !== this.deps.context.sessionId || event.taskId !== this.deps.context.taskId
       || event.attemptId !== this.deps.context.attemptId) throw new Error('permission_recovery_scope_mismatch');
-    if (this.deps.kernel) {
-      await this.legacyWorkflow(event.correlationId).submit(event);
-      return;
-    }
     const record = this.deps.repository.findRequest(event.correlationId);
     if (!record) throw new Error('permission request disappeared during recovery');
+    this.enqueuePermissionWork(event);
+    if (event.type === 'permission_requested') {
+      // A restarted process cannot establish whether an interrupted model
+      // approved the request. Keep its grant closed and expose one precise
+      // user decision. Already durable outcomes never re-run the model.
+      if (record.status === 'pending') {
+        const reason = 'Manager permission judgment was interrupted; user decision required';
+        this.deps.repository.escalate(record.request.id, this.decisionId('escalate', record.request.id), reason, this.now());
+        await this.deps.hooks.onEscalation(record.request, reason);
+      } else if (record.status === 'escalated') {
+        await this.deps.hooks.onEscalation(record.request, record.decisionReason ?? 'user decision required');
+      } else {
+        await this.resumeIfPresent();
+      }
+      this.markPermissionWorkApplied(event.id, this.now());
+      return;
+    }
     if (event.type === 'permission_resolution_received') {
+      this.deps.repository.recordResolution?.(permissionResolutionRecord(event));
       this.deps.repository.recordAuthorization(record.request, {
         receivedEventId: event.id,
         resolution: event.resolution,
@@ -260,66 +312,89 @@ export class PermissionWorkflowService {
     }
     const continuation = await this.applyCapabilityPolicy(record.request,
       event.type === 'permission_resolution_received' ? event : null);
-    if (continuation) this.deps.workflowStore.enqueue(continuation, continuation.occurredAt);
+    if (continuation) await this.deliverContinuation(continuation);
     if (event.type === 'permission_resolution_received') {
-      this.deps.workflowStore.markPermissionEventApplied?.(event.id, this.now());
+      this.markPermissionWorkApplied(event.id, this.now());
     }
-  }
-
-  private legacyWorkflow(requestId: string): DurableKernelWorkflow {
-    // Kept only for old callers while they migrate off the Kernel permission
-    // seam. No production composition should enter this method.
-    return new DurableKernelWorkflow({
-      kernel: this.deps.kernel!,
-      buildSnapshot: event => this.buildSnapshot(event),
-      store: this.deps.workflowStore,
-      clock: { now: () => this.now() },
-      runtime: { apply: decision => this.apply(decision) },
-      acceptedEventTypes: ['permission_requested', 'permission_resolution_received'],
-      acceptedActions: ['grant_capability', 'deny_capability', 'escalate_capability', 'recover_workspace_attempt'],
-      taskId: this.deps.context.taskId,
-      correlationId: requestId,
-    });
   }
 
   private async applyCapabilityPolicy(
     request: NormalizedCapabilityRequest,
     resolution: PermissionResolutionEvent | null,
-  ): Promise<KernelEvent | void> {
+  ): Promise<ControlEvent | void> {
     const authorization = resolution ? {
       receivedEventId: resolution.id,
       resolution: resolution.resolution,
       source: resolution.source,
       plannerPlanId: resolution.plannerPlanId,
     } : undefined;
-    if (resolution?.resolution === 'approve' && !this.deps.context.workspaceId) {
-      this.deps.repository.deny({
-        decisionId: this.decisionId('deny', request.id),
-        request,
-        reason: 'approved request has no recoverable workspace',
-        deniedAt: this.now(),
-        authorization,
-      });
-      await this.resumeIfPresent();
-      return;
-    }
-    if (resolution?.resolution === 'approve') {
-      // A new attempt will re-evaluate this exact fingerprint with the
-      // persisted authorization. The current paused attempt must not receive
-      // a grant that its old process cannot safely consume.
-      return this.deps.hooks.onRecoveryAuthorized({
-        request,
-        workspaceId: this.deps.context.workspaceId,
-        checkpointId: this.deps.context.checkpointId,
-      });
-    }
-    const result = evaluateCapabilityRequest({
+    let grantedScope = request.suggestedScope;
+    let result = evaluateCapabilityRequest({
       request,
       rules: this.deps.rules,
       now: this.now(),
       previouslyDeniedFingerprints: this.deps.repository.listDeniedFingerprints(request.attemptId),
       userAuthorizationFingerprints: this.deps.repository.listApprovedFingerprints(request.taskId),
     });
+    if (result.type === 'deny_capability'
+      && result.reason === 'no explicit permission rule covers this request') {
+      if (!this.deps.manager) {
+        // An unclassified capability is precisely the case where the Manager
+        // cannot establish intent. Escalate it for an explicit user decision;
+        // never silently deny a legitimate request or silently grant it.
+        result = {
+          type: 'escalate_capability',
+          ruleId: null,
+          reason: 'Manager decision is unavailable for this capability; user decision required',
+        };
+      } else {
+        try {
+          const judged = await withManagerTimeout(signal => this.deps.manager!.judge(structuredClone(request), { signal }));
+          const scopeValid = judged.grantedScope === undefined
+            || judged.grantedScope === request.suggestedScope
+            || (request.suggestedScope === 'attempt' && judged.grantedScope === 'once');
+          if (judged.verdict === 'grant' && scopeValid && judged.reason.trim().length > 0) {
+            const limits = defaultGrantLimits(request, this.now());
+            // A Manager may narrow the requested scope, never widen it. The
+            // grant record must carry the narrowed limits as well; otherwise a
+            // one-shot Manager answer accidentally receives the default
+            // attempt-wide allowance.
+            if (judged.grantedScope === 'once') {
+              limits.maxCalls = 1;
+              grantedScope = 'once';
+            }
+            result = {
+              type: 'grant_capability',
+              ruleId: 'manager',
+              reason: judged.reason,
+              limits,
+            };
+          } else if (judged.verdict === 'deny' && judged.reason.trim().length > 0) {
+            result = { type: 'deny_capability', ruleId: 'manager', reason: judged.reason.trim() };
+          } else {
+            result = {
+              type: 'escalate_capability',
+              ruleId: 'manager',
+              reason: judged.reason || 'Manager could not determine whether the capability is safe',
+            };
+          }
+        } catch {
+          result = {
+            type: 'escalate_capability',
+            ruleId: 'manager',
+            reason: 'Manager decision failed or timed out; user decision required',
+          };
+        }
+      }
+    }
+    if (this.deps.isAttemptCurrent?.() === false) {
+      const current = this.deps.repository.findRequest(request.id);
+      if (current && ['pending', 'escalated'].includes(current.status)) {
+        this.deps.repository.deny({ decisionId: this.decisionId('deny', request.id), request,
+          reason: 'permission attempt is no longer current', deniedAt: this.now() });
+      }
+      return;
+    }
     if (resolution?.resolution === 'deny') {
       this.deps.repository.deny({
         decisionId: this.decisionId('deny', request.id),
@@ -331,17 +406,48 @@ export class PermissionWorkflowService {
       await this.resumeIfPresent();
       return;
     }
-    if (result.type === 'grant_capability') {
-      const decisionId = this.decisionId('grant', request.id);
-      this.deps.repository.ensureDecisionAnchor?.(
-        decisionId,
-        this.deps.context.configurationRevision,
+    if (resolution?.resolution === 'approve') {
+      if (result.type !== 'grant_capability') {
+        // A user approval can satisfy an escalation, but it can never
+        // override a platform hard deny or an invalid request.
+        this.deps.repository.deny({
+          decisionId: this.decisionId('deny', request.id),
+          request,
+          reason: result.reason,
+          deniedAt: this.now(),
+          authorization,
+        });
+        await this.resumeIfPresent();
+        return;
+      }
+      if (!this.deps.context.workspaceId) {
+        this.deps.repository.deny({
+          decisionId: this.decisionId('deny', request.id),
+          request,
+          reason: 'approved request has no recoverable workspace',
+          deniedAt: this.now(),
+          authorization,
+        });
+        await this.resumeIfPresent();
+        return;
+      }
+      // A new attempt re-evaluates this exact fingerprint with the persisted
+      // authorization. The paused process never receives a grant directly.
+      return this.deps.hooks.onRecoveryAuthorized({
         request,
-      );
+        workspaceId: this.deps.context.workspaceId,
+        checkpointId: this.deps.context.checkpointId,
+      });
+    }
+    if (result.type === 'grant_capability') {
+      // The grant is owner-owned: no ledger anchor row is created (ADR-0055 D6).
+      const decisionId = this.decisionId('grant', request.id);
       this.deps.repository.grant({
         decisionId,
         request,
         limits: result.limits,
+        scope: grantedScope,
+        reason: result.reason,
         grantedAt: this.now(),
         authorization,
       });
@@ -362,7 +468,7 @@ export class PermissionWorkflowService {
     await this.resumeIfPresent();
   }
 
-  private buildSnapshot(event: KernelEvent): KernelSnapshot {
+  private buildSnapshot(event: ControlEvent): ControlSnapshot {
     const requestId = event.type === 'permission_requested'
       ? event.request.id
       : event.type === 'permission_resolution_received' ? event.requestId : '';
@@ -382,7 +488,7 @@ export class PermissionWorkflowService {
     };
   }
 
-  private async apply(decision: KernelDecision): Promise<KernelEvent | null> {
+  private async apply(decision: ControlDecision): Promise<ControlEvent | null> {
     const action = decision.action;
     if (
       action.type !== 'grant_capability'
@@ -435,8 +541,9 @@ export class PermissionWorkflowService {
   }
 
   private async resumeIfPresent(): Promise<void> {
+    if (this.deps.isAttemptCurrent?.() === false) return;
     const execution = await this.deps.executionBackend.inspect(this.deps.context.containerId);
-    if (execution?.status === 'paused') {
+    if (execution?.status === 'paused' && this.deps.isAttemptCurrent?.() !== false) {
       await this.deps.executionBackend.resume(this.deps.context.containerId);
     }
   }
@@ -462,4 +569,59 @@ export class PermissionWorkflowService {
   private now(): string {
     return this.deps.clock?.now() ?? new Date().toISOString();
   }
+
+  private async deliverContinuation(event: ControlEvent): Promise<void> {
+    if (!this.deps.deliverContinuation) {
+      throw new Error('permission continuation requires an owner delivery port');
+    }
+    await this.deps.deliverContinuation(event);
+  }
+
+  private enqueuePermissionWork(event: ControlEvent): void {
+    if (event.type !== 'permission_requested' && event.type !== 'permission_resolution_received') return;
+    this.deps.repository.enqueuePermissionWork?.({
+      eventId: event.id,
+      requestId: event.type === 'permission_requested' ? event.request.id : event.requestId,
+      eventType: event.type,
+      createdAt: event.occurredAt,
+    });
+  }
+
+  private claimPermissionWork(eventId: string, now: string): boolean {
+    if (this.deps.repository.claimPermissionWork) {
+      if (!this.deps.repository.claimPermissionWork(eventId, now)) return false;
+      return true;
+    }
+    return true;
+  }
+
+  private releasePermissionWork(eventId: string, now: string): void {
+    if (this.deps.repository.releasePermissionWork) {
+      this.deps.repository.releasePermissionWork(eventId, now);
+    }
+  }
+
+  private markPermissionWorkApplied(eventId: string, now: string): void {
+    if (this.deps.repository.markPermissionWorkApplied) {
+      this.deps.repository.markPermissionWorkApplied(eventId, now);
+    }
+    // DEBUG
+    // console.error('marked permission work', eventId);
+    // console.debug('permission applied', eventId);
+  }
+}
+
+function permissionResolutionRecord(event: PermissionResolutionEvent): PermissionResolutionRecord {
+  return {
+    requestId: event.requestId,
+    eventId: event.id,
+    sessionId: event.sessionId,
+    taskId: event.taskId ?? '',
+    subtaskId: event.subtaskId ?? '',
+    attemptId: event.attemptId ?? '',
+    resolution: event.resolution,
+    source: event.source,
+    plannerPlanId: event.plannerPlanId,
+    createdAt: event.occurredAt,
+  };
 }

@@ -1,7 +1,7 @@
 import { workspaceRootClaim } from '../../src/resource/index.js';
 import Database from 'better-sqlite3';
 import { describe, expect, it } from 'vitest';
-import { runMigrations } from '../../src/storage/migrations.js';
+import { initializeDatabaseSchema } from '../../src/storage/schema.js';
 import { SqliteResourceLeaseRepository } from '../../src/storage/resource-lease-repo.js';
 import { seedAgentClasses } from '../support/seed-agent-classes.js';
 
@@ -33,7 +33,7 @@ function seedForeignKeys(db: Database.Database): void {
 describe('SqliteResourceLeaseRepository', () => {
   it('keeps expired Conversation owners fenced and reserves admission for a queued writer', () => {
     const db = new Database(':memory:');
-    runMigrations(db);
+    initializeDatabaseSchema(db);
     seedForeignKeys(db);
     const repo = new SqliteResourceLeaseRepository(db);
     const now = '2026-07-22T00:02:00.000Z';
@@ -61,7 +61,7 @@ describe('SqliteResourceLeaseRepository', () => {
 
   it('allows only one competing write claim and remains idempotent per attempt', () => {
     const db = new Database(':memory:');
-    runMigrations(db);
+    initializeDatabaseSchema(db);
     seedForeignKeys(db);
     const repo = new SqliteResourceLeaseRepository(db);
     const claim = (attemptId: string, subtaskId: string, workUnitId: string, leaseToken: string) => repo.claim({

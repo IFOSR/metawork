@@ -122,18 +122,10 @@ export function ExecutorEditorDialog({ http, view, agentClassRef, operation, dis
                 </label>;
               })}
               </div>
-              <label className="settings-field executor-priority-field"><span>选择偏好</span>
-                <select className="text-input" value={fields.modelPolicy.objective?.priority ?? 'balanced'}
-                  onChange={event => {
-                    if (fields.modelPolicy.mode !== 'auto') return;
-                    update({ modelPolicy: { ...fields.modelPolicy, objective: {
-                      ...fields.modelPolicy.objective,
-                      priority: event.target.value as 'balanced' | 'cost' | 'quality' | 'latency',
-                    } } });
-                  }}>
-                  <option value="balanced">均衡</option><option value="cost">成本优先</option>
-                  <option value="quality">质量优先</option><option value="latency">速度优先</option>
-                </select></label>
+              {/*
+                ADR-0055 D4: Auto mode is automatic. No "optimization objective"
+                picker here either; the stored value is preserved untouched.
+              */}
             </div>}
           <p className="executor-dialog-notice">{existing?.operations === 'restricted'
             ? '此智能体保留系统设置的操作限制；编辑职责不会改变这些限制。'

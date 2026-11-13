@@ -1,4 +1,4 @@
-import type { AnyFusionConfigurationV2, ModelPricingMetadata } from './types.js';
+import type { AnyFusionConfigurationV2 } from './types.js';
 
 export interface AnyFusionConfigurationV3 extends Omit<AnyFusionConfigurationV2, 'schemaVersion'> {
   schemaVersion: 3;
@@ -15,18 +15,6 @@ export function migrateConfigurationV2ToV3(
   return {
     ...configuration,
     schemaVersion: 3,
-    models: Object.fromEntries(Object.entries(configuration.models).map(([ref, model]) => {
-      const pricing: ModelPricingMetadata | undefined = model.pricing ?? (
-        model.costInputPerMillion !== undefined || model.costOutputPerMillion !== undefined
-          ? {
-              source: 'user',
-              exchangeRate: 7,
-              overrideReason: '迁移自 schema v2 的人民币价格',
-            }
-          : undefined
-      );
-      return [ref, { ...model, ...(pricing ? { pricing } : {}) }];
-    })),
     agentClasses: Object.fromEntries(Object.entries(configuration.agentClasses).map(([ref, agent]) => [
       ref,
       { ...agent, ...(agent.responsibility !== undefined ? { responsibility: agent.responsibility } : {}) },

@@ -19,7 +19,7 @@ const PHASE_LABEL: Record<InteractionTraceEvent['phase'], string> = {
 
 const ACTOR_LABEL: Record<InteractionTraceEvent['actor'], string> = {
   user: '用户',
-  planner: 'Planner',
+  planner: 'Manager',
   kernel: 'Kernel',
   runtime: 'Runtime',
   executor: 'Executor',
@@ -59,9 +59,10 @@ export function InteractionTracePanel({
   const scrollRef = useRef<HTMLElement | null>(null);
   const [nowMs, setNowMs] = useState(() => Date.now());
   const lastSequence = trace?.events.at(-1)?.sequence ?? 0;
-  const activeEventId = trace?.status === 'running'
-    ? [...trace.events].reverse().find(event => event.status === 'running')?.id
-    : undefined;
+  const lastEventId = trace?.events.at(-1)?.id;
+  // A trace event never carries a process state: the newest event of a live Turn
+  // is the current step, and a settled Turn has no current step at all.
+  const activeEventId = trace?.status === 'running' ? lastEventId : undefined;
 
   useEffect(() => {
     if (trace?.status === 'running') {
@@ -107,11 +108,7 @@ export function InteractionTracePanel({
               <li
                 className="interaction-event"
                 key={event.id}
-                data-status={
-                  event.status === 'running' && event.id !== activeEventId
-                    ? 'completed'
-                    : event.status
-                }
+                data-active={event.id === activeEventId || undefined}
               >
                 <div className="event-rail"><span /></div>
                 <article>

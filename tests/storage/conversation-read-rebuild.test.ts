@@ -1,6 +1,6 @@
 import Database from 'better-sqlite3';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { runMigrations } from '../../src/storage/migrations.js';
+import { initializeDatabaseSchema } from '../../src/storage/schema.js';
 import { SqliteConversationReadModel } from '../../src/storage/conversation-read-model-repo.js';
 import { SqliteConversationReadRebuildStore } from '../../src/storage/conversation-read-rebuild-repo.js';
 import { SqliteConversationHistoryRepo } from '../../src/storage/conversation-history-repo.js';
@@ -11,7 +11,7 @@ import type { ConversationTurn } from '../../src/session/conversation-store.js';
 const databases: Database.Database[] = [];
 afterEach(() => databases.splice(0).forEach(db => db.close()));
 function fixture() {
-  const db = new Database(':memory:'); databases.push(db); runMigrations(db);
+  const db = new Database(':memory:'); databases.push(db); initializeDatabaseSchema(db);
   const notified = vi.fn();
   const live = new SqliteConversationReadModel(db, Date.now, notified);
   const source = new SqliteConversationHistoryRepo<ConversationTurn>(db, 'a', 'conversation');

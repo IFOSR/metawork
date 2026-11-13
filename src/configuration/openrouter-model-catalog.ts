@@ -1,4 +1,4 @@
-import type { ModelCapability, ModelPricingMetadata } from './types.js';
+import type { ModelCapability } from './types.js';
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { dirname } from 'node:path';
 
@@ -6,7 +6,6 @@ import { dirname } from 'node:path';
 // text-only catalogue. Include the decision modality so models such as
 // `nace-ai/drex-v1.5` can be used for routing-model completion as well.
 export const OPENROUTER_MODELS_URL = 'https://openrouter.ai/api/v1/models?output_modalities=text,decisions';
-export const OPENROUTER_EXCHANGE_RATE = 7 as const;
 const MAX_RESPONSE_BYTES = 8 * 1024 * 1024;
 const DEFAULT_CACHE_TTL_MS = 24 * 60 * 60 * 1_000;
 
@@ -16,10 +15,9 @@ export interface OpenRouterModelMetadata {
   description?: string;
   contextLimit?: number;
   capabilities: ModelCapability[];
-  costInputPerMillion?: number;
-  costOutputPerMillion?: number;
+
   publicFacts?: OpenRouterPublicFacts;
-  pricing: ModelPricingMetadata;
+
 }
 
 export interface OpenRouterPublicFacts {
@@ -157,7 +155,7 @@ interface OpenRouterCatalogRow {
   description?: unknown;
   context_length?: unknown;
   architecture?: unknown;
-  pricing?: unknown;
+
   top_provider?: unknown;
   supported_parameters?: unknown;
   reasoning?: unknown;
@@ -174,7 +172,7 @@ export function parseOpenRouterCatalog(value: unknown, fetchedAt = new Date().to
   const models: Record<string, OpenRouterModelMetadata> = {};
   for (const row of rows) {
     if (!row || typeof row !== 'object') continue;
-    const parsed = parseOpenRouterModel(row as OpenRouterCatalogRow, fetchedAt);
+    const parsed = parseOpenRouterModel(row as OpenRouterCatalogRow);
     if (parsed) models[parsed.modelId] = parsed;
   }
   return { status: 'ready', fetchedAt, models };
@@ -182,15 +180,9 @@ export function parseOpenRouterCatalog(value: unknown, fetchedAt = new Date().to
 
 export function parseOpenRouterModel(
   row: OpenRouterCatalogRow,
-  fetchedAt = new Date().toISOString(),
 ): OpenRouterModelMetadata | null {
   const modelId = stringValue(row.id);
   if (!modelId || modelId.length > 256) return null;
-  const pricing = row.pricing && typeof row.pricing === 'object'
-    ? row.pricing as Record<string, unknown>
-    : {};
-  const inputUsd = nonNegativeNumber(pricing.prompt);
-  const outputUsd = nonNegativeNumber(pricing.completion);
   const contextLimit = positiveInteger(row.context_length);
   const architecture = row.architecture && typeof row.architecture === 'object'
     ? row.architecture as Record<string, unknown>
@@ -213,17 +205,9 @@ export function parseOpenRouterModel(
     ...(stringValue(row.description) ? { description: stringValue(row.description) } : {}),
     ...(contextLimit ? { contextLimit } : {}),
     capabilities,
-    ...(inputUsd !== undefined ? { costInputPerMillion: usdPerTokenToCnyPerMillion(inputUsd) } : {}),
-    ...(outputUsd !== undefined ? { costOutputPerMillion: usdPerTokenToCnyPerMillion(outputUsd) } : {}),
+
     ...(publicFacts ? { publicFacts } : {}),
-    pricing: {
-      source: 'openrouter',
-      ...(inputUsd !== undefined ? { usdInputPerToken: inputUsd } : {}),
-      ...(outputUsd !== undefined ? { usdOutputPerToken: outputUsd } : {}),
-      exchangeRate: OPENROUTER_EXCHANGE_RATE,
-      fetchedAt,
-      catalogModelId: modelId,
-    },
+
   };
 }
 
@@ -324,10 +308,6 @@ function stringArray(value: unknown): string[] {
     : [];
 }
 
-export function usdPerTokenToCnyPerMillion(value: number): number {
-  return value * 1_000_000 * OPENROUTER_EXCHANGE_RATE;
-}
-
 export class OpenRouterModelCatalog {
   private snapshot: OpenRouterCatalogSnapshot | undefined;
   private inFlight: Promise<OpenRouterCatalogSnapshot> | undefined;
@@ -368,6 +348,7 @@ export class OpenRouterModelCatalog {
     try {
       const parsed: unknown = JSON.parse(await readFile(cachePath, 'utf8'));
       if (parsed && typeof parsed === 'object'
+        && (parsed as { cacheVersion?: unknown }).cacheVersion === 2
         && (parsed as { status?: unknown }).status === 'ready'
         && (parsed as { sourceUrl?: unknown }).sourceUrl === OPENROUTER_MODELS_URL
         && (parsed as { models?: unknown }).models
@@ -384,7 +365,7 @@ export class OpenRouterModelCatalog {
     if (!cachePath) return;
     try {
       await mkdir(dirname(cachePath), { recursive: true });
-      await writeFile(cachePath, `${JSON.stringify(snapshot)}\n`, { mode: 0o600 });
+      await writeFile(cachePath, `${JSON.stringify({ ...snapshot, cacheVersion: 2 })}\n`, { mode: 0o600 });
     } catch {
       // Metadata caching is best effort and never blocks settings activation.
     }
@@ -452,10 +433,6 @@ function stringValue(value: unknown): string | undefined {
   return typeof value === 'string' && value.trim() ? value.trim() : undefined;
 }
 
-function nonNegativeNumber(value: unknown): number | undefined {
-  const numeric = typeof value === 'number' ? value : typeof value === 'string' ? Number(value) : NaN;
-  return Number.isFinite(numeric) && numeric >= 0 ? numeric : undefined;
-}
 
 function positiveInteger(value: unknown): number | undefined {
   const numeric = typeof value === 'number' ? value : Number(value);

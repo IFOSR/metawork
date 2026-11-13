@@ -6,7 +6,7 @@ export class SqliteConversationActivitySource implements ConversationActivitySou
 
   latestProgress(taskId: string, generationId: string): string | null {
     const row = this.db.prepare(`SELECT substr(json_extract(runtime.progress_json, '$.text'), 1, 1024) AS text
-      FROM kernel_dispatch_items dispatch JOIN executor_attempt_runtime runtime ON runtime.attempt_id = dispatch.attempt_id
+      FROM dispatch_items dispatch JOIN executor_attempt_runtime runtime ON runtime.attempt_id = dispatch.attempt_id
       WHERE dispatch.task_id = ? AND dispatch.generation_id = ? ORDER BY runtime.updated_at DESC LIMIT 1`)
       .get(taskId, generationId) as { text: string | null } | undefined;
     return row?.text ?? null;

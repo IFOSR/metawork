@@ -1,8 +1,8 @@
 import type Database from 'better-sqlite3';
 import type { AuthorizedExecutorBinding } from '../core/authorized-executor-binding.js';
 import type { CompletionContractViolation } from '../execution/completion-protocol.js';
-import type { KernelFailure } from '../core/kernel-failure.js';
-import type { KernelAttemptKind, KernelRecoveryMode } from '../kernel/control-kernel.js';
+import type { ControlFailure } from '../core/kernel-failure.js';
+import type { ControlAttemptKind, ControlRecoveryMode } from '../control/control-contracts.js';
 
 export type ExecutorAttemptTerminalState =
   | 'completed'
@@ -19,10 +19,10 @@ export interface ExecutorAttemptReceipt {
   subtaskId: string;
   graphRevision: number;
   generationId: string;
-  attemptKind: KernelAttemptKind;
+  attemptKind: ControlAttemptKind;
   sourceAttemptId: string | null;
-  failure: KernelFailure | null;
-  recoveryMode: KernelRecoveryMode;
+  failure: ControlFailure | null;
+  recoveryMode: ControlRecoveryMode;
   workUnitId: string;
   agentClassName: string;
   configurationRevision: string;
@@ -70,15 +70,15 @@ export class ExecutorAttemptReceiptRepo {
       SELECT task_id, subtask_id, generation_id, attempt_kind, source_attempt_id,
              recovery_mode, configuration_revision, authorized_binding_json,
              binding_fingerprint
-      FROM kernel_dispatch_items
+      FROM dispatch_items
       WHERE attempt_id = ?
     `).get(receipt.attemptId) as {
       task_id: string;
       subtask_id: string;
       generation_id: string;
-      attempt_kind: KernelAttemptKind;
+      attempt_kind: ControlAttemptKind;
       source_attempt_id: string | null;
-      recovery_mode: KernelRecoveryMode;
+      recovery_mode: ControlRecoveryMode;
       configuration_revision: string;
       authorized_binding_json: string;
       binding_fingerprint: string;
@@ -198,10 +198,10 @@ function rowToReceipt(row: Record<string, unknown>): ExecutorAttemptReceipt {
       subtaskId: String(row.subtask_id),
       graphRevision: Number(row.graph_revision),
       generationId: String(row.generation_id),
-      attemptKind: String(row.attempt_kind) as KernelAttemptKind,
+      attemptKind: String(row.attempt_kind) as ControlAttemptKind,
       sourceAttemptId: row.source_attempt_id == null ? null : String(row.source_attempt_id),
-      failure: row.failure_json == null ? null : JSON.parse(String(row.failure_json)) as KernelFailure,
-      recoveryMode: String(row.recovery_mode) as KernelRecoveryMode,
+      failure: row.failure_json == null ? null : JSON.parse(String(row.failure_json)) as ControlFailure,
+      recoveryMode: String(row.recovery_mode) as ControlRecoveryMode,
       workUnitId: String(row.work_unit_id),
       agentClassName: String(row.agent_class_name),
       configurationRevision: String(row.configuration_revision),

@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import type { KernelDecisionAction } from '../kernel/control-kernel.js';
+import type { ControlDecisionAction } from '../control/control-contracts.js';
 import type { ExecutorManualUserProfile } from '../configuration/types.js';
 
 export type PlannerProposalPurpose = 'kernel' | 'validation' | 'configuration';
@@ -29,7 +29,6 @@ export type PlannerProposalAcceptedOutcome =
   | 'proposal_validated'
   | 'task_authorized'
   | 'task_control_authorized'
-  | 'direct_reply_delivered'
   | 'clarification_requested'
   | 'authorization_recorded'
   | 'no_action';
@@ -43,7 +42,7 @@ export type PlannerProposalResult =
       outcome: PlannerProposalAcceptedOutcome;
       displayText: string;
       taskId: string | null;
-      kernel: { decisionId: string; action: KernelDecisionAction['type']; reason: string } | null;
+      kernel: { decisionId: string; action: ControlDecisionAction['type']; reason: string } | null;
     }
   | {
       status: 'rejected';
@@ -52,7 +51,7 @@ export type PlannerProposalResult =
       planId: string | null;
       rejectionType: 'validation' | 'kernel';
       issues: string[];
-      kernel: { decisionId: string; action: KernelDecisionAction['type']; reason: string } | null;
+      kernel: { decisionId: string; action: ControlDecisionAction['type']; reason: string } | null;
     }
   | {
       status: 'conflict';

@@ -1,7 +1,7 @@
 import type { RevisionedAgentBinding } from '../core/authorized-executor-binding.js';
 import type {
   ConfigurationSnapshot,
-  KernelConfigurationView,
+  ControlConfigurationView,
   RuntimeConfigurationView,
 } from './types.js';
 import {
@@ -23,7 +23,7 @@ export interface PublicRoutingIdentity {
 
 type PublicRoutingConfiguration =
   | ConfigurationSnapshot
-  | KernelConfigurationView
+  | ControlConfigurationView
   | RuntimeConfigurationView;
 
 export function resolvePublicRoutingIdentity(
@@ -76,9 +76,9 @@ export function resolvePublicRoutingIdentity(
 
 function configurationFacts(source: PublicRoutingConfiguration | null | undefined): {
   revisionId: string;
-  models: KernelConfigurationView['models'] | RuntimeConfigurationView['models'];
-  providers?: KernelConfigurationView['providers'] | RuntimeConfigurationView['providers'];
-  agentClasses?: KernelConfigurationView['agentClasses'] | RuntimeConfigurationView['agentClasses'];
+  models: ControlConfigurationView['models'] | RuntimeConfigurationView['models'];
+  providers?: ControlConfigurationView['providers'] | RuntimeConfigurationView['providers'];
+  agentClasses?: ControlConfigurationView['agentClasses'] | RuntimeConfigurationView['agentClasses'];
   harnesses?: RuntimeConfigurationView['harnesses'];
 } | null {
   if (!source) return null;
@@ -107,7 +107,6 @@ function executorDisplayName(agentClassRef: string, configured?: string): string
 
 function harnessDisplayName(harnessRef: string, driverId?: string): string {
   const identity = driverId ?? harnessRef;
-  if (identity === 'codex-cli') return 'Codex CLI';
   if (identity === 'pi-cli') return 'Pi CLI';
   if (identity === 'anyfusion-planner-host-v2') return 'MetaWork Planner (AnyFusion-Pi)';
   return publicDisplayNameFromRef(harnessRef);
