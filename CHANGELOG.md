@@ -5,6 +5,22 @@ AnyFusion release entries remain unchanged for auditability.
 
 The project follows [Semantic Versioning](https://semver.org/) for public releases.
 
+## [0.1.29] - 2026-11-14
+
+- Prefer DeepSeek's Search API for the Executor's `web_search` when a DeepSeek
+  Provider credential is configured, and fall back to Bing HTML otherwise. The
+  credential is the Provider key; there is no separate search key. Results now
+  carry publication date, site and authority when the DeepSeek backend answers.
+- Remove the Baidu HTML backend and route `web_fetch` by affordance: public-web
+  research attempts read pages through DeepSeek's extraction API, while workspace
+  attempts keep curl so a local service they started stays reachable.
+- Retry only 408/429/5xx DeepSeek failures, surface 401/402/403/404/413 as
+  actionable errors, and fall back to curl for quota or transport failures.
+- Count billed web-tool requests as metered usage: each billable DeepSeek search
+  is one `search` request and each billable DeepSeek fetch is one `tool_request`,
+  recorded per attempt and shown in the account usage view. Free fallbacks and
+  rejected URLs are not counted, and no price is attached.
+
 ## [0.1.27] - 2026-11-12
 
 - Retire the kernel control axis in favour of the `src/control` contracts and the
