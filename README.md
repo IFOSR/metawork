@@ -13,7 +13,7 @@ through one owned control path (Manager proposal → admission → Router → Ex
 certification → delivery), and keeps the result, its receipts and its recovery facts
 across restarts instead of ending at a chat reply.
 
-[Install](#install) · [Quick start](#quick-start) · [What's new in 0.1.27](#whats-new-in-0127) ·
+[Install](#install) · [Quick start](#quick-start) · [What's new in 0.1.29](#whats-new-in-0129) ·
 [Architecture](#architecture) · [Upgrading](#upgrading-from-the-previous-architecture) ·
 [Usage](#usage) · [License](#license) · [中文](README.zh-CN.md)
 
@@ -21,13 +21,13 @@ across restarts instead of ending at a chat reply.
 
 ## Install
 
-**Current release: v0.1.27 (internal), one build for every asset —
-`0.1.27-build-ffca58f`, revision `ffca58f`.** Download from
+**Current release: v0.1.29 (internal), one build for every asset —
+`0.1.29-build-0ab2ee7`, revision `0ab2ee7`.** Download from
 [the latest release](https://github.com/IFOSR/metawork/releases/latest).
 
 | Platform | Addressed to | Download |
 | --- | --- | --- |
-| macOS Apple Silicon (`arm64`) | **Desktop app** (bundles Runtime, Web and Executor Pi) | [MetaWork-darwin-arm64.dmg](https://github.com/IFOSR/metawork/releases/latest/download/MetaWork-darwin-arm64.dmg) — 345,085,425 bytes, SHA-256 `b6053c22b1e816a64c80c63cdd45da4a77a6f2a29ebe806ba789fe2b128812c1` |
+| macOS Apple Silicon (`arm64`) | **Desktop app** (bundles Runtime, Web and Executor Pi) | [MetaWork-darwin-arm64.dmg](https://github.com/IFOSR/metawork/releases/latest/download/MetaWork-darwin-arm64.dmg) — 345,114,277 bytes, SHA-256 `10a1723041b7537982fd383c20660b16d1cae3843892f5f965997f1517a7cf71` |
 | macOS Apple Silicon (`arm64`) | **Server package**, used through the Web client | [install.sh](https://github.com/IFOSR/metawork/releases/latest/download/install.sh) · [manifest.darwin-arm64.json](https://github.com/IFOSR/metawork/releases/latest/download/manifest.darwin-arm64.json) |
 | macOS Intel (`x64`) | **Server package**, used through the Web client | [install.sh](https://github.com/IFOSR/metawork/releases/latest/download/install.sh) · [manifest.darwin-x64.json](https://github.com/IFOSR/metawork/releases/latest/download/manifest.darwin-x64.json) |
 | Linux / WSL2 (`x64`) | **Server package**, used through the Web client | [install.sh](https://github.com/IFOSR/metawork/releases/latest/download/install.sh) · [manifest.linux-x64.json](https://github.com/IFOSR/metawork/releases/latest/download/manifest.linux-x64.json) |
@@ -296,6 +296,23 @@ metawork provider list | add | edit | test | remove
 metawork model    list | add | edit | test | remove
 metawork executor list | add | edit | enable | disable | remove | test
 ```
+
+## What's new in 0.1.29
+
+0.1.29 turns the Executor's web tools onto DeepSeek and starts counting what they
+bill. The full list is in [the release notes](docs/releases/v0.1.29.md).
+
+- `web_search` prefers DeepSeek's Search API whenever a DeepSeek Provider
+  credential is configured and falls back to Bing HTML otherwise; results now
+  carry publication date, site and authority. The Baidu scraper is gone.
+- `web_fetch` is routed by affordance: research attempts read pages through
+  DeepSeek's extraction API, workspace attempts keep curl so a local service they
+  started stays reachable.
+- The DeepSeek credential is the Provider key itself — no separate search key —
+  and an unresolvable credential degrades to Bing instead of failing the attempt.
+- Billed web-tool requests are metered: each billable DeepSeek search is one
+  `search` request and each billable fetch is one `tool_request`, shown in the
+  account usage view. Free fallbacks and rejected URLs are not counted.
 
 ## What's new in 0.1.27
 

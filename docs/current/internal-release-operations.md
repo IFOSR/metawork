@@ -10,6 +10,20 @@ Recorded from the `v0.1.21` internal release (2026-11-03); re-run unchanged for
 `v0.1.23` (2026-11-04): 14 assets, DMG 465,056,678 bytes in 12 parts, Runtime
 workflow 9m43s, DMG assembly 2m.
 
+Re-run for `v0.1.29` (2026-11-14): 15 assets, DMG 345,114,277 bytes in 9 parts,
+Runtime workflow 12m, DMG assembly under 1m, payload `0.1.29-desktoppayload-1741`
+passing the Desktop update gate against an installed `0.1.28` build. Two pitfalls
+that cost a retry:
+
+- `internal-desktop-upload.yml` requires `source_commit` as the **full 40-character**
+  SHA and `target_commitish` of the draft release to equal it. A draft created
+  without `--target` records the branch name (`main`), so patch it first with
+  `gh api -X PATCH repos/OWNER/REPO/releases/ID -f tag_name=vVERSION -f target_commitish=$FULL_SHA`.
+  Patch `tag_name` in the same request: patching only the target turns the draft's
+  tag into an `untagged-…` placeholder and `gh release view vVERSION` stops working.
+- Upload parts in batches of four (each ~1 minute) and confirm `split` produced
+  exactly `part_count` files before dispatching the workflow.
+
 ## What gets published
 
 | Asset | Target(s) | Built by |
