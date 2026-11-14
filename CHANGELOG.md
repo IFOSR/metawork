@@ -5,6 +5,29 @@ AnyFusion release entries remain unchanged for auditability.
 
 The project follows [Semantic Versioning](https://semver.org/) for public releases.
 
+## [0.1.30] - 2026-11-14
+
+- Serialize each Task's snapshot/decision/application section inside the
+  account-owned Execution Runtime, so two workflow instances can no longer drive
+  the same frontier; waiting for an Executor stays outside that section.
+- Stop treating `queued` as proof that a Task has already yielded: queue repair,
+  slot convergence and periodic promotion now read the same active-operation
+  fact before reclaiming a reservation or re-serving a slot.
+- Turn a typed, fully rolled-back live-owner dispatch conflict into an explicit
+  rejection that is checked against the current frontier, while unknown
+  preparation or database failures keep their recovery fence.
+- Make startup/periodic recovery and `/task recovery` share one postcondition
+  inspector for both `pending` and `retry_authorized` items, so an authorized
+  retry is either advanced or settled instead of blocking a finished Task.
+- Settle a redundant duplicate dispatch only with matching graph, generation,
+  authorization, Workspace and completed-owner-receipt evidence, and without
+  claiming that its own attempts ran. Unfinished completion stays discoverable
+  across restart through a durable settlement tag.
+- Recover completion by reusing certified results and the existing idempotent
+  completion transaction/outbox to fill summary, actual artifacts, interaction,
+  graph closure and answer delivery without rerunning Executors; periodic
+  recovery also delivers pending completion notifications.
+
 ## [0.1.29] - 2026-11-14
 
 - Prefer DeepSeek's Search API for the Executor's `web_search` when a DeepSeek
