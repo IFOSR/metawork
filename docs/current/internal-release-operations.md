@@ -15,6 +15,24 @@ Runtime workflow 12m, DMG assembly under 1m, payload `0.1.29-desktoppayload-1741
 passing the Desktop update gate against an installed `0.1.28` build. Two pitfalls
 that cost a retry:
 
+Re-run for `v0.1.30` (2026-11-14): 15 assets, DMG 345,451,303 bytes in 9 parts,
+Runtime workflow 11m, DMG assembly under 2m, payload
+`0.1.30-desktoppayload-1435` passing the Desktop update gate against the installed
+`0.1.29` build. The local payload build failed twice before producing a DMG, both
+times because the local build tree did not match CI:
+
+- `memory engine root must be a directory named "tdai"`: `--memory-root` takes
+  the engine directory itself, so copy the installed engine to
+  `<work>/memory/tdai` and pass that path.
+- `ENOENT .../payload/metawork/dist/pi-pdf/index.ts`: `npm run build` stopped at
+  `prepare-pi-pdf.mjs` because the pinned Python archive download failed
+  (`curl: (16) Error in the HTTP2 framing layer`), leaving `dist/pi-pdf` with an
+  empty `python/` and no source files. Rebuild the two caches from an already
+  published payload (`~/.metawork/desktop-support/<payload>/dist/pi-pdf`) into
+  `.tmp/pi-pdf-python/<sha256>/` and `.tmp/pi-pdf-dependencies/<fingerprint>/`
+  with the matching `ready` files, then rerun `prepare-pi-pdf.mjs`; it re-verifies
+  the interpreter and the `pypdf`/`pdfplumber`/`pypdfium2`/`PIL` imports.
+
 - `internal-desktop-upload.yml` requires `source_commit` as the **full 40-character**
   SHA and `target_commitish` of the draft release to equal it. A draft created
   without `--target` records the branch name (`main`), so patch it first with
