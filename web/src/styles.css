@@ -9434,6 +9434,11 @@ html[data-platform='desktop'] .workspace-header { column-gap: 16px; }
 .usage-summary h3, .usage-chart-panel h3, .usage-quota h3 { font-size: 13px; font-weight: 600; margin: 0 0 14px; }
 .usage-summary strong { display: block; font-size: clamp(18px, 2vw, 29px); font-variant-numeric: tabular-nums; overflow-wrap: anywhere; margin-bottom: 8px; }
 .usage-notice { padding: 10px 12px; border-left: 2px solid var(--accent); color: var(--text-dim); font-size: 12px; }
+.usage-web { display: flex; flex-wrap: wrap; align-items: center; gap: 12px 24px; margin: 12px 0; padding: 14px 18px; border: 1px solid var(--border); border-radius: 8px; }
+.usage-web h3 { font-size: 13px; font-weight: 600; margin: 4px 0 0; }
+.usage-web strong { font-size: 18px; font-variant-numeric: tabular-nums; }
+.usage-web strong small { margin-left: 4px; font-size: 11px; font-weight: 400; color: var(--text-dim); }
+.usage-web p { flex: 1 1 280px; margin: 0; color: var(--text-dim); font-size: 12px; }
 .usage-chart-panel, .usage-quota { padding: 20px 0; border-bottom: 1px solid var(--border); }
 .usage-chart-scroll, .usage-table-scroll { overflow-x: auto; max-width: 100%; }
 .usage-chart { display: flex; gap: 6px; padding-top: 16px; }

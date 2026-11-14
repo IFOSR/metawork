@@ -2042,7 +2042,12 @@ Attempt evidence and upstream ResultReference access follow the registered
 Harness driver's support in the authorized configuration revision, including
 custom Pi/Codex AgentClasses. AgentClass names do not gate the service. Pi
 materializes its evidence extension for bound attempts even without web
-affordances; only the web tools follow those affordances. The service retains
+affordances; only the web tools follow those affordances. The attempt's
+`web_search` prefers DeepSeek's Search API when a DeepSeek Provider credential is
+configured (it reuses that key; there is no separate search key) and falls back
+to Bing HTML, while `web_fetch` uses DeepSeek's extraction API for research
+affordances and curl for workspace attempts so local services stay
+reachable. The service retains
 direct-dependency authorization and closes when the attempt ends.
 
 MetaWork can represent complex requests as a work graph instead of a single undifferentiated prompt. The graph has no explicit single/multi execution mode. `AnyFusionPlanningAgent` keeps work that one canonical AgentClass can deliver as one node and creates another node only at a controlled Routing Capability handoff. The shared pure rules reject malformed DAGs and mergeable same-AgentClass single chains, while reentrant adapters may now own multiple independent nodes in one frontier.

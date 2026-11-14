@@ -1914,6 +1914,9 @@ export class SubtaskAttemptRunner {
   ): void {
     if (!input.queryId || !this.deps.usageObserver) return;
     const now = new Date().toISOString();
+    // A tool request is not a model call: keep the model identity off it so the
+    // Token projection never absorbs a search/fetch observation.
+    const modelCall = usage.counters.some(counter => counter.resource === 'model_tokens');
     this.deps.usageObserver({
       sourceId: `harness:${dispatch.authorizedBinding.harnessRef}:${input.attemptId}`,
       sourceEventKey: usage.sourceEventKey,
@@ -1928,7 +1931,9 @@ export class SubtaskAttemptRunner {
         ?? this.deps.usagePayer ?? 'unknown',
       agentClassRef: usage.agentClassRef ?? dispatch.authorizedBinding.agentClassRef,
       providerRef: usage.providerRef ?? dispatch.authorizedBinding.providerRef,
-      modelId: usage.modelId ?? this.deps.executionRuntime.resolveModelId(dispatch.authorizedBinding),
+      modelId: modelCall
+        ? usage.modelId ?? this.deps.executionRuntime.resolveModelId(dispatch.authorizedBinding)
+        : null,
       capturedAt: usage.occurredAtUtc ?? now,
       providerResponseId: usage.providerResponseId,
       providerBindingVersion: dispatch.bindingFingerprint,

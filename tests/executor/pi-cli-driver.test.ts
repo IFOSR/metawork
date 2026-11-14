@@ -628,7 +628,9 @@ describe('PiCliDriver', () => {
         join(reviewerHome.homePath, '.pi', 'agent', 'extensions', 'metawork-web-tools.ts'), 'utf8',
       )).toContain('testExtension');
       expect(reviewerHome.environment.METACLAW_PI_WEB_TOOLS_ENABLED).toBe('0');
+      expect(reviewerHome.environment.METACLAW_PI_WEB_FETCH_BACKEND).toBe('curl');
       expect(researchHome.environment.METACLAW_PI_WEB_TOOLS_ENABLED).toBe('1');
+      expect(researchHome.environment.METACLAW_PI_WEB_FETCH_BACKEND).toBe('deepseek');
     } finally {
       await rm(root, { recursive: true, force: true });
     }
@@ -767,5 +769,69 @@ describe('PiCliDriver', () => {
       vi.unstubAllEnvs();
       await rm(root, { recursive: true, force: true });
     }
+  });
+
+  it('meters billed DeepSeek web-tool requests as their own usage resource', () => {
+    const driver = new PiCliDriver({ probeCommand: vi.fn() });
+    const search = driver.parseUsageLine?.({
+      stream: 'stdout',
+      line: JSON.stringify({
+        type: 'tool_execution_end',
+        toolCallId: 'call_search_1',
+        toolName: 'web_search',
+        isError: false,
+        result: { content: [{ type: 'text', text: '{}' }],
+          details: { provider: 'deepseek-search-api', estimatedCostUsd: 0.00075 } },
+      }),
+    });
+    expect(search).toMatchObject({
+      sourceEventKey: 'tool_request:call_search_1',
+      callId: 'tool:call_search_1',
+      counters: [{ resource: 'search', metric: 'request', unit: 'request', kind: 'delta', value: '1' }],
+    });
+    const fetch = driver.parseUsageLine?.({
+      stream: 'stdout',
+      line: JSON.stringify({
+        type: 'tool_execution_end',
+        toolCallId: 'call_fetch_1',
+        toolName: 'web_fetch',
+        result: { details: { provider: 'deepseek-fetch-api', estimatedCostUsd: 0.00075 } },
+      }),
+    });
+    expect(fetch?.counters).toEqual([
+      { resource: 'tool_request', metric: 'request', unit: 'request', kind: 'delta', value: '1' },
+    ]);
+  });
+
+  it('keeps the free Bing fallback and non-web tools out of the usage ledger', () => {
+    const driver = new PiCliDriver({ probeCommand: vi.fn() });
+    expect(driver.parseUsageLine?.({
+      stream: 'stdout',
+      line: JSON.stringify({
+        type: 'tool_execution_end',
+        toolCallId: 'call_search_2',
+        toolName: 'web_search',
+        result: { details: { provider: 'bing-html-curl' } },
+      }),
+    })).toBeNull();
+    // A rejected or failed DeepSeek URL is free: no billable request.
+    expect(driver.parseUsageLine?.({
+      stream: 'stdout',
+      line: JSON.stringify({
+        type: 'tool_execution_end',
+        toolCallId: 'call_fetch_403',
+        toolName: 'web_fetch',
+        result: { details: { provider: 'deepseek-fetch-api', httpStatus: 403, failed: true } },
+      }),
+    })).toBeNull();
+    expect(driver.parseUsageLine?.({
+      stream: 'stdout',
+      line: JSON.stringify({ type: 'tool_execution_end', toolCallId: 'call_bash', toolName: 'bash', result: {} }),
+    })).toBeNull();
+    expect(driver.parseUsageLine?.({
+      stream: 'stderr',
+      line: JSON.stringify({ type: 'tool_execution_end', toolCallId: 'call_search_3', toolName: 'web_search',
+        result: { details: { provider: 'deepseek-search-api' } } }),
+    })).toBeNull();
   });
 });

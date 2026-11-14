@@ -121,6 +121,9 @@ export class PiCliDriver implements HarnessDriver {
         PI_CODING_AGENT_SESSION_DIR: sessionPath,
         ...input.environment,
         METACLAW_PI_WEB_TOOLS_ENABLED: hasWebResearchAffordances(input.executorAffordances) ? '1' : '0',
+        // Research attempts read public pages through DeepSeek's extraction API;
+        // workspace attempts keep curl so a task can inspect a local service.
+        METACLAW_PI_WEB_FETCH_BACKEND: hasWebResearchAffordances(input.executorAffordances) ? 'deepseek' : 'curl',
       },
       homeDirectories: ['.pi/agent/sessions'],
     });
@@ -277,6 +280,7 @@ export class PiCliDriver implements HarnessDriver {
   parseUsageLine(input: HarnessProgressLineInput): HarnessUsageEvent | null {
     if (input.stream !== 'stdout') return null;
     const event = parseJsonLine(input.line);
+    if (event?.type === 'tool_execution_end') return piToolUsage(event);
     if (event?.type !== 'message_end' || messageRole(event.message) !== 'assistant') return null;
     const message = asRecord(event.message);
     const usage = asRecord(message?.usage);
@@ -392,6 +396,32 @@ export class PiCliDriver implements HarnessDriver {
     await copyFile(this.webExtensionSourcePath, target);
     await chmod(target, 0o600);
   }
+}
+
+/**
+ * Billed third-party tool usage: only the DeepSeek backends cost money per
+ * request, so the free Bing HTML fallback stays out of the usage ledger.
+ */
+function piToolUsage(event: Record<string, unknown>): HarnessUsageEvent | null {
+  const toolName = typeof event.toolName === 'string' ? event.toolName : '';
+  const resource = toolName === 'web_search'
+    ? 'search' as const
+    : toolName === 'web_fetch' ? 'tool_request' as const : null;
+  if (!resource) return null;
+  const details = asRecord(asRecord(event.result)?.details);
+  const provider = typeof details?.provider === 'string' ? details.provider : '';
+  if (!provider.startsWith('deepseek-')) return null;
+  // The extension reports a price only for a billable response; a rejected URL or
+  // a failed request is free and must not appear as usage.
+  if (details?.failed === true || typeof details?.estimatedCostUsd !== 'number') return null;
+  const toolCallId = firstString(event.toolCallId);
+  if (!toolCallId) return null;
+  return {
+    sourceEventKey: `tool_request:${toolCallId}`,
+    callId: `tool:${toolCallId}`,
+    occurredAtUtc: new Date().toISOString(),
+    counters: [{ resource, metric: 'request', unit: 'request', kind: 'delta', value: '1' }],
+  };
 }
 
 class PiResultStreamTracker implements HarnessResultStreamTracker {

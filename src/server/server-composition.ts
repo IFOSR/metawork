@@ -2755,7 +2755,7 @@ export async function main(cliCommand = parseCliArgs(process.argv.slice(2))) {
       clientNotifications: { read: cursor => clientNotifications.read(LOCAL_DEFAULT_ACCOUNT_ID, cursor) },
       serviceActivity: () => activityProjection.serviceSummary(LOCAL_DEFAULT_ACCOUNT_ID),
       agentReadiness,
-      tokenUsageQuery: createTokenUsageManagementQuery({ accountId: LOCAL_DEFAULT_ACCOUNT_ID, usage: meteringServices.tokenUsage, quotaContext }),
+      tokenUsageQuery: createTokenUsageManagementQuery({ accountId: LOCAL_DEFAULT_ACCOUNT_ID, usage: meteringServices.tokenUsage, webUsage: meteringServices.webUsage, quotaContext }),
       memoryQuery: createMemoryManagementQuery({
         resolveRuntime: () => memoryRuntimeController.runtime,
         accountId: LOCAL_DEFAULT_ACCOUNT_ID,
