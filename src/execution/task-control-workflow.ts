@@ -30,6 +30,8 @@ export interface UncertainControlOperation {
 }
 
 export interface TaskControlWorkflowDeps {
+  /** Account-owned serialization of snapshot + apply, never the Executor drain. */
+  withTaskOperation?<T>(taskId: string, operation: () => Promise<T>): Promise<T>;
   productionAuthorization?: () => ProductionAuthorizationFact;
   kernel: ControlDecider;
   buildSnapshot(event: ControlEvent): ControlSnapshot;
@@ -107,56 +109,66 @@ export class TaskControlWorkflow implements ControlWorkflow {
         throw new Error('Task control workflow did not reach quiescence');
       }
       const event = this.queue.shift()!;
-      this.eventStates.set(event.id, 'applying');
-      try {
-        const authorization = this.deps.productionAuthorization?.();
-        const snapshot: ControlSnapshot = {
-          ...this.deps.buildSnapshot(event),
-          ...(authorization ? { productionAuthorization: authorization } : {}),
-        };
-        const decision = this.deps.kernel.decide(event, snapshot);
-        if (this.deps.acceptedActions && !this.deps.acceptedActions.includes(decision.action.type)) {
-          this.forgetEvent(event.id);
-          throw new ControlApplicationRejectionError(
-            `control action is not accepted by this workflow: ${decision.action.type}`,
-            'action_not_allowed',
-          );
-        }
-        decisions.push(decision);
-        handled += 1;
-        if (!allowsControlAction(decision.action, snapshot.productionAuthorization)) {
-          this.markApplied(event.id);
-          continue;
-        }
-        try {
-          const observation = await this.deps.runtime.apply(decision);
-          this.markApplied(event.id);
-          if (observation) this.enqueue(observation);
-        } catch (error) {
-          if (error instanceof ControlApplicationInterruptedError) {
-            this.eventStates.set(event.id, 'uncertain');
-            this.recordUncertain(decision, error, event.taskId ?? null);
-            break;
-          }
-          const settled = error instanceof ControlApplicationRejectionError
-            || error instanceof ControlApplicationSettledError;
-          if (settled) this.markApplied(event.id);
-          else {
-            this.eventStates.set(event.id, 'uncertain');
-            this.recordUncertain(decision, error, event.taskId ?? null);
-          }
-          break;
-        }
-      } catch (error) {
-        // Snapshot/policy failures have not invoked the Runtime and may be
-        // retried. Uncertain effects retain their fence even if journaling fails.
-        if (this.eventStates.get(event.id) === 'applying') this.forgetEvent(event.id);
-        throw error;
-      } finally {
-        this.deps.onEventSettled?.(event);
-      }
+      handled += 1;
+      const taskId = event.taskId ?? this.deps.taskId;
+      const apply = () => this.applyEvent(event, decisions);
+      const interrupted = taskId && this.deps.withTaskOperation
+        ? await this.deps.withTaskOperation(taskId, apply)
+        : await apply();
+      if (interrupted) break;
     }
     return { decisions, quiescent: this.queue.length === 0, pendingRecovery: this.pendingRecoveryCount() };
+  }
+
+  private async applyEvent(event: ControlEvent, decisions: ControlDecision[]): Promise<boolean> {
+    this.eventStates.set(event.id, 'applying');
+    try {
+      const authorization = this.deps.productionAuthorization?.();
+      const snapshot: ControlSnapshot = {
+        ...this.deps.buildSnapshot(event),
+        ...(authorization ? { productionAuthorization: authorization } : {}),
+      };
+      const decision = this.deps.kernel.decide(event, snapshot);
+      if (this.deps.acceptedActions && !this.deps.acceptedActions.includes(decision.action.type)) {
+        this.forgetEvent(event.id);
+        throw new ControlApplicationRejectionError(
+          `control action is not accepted by this workflow: ${decision.action.type}`,
+          'action_not_allowed',
+        );
+      }
+      decisions.push(decision);
+      if (!allowsControlAction(decision.action, snapshot.productionAuthorization)) {
+        this.markApplied(event.id);
+        return false;
+      }
+      try {
+        const observation = await this.deps.runtime.apply(decision);
+        this.markApplied(event.id);
+        if (observation) this.enqueue(observation);
+      } catch (error) {
+        if (error instanceof ControlApplicationInterruptedError) {
+          this.eventStates.set(event.id, 'uncertain');
+          this.recordUncertain(decision, error, event.taskId ?? null);
+          return true;
+        }
+        const settled = error instanceof ControlApplicationRejectionError
+          || error instanceof ControlApplicationSettledError;
+        if (settled) this.markApplied(event.id);
+        else {
+          this.eventStates.set(event.id, 'uncertain');
+          this.recordUncertain(decision, error, event.taskId ?? null);
+        }
+        return true;
+      }
+    } catch (error) {
+      // Snapshot/policy failures have not invoked the Runtime and may be
+      // retried. Uncertain effects retain their fence even if journaling fails.
+      if (this.eventStates.get(event.id) === 'applying') this.forgetEvent(event.id);
+      throw error;
+    } finally {
+      this.deps.onEventSettled?.(event);
+    }
+    return false;
   }
 
   private enqueue(event: ControlEvent): void {

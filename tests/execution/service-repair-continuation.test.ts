@@ -49,6 +49,7 @@ function runtimeWith(overrides: {
   const taskState = recordingTaskStateAuthority();
   let subtaskStatus = overrides.subtaskStatus ?? 'done';
   const runtime = new ControlExecutionRuntime({
+    recoveryItems: { findRecoveryItem: () => null },
     callbacks: {
       appendOutput: (...parts: string[]) => { outputs.push(parts.join(' ')); },
       appendExecutionTrace: (input: Record<string, unknown>) => { traces.push(input); },

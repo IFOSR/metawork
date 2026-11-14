@@ -1452,6 +1452,36 @@ sockets before reclaiming a confirmed stale socket and records the created
 device/inode so shutdown cannot unlink a replacement. Planner RPC preserves
 structured transport uncertainty and partial tool audit.
 
+### Duplicate dispatch and completion recovery (2026-11-14)
+
+The account-owned `ControlExecutionRuntime` serializes each Task's snapshot,
+decision and application across `TaskControlWorkflow` instances. Waiting for an
+Executor stays outside this section. Distinct resume/recovery events each read
+fresh facts and receive their own acknowledgement. Under the existing Server
+`runtime.lock`, queue-entry repair, slot convergence and periodic promotion use
+the same active-operation signal; durable reservation/version and residue checks
+still release real resource yields and recover stale startup records.
+
+`ControlDispatchItemRepo.insertBatch()` keeps its IMMEDIATE transaction and
+unique live-attempt constraint. A typed, fully rolled-back owner conflict becomes
+an explicit rejection followed by a fresh frontier check; unknown Workspace or
+database errors keep normal recovery. No historical attempt suppresses a legal
+continuation, fallback or repair.
+
+Startup/periodic recovery and `/task recovery` share one postcondition inspector
+for pending and retry-authorized items. Strict graph, generation, binding,
+Workspace and completed-receipt evidence can settle an obsolete ordinary dispatch
+without claiming that its own attempts ran. Its durable settlement tag selects
+unfinished completion after a restart, even when the Task already says succeeded.
+The existing completion boundary reuses certified results and a stable result/
+outbox identity, atomically fills summary, actual artifacts, interaction and graph
+closure, and delivers the answer. Executors are not rerun. Ordinary safe retries
+belong to the current frontier with the existing bounded budget; repeated scans
+do not increment authorization counts. Periodic recovery also delivers pending
+completion notifications. This adds no persistent lease or control ledger and
+does not support multiple database writers. See the
+[local implementation and Web acceptance record](../plans/2026-11-14-completed-task-blocked-by-duplicate-dispatch-recovery.md).
+
 ### Startup recovery configuration pins (2026-11-10, review R-12)
 
 Before recovery, the account resolves each distinct active Work Graph and

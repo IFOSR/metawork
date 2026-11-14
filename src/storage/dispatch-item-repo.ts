@@ -87,6 +87,15 @@ interface DispatchItemRow {
   updated_at: string;
 }
 
+/** The enclosing IMMEDIATE transaction rolls back the entire new batch. */
+export class DispatchAttemptConflictError extends Error {
+  constructor(readonly taskId: string, readonly generationId: string,
+    readonly subtaskId: string, readonly ownerAttemptId: string) {
+    super(`live dispatch attempt already owns ${subtaskId}: ${ownerAttemptId}`);
+    this.name = 'DispatchAttemptConflictError';
+  }
+}
+
 export class ControlDispatchItemRepo {
   constructor(private readonly db: Database.Database) {}
 
@@ -239,9 +248,10 @@ export class ControlDispatchItemRepo {
             item.subtaskId,
             item.attemptId,
           ) as { attempt_id: string } | undefined;
-          throw new Error(
-            `live dispatch attempt already owns ${item.subtaskId}: ${owner?.attempt_id ?? 'unknown'}`,
-          );
+          // An unidentifiable constraint failure is not a proved live-owner conflict.
+          if (!owner) throw error;
+          throw new DispatchAttemptConflictError(decision.action.taskId,
+            bindingContext.generationId, item.subtaskId, owner.attempt_id);
         }
       }
       return decision.action.items.map(item => {

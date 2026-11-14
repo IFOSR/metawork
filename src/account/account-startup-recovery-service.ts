@@ -41,6 +41,7 @@ import type { AccountControlCoordinator } from './account-control-coordinator.js
 import { buildEligibleContextRefKeys } from '../work-graph/index.js';
 import {
   inspectApplicationAgainstSources,
+  MAX_UNSAFE_APPLICATION_RETRIES,
   isRetrySafeLegacySystemBindingReplan,
   legacySystemBindingRecoveryEvent,
   type ApplicationPostconditionFactSource,
@@ -59,12 +60,6 @@ import type { ConfigurationSnapshot } from '../configuration/types.js';
 import { buildControlConfigurationView, buildPlannerConfigurationView } from '../configuration/projections.js';
 import type { ConversationResultDelivery } from '../session/conversation-session.js';
 import type { ExecutionTraceAppendInput } from '../execution/execution-trace.js';
-
-/**
- * Bounded retry budget for a `retry_safe` uncertain application before it must
- * stay `uncertain` and surface as explicit `recovery_required`.
- */
-const MAX_UNSAFE_APPLICATION_RETRIES = 3;
 
 export class AccountStartupRecoveryService {
   private lastBlockedRecheckAt: number | null = null;
@@ -473,7 +468,10 @@ export class AccountStartupRecoveryService {
    */
   private async convergeRecovery(now: string): Promise<boolean> {
     this.convergeTerminalTaskUsage(now);
-    const retriedTaskIds = [...new Set(this.convergeUncertainApplications(now))];
+    const retriedTaskIds = [...new Set([
+      ...this.convergeUncertainApplications(now),
+      ...this.deps.kernelServices.recoveryItems.listIncompleteDispatchCompletions(),
+    ])];
     // Re-queuing an application is not convergence on its own: the same pass
     // must drain the Task so the retried Decision is actually re-applied and
     // the next verdict is observed (2026-09-25 review, bounded retry closure).
@@ -707,7 +705,7 @@ export class AccountStartupRecoveryService {
     }
     const sources = this.recoveryFactSource();
     const stuck = this.deps.kernelServices.recoveryItems
-      .listPending(taskId)
+      .listUnresolved(taskId)
       .filter(item => {
         const inspection = inspectApplicationAgainstSources(item, sources);
         if (inspection.verdict === 'unresolved') return true;
@@ -738,7 +736,8 @@ export class AccountStartupRecoveryService {
 
   private async promoteAvailableQueuedTasks(now: string): Promise<void> {
     const scheduler = this.deps.repositories.conversationTaskSchedulerRepo;
-    const promotions = scheduler.promoteAvailable(this.workspaceConversationLimit(), now);
+    const promotions = scheduler.promoteAvailable(this.workspaceConversationLimit(), now,
+      taskId => !this.isTaskOperationActive(taskId));
     await Promise.all(promotions.map(promotion =>
       this.promoteConversationTask(promotion.taskId, promotion.conversationId)));
   }
@@ -786,6 +785,7 @@ export class AccountStartupRecoveryService {
     // replacement for the foreground Conversation replan callback, so they must
     // run before recovery converges the Tasks they own.
     const replan = await this.runReplanWorker();
+    await this.deliverPendingEffects(now);
     // The same convergence entry as startup recovery, selected from durable
     // pending facts rather than a blocked-only Task scan (review fix 2).
     const converged = await this.convergeRecovery(now);
@@ -991,10 +991,14 @@ export class AccountStartupRecoveryService {
     const recoveryItems = this.deps.kernelServices.recoveryItems;
     const sources = this.recoveryFactSource();
     const retriedTaskIds = new Set<string>();
-    for (const item of recoveryItems.listPending()) {
+    for (const item of recoveryItems.listUnresolved()) {
+      const taskId = 'taskId' in item.decision.action ? item.decision.action.taskId : null;
+      if (taskId && this.isTaskOperationActive(taskId)) continue;
       const inspection = inspectApplicationAgainstSources(item, sources);
-      if (inspection.verdict === 'applied') {
-        recoveryItems.resolveRecoveryItem(item.id, 'assume_applied', now);
+      if (inspection.verdict === 'applied' || inspection.verdict === 'settled') {
+        if (inspection.verdict === 'settled') recoveryItems.settleRedundantDispatch(item.id, inspection.reason, now);
+        else recoveryItems.resolveRecoveryItem(item.id, 'assume_applied', now);
+        if (taskId) retriedTaskIds.add(taskId);
         continue;
       }
       // Bounded retry: after the declared budget the application stays
@@ -1002,7 +1006,8 @@ export class AccountStartupRecoveryService {
       // oscillating forever between pending and uncertain.
       if (inspection.verdict === 'retry_safe'
         && item.applyAttempts < MAX_UNSAFE_APPLICATION_RETRIES) {
-        recoveryItems.resolveRecoveryItem(item.id, 'retry', now);
+        // Authorization is durable: a scan must not spend the same retry again.
+        if (item.status === 'pending') recoveryItems.resolveRecoveryItem(item.id, 'retry', now);
         const action = item.decision.action;
         if ('taskId' in action && action.taskId) retriedTaskIds.add(action.taskId);
       }
@@ -1071,6 +1076,7 @@ export class AccountStartupRecoveryService {
 
   private recoveryFactSource(): ApplicationPostconditionFactSource {
     return {
+      readDispatchRecoveryFacts: item => this.deps.kernelServices.recoveryItems.readDispatchRecoveryFacts(item),
       findTask: taskId => {
         const task = this.deps.taskServices.taskRuntimeService.findTask(taskId);
         return task
@@ -1202,11 +1208,16 @@ export class AccountStartupRecoveryService {
     });
   }
 
+  private isTaskOperationActive(taskId: string): boolean {
+    return this.deps.kernelExecutionServices.kernelExecutionRuntime.isTaskOperationActive(taskId);
+  }
+
   /** Make every `queued` Task promotable again by closing a stale run entry. */
   private requeueQueuedTaskEntries(): number {
     const scheduler = this.deps.repositories.conversationTaskSchedulerRepo;
     let changed = 0;
     for (const task of this.deps.taskServices.taskRuntimeService.listTasksByStatus('queued')) {
+      if (this.isTaskOperationActive(task.id)) continue;
       if (scheduler.requeueStaleEntry(task.id)) changed += 1;
     }
     return changed;
@@ -1217,7 +1228,7 @@ export class AccountStartupRecoveryService {
     const tasks = this.deps.taskServices.taskRuntimeService;
     for (const slot of scheduler.listSlots()) {
       const taskId = slot.activeTaskId;
-      if (!taskId || slot.state === 'free') continue;
+      if (!taskId || slot.state === 'free' || this.isTaskOperationActive(taskId)) continue;
       const task = tasks.findTask(taskId);
       if (!task) continue;
       const terminal = task.status === 'succeeded' || task.status === 'failed'

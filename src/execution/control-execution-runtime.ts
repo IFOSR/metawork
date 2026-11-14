@@ -1,3 +1,4 @@
+import { parseApplicationSettlement } from '../control/control-application-settlement.js';
 import type { ControlDecider } from '../control/control-workflow.js';
 import { PlanProposalUnavailableError } from './plan-proposal-store.js';
 import { routerDefaultFallbackFacts, routerFailureFacts, routerUnavailableReasonLabel } from './router-failure.js';
@@ -71,6 +72,7 @@ import type {
 import { buildDefaultResourceClaims } from '../resource/index.js';
 import { deriveRunnableFrontier } from '../work-graph/index.js';
 import type { ControlDispatchItemRepo, ControlDispatchItemRecord } from '../storage/dispatch-item-repo.js';
+import { DispatchAttemptConflictError } from '../storage/dispatch-item-repo.js';
 import type { ExecutorAttemptRuntimeRepo } from '../storage/executor-attempt-runtime-repo.js';
 import type { WorkspacePublicationRepo } from '../storage/workspace-publication-repo.js';
 import { canonicalizeWorkspacePath } from '../workspace/workspace-path.js';
@@ -125,6 +127,8 @@ import {
 } from '../configuration/index.js';
 import {
   inspectApplicationAgainstSources,
+  MAX_UNSAFE_APPLICATION_RETRIES,
+  type RecoveryApplicationFact,
   isSupersededMergeReplanApplication,
   isRetrySafeLegacySystemBindingReplan,
   isRetrySafeMergeRepairReplan,
@@ -721,6 +725,7 @@ export interface TaskControlDecision {
 
 /** Runtime handler set for Kernel decisions. It applies one authorized action and reports one fact. */
 export class ControlExecutionRuntime {
+  private readonly taskOperations = new Map<string, Promise<void>>();
   private readonly serviceVerifications = new Set<string>();
   private readonly taskEvents: TaskEventRecorder;
   private readonly attemptSupervisor: AttemptSupervisor;
@@ -791,7 +796,26 @@ export class ControlExecutionRuntime {
     }
   }
 
-  /** One explicit recovery fact per interrupted application (ADR-0055 D6). */
+  /** Includes callers waiting to read fresh facts inside this Task's critical section. */
+  isTaskOperationActive(taskId: string): boolean {
+    return this.taskOperations.has(taskId);
+  }
+
+  /** One account-owned critical section per Task; each event reads fresh facts. */
+  async withTaskOperation<T>(taskId: string, operation: () => Promise<T>): Promise<T> {
+    const previous = this.taskOperations.get(taskId);
+    let release!: () => void;
+    const current = new Promise<void>(resolve => { release = resolve; });
+    this.taskOperations.set(taskId, current);
+    try {
+      if (previous) await previous;
+      return await operation();
+    } finally {
+      if (this.taskOperations.get(taskId) === current) this.taskOperations.delete(taskId);
+      release();
+    }
+  }
+
   private recordUncertainOperation(input: {
     operation: ControlDecision;
     taskId: string | null;
@@ -1963,6 +1987,7 @@ export class ControlExecutionRuntime {
   }
 
   async recoverDue(taskId: string, reason = 'durable workflow recovery'): Promise<boolean> {
+    if (this.isTaskOperationActive(taskId)) return false;
     const task = this.deps.taskRuntimeService.findTask(taskId);
     if (!task) return false;
     if (await this.recoverCompletedWorkspaceAnswer(taskId)) return true;
@@ -1979,6 +2004,23 @@ export class ControlExecutionRuntime {
     // a dispatch event instead of an empty recovery drain.
     const hasRunnableWork = task.status === 'running'
       && this.deps.subtaskRepo.listActiveByTask(taskId).some(subtask => subtask.status === 'ready');
+    const dispatchRetry = this.deps.recoveryItems.listUnresolved(taskId).find(item => {
+      const action = item.decision.action;
+      if (item.status !== 'retry_authorized' || item.applyAttempts >= MAX_UNSAFE_APPLICATION_RETRIES
+        || action.type !== 'dispatch_batch' || !action.items.length
+        || action.items.some(i => i.attemptKind !== 'primary' || i.sourceAttemptId !== null
+          || i.recoveryMode !== 'fresh' || i.attemptPayload !== null)) return false;
+      const facts = this.deps.recoveryItems.readDispatchRecoveryFacts(item);
+      return this.inspectRecoveryApplication(item).verdict === 'retry_safe'
+        && facts.workspaceSettled && !facts.ownAttemptEffects
+        && facts.revision?.status === 'active'
+        && facts.revision.createdAt <= item.createdAt
+        && facts.revision.configurationRevision === item.decision.configurationRevision
+        && action.items.every(i => facts.subtasks.some(s => s.id === i.subtaskId
+          && s.generationId === facts.revision!.generationId && s.graphRevision === facts.revision!.revision
+          && s.status === 'ready' && s.executorBindings.some(b => authorizedExecutorBindingFingerprint(b) === i.bindingFingerprint))
+          && !facts.dispatches.some(d => d.subtaskId === i.subtaskId));
+    });
     await this.execute(this.prepareExecution({
       taskId,
       request: {
@@ -1989,7 +2031,18 @@ export class ControlExecutionRuntime {
         schedulingReason: reason,
       },
       recoveryOnly: !hasRunnableWork,
+      ...(dispatchRetry ? { initialEvent: {
+        schemaVersion: 5 as const, type: 'dispatch_requested' as const,
+        configurationRevision: dispatchRetry.decision.configurationRevision,
+        id: dispatchRetry.eventId, correlationId: dispatchRetry.decisionId, causationId: null,
+        taskId, sessionId: this.sessionId, occurredAt: new Date().toISOString(),
+        reason: 'authorized recovery: reevaluate the current ordinary dispatch frontier',
+      } } : {}),
     }));
+    if (dispatchRetry && this.deps.recoveryItems.findRecoveryItem(dispatchRetry.id)?.status === 'retry_authorized') {
+      // Only an actual owner pass consumes budget; scans do not.
+      this.deps.recoveryItems.resolveRecoveryItem(dispatchRetry.id, 'retry', new Date().toISOString());
+    }
     const after = this.deps.taskRuntimeService.findTask(taskId);
     // A block may be stale: the facts can already prove the conclusion (for
     // example an accepted result whose later metadata correction failed).
@@ -2015,31 +2068,64 @@ export class ControlExecutionRuntime {
       && (after.status !== beforeStatus || after.updatedAt !== beforeUpdatedAt);
   }
 
+  private inspectRecoveryApplication(item: RecoveryApplicationFact) {
+    return inspectApplicationAgainstSources(item, {
+      readDispatchRecoveryFacts: item => this.deps.recoveryItems.readDispatchRecoveryFacts(item),
+      findTask: id => this.deps.taskRuntimeService.findTask(id),
+      listSubtasks: id => this.deps.subtaskRepo.listByTask(id),
+      listDispatchItems: id => this.deps.dispatchItemRepo.listByTask(id)
+        .map(dispatch => ({ ...dispatch, causationId: null })),
+      findWorkGraphRevision: (id, revision) => this.deps.workGraphRevisionRepo.find(id, revision),
+      findReplanRequest: (id, generationId, revision) => this.deps.generationReplanRepo.findByGeneration(id, generationId, revision),
+      findReplanRequestById: id => this.deps.generationReplanRepo.find(id),
+      findRetryWake: (_id, decisionId) => this.deps.retryWakeRepo.findByDecision(decisionId),
+    });
+  }
+
   /** Retry only the final answer from certified results; never relaunch an Executor. */
-  private async recoverCompletedWorkspaceAnswer(taskId: string): Promise<boolean> {
+  private recoverCompletedWorkspaceAnswer(taskId: string): Promise<boolean> {
+    return this.withTaskOperation(taskId, () => this.recoverCompletedWorkspaceAnswerOnce(taskId));
+  }
+
+  private async recoverCompletedWorkspaceAnswerOnce(taskId: string): Promise<boolean> {
     const task = this.deps.taskRuntimeService.findTask(taskId);
     if (!task || task.status === 'cancelled' || task.status === 'failed') return false;
     const revision = this.deps.workGraphRevisionRepo.findActive(taskId)
       ?? this.deps.workGraphRevisionRepo.findLatest(taskId);
     if (!revision || !this.deps.conversationWorktrees?.repo.binding(taskId, revision.generationId)) return false;
-    const item = this.deps.recoveryItems.listRecoveryItems(taskId).find(candidate =>
+    const recoveries = this.deps.recoveryItems.listByTask(taskId);
+    const item = recoveries.find(candidate =>
       candidate.status === 'retry_authorized' && candidate.decision.action.type === 'complete_task'
       && candidate.decision.action.taskId === taskId
       && candidate.decision.configurationRevision === revision.configurationRevision);
-    if (!item) return false;
-    if (this.deps.cancellationCoordinator.completionBlockedReasons(taskId, revision.generationId, item.decisionId).length) return false;
+    const redundant = recoveries.find(candidate => candidate.status === 'assumed_applied'
+      && candidate.decision.action.type === 'dispatch_batch'
+      && candidate.decision.configurationRevision === revision.configurationRevision
+      && parseApplicationSettlement(candidate.errorSummary)?.code === 'duplicate_dispatch_completed');
+    if (!item && (!redundant || !revision.authorizedOperationId)) return false;
+    if (this.deps.cancellationCoordinator.completionBlockedReasons(taskId, revision.generationId, item?.decisionId).length) return false;
+    if (this.deps.productionAuthorization && !this.deps.productionAuthorization().allowed) return false;
     const subtasks = this.deps.subtaskRepo.listByTask(taskId)
       .filter(subtask => subtask.generationId === revision.generationId);
     if (!subtasks.length || subtasks.some(subtask => subtask.status !== 'done')) return false;
-    await this.completeTask({
-      taskId, decisionId: item.decisionId, executionId: `answer_recovery:${item.id}`,
+    const decisionId = item?.decisionId ?? `completion_recovery:${taskId}:${revision.generationId}`;
+    try {
+      await this.completeTask({
+        taskId, decisionId, executionId: `answer_recovery:${decisionId}`,
       request: { userPrompt: task.goal, contextTaskId: taskId, executionMode: 'follow-up', origin: 'system' },
       subtasks, revisionCompletion: { revision: revision.revision, completionKind: 'full' },
       finishExecution: async lines => {
         this.deps.callbacks.appendOutput(...lines);
         this.deps.callbacks.refreshRuntimeState();
       },
-    });
+      });
+    } catch (error) {
+      this.recordUncertainOperation({ taskId, subtaskId: null, attemptId: null, error,
+        operation: { schemaVersion: 5, id: decisionId, eventId: decisionId,
+          configurationRevision: revision.configurationRevision,
+          action: { type: 'complete_task', taskId }, reason: 'resume completion after dispatch settlement' } });
+      return false;
+    }
     return this.deps.taskRuntimeService.findTask(taskId)?.status === 'succeeded';
   }
 
@@ -2368,7 +2454,41 @@ export class ControlExecutionRuntime {
       : {};
   }
 
-  private async applyExecutionDecision(input: {
+  private async applyExecutionDecision(
+    input: Parameters<ControlExecutionRuntime['applyExecutionDecisionUnchecked']>[0],
+  ): Promise<ControlEvent | null> {
+    try {
+      const event = await this.applyExecutionDecisionUnchecked(input);
+      if (input.decision.action.type === 'dispatch_batch') {
+        const recovery = this.deps.recoveryItems.findRecoveryItem(input.decision.id);
+        if (recovery?.status === 'retry_authorized') {
+          if (this.inspectRecoveryApplication(recovery).verdict === 'applied') {
+            this.deps.recoveryItems.markSettled(recovery.id, new Date().toISOString());
+          }
+        }
+      }
+      return event;
+    } catch (error) {
+      // Only insertBatch can produce this structured error, after rolling back
+      // the entire batch. Router/Workspace preparation already returned; their
+      // failures, and all other database errors, retain normal recovery.
+      if (!(error instanceof DispatchAttemptConflictError)
+        || input.decision.action.type !== 'dispatch_batch') throw error;
+      this.appendExecutionTrace({ phase: 'routing', actor: 'runtime',
+        kind: 'dispatch_conflict_rejected', title: '重复派发已拒绝',
+        summary: '已有授权占用该子任务，本批未新增执行；按当前事实重新检查剩余工作。',
+        details: { decisionId: input.decision.id, taskId: error.taskId,
+          generationId: error.generationId, subtaskId: error.subtaskId,
+          ownerAttemptId: error.ownerAttemptId },
+        eventKey: `${input.decision.id}:dispatch_conflict`, taskId: error.taskId });
+      // A partial conflict rolls back non-conflicting items too. Reevaluate
+      // rather than silently abandoning those remaining ready nodes.
+      return this.eventFromDecision(input.decision, { type: 'dispatch_requested',
+        taskId: error.taskId, reason: 'dispatch conflict rejected; reevaluate current frontier' });
+    }
+  }
+
+  private async applyExecutionDecisionUnchecked(input: {
     decision: ControlDecision;
     executionId: string;
     request: QueuedExecutionRequest;
@@ -3998,22 +4118,13 @@ export class ControlExecutionRuntime {
       : event.type === 'recovery_resolution_requested' ? {
           schemaVersion: 5,
           type: 'recovery',
-          task: { id: task.id, status: task.status },
+          task: { id: task.id, status: this.deps.taskRuntimeService.findTask(task.id)?.status ?? task.status },
           item: (() => {
             const item = this.deps.recoveryItems.findRecoveryItem(event.recoveryItemId);
             return item && 'taskId' in item.decision.action && item.decision.action.taskId === task.id
               && (item.status === 'pending' || item.status === 'retry_authorized')
               ? { id: item.id, kind: 'application' as const, status: item.status,
-                  retrySafe: inspectApplicationAgainstSources(item, {
-                    findTask: id => this.deps.taskRuntimeService.findTask(id),
-                    listSubtasks: id => this.deps.subtaskRepo.listByTask(id),
-                    listDispatchItems: id => this.deps.dispatchItemRepo.listByTask(id)
-                      .map(dispatch => ({ ...dispatch, causationId: null })),
-                    findWorkGraphRevision: (id, revision) => this.deps.workGraphRevisionRepo.find(id, revision),
-                    findReplanRequest: (id, generationId, revision) => this.deps.generationReplanRepo.findByGeneration(id, generationId, revision),
-                    findReplanRequestById: id => this.deps.generationReplanRepo.find(id),
-                    findRetryWake: (_id, decisionId) => this.deps.retryWakeRepo.findByDecision(decisionId),
-                  }).verdict === 'retry_safe' }
+                  retrySafe: this.inspectRecoveryApplication(item).verdict === 'retry_safe' }
               : null;
           })(),
         }
@@ -4046,6 +4157,7 @@ export class ControlExecutionRuntime {
       onLaunchError: async (item, error) => this.launchFailureEvent(item, error),
     };
     workflow = new TaskControlWorkflow({
+      withTaskOperation: (taskId, operation) => this.withTaskOperation(taskId, operation),
       recordUncertain: input => this.recordUncertainOperation(input),
       productionAuthorization: this.deps.productionAuthorization,
       kernel: this.deps.controlLoop,
@@ -5343,6 +5455,7 @@ export class ControlExecutionRuntime {
       onLaunchError: async (item, error) => this.launchFailureEvent(item, error),
     };
     workflow = new TaskControlWorkflow({
+      withTaskOperation: (taskId, operation) => this.withTaskOperation(taskId, operation),
       recordUncertain: input => this.recordUncertainOperation(input),
       productionAuthorization: this.deps.productionAuthorization,
       kernel: this.deps.controlLoop,

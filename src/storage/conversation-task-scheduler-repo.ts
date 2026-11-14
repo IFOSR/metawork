@@ -225,6 +225,7 @@ export class ConversationTaskSchedulerRepo {
   promoteAvailable(
     limitPerWorkspace: number,
     now: string,
+    eligible: (taskId: string) => boolean = () => true,
   ): Array<{ taskId: string; conversationId: string; reservationId: string }> {
     return this.db.transaction(() => {
       const occupiedByWorkspace = this.occupiedSlotCountsByWorkspace();
@@ -247,7 +248,7 @@ export class ConversationTaskSchedulerRepo {
             AND slot.state = 'free'
             AND slot.active_task_id IS NULL
         `).all() as CandidateRow[];
-        const candidate = selectCandidate(candidates, now);
+        const candidate = selectCandidate(candidates.filter(candidate => eligible(candidate.task_id)), now);
         if (!candidate) break;
         const workspaceId = candidate.workspace_id ?? '';
         const occupied = occupiedByWorkspace.get(workspaceId) ?? 0;

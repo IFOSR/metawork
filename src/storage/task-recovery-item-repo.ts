@@ -12,6 +12,12 @@
 import type Database from 'better-sqlite3';
 import type { ControlDecision } from '../control/control-contracts.js';
 import type { ControlDecisionApplicationRecord } from '../control/control-workflow.js';
+import type { DispatchRecoveryFacts, RecoveryApplicationFact } from '../execution/control-application-recovery.js';
+import { ControlDispatchItemRepo } from './dispatch-item-repo.js';
+import { ExecutorAttemptReceiptRepo } from './executor-attempt-receipt-repo.js';
+import { SubtaskRepo } from './subtask-repo.js';
+import { WorkGraphRevisionRepo } from './work-graph-revision-repo.js';
+import { formatApplicationSettlement } from '../control/control-application-settlement.js';
 
 export type TaskRecoveryItemStatus = 'pending' | 'retry_authorized' | 'assumed_applied';
 
@@ -98,6 +104,67 @@ export class TaskRecoveryItemRepo {
     const row = this.db.prepare('SELECT * FROM task_recovery_items WHERE id = ?')
       .get(id) as TaskRecoveryItemRow | undefined;
     return row ? rowToRecord(row) : null;
+  }
+
+  readDispatchRecoveryFacts(application: RecoveryApplicationFact): DispatchRecoveryFacts {
+    const action = application.decision.action;
+    if (action.type !== 'dispatch_batch') throw new Error('dispatch recovery facts require a dispatch batch');
+    const taskId = action.taskId;
+    const revision = new WorkGraphRevisionRepo(this.db).findLatest(taskId);
+    const binding = revision ? this.db.prepare(`SELECT binding_fingerprint, created_at
+      FROM conversation_execution_bindings WHERE task_id = ? AND generation_id = ?`)
+      .get(taskId, revision.generationId) as DispatchRecoveryFacts['binding'] | undefined : null;
+    const unsettled = this.db.prepare(`SELECT 1 FROM workspace_git_operations operation
+      JOIN tasks task ON task.id = ? AND task.workspace_id = operation.workspace_id
+      WHERE operation.state <> 'applied'
+        AND (operation.conversation_id IS NULL OR operation.conversation_id = task.conversation_id)
+      LIMIT 1`).get(taskId);
+    const ownAttemptEffects = action.items.some(item => this.db.prepare(`
+      SELECT 1 FROM dispatch_items WHERE attempt_id = ?
+      UNION ALL SELECT 1 FROM executor_attempt_runtime WHERE attempt_id = ?
+      UNION ALL SELECT 1 FROM executor_attempt_receipts WHERE attempt_id = ?
+      UNION ALL SELECT 1 FROM attempt_sandboxes WHERE attempt_id = ?
+      UNION ALL SELECT 1 FROM work_units WHERE claimed_attempt_id = ?
+      LIMIT 1`).get(...Array<string>(5).fill(item.attemptId)) !== undefined);
+    return { revision, binding: binding ?? null, workspaceSettled: !unsettled,
+      ownAttemptEffects, subtasks: new SubtaskRepo(this.db).listByTask(taskId),
+      dispatches: new ControlDispatchItemRepo(this.db).listByTask(taskId),
+      receipts: new ExecutorAttemptReceiptRepo(this.db).listByTask(taskId),
+      routes: this.db.prepare(`SELECT task_id,generation_id,subtask_id,graph_revision,
+        configuration_revision,attempt_ordinal,outcome,created_at FROM route_decisions WHERE task_id = ?`)
+        .all(taskId) as unknown as DispatchRecoveryFacts['routes'] };
+  }
+
+  listUnresolved(taskId?: string): TaskRecoveryItemRecord[] {
+    return (this.db.prepare(`SELECT * FROM task_recovery_items
+      WHERE status IN ('pending','retry_authorized') ${taskId ? 'AND task_id = ?' : ''}
+      ORDER BY created_at ASC,id ASC`).all(...(taskId ? [taskId] : [])) as TaskRecoveryItemRow[]).map(rowToRecord);
+  }
+
+  /** Resume a settled duplicate's unfinished completion even after losing its slot. */
+  listIncompleteDispatchCompletions(): string[] {
+    return (this.db.prepare(`SELECT DISTINCT task.id FROM task_recovery_items item
+      JOIN tasks task ON task.id = item.task_id
+      JOIN work_graph_revisions graph ON graph.task_id = task.id
+        AND graph.revision = (SELECT MAX(revision) FROM work_graph_revisions WHERE task_id = task.id)
+      WHERE item.status = 'assumed_applied'
+        AND item.error_summary LIKE 'control_settlement/operation_settled:duplicate_dispatch_completed %'
+        AND task.status NOT IN ('failed','cancelled')
+        AND (graph.status <> 'completed' OR NOT EXISTS (
+          SELECT 1 FROM effect_outbox WHERE id = 'workspace_completion:' || task.id || ':' || graph.generation_id
+        ) OR NOT EXISTS (
+          SELECT 1 FROM conversation_turn_answers WHERE source_task_id = task.id
+            AND revision_key = 'result_workspace_completion:' || task.id || ':' || graph.generation_id
+        ))`).all() as Array<{ id: string }>).map(row => row.id);
+  }
+
+  /** Keep the original error and attach a durable, structured explanation. */
+  settleRedundantDispatch(id: string, reason: string, now: string): void {
+    const settlement = formatApplicationSettlement({ kind: 'operation_settled',
+      code: 'duplicate_dispatch_completed', detail: reason });
+    this.db.prepare(`UPDATE task_recovery_items SET status = 'assumed_applied',
+      error_summary = ? || char(10) || COALESCE(error_summary, ''), updated_at = ?
+      WHERE id = ? AND status IN ('pending','retry_authorized')`).run(settlement, now, id);
   }
 
   listRecoveryItems(taskId: string): TaskRecoveryItemRecord[] {

@@ -1,3 +1,4 @@
+import { stableAttemptOrdinal } from '../execution/attempt-dispatch-plan.js';
 import { authorizedExecutorBindingFingerprint } from '../core/authorized-executor-binding.js';
 import type { RuntimeConfigurationView } from '../configuration/types.js';
 import type { ExecutorAttemptReceipt } from '../storage/executor-attempt-receipt-repo.js';
@@ -113,10 +114,4 @@ export function createAccountRouteDispatcher(deps: {
 
 function stale(): RouterError {
   return new RouterError('route_stale_decision', 'Task or routing facts changed before dispatch');
-}
-
-function stableAttemptOrdinal(attemptId: string): number {
-  let value = 17;
-  for (const character of attemptId) value = (value * 31 + character.charCodeAt(0)) % 2_000_000_000;
-  return value;
 }

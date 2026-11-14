@@ -97,7 +97,7 @@ describe('Workspace completion answer', () => {
         taskRuntimeService: { findTask: () => task },
         workGraphRevisionRepo: { findActive: () => ({ generationId: 'gen', revision: 1, configurationRevision: 'config' }) },
         conversationWorktrees: { repo: { binding: () => ({ workspaceId: 'ws' }) } },
-        recoveryItems: { listRecoveryItems: () => [{ id: 'recovery', decisionId: 'decision',
+        recoveryItems: { listByTask: () => [{ id: 'recovery', decisionId: 'decision',
           status: mode === 'pending' ? 'pending' : 'retry_authorized',
           decision: { action: { type: 'complete_task', taskId: 'task' },
             configurationRevision: mode === 'different-config' ? 'old-config' : 'config' } }] },
