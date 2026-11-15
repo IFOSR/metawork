@@ -1080,4 +1080,5 @@ Pause=内存+文件系统+进程快照、秒级原地恢复、休眠不计 vCPU/
 验证（WSL）：`node --check` 通过；`node --test test/*.test.js` 51/51
 全绿（stash 对比确认改动前同绿）；测试同步点——创建顺序、步骤数、
 失败注入改打 network 步、close 删除序列、续跑种子步骤形状。
-版本：console v1.5.18、deploy yaml official-server:1.5.18。
+版本：console v1.5.18、deploy yaml official-server:1.5.18。镜像 official-server 1.5.18（digest
+sha256:96dfaaa5599e33f05493feef52d6c940d5d8a14bde656ca2682f3dde1c094beb）已推送并远端验证（digest 一致 + --pull=always 拉起：sandboxVpaManifest 0 处、SANDBOX_STEPS 正常、console v1.5.18）。
