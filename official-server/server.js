@@ -431,6 +431,9 @@ async function adminRoute(request, response, path) {
     if (!row) fail(404, 'sandbox_not_found');
     if (row.status === 'closed') return send(response, 200, { closed: true });
     if (inflightSandboxes.has(row.id)) fail(409, 'sandbox_provisioning');
+    // VPA 已退役：存量实例 close 时兜底删除（先于 Deployment，404 视为已不存在）。
+    const vpaDelete = await k8sRequest('DELETE', `/apis/autoscaling.k8s.io/v1/namespaces/${runtimeEnv.namespace}/verticalpodautoscalers/${sandboxResourceName(row.id)}`);
+    if (vpaDelete.status !== 200 && vpaDelete.status !== 404) fail(502, 'k8s_delete_failed');
     for (const resource of SANDBOX_RESOURCES.slice().reverse()) {
       const result = await k8sRequest('DELETE', `${resource.apiPath}/namespaces/${runtimeEnv.namespace}/${resource.plural}/${sandboxTargetName(resource, sandboxResourceName(row.id))}`);
       if (result.status !== 200 && result.status !== 404) fail(502, 'k8s_delete_failed');
@@ -463,13 +466,14 @@ async function adminRoute(request, response, path) {
 // 方案：docs/plans/2026-11-09-official-runtime-provisioning-design.md。免密门禁（L1）
 // 与沙盒官方会话（L2）为二期预留，一期域名开放访问。
 const TIER_RESOURCES = { small: { requests: { cpu: '500m', memory: '1Gi' }, limits: { cpu: '2', memory: '4Gi' } } };
-const SANDBOX_STEPS = ['storage', 'workload', 'autoscale', 'network', 'ingress', 'ready'];
+// VPA 已退役（1.5.18）：不再为实例创建 VPA，requests 固定取 TIER_RESOURCES。
+// 存量 VPA CR 由维护 sweep 与 close 兜底删除，台账 vpa_json 一并清空。
+const SANDBOX_STEPS = ['storage', 'workload', 'network', 'ingress', 'ready'];
 // 数组顺序即创建顺序，也是 close 时的逆序删除顺序（PVC 最后删）。
 // resourceName：删除/读取时该资源的实际名（PVC 带 -data 后缀，其余与 Deployment 同名）。
 const SANDBOX_RESOURCES = [
   { step: 'storage', apiPath: '/api/v1', plural: 'persistentvolumeclaims', resourceName: resourceName => `${resourceName}-data`, manifest: sandboxPvcManifest },
   { step: 'workload', apiPath: '/apis/apps/v1', plural: 'deployments', manifest: sandboxDeploymentManifest },
-  { step: 'autoscale', apiPath: '/apis/autoscaling.k8s.io/v1', plural: 'verticalpodautoscalers', manifest: sandboxVpaManifest },
   { step: 'network', apiPath: '/api/v1', plural: 'services', manifest: sandboxServiceManifest },
   { step: 'ingress', apiPath: '/apis/networking.k8s.io/v1', plural: 'ingresses', resourceName: resourceName => `${resourceName}-auth`, manifest: sandboxAuthIngressManifest },
   { step: 'ingress', apiPath: '/apis/networking.k8s.io/v1', plural: 'ingresses', manifest: sandboxIngressManifest },
@@ -639,15 +643,9 @@ async function refreshLive(row) {
       db.prepare("UPDATE runtimes SET status='running', updated_at=? WHERE id=? AND status='provisioning'").run(now(), row.id);
     }
   }
-  const vpa = await k8sRequest('GET', `/apis/autoscaling.k8s.io/v1/namespaces/${runtimeEnv.namespace}/verticalpodautoscalers/${name}`);
-  if (vpa.status === 200) {
-    const target = vpa.data?.status?.recommendation?.containerRecommendations?.[0]?.target;
-    const encoded = target?.cpu || target?.memory ? JSON.stringify({ targetCpu: target.cpu ?? null, targetMemory: target.memory ?? null }) : null;
-    if (encoded !== row.vpa_json) db.prepare('UPDATE runtimes SET vpa_json=?, updated_at=? WHERE id=?').run(encoded, now(), row.id);
-  }
 }
 
-// 六步管线：storage → workload → autoscale → network → ingress → ready。任一步失败：
+// 五步管线：storage → workload → network → ingress → ready。任一步失败：
 // 记失败步骤与原因，回滚已建资源（PVC 最后删），整体落 failed；failed/closed 不占一账号名额。
 // updating（版本更新）同样走本管线：跳过创建步骤，仅等待新镜像就绪。
 async function provision(sandboxId) {
@@ -995,23 +993,6 @@ function sandboxDeploymentManifest(row, name) {
   };
 }
 
-function sandboxVpaManifest(row, name) {
-  return {
-    apiVersion: 'autoscaling.k8s.io/v1', kind: 'VerticalPodAutoscaler',
-    metadata: { name, namespace: runtimeEnv.namespace, labels: sandboxLabels(row.id) },
-    spec: {
-      targetRef: { apiVersion: 'apps/v1', kind: 'Deployment', name },
-      updatePolicy: { updateMode: 'Auto' },
-      resourcePolicy: {
-        containerPolicies: [{
-          containerName: 'server', controlledResources: ['cpu', 'memory'],
-          minAllowed: { cpu: '250m', memory: '512Mi' }, maxAllowed: { cpu: '4', memory: '8Gi' },
-        }],
-      },
-    },
-  };
-}
-
 function sandboxServiceManifest(row, name) {
   return {
     apiVersion: 'v1', kind: 'Service',
@@ -1324,6 +1305,17 @@ async function runtimeMaintenanceSweep() {
     if (db.prepare("SELECT id FROM runtimes WHERE status='running' AND coalesce(last_access_at, created_at) < ? LIMIT 1").get(accessCutoff)) {
       const recycled = db.prepare("UPDATE runtimes SET status='recycle_pending', updated_at=? WHERE status='running' AND coalesce(last_access_at, created_at) < ?").run(now(), accessCutoff);
       if (recycled.changes > 0) console.error('sandbox_recycle_marked', JSON.stringify({ count: recycled.changes }));
+    }
+    // VPA 退役清理（1.5.18）：存量实例的 VPA CR 兜底删除并清空台账快照。
+    // 幂等：清理完成后 vpa_json 全为 NULL，后续 sweep 扫不到行；残余孤儿由 close 兜底。
+    for (const item of db.prepare("SELECT id FROM runtimes WHERE status IN ('provisioning', 'running', 'updating', 'suspended', 'recycle_pending') AND vpa_json IS NOT NULL").all()) {
+      const deleted = await k8sRequest('DELETE', `/apis/autoscaling.k8s.io/v1/namespaces/${runtimeEnv.namespace}/verticalpodautoscalers/${sandboxResourceName(item.id)}`);
+      if (deleted.status === 200 || deleted.status === 404) {
+        db.prepare('UPDATE runtimes SET vpa_json = NULL, updated_at = ? WHERE id = ?').run(now(), item.id);
+        console.error('sandbox_vpa_cleanup_done', JSON.stringify({ sandboxId: item.id }));
+      } else {
+        console.error('sandbox_vpa_cleanup_failed', JSON.stringify({ sandboxId: item.id, reason: k8sReason(deleted.status) }));
+      }
     }
     // 就绪兜底：管线等待超时（安装期超过 readyTimeoutMs）后，没有查询也会把已就绪的实例收敛为 running。
     for (const item of db.prepare("SELECT id FROM runtimes WHERE status = 'provisioning'").all()) {

@@ -194,7 +194,6 @@ before(async () => {
       if (plural === 'pods') return done(200, { items: [stubPod(name)] });
       const stored = k8sObjects.get(`${plural}/${name}`);
       if (!stored) return done(404, { kind: 'Status', code: 404 });
-      if (plural === 'verticalpodautoscalers') return done(200, { ...stored, status: { recommendation: { containerRecommendations: [{ target: { cpu: '750m', memory: '1Gi' } }] } } });
       // Deployment 的 rollout 状态：桩按已注册的模板给出已收敛的信号。
       if (plural === 'deployments') {
         const generation = Number(stored.metadata?.generation ?? 1);
@@ -816,7 +815,7 @@ test('instance create requires a session and an active entitlement', async () =>
   assert.deepEqual(forbidden.body, { code: 'entitlement_inactive' });
 });
 
-test('instance creation provisions six resources and reaches running with all steps done', async () => {
+test('instance creation provisions five resources and reaches running with all steps done', async () => {
   const { token } = await registerLogin('instance-a@example.com');
   assert.equal((await api('/v1/orders', { plan: 'trial', idempotencyKey: 'instance-trial-001' }, token)).status, 201);
   const created = await api('/v1/runtimes', { idempotencyKey: 'instance-create-0001', name: 'Dev Workspace' }, token);
@@ -824,7 +823,7 @@ test('instance creation provisions six resources and reaches running with all st
   const instance = created.body.sandbox;
   assert.equal(instance.status, 'provisioning');
   assert.match(instance.domain, /^dev-workspace-[0-9a-f]{4}\.metawork\.nexusfusionai\.com$/u);
-  assert.equal(instance.steps.length, 6);
+  assert.equal(instance.steps.length, 5);
   const replay = await api('/v1/runtimes', { idempotencyKey: 'instance-create-0001' }, token);
   assert.equal(replay.body.sandbox.sandboxId, instance.sandboxId);
   const second = await api('/v1/runtimes', { idempotencyKey: 'instance-create-0002' }, token);
@@ -838,15 +837,16 @@ test('instance creation provisions six resources and reaches running with all st
     await new Promise(resolve => setTimeout(resolve, 20));
     view = await api(`/v1/runtimes/${instance.sandboxId}`, undefined, token);
   } while (view.body.sandbox?.status !== 'running');
-  assert.deepEqual(view.body.sandbox.steps.map(step => step.status), ['done', 'done', 'done', 'done', 'done', 'done']);
+  assert.deepEqual(view.body.sandbox.steps.map(step => step.status), ['done', 'done', 'done', 'done', 'done']);
   assert.equal(view.body.sandbox.podPhase, 'Running');
   assert.equal(view.body.sandbox.resources.requests.cpu, '500m');
   const lastAccess = db.prepare('SELECT last_access_at FROM runtimes WHERE id = ?').get(instance.sandboxId).last_access_at;
   assert.ok(lastAccess && Date.now() - Date.parse(lastAccess) < 60000);
   await new Promise(resolve => setTimeout(resolve, 5100));
   const refreshed = await api(`/v1/runtimes/${instance.sandboxId}`, undefined, token);
-  assert.deepEqual(refreshed.body.sandbox.vpa, { targetCpu: '750m', targetMemory: '1Gi' });
-  assert.deepEqual(k8sCreates(), ['persistentvolumeclaims', 'deployments', 'verticalpodautoscalers', 'services', 'ingresses', 'ingresses']);
+  // VPA 已退役：台账不再有建议值。
+  assert.equal(refreshed.body.sandbox.vpa, null);
+  assert.deepEqual(k8sCreates(), ['persistentvolumeclaims', 'deployments', 'services', 'ingresses', 'ingresses']);
   sandboxA = { token, sandboxId: instance.sandboxId, domain: instance.domain };
 });
 
@@ -905,7 +905,7 @@ test('the console reads the payload keys the server actually returns', () => {
 test('a mid-pipeline failure records the failed step, rolls back and frees the slot', async () => {
   const { token } = await registerLogin('instance-c@example.com');
   assert.equal((await api('/v1/orders', { plan: 'trial', idempotencyKey: 'instance-trial-002' }, token)).status, 201);
-  k8sFailNext = 'verticalpodautoscalers';
+  k8sFailNext = 'services';
   const created = await api('/v1/runtimes', { idempotencyKey: 'instance-fail-0001' }, token);
   assert.equal(created.status, 202);
   const deadline = Date.now() + 5000;
@@ -918,7 +918,7 @@ test('a mid-pipeline failure records the failed step, rolls back and frees the s
   const steps = Object.fromEntries(view.body.sandbox.steps.map(step => [step.name, step]));
   assert.equal(steps.storage.status, 'done');
   assert.equal(steps.workload.status, 'done');
-  assert.equal(steps.autoscale.status, 'failed'); assert.equal(steps.autoscale.reason, 'k8s_500');
+  assert.equal(steps.network.status, 'failed'); assert.equal(steps.network.reason, 'k8s_500');
   assert.equal(steps.ready.status, 'pending');
   const rollbackDeadline = Date.now() + 3000;
   let deletes;
@@ -945,7 +945,7 @@ test('an interrupted provisioning resumes to completion on the next view', async
   assert.equal((await api('/v1/orders', { plan: 'trial', idempotencyKey: 'instance-trial-003' }, token)).status, 201);
   const instanceId = `rt_${randomBytes(12).toString('hex')}`;
   const slug = `resume-${randomBytes(2).toString('hex')}`;
-  const steps = ['storage', 'workload', 'autoscale', 'network', 'ingress', 'ready']
+  const steps = ['storage', 'workload', 'network', 'ingress', 'ready']
     .map(name => ({ name, status: ['storage', 'workload'].includes(name) ? 'done' : 'pending' }));
   const seedDb = new DatabaseSync(join(root, 'test.sqlite'));
   seedDb.exec('PRAGMA busy_timeout = 10000');
@@ -964,7 +964,7 @@ test('an interrupted provisioning resumes to completion on the next view', async
     await new Promise(resolve => setTimeout(resolve, 20));
     view = await api(`/v1/runtimes/${instanceId}`, undefined, token);
   } while (view.body.sandbox.status !== 'running');
-  assert.deepEqual(k8sCreates().slice(createsBefore), ['verticalpodautoscalers', 'services', 'ingresses', 'ingresses']);
+  assert.deepEqual(k8sCreates().slice(createsBefore), ['services', 'ingresses', 'ingresses']);
   assert.equal(db.prepare('SELECT status FROM runtimes WHERE id = ?').get(instanceId).status, 'running');
 });
 
@@ -977,7 +977,7 @@ test('30-day no-access marks recycle_pending and only admin close deletes resour
   const deletesBefore = k8sCalls.filter(call => call.method === 'DELETE').length;
   assert.equal((await api('/v1/admin/runtimes/close', { sandboxId: sandboxC.sandboxId }, admin)).status, 200);
   const deletedNow = k8sCalls.filter(call => call.method === 'DELETE').slice(deletesBefore).map(call => call.plural);
-  assert.deepEqual(deletedNow, ['ingresses', 'ingresses', 'services', 'verticalpodautoscalers', 'deployments', 'persistentvolumeclaims']);
+  assert.deepEqual(deletedNow, ['verticalpodautoscalers', 'ingresses', 'ingresses', 'services', 'deployments', 'persistentvolumeclaims']);
   assert.equal(db.prepare('SELECT status FROM runtimes WHERE id = ?').get(sandboxC.sandboxId).status, 'closed');
   const after = await api(`/v1/runtimes/${sandboxC.sandboxId}`, undefined, sandboxC.token);
   assert.equal(after.body.sandbox.status, 'closed');
@@ -1135,7 +1135,7 @@ test('a provisioning row present at boot resumes without crashing the service', 
   first.kill(); await whenExited(first);
   const instanceId = `rt_${randomBytes(12).toString('hex')}`;
   const slug = `boot-${randomBytes(2).toString('hex')}`;
-  const steps = ['storage', 'workload', 'autoscale', 'network', 'ingress', 'ready']
+  const steps = ['storage', 'workload', 'network', 'ingress', 'ready']
     .map(name => ({ name, status: ['storage'].includes(name) ? 'done' : 'pending' }));
   const seedDb = new DatabaseSync(bootDb);
   seedDb.exec('PRAGMA busy_timeout = 10000');
