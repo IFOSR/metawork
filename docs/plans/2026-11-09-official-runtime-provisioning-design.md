@@ -1061,3 +1061,23 @@ node v22.19.0 / `/opt/pi/bin/pi` 可执行 / 修复标记在）。
 `data/` 仅剩 `bm25_zh_default.json` + `stopwords.txt`；`/engine` 243M；
 `import("./dist/gateway/server.js")` 冒烟 `GATEWAY_LOAD_OK`。镜像 0.1.28.3（digest
 sha256:cfccb2313e04d8de019a3df1e908beff5f23b8b7c816845b1833ecabd876d938）已推送并远端验证（imagetools digest 一致 + --pull=always 拉起运行：node v22.19.0 / /opt/pi/bin/pi 可执行 / ENGINE_OK / 执行器修复标记在 / 旧改写签名 0）。
+
+### VPA 退役（2026-11-13，1.5.18，用户决策：不做自研闲置冻结）
+
+用户决策：VPA 砍掉；suspend/scale 0 机制保持原样，只服务权益失效停机的
+原始语义，不加闲置冻结；闲置/秒级唤醒方向转向阿里云 Agent Sandbox
+Pause/Resume 调研（极速版托管/ACS 原生/ACK+Knative+沙箱控制器三种形态，
+Pause=内存+文件系统+进程快照、秒级原地恢复、休眠不计 vCPU/内存费，
+白名单制——另行立项试点）。
+
+改动：创建管线五步化（storage → workload → network → ingress → ready，
+不再创建 VPA）；维护 sweep 兜底删除存量 VPA CR（幂等，DELETE 200/404
+后清空 vpa_json）；close 对存量实例兜底删除 VPA（先于 Deployment，
+404 容忍）；refreshLive 移除建议值采集；vpa_json 列保留（历史兼容，
+新实例为 NULL，sandboxView null 兜底）。TIER_RESOURCES 不变
+（requests 500m/1Gi，limits 2核/4Gi）。
+
+验证（WSL）：`node --check` 通过；`node --test test/*.test.js` 51/51
+全绿（stash 对比确认改动前同绿）；测试同步点——创建顺序、步骤数、
+失败注入改打 network 步、close 删除序列、续跑种子步骤形状。
+版本：console v1.5.18、deploy yaml official-server:1.5.18。
