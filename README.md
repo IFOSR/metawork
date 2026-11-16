@@ -13,7 +13,7 @@ through one owned control path (Manager proposal → admission → Router → Ex
 certification → delivery), and keeps the result, its receipts and its recovery facts
 across restarts instead of ending at a chat reply.
 
-[Install](#install) · [Quick start](#quick-start) · [What's new in 0.1.30](#whats-new-in-0130) ·
+[Install](#install) · [Quick start](#quick-start) · [What's new in 0.1.31](#whats-new-in-0131) ·
 [Architecture](#architecture) · [Upgrading](#upgrading-from-the-previous-architecture) ·
 [Usage](#usage) · [License](#license) · [中文](README.zh-CN.md)
 
@@ -21,13 +21,13 @@ across restarts instead of ending at a chat reply.
 
 ## Install
 
-**Current release: v0.1.30 (internal), one build for every asset —
-`0.1.30-build-5412891`, revision `5412891`.** Download from
+**Current release: v0.1.31 (internal), one build for every asset —
+`0.1.31-build-3619af8`, revision `3619af8`.** Download from
 [the latest release](https://github.com/IFOSR/metawork/releases/latest).
 
 | Platform | Addressed to | Download |
 | --- | --- | --- |
-| macOS Apple Silicon (`arm64`) | **Desktop app** (bundles Runtime, Web and Executor Pi) | [MetaWork-darwin-arm64.dmg](https://github.com/IFOSR/metawork/releases/latest/download/MetaWork-darwin-arm64.dmg) — 345,451,303 bytes, SHA-256 `352ef1b9a7e8bc70082e95e636071e328e7efca9b55b396b329ca84f506f1819` |
+| macOS Apple Silicon (`arm64`) | **Desktop app** (bundles Runtime, Web and Executor Pi) | [MetaWork-darwin-arm64.dmg](https://github.com/IFOSR/metawork/releases/latest/download/MetaWork-darwin-arm64.dmg) — 345,572,953 bytes, SHA-256 `4711a4f79af2a62c8305a2eb86bc381b08e4f5a4a2967580a1a6695964fef54b` |
 | macOS Apple Silicon (`arm64`) | **Server package**, used through the Web client | [install.sh](https://github.com/IFOSR/metawork/releases/latest/download/install.sh) · [manifest.darwin-arm64.json](https://github.com/IFOSR/metawork/releases/latest/download/manifest.darwin-arm64.json) |
 | macOS Intel (`x64`) | **Server package**, used through the Web client | [install.sh](https://github.com/IFOSR/metawork/releases/latest/download/install.sh) · [manifest.darwin-x64.json](https://github.com/IFOSR/metawork/releases/latest/download/manifest.darwin-x64.json) |
 | Linux / WSL2 (`x64`) | **Server package**, used through the Web client | [install.sh](https://github.com/IFOSR/metawork/releases/latest/download/install.sh) · [manifest.linux-x64.json](https://github.com/IFOSR/metawork/releases/latest/download/manifest.linux-x64.json) |
@@ -296,6 +296,14 @@ metawork provider list | add | edit | test | remove
 metawork model    list | add | edit | test | remove
 metawork executor list | add | edit | enable | disable | remove | test
 ```
+
+## What's new in 0.1.31
+
+0.1.31 fixes failure settlement during shared read-only Workspace preparation.
+A transient startup error now leaves a failure receipt and releases its claims;
+explicitly transient errors can use the existing bounded retry budget instead of
+leaving the Task stuck behind an uncertain dispatch. Workspace protections and
+terminal fences remain enforced. See [the release notes](docs/releases/v0.1.31.md).
 
 ## What's new in 0.1.30
 
