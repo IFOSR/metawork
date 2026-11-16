@@ -50,6 +50,7 @@ import { SubtaskExecutionContextBuilder, TaskResourceReferenceError } from './su
 import type { GatewayAttachmentStore } from '../gateway/attachment-store-port.js';
 import type { WorkUnitClaimService } from './work-unit-claim-service.js';
 import { generateInteractionId } from '../utils/id.js';
+import { redactSensitiveText } from '../utils/redact-sensitive-text.js';
 import { ExecutionEvidenceToolServer } from './execution-evidence-tool-server.js';
 import type { ControlFailure } from '../core/kernel-failure.js';
 import type { Subtask, Task } from '../core/types.js';
@@ -882,6 +883,7 @@ export class SubtaskAttemptRunner {
       }
     };
     let finalCheckpointReason: 'success' | 'failure' | 'cancelled' = 'failure';
+    let preparingRead = false;
     let declaredTargetPaths: string[] = [];
     let observationRoot = executionContext.executionMode === 'service_git' ? executionContext.authorizedWorkingDirectory : executionContext.canonicalWorkspacePath;
     const heartbeat = setInterval(() => {
@@ -893,7 +895,20 @@ export class SubtaskAttemptRunner {
     }, 20_000);
     try {
       claim.startAttempt();
-      if (conversationReadOnly) await this.deps.conversationWorktrees!.beginRead(conversationBinding!, attemptId, sourceAttemptId);
+      // Running includes startup preparation. A failure before this transition
+      // cannot satisfy the terminal landing fence and would lose its receipt.
+      this.lifecycle.transitionSubtask({
+        subtaskId: subtask.id,
+        to: 'running',
+        actor: 'subtask-attempt-runner',
+        reason: `attempt ${attemptId} claimed the Subtask`,
+      });
+      claim.markRunning();
+      if (conversationReadOnly) {
+        preparingRead = true;
+        await this.deps.conversationWorktrees!.beginRead(conversationBinding!, attemptId, sourceAttemptId);
+        preparingRead = false;
+      }
       if ((attemptKind as string) === 'merge_repair') {
         if (dispatch.attemptPayload?.protocol !== 'metaclaw:merge-repair:v1') {
           throw new Error('merge repair attempt is missing metaclaw:merge-repair:v1 payload');
@@ -905,13 +920,6 @@ export class SubtaskAttemptRunner {
           throw new Error(`merge repair budget or publication state is stale: ${dispatch.attemptPayload.publicationId}`);
         }
       }
-      this.lifecycle.transitionSubtask({
-        subtaskId: subtask.id,
-        to: 'running',
-        actor: 'subtask-attempt-runner',
-        reason: `attempt ${attemptId} claimed the Subtask`,
-      });
-      claim.markRunning();
       if (
         !this.deps.agentClassService.hasExecutorAgentClass(agentClassName)
         || claim.workUnit.agentClassName !== agentClassName
@@ -1754,10 +1762,33 @@ export class SubtaskAttemptRunner {
         resultId: resultObjects.safeProjectionId ?? undefined,
       };
     } catch (error) {
-      if (conversationReadOnly && this.deps.conversationWorktrees!.repo.conversationState(conversationBinding!.worktreeId).state === 'failed') {
+      const readWorkspaceFailed = conversationReadOnly
+        && this.deps.conversationWorktrees!.repo.conversationState(conversationBinding!.worktreeId).state === 'failed';
+      if (readWorkspaceFailed) {
         this.deps.executionRuntime.abortTask(task.id);
       }
       const message = error instanceof Error ? error.message : String(error);
+      const errorCode = error instanceof Error ? (error as NodeJS.ErrnoException).code : undefined;
+      // Only definite transient errors from this pre-Executor read stage may
+      // enter the existing bounded retry policy. A failed Workspace stays
+      // fenced even if its verification threw a transient I/O error.
+      const transientReadFailure = !readWorkspaceFailed
+        && (['EAGAIN', 'EBUSY', 'ETIMEDOUT'].includes(errorCode ?? '')
+          || message === 'workspace_git_busy:integration');
+      const readPreparationFailure = preparingRead ? kernelFailure({
+        kind: readWorkspaceFailed || ['stale_conversation_binding', 'read_only_input_changed'].includes(message)
+          ? 'configuration' : transientReadFailure ? 'infrastructure' : 'unknown',
+        scope: 'attempt',
+        code: errorCode ?? (message.startsWith('read_only_') || message === 'stale_conversation_binding'
+          ? message : 'read_preparation_failed'),
+        summary: message,
+        detail: message,
+        origin: 'kernel',
+        stage: 'workspace_preparation',
+        retryable: transientReadFailure,
+        attemptStarted: false,
+        externalSideEffect: false,
+      }) : null;
       const edgeHandoffFailure = error instanceof EdgeHandoffMaterializationError
         ? kernelFailure({
             kind: 'infrastructure',
@@ -1793,7 +1824,7 @@ export class SubtaskAttemptRunner {
             externalSideEffect: false,
           })
         : null;
-      const normalizedFailure = edgeHandoffFailure ?? (dependencyFailure
+      const normalizedFailure = readPreparationFailure ?? edgeHandoffFailure ?? (dependencyFailure
         ? kernelFailure({
             kind: dependencyFailure.retryable ? 'infrastructure' : 'capability_mismatch',
             scope: 'task',
@@ -1822,25 +1853,34 @@ export class SubtaskAttemptRunner {
         );
       }
       if (!this.receiptRepo.findByAttemptId(attemptId)) {
-        this.persistNonSuccess({
-          attemptId, executionId: input.executionId, taskId: input.taskId, subtaskId: input.subtaskId,
-          workUnitId: claim.workUnit.id, agentClassName, startedAt,
-          terminalState: 'executor_failed',
-          rawResponse,
-          errorCode: normalizedFailure?.code ?? 'attempt_exception',
-          errorDetail: normalizedFailure?.summary ?? message,
-          failure: normalizedFailure,
-          resultObjects: this.persistAttemptResults({
-            attemptId,
-            taskId: task.id,
-            generationId: subtask.generationId,
-            subtaskId: subtask.id,
+        try {
+          this.persistNonSuccess({
+            attemptId, executionId: input.executionId, taskId: input.taskId, subtaskId: input.subtaskId,
+            workUnitId: claim.workUnit.id, agentClassName, startedAt,
+            terminalState: 'executor_failed',
             rawResponse,
-            body: null,
-            completeness: 'incomplete',
-            rawResultWriter,
-          }),
-        });
+            errorCode: normalizedFailure?.code ?? 'attempt_exception',
+            errorDetail: normalizedFailure?.summary ?? message,
+            failure: normalizedFailure,
+            resultObjects: this.persistAttemptResults({
+              attemptId,
+              taskId: task.id,
+              generationId: subtask.generationId,
+              subtaskId: subtask.id,
+              rawResponse,
+              body: null,
+              completeness: 'incomplete',
+              rawResultWriter,
+            }),
+          });
+        } catch (landingError) {
+          // Keep both errors when even the failure receipt cannot commit. Do
+          // not relax the terminal fence or assert that execution was safe.
+          const landingMessage = landingError instanceof Error ? landingError.message : String(landingError);
+          console.error('Attempt failure receipt could not be persisted', { taskId: task.id, attemptId,
+            originalError: redactSensitiveText(message), landingError: redactSensitiveText(landingMessage) });
+          throw new Error(`Attempt failed: ${message}; terminal persistence failed: ${landingMessage}`, { cause: landingError });
+        }
       }
       claim.markFailed(normalizedFailure?.summary ?? message);
       return {

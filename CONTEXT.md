@@ -1083,6 +1083,17 @@ facts and side effects outside the compatibility module.
 
 `src/execution/subtask-attempt-runner.ts` executes one Kernel-authorized deterministic attempt. A successful In-place primary/correction attempt commits an immutable receipt and change record, then completes the Subtask directly; it does not create a candidate publication. Workspace delivery records change facts and live references atomically after the attempt receipt is sealed. Every non-success commits a terminal receipt and returns control to Kernel policy. A first completion-contract failure may receive one response-only correction on the same AgentClass. In-place write uncertainty is fenced for reconciliation; legacy publication/merge-repair records are migration facts and are never dispatched for new work.
 
+Attempt startup failure landing (2026-11-15): after claiming resources, the runner
+enters Subtask `running` before asynchronous shared-read preparation, so its
+failure can satisfy the existing terminal transaction fence. This state includes
+preparation and does not prove Executor launch. Read-preparation failures retain
+the original error and explicit no-launch facts; only identified transient errors
+in a non-failed Workspace use the existing bounded retry policy. Workspace
+integrity, cancellation and terminal fences remain enforced. Failure-persistence
+errors preserve both causes and emit redacted diagnostics. Missing runtime and
+receipt rows alone never authorize replay. See the
+[implementation record](docs/plans/2026-11-15-attempt-startup-failure-landing.md).
+
 Local CLI attempts have no MetaWork-owned wall-clock, tool-count or processing-cycle
 budget. `runtimePolicy.executorIdleTimeoutMs` is the sustained-inactivity check
 threshold (default 5 minutes), never a kill deadline. Operations remain independently
