@@ -5,6 +5,16 @@ AnyFusion release entries remain unchanged for auditability.
 
 The project follows [Semantic Versioning](https://semver.org/) for public releases.
 
+## [0.1.31] - 2026-11-16
+
+- Land failures during shared read-only Workspace preparation through the existing
+  Attempt terminal transaction, preserving the original error and releasing
+  claims instead of leaving a scheduled Subtask with an uncertain dispatch.
+- Retry only explicitly transient preparation failures through the existing
+  bounded continuation budget; keep Workspace safety and terminal fences intact.
+- Preserve both the original failure and a receipt-write failure in redacted
+  diagnostics when failure settlement itself cannot commit.
+
 ## [0.1.30] - 2026-11-14
 
 - Serialize each Task's snapshot/decision/application section inside the
