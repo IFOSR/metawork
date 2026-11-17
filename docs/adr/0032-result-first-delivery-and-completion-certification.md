@@ -103,6 +103,41 @@ Harness.
 
 ## Consequences
 
+### 2026-11-17 clarification: accepted-result delivery integrity
+
+Runtime scratch under the reserved root `.metawork-tmp` and temporary write
+paths is excluded by the same rule in Workspace change observation and private
+Git sealing. Historical observations are projected through that rule at read
+time; immutable receipt/delta bytes are not rewritten. This is not permission to
+ignore any business-file change: sealed content hashes and current availability
+remain mandatory checks. Missing or changed accepted files fail closed.
+
+Acceptance resolves the user's result decision, not delivery. An unsuccessful
+`task_result_continuation` must surface its delivery error and exact identity.
+Explicit re-delivery reuses the original acceptance, safe body and outbox item,
+with a separate retry operation key; it never re-executes the Executor. Only
+current-generation, unsuperseded identities may expose this control. Terminal
+Tasks expose no result control. A failed continuation is not silently retried by
+every periodic wake.
+
+### 2026-11-17 clarification: internal metadata is not a user decision
+
+User acceptance resolves an actual uncertainty about the requested outcome; it
+must not ask the user to approve protocol syntax or fill in Runtime metadata.
+Deterministically recoverable omissions are normalized before certification.
+Remaining metadata failures retain the existing bounded response-only repair;
+normalization does not certify missing evidence, missing deliverables or unknown
+Workspace effects. A system fault must not be described as information missing
+from the user. Any request for a user decision must explain the unresolved
+outcome and the consequence of the offered choice.
+
+In the completion v4 report, omitted `noChangeReason` normalizes to `null`.
+Reports do not require this edit-only explanation; edits with observed changes
+also do not require one. A zero-change edit still needs a nonempty explanation,
+and missing/truncated Workspace observations still fail certification. Explicit
+invalid values are not discarded. This normalization neither alters the saved
+raw response nor fabricates completion evidence or an explanation.
+
 ### 2026-10-21 amendment: exact acceptance and explicit retry
 
 One read-only resolver binds the pending receipt to its safe projection. The

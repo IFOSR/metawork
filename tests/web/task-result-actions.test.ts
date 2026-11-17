@@ -57,6 +57,20 @@ function renderBlocked(input: {
 }
 
 describe('Task result action presentation', () => {
+  it('offers delivery retry for an already accepted result, without asking for acceptance again', () => {
+    const html = renderToStaticMarkup(createElement(BlockedActions, {
+      ws: {} as WsClient, http: {} as HttpClient, conversationId: 'conversation', taskId: 'task',
+      lifecycle: { status: 'needs_action', nextAuthorizedAction: 'accept_result',
+        reason: { code: 'delivery_failed', message: '结果已接受，但交付失败：文件已变化', evidenceRefs: [] },
+        pendingActions: [{ actionId: 'accepted_delivery:effect', kind: 'accept_result',
+          label: '重试已接受结果的交付', result: expectedResult,
+          reason: { code: 'delivery_failed', message: '文件已变化', evidenceRefs: [] } }] },
+    }));
+    expect(html).toContain('重试交付');
+    expect(html).toContain('接受决定已保存');
+    expect(html).not.toContain('>接受并交付</button>');
+    expect(html).not.toContain('>重新执行</button>');
+  });
   it('renders the accept / retry decision once, in the blocked card', () => {
     const html = renderBlocked({ actions: ['accept_result', 'retry_attempt'], nextAuthorizedAction: 'accept_result' });
     expect(html).toContain('接受并交付');

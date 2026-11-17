@@ -31,6 +31,14 @@ export interface PendingResultIdentity {
   resultId: string;
 }
 
+/** Current, explicitly accepted result whose delivery has not settled. */
+export interface AcceptedResultContinuation {
+  id: string;
+  result: PendingResultIdentity;
+  status: 'pending' | 'sending' | 'uncertain' | 'failed';
+  error: string | null;
+}
+
 export function safeProjectionId(receipt: SafeResultReceipt): string | null {
   const refs = receipt.parsing?.resultObjects;
   if (!refs || typeof refs !== 'object') return null;

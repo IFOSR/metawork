@@ -96,6 +96,17 @@ Git or publication effects.
 
 ### 5. Completion follows the authorized requirements
 
+2026-11-17 accepted-delivery clarification: the Storage facts adapter includes
+exact accepted-result continuations for the current graph. Pending/sending
+delivery with a held slot is a delivering operation; failed/uncertain staging
+produces a delivery_failed action and needs_action, rather than leaving the
+acceptance-time queued conclusion in place. Runtime reconciles on both success
+and failure. Explicit re-delivery clears the failed continuation under the
+existing transaction/authorization boundary and records its own operation key,
+preserving the original acceptance identity. TaskView and execution timelines
+carry this delivery fact separately from immutable Attempt outcomes and the
+Subtask's internal awaiting_decision state.
+
 `work_graph_revisions.completion_requirements_json` records the requirement
 snapshot authorized with that revision (execution per node, public file delivery,
 safety report, required local service). A re-plan persists a new snapshot.

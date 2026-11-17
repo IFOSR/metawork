@@ -1,7 +1,7 @@
 import { createRequire } from 'node:module';
 import { createElement } from 'react';
 import { describe, expect, it } from 'vitest';
-import { collectExecutionCards } from '../../web/src/task-dag';
+import { collectExecutionCards, taskDagNodeDetails, taskDagSummary } from '../../web/src/task-dag';
 import { TaskDagPanel } from '../../web/src/components/TaskDagPanel';
 import type { ConversationTurnProjection } from '../../web/src/api/session-types';
 import type { ExecutionTimeline, WorkGraphPresentationProjection } from '../../web/src/api/types';
@@ -41,6 +41,27 @@ const { renderToStaticMarkup } = requireFromWeb('react-dom/server') as {
 };
 
 describe('Turn Task presentation', () => {
+  it.each(['pending', 'sending', 'uncertain', 'failed'] as const)('presents accepted result delivery from live facts (%s)', status => {
+    const blocked = status === 'uncertain' || status === 'failed';
+    const timeline: ExecutionTimeline = { taskId: 't', title: 'Report', status: blocked ? 'needs_action' : 'running', stages: [
+      { phase: 'execution', status: 'blocked', subtasks: [{ id: 's', title: 'Report', status: 'awaiting_decision',
+        resultDelivery: { status, error: blocked ? 'sealed file changed' : null }, attempts: [] }] },
+    ] };
+    const cards = collectExecutionCards([], timeline);
+    const detail = taskDagNodeDetails(cards, Date.now(), false).get('s');
+    expect(detail?.statusLabel).toBe(blocked ? '交付受阻' : '待交付');
+    expect(detail?.step).toContain('结果已接受');
+    expect(cards[0]!.state).toBe(blocked ? 'blocked' : 'waiting');
+    if (!blocked) expect(taskDagSummary({ cards, subtaskCount: 1, turnStatus: 'running' }).headline)
+      .toBe('结果已接受，等待交付');
+    const turn = { id: 'turn', taskId: 't', status: 'running', userInput: 'Report',
+      traceEvents: [], artifacts: [], executionTimeline: timeline } as unknown as ConversationTurnProjection;
+    const graph = dagFromTurn(turn);
+    graph.nodes[0]!.executionState = 'blocked';
+    const html = renderToStaticMarkup(createElement(TaskDagPanel, { turn, workGraph: graph }));
+    expect(html).toContain(`data-status="${blocked ? 'blocked' : 'waiting'}"`);
+    if (!blocked) expect(html).not.toContain('data-status="blocked"');
+  });
   it('renders delivery-only retry graphs without dereferencing a missing node', () => {
     const turn = { id: 'turn', taskId: 'retry', status: 'failed', userInput: '/task retry source',
       traceEvents: [], artifacts: [] } as unknown as ConversationTurnProjection;

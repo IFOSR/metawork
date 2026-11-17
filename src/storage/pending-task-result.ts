@@ -1,6 +1,6 @@
 import type Database from 'better-sqlite3';
 import { ExecutorAttemptReceiptRepo } from './executor-attempt-receipt-repo.js';
-import { resolveSafeResult, type PendingResultIdentity, type SafeResultObject } from '../task/safe-result-identity.js';
+import { resolveSafeResult, type AcceptedResultContinuation, type PendingResultIdentity, type SafeResultObject } from '../task/safe-result-identity.js';
 
 /** Shared indexed selection for controls and every TaskView surface. Historical receipts cannot resurrect buttons. */
 export function readPendingTaskResults(db: Database.Database, taskId: string): PendingResultIdentity[] {
@@ -48,4 +48,54 @@ export function readPendingTaskResults(db: Database.Database, taskId: string): P
 
 export function readPendingTaskResult(db: Database.Database, taskId: string): PendingResultIdentity | null {
   return readPendingTaskResults(db, taskId)[0] ?? null;
+}
+
+/** Exact accepted identity, shared by conclusion and UI; stale outbox rows cannot resurrect controls. */
+export function readAcceptedResultContinuations(db: Database.Database, taskId: string): AcceptedResultContinuation[] {
+  const rows = db.prepare(`SELECT e.id, e.status, substr(e.error_summary, 1, 512) AS error,
+      r.attempt_id AS attemptId, r.subtask_id AS subtaskId, r.generation_id AS generationId,
+      r.graph_revision AS graphRevision, json_extract(e.payload_json, '$.action.resultId') AS resultId,
+      t.account_id AS accountId
+    FROM effect_outbox e
+    JOIN tasks t ON t.id = e.task_id AND t.status NOT IN ('succeeded','failed','cancelled')
+    JOIN executor_attempt_receipts r ON r.attempt_id = json_extract(e.payload_json, '$.action.attemptId')
+      AND r.task_id = t.id
+    JOIN subtasks s ON s.id = r.subtask_id AND s.task_id = t.id AND s.status = 'awaiting_decision'
+    JOIN work_graph_revisions g ON g.task_id = t.id AND g.status = 'active'
+      AND g.generation_id = r.generation_id AND g.revision = r.graph_revision
+      AND s.generation_id = g.generation_id AND s.graph_revision = g.revision
+    WHERE e.task_id = ? AND e.effect_type = 'task_result_continuation'
+      AND e.status IN ('pending','sending','uncertain','failed')
+      AND json_extract(e.payload_json, '$.action.type') = 'accept_uncertified_result'
+      AND json_extract(e.payload_json, '$.action.taskId') = t.id
+      AND json_extract(e.payload_json, '$.action.subtaskId') = s.id
+      AND json_extract(e.payload_json, '$.action.generationId') = g.generation_id
+      AND json_extract(e.payload_json, '$.action.graphRevision') = g.revision
+      AND EXISTS (SELECT 1 FROM task_state_changes c WHERE c.task_id = t.id
+        AND c.operation_key = 'accept_result:' || r.attempt_id || ':' || json_extract(e.payload_json, '$.action.resultId'))
+      AND NOT EXISTS (SELECT 1 FROM executor_attempt_receipts newer
+        WHERE newer.subtask_id = s.id AND newer.generation_id = g.generation_id
+          AND (newer.completed_at > r.completed_at OR (newer.completed_at = r.completed_at AND newer.rowid > r.rowid))
+          AND NOT (newer.attempt_kind = 'contract_correction'
+            AND newer.terminal_state IN ('executor_failed','contract_blocked','heartbeat_lost','cancelled_or_stale')))
+      AND NOT EXISTS (SELECT 1 FROM dispatch_items d WHERE d.subtask_id = s.id
+        AND d.generation_id = g.generation_id AND d.created_at > r.started_at AND d.attempt_id != r.attempt_id
+        AND d.status IN ('pending_launch','launching','running','cancelling'))
+    ORDER BY e.created_at, e.id`).all(taskId) as Array<{
+      id: string; status: AcceptedResultContinuation['status']; error: string | null;
+      attemptId: string; subtaskId: string; generationId: string; graphRevision: number; resultId: string; accountId: string;
+    }>;
+  const receipts = new ExecutorAttemptReceiptRepo(db);
+  return rows.flatMap(row => {
+    const receipt = receipts.findByAttemptId(row.attemptId)!;
+    const pair = resolveSafeResult({ accountId: row.accountId, receipt,
+      findReceipt: id => receipts.findByAttemptId(id),
+      findObject: id => db.prepare(`SELECT result_id AS resultId, account_id AS accountId, task_id AS taskId,
+        generation_id AS generationId, source_subtask_id AS sourceSubtaskId, attempt_id AS attemptId,
+        kind, byte_length AS byteLength, completeness FROM result_objects WHERE result_id = ?`)
+        .get(id) as SafeResultObject | undefined ?? null });
+    return pair?.resultObjectId === row.resultId ? [{ id: row.id, status: row.status, error: row.error,
+      result: { taskId, subtaskId: row.subtaskId, generationId: row.generationId,
+        graphRevision: row.graphRevision, attemptId: row.attemptId, resultId: row.resultId } }] : [];
+  });
 }

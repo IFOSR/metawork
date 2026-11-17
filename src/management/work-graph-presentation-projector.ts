@@ -8,6 +8,7 @@ import type { RoutingResolutionAudit } from '../routing/auto-model-resolver.js';
 import { deriveRunnableFrontier } from '../work-graph/frontier.js';
 import { buildCanonicalSubtaskIdentityMap } from '../work-graph/subtask-identity.js';
 import type { WorkGraphProposal, WorkGraphSubtask } from '../work-graph/types.js';
+import type { AcceptedResultContinuation } from '../task/safe-result-identity.js';
 
 export interface WorkGraphPresentationSubtaskFact {
   id: string;
@@ -54,6 +55,7 @@ export interface WorkGraphPresentationInput {
   dispatchItems: readonly WorkGraphPresentationDispatchFact[];
   receipts: readonly WorkGraphPresentationReceiptFact[];
   publications: readonly WorkGraphPresentationPublicationFact[];
+  acceptedResultContinuations?: readonly AcceptedResultContinuation[];
 }
 
 export interface WorkGraphPresentationRouting {
@@ -129,6 +131,8 @@ export class WorkGraphPresentationProjector {
     const canonical = (subtaskId: string): string => aliases.get(subtaskId) ?? subtaskId;
     const graph = canonicalGraph(input.graph, canonical);
     const factsById = new Map(input.subtasks.map(fact => [canonical(fact.id), fact]));
+    const deliveriesById = new Map((input.acceptedResultContinuations ?? [])
+      .map(delivery => [canonical(delivery.result.subtaskId), delivery]));
     const decisionsBySubtask = new Map(
       input.decisions
         .filter(decision => decision.subtaskId)
@@ -167,15 +171,19 @@ export class WorkGraphPresentationProjector {
       const dispatch = dispatchBySubtask.get(subtask.id);
       const receipt = receiptBySubtask.get(subtask.id);
       const publication = publicationBySubtask.get(subtask.id);
+      const delivery = deliveriesById.get(subtask.id);
+      const deliveryBlocked = delivery?.status === 'failed' || delivery?.status === 'uncertain';
       return {
         id: subtask.id,
         title: bounded(subtask.title, 300),
         goal: bounded(subtask.goal, 1_000),
         status: publication?.status ?? receipt?.terminalState ?? dispatch?.status ?? fact?.status ?? 'unknown',
-        executionState: presentationExecutionState(fact?.status ?? 'unknown'),
+        executionState: delivery ? (deliveryBlocked ? 'blocked' : 'waiting')
+          : presentationExecutionState(fact?.status ?? 'unknown'),
         phase: layers.get(subtask.id) ?? 0,
         runnable: runnable.has(subtask.id),
-        schedulingDetail: fact?.status === 'running' ? '执行中'
+        schedulingDetail: delivery ? (deliveryBlocked ? '结果已接受，交付受阻，可重试交付' : '结果已接受，等待交付')
+          : fact?.status === 'running' ? '执行中'
           : fact?.resourceWaitAccess === 'read' ? '等待写入节点或其他独占资源释放'
           : fact?.resourceWaitAccess === 'write' ? '等待读取或写入节点释放资源'
           : fact?.hasPendingOrActiveAttempt ? '已安排，等待执行启动或收束'

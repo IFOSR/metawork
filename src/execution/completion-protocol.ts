@@ -62,7 +62,10 @@ const CompletedReportSchema = z.object({
     z.string().trim().min(1),
     z.record(z.string(), z.unknown()),
   ])),
-  noChangeReason: z.string().trim().min(1).nullable(),
+  // Absence is not evidence of an incomplete business result. Normalize the
+  // optional explanation, then let observed Workspace facts determine whether
+  // an edit with no changes actually needs one. Never invent an explanation.
+  noChangeReason: z.string().trim().min(1).nullable().default(null),
   /** Explicit body channel: a report file this attempt wrote to the output area. */
   reportPath: z.string().trim().min(1).max(500).nullable().optional(),
 }).strict();

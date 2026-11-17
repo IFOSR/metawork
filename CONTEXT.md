@@ -1,5 +1,24 @@
 # MetaWork Planning Agent And Work Unit Context
 
+Accepted-result delivery follow-up (2026-11-17, local): Workspace observation and
+Git sealing share the reserved Runtime-scratch boundary. Reading historical
+deltas excludes those internal paths without rewriting their immutable records;
+business-file hashes and live-file availability still fail closed. Accepted
+result continuations are current-generation, exact-identity facts. Failed staging
+reconciles Task to needs_action with its delivery error, and explicit re-delivery
+reuses the original acceptance and result without launching an Executor. TaskView
+and the DAG distinguish pending delivery from a pending user decision. See the
+[implementation and validation record](docs/plans/2026-11-17-accepted-result-delivery-fix.md).
+The installed instance and the incident Task have not been changed.
+
+Completion metadata normalization (2026-11-17, local): omitted `noChangeReason`
+defaults to null before assessment. Actual Workspace observations still decide
+whether a zero-change edit needs an explanation; missing outputs/evidence and
+uncertain deltas remain uncertified. Protocol omissions with a deterministic
+default must not create a user acceptance request. User decisions address an
+unresolved outcome or choice, not approval of internal metadata syntax. See
+ADR-0032 and the same implementation record for the tested scope.
+
 Web recovery review (2026-11-12): `/task retry` links the existing successor and
 reports its actual state; it does not restart a terminal successor. Manual
 recovery validates Task ownership and the interrupted operation's postcondition

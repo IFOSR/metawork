@@ -47,7 +47,7 @@ export function buildExecutorContextPrompt(input: ExecutorInput): string {
           noChangeReason: null,
         }),
         'Return only evidence and noChangeReason. Runtime derives changed files and injects schema identity, attempt/work-unit/subtask IDs, acceptance keys, and handoff identities from the bound contract.',
-        'Only provide noChangeReason when the requested edit produced no Workspace changes. Runtime treats its observed before/after delta as authoritative when files did change.',
+        'Provide a non-empty noChangeReason when the requested edit produced no Workspace changes. Otherwise omit it or use null. Runtime treats its observed before/after delta as authoritative when files did change.',
         'Workspace changes are allowed for every delivery kind when needed for the task. Runtime tracks changes for Git publication and audit. File delivery follows the Planner-declared fileOutputs below, independently of edit/report.',
         'If the Subtask cannot be completed, return {"failure":{"kind":"task_failed","code":"<stable_code>","summary":"<concise explanation>"}} instead.',
         'The marker shown above is illustrative. Emit it exactly once, only at the end of your final response.',

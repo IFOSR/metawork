@@ -1699,7 +1699,7 @@ export class ControlExecutionRuntime {
     action: Extract<TaskControlAction, { type: 'accept_uncertified_result' | 'retry_uncertified_result' }>;
   }): void {
     const action = decision.action;
-    const snapshot = this.deps.cancellationCoordinator.buildSnapshot(action.taskId);
+    const snapshot = this.deps.cancellationCoordinator.buildSnapshot(action.taskId, action);
     const pending = action.type === 'accept_uncertified_result' && snapshot.acceptedResult
       ? snapshot.acceptedResult : snapshot.uncertifiedResult;
     const graph = this.deps.workGraphRevisionRepo.findActive(action.taskId);
@@ -1708,15 +1708,23 @@ export class ControlExecutionRuntime {
       || graph?.generationId !== action.generationId || graph.revision !== action.graphRevision) {
       throw new ControlApplicationRejectionError('该结果操作已过期，请刷新任务后重试。', 'result_identity_changed');
     }
-    const operationKey = action.type === 'accept_uncertified_result'
+    const resultOperationKey = action.type === 'accept_uncertified_result'
       ? TaskOperationKeys.acceptResult(action.attemptId, action.resultId)
       : TaskOperationKeys.retryResult(action.attemptId, action.resultId);
+    const effectId = `result_continuation:${resultOperationKey}`;
+    const replay = action.type === 'accept_uncertified_result' && Boolean(snapshot.acceptedResult);
+    const existingEffect = replay ? this.deps.effectOutboxRepo.find(effectId) : null;
+    if (replay && (!existingEffect || !['uncertain', 'failed'].includes(existingEffect.status))) return;
+    // Re-delivery has its own operation identity. It must not rewrite the first
+    // user's acceptance or collide with its immutable decision identity.
+    const operationKey = replay ? `resume_accepted_result:${decision.id}` : resultOperationKey;
     // Only local durable writes here. Acceptance, continuation, queue and
     // application either all commit or all roll back.
     this.deps.effectOutboxRepo.transaction(() => {
       this.deps.taskStateAuthority.reconcile({
         taskId: action.taskId, decisionId: decision.id, operationKey,
         actor: 'kernel-execution-runtime', reason: decision.reason,
+        resumeAuthorized: replay,
         resolvedResult: { attemptId: action.attemptId, resultId: action.resultId },
         facts: () => {
           if (action.type === 'retry_uncertified_result') {
@@ -1724,8 +1732,9 @@ export class ControlExecutionRuntime {
               actor: 'kernel-execution-runtime', reason: 'explicit user retry authorized by task control',
               changes: { error: null } });
           }
-          this.deps.effectOutboxRepo.enqueue({
-            id: `result_continuation:${operationKey}`, decisionId: decision.id,
+          if (replay) this.deps.effectOutboxRepo.resolve(effectId, 'retry', new Date().toISOString());
+          else this.deps.effectOutboxRepo.enqueue({
+            id: effectId, decisionId: decision.id,
             taskId: action.taskId, effectType: 'task_result_continuation',
             payload: { action }, availableAt: new Date().toISOString(),
           });
@@ -1885,6 +1894,13 @@ export class ControlExecutionRuntime {
     if (effects.length === 0) return true;
     const task = this.deps.taskRuntimeService.findTask(taskId);
     const scheduler = this.deps.conversationTaskSchedulerRepo;
+    const failed = effects.find(effect => effect.status === 'uncertain' || effect.status === 'failed');
+    if (failed) {
+      this.reconcileTaskState(taskId, { decisionId: failed.decisionId,
+        operationKey: `result_delivery_failed:${failed.id}:${failed.deliveryAttempts}`,
+        reason: 'accepted result delivery requires explicit recovery' });
+      return false;
+    }
     if (!task || !['queued', 'running'].includes(task.status)) return false;
     if (!scheduler || !task.conversationId) return false;
     let slot = scheduler.getSlot(task.conversationId);
@@ -1916,14 +1932,19 @@ export class ControlExecutionRuntime {
         || revision.revision !== action.graphRevision) return false;
       // Staging is idempotent by publication id and validates the current slot
       // before/after Git. Retrying this local effect does not re-run an Executor.
-      if (effect.status === 'uncertain' || effect.status === 'failed') {
-        this.deps.effectOutboxRepo.resolve(effect.id, 'retry', new Date().toISOString());
-      }
+      this.reconcileTaskState(taskId, { decisionId: effect.decisionId,
+        operationKey: `result_delivery_started:${effect.id}:${effect.deliveryAttempts}`,
+        reason: 'accepted result delivery holds the Conversation slot' });
       const delivered = await this.deps.effectOutboxRepo.deliver(effect.id, async () => {
         if (action.type === 'accept_uncertified_result') await this.deps.attemptRunner.stageAcceptedResult(action);
         return action.resultId;
       }, () => new Date().toISOString());
-      if (delivered.status !== 'sent') return false;
+      if (delivered.status !== 'sent') {
+        this.reconcileTaskState(taskId, { decisionId: effect.decisionId,
+          operationKey: `result_delivery_failed:${effect.id}:${delivered.deliveryAttempts}`,
+          reason: 'accepted result delivery failed' });
+        return false;
+      }
       this.reconcileTaskState(taskId, { decisionId: effect.decisionId,
         operationKey: `result_started:${effect.id}`, reason: 'reserved result continuation started' });
     }

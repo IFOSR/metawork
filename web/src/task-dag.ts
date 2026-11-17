@@ -218,6 +218,15 @@ export function collectExecutionCards(
     ? userFacingBlockReason(timeline.reasonMessage ?? timeline.explanation)
     : '';
   return [...bySubtask.values()].map(card => {
+    const delivery = executionStage?.subtasks?.find(subtask => subtask.id === card.subtaskId)?.resultDelivery;
+    if (delivery) {
+      const failed = delivery.status === 'uncertain' || delivery.status === 'failed';
+      return { ...card, state: failed ? 'blocked' : 'waiting',
+        stepKey: failed ? 'accepted_delivery_failed' : 'accepted_delivery',
+        stepLabel: failed ? `结果已接受，但交付失败：${delivery.error ?? '请检查交付条件后重试。'}`
+          : '结果已接受，正在等待或检查交付。',
+        activityStatus: 'settled', healthText: null };
+    }
     const settled = settleTerminalStep(card);
     if (!blockReason || settled.state === 'completed' || settled.state === 'failed') return settled;
     return {
@@ -358,6 +367,7 @@ function looksLikeInternalTaskId(value: string): boolean {
 
 /** One node's live execution detail, rendered inside the DAG node. */
 export interface TaskDagNodeDetail {
+  executionState: ExecutionCardState;
   /** 执行中 / 已完成 / 等待中 / 已阻塞 / 已失败 / 状态待确认 */
   statusLabel: string;
   /** Executor · Provider/Model */
@@ -400,7 +410,9 @@ export function taskDagNodeDetails(
       : card.stepLabel || activityLabel(card.activityStatus, '');
     const health = card.healthText && card.healthText !== stepText ? card.healthText : '';
     details.set(card.subtaskId, {
-      statusLabel: EXECUTION_STATE_LABEL[card.state],
+      executionState: card.state,
+      statusLabel: card.stepKey === 'accepted_delivery' ? '待交付'
+        : card.stepKey === 'accepted_delivery_failed' ? '交付受阻' : EXECUTION_STATE_LABEL[card.state],
       binding: binding || '尚未选定执行器',
       // A DAG node is a one-line surface: flatten Markdown instead of printing it.
       step: markdownPreview([stepText, health].filter(Boolean).join(' · '), 200),
@@ -439,6 +451,9 @@ export function taskDagSummary(input: {
     case 'completed':
       return { state, headline: '已完成', detail: artifacts > 0 ? `${progress} · 产物 ${artifacts} 个` : progress };
     default:
+      if (cards.some(card => card.stepKey === 'accepted_delivery')) {
+        return { state, headline: '结果已接受，等待交付', detail: progress };
+      }
       return { state, headline: '等待执行', detail: progress };
   }
 }

@@ -162,6 +162,7 @@ import { ExecutorAttemptReceiptRepo } from '../storage/executor-attempt-receipt-
 import { projectTaskViewFacts } from '../gateway/task-view-facts.js';
 import { projectTaskView } from '../task/task-view.js';
 import { SqliteTaskActivityFacts } from '../storage/task-activity-facts-repo.js';
+import { readAcceptedResultContinuations } from '../storage/pending-task-result.js';
 import { GenerationReplanRequestRepo } from '../storage/generation-replan-request-repo.js';
 import { RetryWakeRepo } from '../storage/retry-wake-repo.js';
 import { projectPublicDelivery } from '../delivery/public-delivery-view.js';
@@ -2862,6 +2863,7 @@ export async function main(cliCommand = parseCliArgs(process.argv.slice(2))) {
           const waits = new SqliteResourceLeaseRepository(db).findWaiting(taskId);
           return workGraphPresentationProjector.project({
             taskId,
+            acceptedResultContinuations: readAcceptedResultContinuations(db, taskId),
             graphRevision: revision.revision,
             configuration: runtimeBindings.getRuntimeConfiguration(graph.configurationRevision)
               ?? runtimeBindings.getActiveRuntimeConfiguration(),

@@ -35,6 +35,7 @@ export interface SubtaskCard {
   id: string;
   title: string;
   status: string;
+  resultDelivery?: { status: 'pending' | 'sending' | 'uncertain' | 'failed'; error: string | null };
   executor?: string;
   harness?: string;
   provider?: string;

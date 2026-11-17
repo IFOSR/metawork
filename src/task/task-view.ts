@@ -12,7 +12,8 @@
  */
 
 import type { SubtaskStatus, TaskStatus } from '../core/types.js';
-import type { PendingResultIdentity } from './safe-result-identity.js';
+import type { AcceptedResultContinuation, PendingResultIdentity } from './safe-result-identity.js';
+import { acceptedResultDeliveryAction } from './task-state-facts.js';
 import type { ControlAttemptKind, ControlSubtaskStatus } from '../control/control-contracts.js';
 import type { ControlFailure } from '../core/kernel-failure.js';
 import type { ExecutorAttemptTerminalState } from '../storage/executor-attempt-receipt-repo.js';
@@ -82,6 +83,7 @@ export interface TaskViewPendingDecisionFact {
 }
 
 export interface TaskViewFacts {
+  readonly acceptedResultContinuations?: readonly AcceptedResultContinuation[];
   readonly workspaceMerge?: import('../workspace/workspace-git-contracts.js').WorkspaceMergeSummary|null;
   readonly serviceState?: string | null;
   readonly task: {
@@ -134,6 +136,7 @@ export interface TaskViewFacts {
 }
 
 export interface TaskView {
+  readonly acceptedResultContinuations?: readonly AcceptedResultContinuation[];
   readonly workspaceMerge?: import('../workspace/workspace-git-contracts.js').WorkspaceMergeSummary|null;
   readonly taskId: string;
   /** The one Task conclusion every surface reads. */
@@ -233,6 +236,12 @@ export function projectTaskView(facts: TaskViewFacts): TaskView {
   // offers a generic resume that the Kernel can only answer with `no_op`.
   const pendingActions = isTerminalTaskStatus(status)
     ? [] : mergePendingActions(detail.pendingActions, facts.pendingDecision);
+  if (!isTerminalTaskStatus(status)) {
+    for (const continuation of facts.acceptedResultContinuations ?? []) {
+      const action = acceptedResultDeliveryAction(continuation);
+      if (action && !pendingActions.some(item => item.actionId === action.actionId)) pendingActions.push(action);
+    }
+  }
   const projectedDetail: TaskStateDetail = { ...detail, pendingActions };
   const blockingResidue = deriveBlockingResidue({
     activeAttempt,
@@ -252,6 +261,7 @@ export function projectTaskView(facts: TaskViewFacts): TaskView {
       : null;
   return {
     taskId: facts.task.id,
+    acceptedResultContinuations: isTerminalTaskStatus(status) ? [] : facts.acceptedResultContinuations ?? [],
     workspaceMerge: facts.workspaceMerge??null,
     state: {
       taskId: facts.task.id,
@@ -316,8 +326,8 @@ export function projectTaskView(facts: TaskViewFacts): TaskView {
 function mergePendingActions(
   persisted: readonly TaskPendingAction[],
   decision: TaskViewPendingDecisionFact | null | undefined,
-): readonly TaskPendingAction[] {
-  if (decision === undefined) return persisted;
+): TaskPendingAction[] {
+  if (decision === undefined) return [...persisted];
   const actions = persisted.filter(action => !action.result);
   const expected = decision?.expectedResult;
   if (!expected) return actions;
