@@ -161,3 +161,9 @@ export function addMilliseconds(value: string, milliseconds: number): string {
     ? new Date(timestamp + milliseconds).toISOString()
     : value;
 }
+
+export function stableAttemptOrdinal(attemptId: string): number {
+  let value = 17;
+  for (const character of attemptId) value = (value * 31 + character.charCodeAt(0)) % 2_000_000_000;
+  return value;
+}

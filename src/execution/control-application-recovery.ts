@@ -1,3 +1,4 @@
+import { stableAttemptOrdinal } from './attempt-dispatch-plan.js';
 import type { ControlEvent } from '../control/control-contracts.js';
 import type { ControlDecisionApplicationRecord } from '../control/control-workflow.js';
 
@@ -16,6 +17,13 @@ import type {
 } from '../storage/generation-replan-request-repo.js';
 import type { WorkGraphRevisionRecord } from '../storage/work-graph-revision-repo.js';
 import { parseApplicationSettlement } from '../control/control-application-settlement.js';
+import { authorizedExecutorBindingFingerprint } from '../core/authorized-executor-binding.js';
+import type { Subtask } from '../core/types.js';
+import type { ControlDispatchItemRecord } from '../storage/dispatch-item-repo.js';
+import type { ExecutorAttemptReceipt } from '../storage/executor-attempt-receipt-repo.js';
+
+/** Existing bounded application recovery budget, shared by scanning and owner retry. */
+export const MAX_UNSAFE_APPLICATION_RETRIES = 3;
 
 export const LEGACY_SYSTEM_BINDING_CALLBACK_ERROR =
   'Conversation execution callback is unavailable: onDecisionApplying';
@@ -26,6 +34,7 @@ export const MERGE_REPLAN_SYSTEM_BINDING_CALLBACK_ERROR =
  * Action-specific postcondition verdict (2026-09-25 plan §6).
  *
  * - `applied`: the declared postcondition is durably present.
+ * - `settled`: a redundant ordinary dispatch is proven unnecessary, without executing it.
  * - `retry_safe`: the postcondition is absent and re-applying the same Decision
  *   cannot duplicate a durable effect.
  * - `unresolved`: the outcome is unknowable or contradictory; the application
@@ -34,6 +43,7 @@ export const MERGE_REPLAN_SYSTEM_BINDING_CALLBACK_ERROR =
  */
 export type ApplicationPostconditionVerdict =
   | 'applied'
+  | 'settled'
   | 'retry_safe'
   | 'unresolved'
   | 'not_managed';
@@ -50,6 +60,20 @@ export interface ApplicationPostconditionInspection {
   readonly family: ApplicationPostconditionFamily;
   readonly verdict: ApplicationPostconditionVerdict;
   readonly reason: string;
+}
+
+/** Raw owner facts, shared by diagnostics and recovery; absence never proves safety. */
+export interface DispatchRecoveryFacts {
+  readonly revision: WorkGraphRevisionRecord | null;
+  readonly binding: { binding_fingerprint: string; created_at: string } | null;
+  readonly workspaceSettled: boolean;
+  readonly ownAttemptEffects: boolean;
+  readonly subtasks: readonly Subtask[];
+  readonly dispatches: readonly ControlDispatchItemRecord[];
+  readonly receipts: readonly ExecutorAttemptReceipt[];
+  readonly routes: readonly { task_id: string; generation_id: string; subtask_id: string;
+    graph_revision: number; configuration_revision: string; attempt_ordinal: number;
+    outcome: string; created_at: string }[];
 }
 
 export interface DispatchItemFact {
@@ -79,6 +103,7 @@ export interface WorkGraphRevisionFact {
 }
 
 export interface ApplicationPostconditionFacts {
+  readonly dispatchRecovery?: DispatchRecoveryFacts;
   readonly application: RecoveryApplicationFact;
   readonly task: TaskFact | null;
   readonly subtasks: readonly { id: string; status: string }[];
@@ -107,6 +132,7 @@ export interface ApplicationPostconditionFacts {
  * verdict the user sees is the same verdict recovery acts on.
  */
 export interface ApplicationPostconditionFactSource {
+  readDispatchRecoveryFacts?(application: RecoveryApplicationFact): DispatchRecoveryFacts;
   findTask(taskId: string): TaskFact | null;
   listSubtasks(taskId: string): readonly { id: string; status: string }[];
   listDispatchItems(taskId: string): readonly DispatchItemFact[];
@@ -129,6 +155,8 @@ export function inspectApplicationAgainstSources(
   const taskId = 'taskId' in action ? action.taskId : null;
   const namesRevision = action.type === 'authorize_task_plan';
   return inspectApplicationPostcondition({
+    ...(action.type === 'dispatch_batch' && sources.readDispatchRecoveryFacts
+      ? { dispatchRecovery: sources.readDispatchRecoveryFacts(application) } : {}),
     application,
     task: taskId ? sources.findTask(taskId) : null,
     subtasks: taskId ? sources.listSubtasks(taskId) : [],
@@ -410,6 +438,17 @@ function inspectDispatch(
     };
   }
   if (matched.length === 0) {
+    const redundant = completedDuplicateDispatch(facts, expected);
+    if (redundant) return { family: 'dispatch', verdict: 'settled',
+      reason: `duplicate dispatch never launched; completed by ${redundant.join(', ')}` };
+    // Once another attempt or preparation evidence exists, absence of our row
+    // alone does not authorize replay. Preserve unknown and mismatched cases.
+    if (facts.dispatchRecovery && (facts.dispatchRecovery.ownAttemptEffects
+      || !facts.dispatchRecovery.workspaceSettled
+      || expected.some(item => facts.dispatchItems.some(candidate => candidate.subtaskId === item.subtaskId)))) {
+      return { family: 'dispatch', verdict: 'unresolved',
+        reason: 'dispatch has competing execution or unverified preparation; exact completion evidence is required' };
+    }
     return {
       family: 'dispatch',
       verdict: 'retry_safe',
@@ -421,6 +460,57 @@ function inspectDispatch(
     verdict: 'unresolved',
     reason: `partial dispatch batch: ${matched.length}/${expected.length} items landed with matching identity`,
   };
+}
+
+function completedDuplicateDispatch(facts: ApplicationPostconditionFacts,
+  expected: readonly Extract<ControlDecisionAction, { type: 'dispatch_batch' }>['items'][number][],
+): string[] | null {
+  const evidence = facts.dispatchRecovery;
+  const action = facts.application.decision.action;
+  if (!evidence || action.type !== 'dispatch_batch' || expected.length === 0
+    || !facts.task || ['cancelled', 'failed'].includes(facts.task.status)
+    || evidence.ownAttemptEffects || !evidence.workspaceSettled) return null;
+  const graph = evidence.revision;
+  const pin = facts.application.decision.configurationRevision;
+  const at = facts.application.createdAt;
+  if (!graph || graph.taskId !== action.taskId || graph.status === 'superseded'
+    || graph.configurationRevision !== pin || graph.createdAt > at
+    || !evidence.binding || evidence.binding.created_at > at) return null;
+  const covered: string[] = [];
+  for (const item of expected) {
+    if (item.attemptKind !== 'primary' || item.sourceAttemptId !== null
+      || item.recoveryMode !== 'fresh' || item.attemptPayload !== null) return null;
+    const subtask = evidence.subtasks.find(node => node.id === item.subtaskId);
+    if (!subtask || subtask.taskId !== action.taskId || subtask.status !== 'done'
+      || subtask.generationId !== graph.generationId || subtask.graphRevision !== graph.revision) return null;
+    const eligible = new Set(subtask.executorBindings.map(authorizedExecutorBindingFingerprint));
+    if (!eligible.has(item.bindingFingerprint)
+      || authorizedExecutorBindingFingerprint(item.authorizedBinding) !== item.bindingFingerprint) return null;
+    // Router records bind the unlanded request to the actual graph revision.
+    const ordinal = stableAttemptOrdinal(item.attemptId);
+    if (!evidence.routes.some(route => route.task_id === action.taskId
+      && route.subtask_id === item.subtaskId && route.generation_id === graph.generationId
+      && route.graph_revision === graph.revision && route.configuration_revision === pin
+      && route.attempt_ordinal === ordinal && route.outcome === 'selected' && route.created_at <= at)) return null;
+    const owner = evidence.dispatches.find(candidate => candidate.taskId === action.taskId
+      && candidate.subtaskId === item.subtaskId && candidate.generationId === graph.generationId
+      && candidate.decisionId !== facts.application.decisionId && candidate.attemptId !== item.attemptId
+      && candidate.configurationRevision === pin && candidate.attemptKind === 'primary'
+      && candidate.sourceAttemptId === null && candidate.recoveryMode === 'fresh'
+      && candidate.attemptPayload === null && candidate.status === 'terminal'
+      && candidate.createdAt <= at && candidate.terminalAt !== null && candidate.terminalAt > at
+      && candidate.executionBindingFingerprint === evidence.binding!.binding_fingerprint
+      && eligible.has(candidate.bindingFingerprint)
+      && authorizedExecutorBindingFingerprint(candidate.authorizedBinding) === candidate.bindingFingerprint
+      && JSON.stringify(candidate.resourceGrant) === JSON.stringify(item.defaultResourceGrant));
+    if (!owner || !evidence.receipts.some(receipt => receipt.attemptId === owner.attemptId
+      && receipt.taskId === action.taskId && receipt.subtaskId === item.subtaskId
+      && receipt.generationId === graph.generationId && receipt.graphRevision === graph.revision
+      && receipt.configurationRevision === pin && receipt.bindingFingerprint === owner.bindingFingerprint
+      && receipt.attemptKind === 'primary' && receipt.terminalState === 'completed')) return null;
+    covered.push(owner.attemptId);
+  }
+  return covered;
 }
 
 function inspectReplanScheduling(

@@ -9,6 +9,9 @@
 
 ## 现行架构与契约（本轮收敛）
 
+- [2026-11-16 v0.1.31 Release 与 DMG](plans/2026-11-16-v0.1.31-release.md)
+  —— 启动准备失败修复的版本发布、签名资产核验和 Apple Silicon DMG 升级门禁。
+
 - [2026-11-12 账单与记忆画像展示优化](plans/2026-11-12-billing-memory-presentation.md)
   —— 账号 Token 汇总、趋势与明细重排；记忆增加整体画像、主题分布和可核对摘要，保留 L1/L2/L3 管理；8788 桌面、窄屏和错误重试验证通过。
 
@@ -63,6 +66,10 @@
 
 ## 现行计划（尚未被 ADR-0055 取代）
 
+- [启动准备失败的回执落地修复](plans/2026-11-15-attempt-startup-failure-landing.md)
+  —— 2026-11-16，已实施并通过本地 Release、真实 Admin Web 正常及故障恢复验收；114 项聚焦回归通过，既有宿主失败及部署边界见记录。
+- [已完成任务被重复派发恢复项阻塞：最终收敛方案](plans/2026-11-14-completed-task-blocked-by-duplicate-dispatch-recovery.md)
+  —— 2026-11-14，已实施并完成原任务恢复及真实账号四节点 Web 验收；96 项聚焦回归通过，全仓基线失败及打包限制见记录。
 - [Workspace 内部 Git 与会话 Worktree 并行模型](plans/2026-10-29-workspace-internal-git-session-worktree-design.md)
   与[详细技术方案](plans/2026-10-29-workspace-internal-git-session-worktree-technical-design.md)。
 - [多任务调度路线图](plans/future-multi-task-scheduling-roadmap.md)、

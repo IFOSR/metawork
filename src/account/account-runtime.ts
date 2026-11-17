@@ -469,6 +469,7 @@ export class AccountRuntime implements AccountRuntimeHandle {
             .findRecoveryItem(decisionId);
           if (!application) return null;
           return inspectApplicationAgainstSources(application, {
+            readDispatchRecoveryFacts: item => this.deps.kernelServices.recoveryItems.readDispatchRecoveryFacts(item),
             findTask: taskId => {
               const task = this.deps.taskServices?.taskRuntimeService.findTask(taskId);
               return task

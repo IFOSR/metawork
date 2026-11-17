@@ -1050,6 +1050,28 @@ managed service control and remaining-work retry — belongs to the Task Runtime
 `src/execution/*-policy.ts`, behind the single `ControlLoopPolicy` decider. There
 is no Kernel policy class, no event inbox, no decision/application ledger and no
 replay: an interrupted application leaves one `task_recovery_items` row.
+Within the Server instance protected by `runtime.lock`, the account-owned
+Execution Runtime serializes each Task's snapshot/decision/application section
+across workflow instances. Executor draining stays outside that section; distinct
+resume and recovery events retain their own decisions and acknowledgements.
+Queue repair, slot convergence and periodic promotion read the same active-operation
+fact before reclaiming a reservation. Existing durable slot/version and residue
+checks still govern resource yield and restart recovery; this is not a
+multi-process database lease.
+Only a typed, fully rolled-back live-owner dispatch conflict is an explicit
+rejection; unknown preparation or database failures retain recovery fences.
+Startup/periodic recovery and diagnostics share the same postcondition inspector
+for both pending and retry-authorized items. A redundant ordinary dispatch may
+settle only with matching graph, generation, authorization, Workspace and completed
+owner receipts, without effects from its own attempts. Authorized ordinary safe
+retries re-evaluate the current frontier within the existing bounded budget;
+scans alone do not spend another authorization. A durable settlement tag keeps
+unfinished completion discoverable across restart, including after a succeeded
+conclusion. Recovery reuses certified results and the existing idempotent
+completion transaction/outbox to fill summary, actual artifacts, interaction,
+graph closure and answer delivery without rerunning Executors. Periodic recovery
+also delivers pending completion notifications. See the
+[implementation and acceptance record](docs/plans/2026-11-14-completed-task-blocked-by-duplicate-dispatch-recovery.md).
 Under ADR-0055, this Task Runtime coordination seam may validate Work Graph
 identity, persist Task facts, derive a runnable frontier and coordinate parallel
 claims/recovery. It is
@@ -1060,6 +1082,17 @@ repositories, adapters or raw logs. Storage and Runtime implement the durable
 facts and side effects outside the compatibility module.
 
 `src/execution/subtask-attempt-runner.ts` executes one Kernel-authorized deterministic attempt. A successful In-place primary/correction attempt commits an immutable receipt and change record, then completes the Subtask directly; it does not create a candidate publication. Workspace delivery records change facts and live references atomically after the attempt receipt is sealed. Every non-success commits a terminal receipt and returns control to Kernel policy. A first completion-contract failure may receive one response-only correction on the same AgentClass. In-place write uncertainty is fenced for reconciliation; legacy publication/merge-repair records are migration facts and are never dispatched for new work.
+
+Attempt startup failure landing (2026-11-15): after claiming resources, the runner
+enters Subtask `running` before asynchronous shared-read preparation, so its
+failure can satisfy the existing terminal transaction fence. This state includes
+preparation and does not prove Executor launch. Read-preparation failures retain
+the original error and explicit no-launch facts; only identified transient errors
+in a non-failed Workspace use the existing bounded retry policy. Workspace
+integrity, cancellation and terminal fences remain enforced. Failure-persistence
+errors preserve both causes and emit redacted diagnostics. Missing runtime and
+receipt rows alone never authorize replay. See the
+[implementation record](docs/plans/2026-11-15-attempt-startup-failure-landing.md).
 
 Local CLI attempts have no MetaWork-owned wall-clock, tool-count or processing-cycle
 budget. `runtimePolicy.executorIdleTimeoutMs` is the sustained-inactivity check

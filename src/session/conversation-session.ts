@@ -2253,6 +2253,8 @@ export class ConversationSession {
         : '';
       const action = diagnosis?.verdict === 'retry_safe'
         ? `\n  可安全重试：/task recover ${taskId} ${item.id} retry`
+        : diagnosis?.verdict === 'settled'
+          ? '\n  多余派发已核实，无需再次执行；系统将结清并补齐任务收尾。'
         : diagnosis?.verdict === 'applied'
           ? `\n  已核实完成，可结清：/task recover ${taskId} ${item.id} assume-applied`
           : '\n  请先核对实际结果；当前没有证明可安全重试的事实。';

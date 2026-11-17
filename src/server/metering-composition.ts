@@ -5,12 +5,14 @@ import { SqliteQueryContextStore } from '../storage/query-usage-context-repo.js'
 import { createQueryContextService } from '../metering/query-context-service.js';
 import type { QueryUsageLifecycle } from '../metering/query-lifecycle.js';
 import { TokenUsageService } from '../metering/token-usage-service.js';
+import { WebUsageService } from '../metering/web-usage-service.js';
 
 export interface ServerMeteringServices {
   readonly lifecycle: QueryUsageLifecycle;
   readonly contexts: SqliteQueryContextStore;
   readonly metering: SqliteMeteringStore;
   readonly tokenUsage: TokenUsageService;
+  readonly webUsage: WebUsageService;
 }
 
 /** Server-owned attribution and Token accounting. Never creates monetary facts. */
@@ -18,6 +20,7 @@ export function createServerMeteringServices(db: Database.Database): ServerMeter
   const contexts = new SqliteQueryContextStore(db);
   const metering = new SqliteMeteringStore(db);
   const tokenUsage = new TokenUsageService(metering);
+  const webUsage = new WebUsageService(metering);
   const queryContext = createQueryContextService({
     store: contexts,
     createQueryId: () => `query_${randomUUID()}`,
@@ -66,5 +69,5 @@ export function createServerMeteringServices(db: Database.Database): ServerMeter
       );
     },
   };
-  return { lifecycle, contexts, metering, tokenUsage };
+  return { lifecycle, contexts, metering, tokenUsage, webUsage };
 }

@@ -25,9 +25,14 @@ export interface HarnessProgressEvent {
 }
 
 export interface HarnessUsageCounter {
-  readonly resource: 'model_tokens';
+  /**
+   * `model_tokens` for Provider calls. A billed third-party tool (for example a
+   * search API the Executor invoked) reports its own metered resource and unit;
+   * the metering normalizer validates the resource against `USAGE_RESOURCES`.
+   */
+  readonly resource: 'model_tokens' | 'search' | 'tool_request';
   readonly metric: string;
-  readonly unit: 'token';
+  readonly unit: 'token' | 'request';
   readonly kind: 'delta' | 'cumulative';
   readonly value: string;
   readonly subsetOf?: string;

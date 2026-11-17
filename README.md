@@ -13,7 +13,7 @@ through one owned control path (Manager proposal → admission → Router → Ex
 certification → delivery), and keeps the result, its receipts and its recovery facts
 across restarts instead of ending at a chat reply.
 
-[Install](#install) · [Quick start](#quick-start) · [What's new in 0.1.27](#whats-new-in-0127) ·
+[Install](#install) · [Quick start](#quick-start) · [What's new in 0.1.31](#whats-new-in-0131) ·
 [Architecture](#architecture) · [Upgrading](#upgrading-from-the-previous-architecture) ·
 [Usage](#usage) · [License](#license) · [中文](README.zh-CN.md)
 
@@ -21,13 +21,13 @@ across restarts instead of ending at a chat reply.
 
 ## Install
 
-**Current release: v0.1.27 (internal), one build for every asset —
-`0.1.27-build-ffca58f`, revision `ffca58f`.** Download from
+**Current release: v0.1.31 (internal), one build for every asset —
+`0.1.31-build-3619af8`, revision `3619af8`.** Download from
 [the latest release](https://github.com/IFOSR/metawork/releases/latest).
 
 | Platform | Addressed to | Download |
 | --- | --- | --- |
-| macOS Apple Silicon (`arm64`) | **Desktop app** (bundles Runtime, Web and Executor Pi) | [MetaWork-darwin-arm64.dmg](https://github.com/IFOSR/metawork/releases/latest/download/MetaWork-darwin-arm64.dmg) — 345,085,425 bytes, SHA-256 `b6053c22b1e816a64c80c63cdd45da4a77a6f2a29ebe806ba789fe2b128812c1` |
+| macOS Apple Silicon (`arm64`) | **Desktop app** (bundles Runtime, Web and Executor Pi) | [MetaWork-darwin-arm64.dmg](https://github.com/IFOSR/metawork/releases/latest/download/MetaWork-darwin-arm64.dmg) — 345,572,953 bytes, SHA-256 `4711a4f79af2a62c8305a2eb86bc381b08e4f5a4a2967580a1a6695964fef54b` |
 | macOS Apple Silicon (`arm64`) | **Server package**, used through the Web client | [install.sh](https://github.com/IFOSR/metawork/releases/latest/download/install.sh) · [manifest.darwin-arm64.json](https://github.com/IFOSR/metawork/releases/latest/download/manifest.darwin-arm64.json) |
 | macOS Intel (`x64`) | **Server package**, used through the Web client | [install.sh](https://github.com/IFOSR/metawork/releases/latest/download/install.sh) · [manifest.darwin-x64.json](https://github.com/IFOSR/metawork/releases/latest/download/manifest.darwin-x64.json) |
 | Linux / WSL2 (`x64`) | **Server package**, used through the Web client | [install.sh](https://github.com/IFOSR/metawork/releases/latest/download/install.sh) · [manifest.linux-x64.json](https://github.com/IFOSR/metawork/releases/latest/download/manifest.linux-x64.json) |
@@ -296,6 +296,55 @@ metawork provider list | add | edit | test | remove
 metawork model    list | add | edit | test | remove
 metawork executor list | add | edit | enable | disable | remove | test
 ```
+
+## What's new in 0.1.31
+
+0.1.31 fixes failure settlement during shared read-only Workspace preparation.
+A transient startup error now leaves a failure receipt and releases its claims;
+explicitly transient errors can use the existing bounded retry budget instead of
+leaving the Task stuck behind an uncertain dispatch. Workspace protections and
+terminal fences remain enforced. See [the release notes](docs/releases/v0.1.31.md).
+
+## What's new in 0.1.30
+
+0.1.30 stops a finished Task from staying blocked by its own duplicate dispatch
+and recovers completion without rerunning an Executor. The full list is in
+[the release notes](docs/releases/v0.1.30.md).
+
+- Each Task's snapshot/decision/application section is now serialized inside the
+  account-owned Execution Runtime, so two workflow instances can no longer drive
+  the same frontier while the first is still preparing.
+- `queued` is no longer read as proof that a Task yielded: queue repair, slot
+  convergence and periodic promotion consult the same active-operation fact
+  before reclaiming a reservation or re-serving a slot.
+- A typed, fully rolled-back live-owner dispatch conflict becomes an explicit
+  rejection checked against the current frontier; unknown preparation or database
+  failures keep their recovery fence.
+- Startup/periodic recovery and `/task recovery` share one postcondition
+  inspector over `pending` and `retry_authorized` items, so an authorized retry is
+  either advanced or settled instead of blocking the Task conclusion.
+- Completion recovery reuses certified results and the existing idempotent
+  completion transaction/outbox (summary, actual artifacts, interaction, graph
+  closure, answer delivery) and leaves a durable settlement tag so an interrupted
+  completion is still found after restart. Periodic recovery also delivers pending
+  completion notifications.
+
+## What's new in 0.1.29
+
+0.1.29 turns the Executor's web tools onto DeepSeek and starts counting what they
+bill. The full list is in [the release notes](docs/releases/v0.1.29.md).
+
+- `web_search` prefers DeepSeek's Search API whenever a DeepSeek Provider
+  credential is configured and falls back to Bing HTML otherwise; results now
+  carry publication date, site and authority. The Baidu scraper is gone.
+- `web_fetch` is routed by affordance: research attempts read pages through
+  DeepSeek's extraction API, workspace attempts keep curl so a local service they
+  started stays reachable.
+- The DeepSeek credential is the Provider key itself — no separate search key —
+  and an unresolvable credential degrades to Bing instead of failing the attempt.
+- Billed web-tool requests are metered: each billable DeepSeek search is one
+  `search` request and each billable fetch is one `tool_request`, shown in the
+  account usage view. Free fallbacks and rejected URLs are not counted.
 
 ## What's new in 0.1.27
 

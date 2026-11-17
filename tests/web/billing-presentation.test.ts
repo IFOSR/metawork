@@ -24,6 +24,11 @@ describe('Web token usage presentation', () => {
     ]);
     expect(usage).toContain('时间区间');
     expect(usage).toContain('统计维度');
+    // Billed web-tool requests are shown as counts next to Token usage, never as
+    // money: pricing stays a separate decision from measured quantity.
+    expect(usage).toContain('联网检索');
+    expect(usage).toContain('searchRequests');
+    expect(usage).not.toContain('0.00075');
     expect(usage).toContain('按 Provider');
     expect(usage).toContain('按天用量趋势');
     expect(http).toContain('/api/usage/timeline');

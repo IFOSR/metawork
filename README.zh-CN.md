@@ -12,7 +12,7 @@ MetaWork 把自然语言需求变成可持久化的 Task 与 Work Graph，只经
 （Manager 提议 → 准入 → Router 决策 → Executor 执行 → 验收 → 交付），结果、回执与
 恢复事实跨进程重启保留，而不是停留在一次聊天回复。
 
-[安装](#安装) · [快速开始](#快速开始) · [0.1.27 新增](#0127-新增) ·
+[安装](#安装) · [快速开始](#快速开始) · [0.1.31 新增](#0131-新增) ·
 [架构](#架构) · [从旧架构升级](#从旧架构升级) · [使用方式](#使用方式) ·
 [许可](#许可) · [English](README.md)
 
@@ -20,13 +20,13 @@ MetaWork 把自然语言需求变成可持久化的 Task 与 Work Graph，只经
 
 ## 安装
 
-**当前版本：v0.1.27（内部版），所有资产来自同一个构建
-`0.1.27-build-ffca58f`（revision `ffca58f`）。** 下载入口：
+**当前版本：v0.1.31（内部版），所有资产来自同一个构建
+`0.1.31-build-3619af8`（revision `3619af8`）。** 下载入口：
 [latest release](https://github.com/IFOSR/metawork/releases/latest)。
 
 | 平台 | 用途 | 下载 |
 | --- | --- | --- |
-| macOS Apple Silicon（`arm64`） | **桌面应用**（内含 Runtime、Web 与 Executor Pi） | [MetaWork-darwin-arm64.dmg](https://github.com/IFOSR/metawork/releases/latest/download/MetaWork-darwin-arm64.dmg) — 345,085,425 字节，SHA-256 `b6053c22b1e816a64c80c63cdd45da4a77a6f2a29ebe806ba789fe2b128812c1` |
+| macOS Apple Silicon（`arm64`） | **桌面应用**（内含 Runtime、Web 与 Executor Pi） | [MetaWork-darwin-arm64.dmg](https://github.com/IFOSR/metawork/releases/latest/download/MetaWork-darwin-arm64.dmg) — 345,572,953 字节，SHA-256 `4711a4f79af2a62c8305a2eb86bc381b08e4f5a4a2967580a1a6695964fef54b` |
 | macOS Apple Silicon（`arm64`） | **Server 包**，用 Web 客户端访问 | [install.sh](https://github.com/IFOSR/metawork/releases/latest/download/install.sh) · [manifest.darwin-arm64.json](https://github.com/IFOSR/metawork/releases/latest/download/manifest.darwin-arm64.json) |
 | macOS Intel（`x64`） | **Server 包**，用 Web 客户端访问 | [install.sh](https://github.com/IFOSR/metawork/releases/latest/download/install.sh) · [manifest.darwin-x64.json](https://github.com/IFOSR/metawork/releases/latest/download/manifest.darwin-x64.json) |
 | Linux / WSL2（`x64`） | **Server 包**，用 Web 客户端访问 | [install.sh](https://github.com/IFOSR/metawork/releases/latest/download/install.sh) · [manifest.linux-x64.json](https://github.com/IFOSR/metawork/releases/latest/download/manifest.linux-x64.json) |
@@ -259,6 +259,43 @@ metawork provider list | add | edit | test | remove
 metawork model    list | add | edit | test | remove
 metawork executor list | add | edit | enable | disable | remove | test
 ```
+
+## 0.1.31 新增
+
+0.1.31 修复共享只读工作区准备阶段失败后，错误回执无法落地、任务卡在 uncertain
+派发的问题。失败会保留原始错误并释放认领；明确的临时错误走既有有限重试，工作区保护
+和终态围栏继续生效。完整说明见[发布说明](docs/releases/v0.1.31.md)。
+
+## 0.1.30 新增
+
+0.1.30 修掉“已完成的任务被自己那次重复派发卡住”，并让完成收尾可以在不重跑 Executor
+的前提下恢复。完整列表见[发布说明](docs/releases/v0.1.30.md)。
+
+- 每个 Task 的“快照 / 决策 / 应用”段现在由账号级 Execution Runtime 串行化，两个工作流
+  实例不会再在第一个仍在准备时驱动同一份前沿。
+- `queued` 不再被当作“已经退让”的证据：队列修复、名额收敛与周期提升在收回名额或重新
+  提升前都会读取同一个活跃操作事实。
+- 只有可识别且整批回滚的“活跃 owner 派发冲突”才变成显式拒绝并重新对照当前前沿；未知的
+  准备或数据库失败仍保留恢复围栏。
+- 启动/周期恢复与 `/task recovery` 共用同一个后置条件检查器，覆盖 `pending` 与
+  `retry_authorized`，恢复授权要么被推进、要么被结清，不再持续阻塞任务结论。
+- 完成收尾复用已验证结果和既有的幂等完成事务/outbox（摘要、实际产物、interaction、
+  图闭合、答案交付），并留下持久的结清标记，重启后仍能找到未完成的收尾；周期恢复同时
+  补投待发送的完成通知。
+
+## 0.1.29 新增
+
+0.1.29 把 Executor 的联网工具迁到 DeepSeek，并把它的计费请求纳入用量统计。完整列表见
+[发布说明](docs/releases/v0.1.29.md)。
+
+- 配置了 DeepSeek Provider 凭据时，`web_search` 优先使用 DeepSeek 搜索 API，否则回落到
+  Bing HTML；结果新增发布日期、站点与权威度。百度抓取后端已删除。
+- `web_fetch` 按 affordance 分流：研究类 attempt 走 DeepSeek 提取 API，工作区任务保留
+  curl，仍可访问自己启动的本地服务。
+- DeepSeek 凭据就是 Provider 的 Key（没有独立搜索 Key）；凭据不可解析时回落到 Bing，
+  不会让 attempt 失败。
+- 计费的联网请求计入用量：每次计费搜索记一条 `search` 请求、每次计费抓取记一条
+  `tool_request` 请求，在账号用量页展示；免费兜底与被拒 URL 不计入。
 
 ## 0.1.27 新增
 

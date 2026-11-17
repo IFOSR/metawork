@@ -133,6 +133,25 @@ export interface MeteringStore {
   listModelUsageFacts?(input: ModelUsageFilter): ModelUsageFact[];
   /** Stream account-scoped facts without materializing the entire period. */
   iterateModelUsageFacts?(input: ModelUsageFilter): Iterable<ModelUsageFact>;
+  /** Account-scoped totals for non-token resources (billed tool calls). */
+  summarizeResourceUsage?(input: ResourceUsageFilter): ResourceUsageTotal[];
+}
+
+/** Account-scoped resource totals; the same observation store backs Token usage. */
+export interface ResourceUsageFilter {
+  readonly accountId: string;
+  readonly from: string;
+  readonly to: string;
+  readonly resources: readonly UsageResource[];
+}
+
+export interface ResourceUsageTotal {
+  readonly resource: UsageResource;
+  readonly metric: string;
+  readonly unit: string;
+  /** Exact decimal string; only denominator-1 observations are summed. */
+  readonly quantity: string;
+  readonly observations: number;
 }
 
 export interface ModelUsageFilter {

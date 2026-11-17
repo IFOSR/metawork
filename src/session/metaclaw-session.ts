@@ -2587,6 +2587,7 @@ export class MetaclawSession {
 
   private diagnoseRecoveryApplication(item: import('../execution/control-application-recovery.js').RecoveryApplicationFact) {
     return inspectApplicationAgainstSources(item, {
+      readDispatchRecoveryFacts: item => this.recoveryItems.readDispatchRecoveryFacts(item),
       findTask: id => {
         const record = this.taskRuntimeService.findTask(id);
         return record

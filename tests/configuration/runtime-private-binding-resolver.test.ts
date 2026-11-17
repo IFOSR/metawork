@@ -223,6 +223,79 @@ describe('resolveRuntimePrivateConfigurationBinding', () => {
       secretStore,
     })).rejects.toThrow('Provider credential is empty: provider-main');
   });
+
+  it('reuses the configured DeepSeek credential for the Executor web tools', async () => {
+    const configuration = runtimeConfiguration();
+    configuration.providers.deepseek = {
+      protocol: 'openai-compatible',
+      baseUrl: 'https://api.deepseek.com/v1',
+      apiKeyRef: 'keychain:anyfusion/provider-deepseek',
+      region: 'international',
+      enabled: true,
+    };
+    const secretStore = recordingSecretStore({
+      'keychain:anyfusion/provider-main': 'sk-attempt-secret',
+      'keychain:anyfusion/provider-deepseek': 'sk-deepseek',
+    });
+
+    const result = await resolveRuntimePrivateConfigurationBinding({
+      configuration,
+      authorizedBinding: binding(),
+      secretStore,
+    });
+
+    // Same key as the DeepSeek LLM provider: there is no separate search key.
+    expect(result.environment).toMatchObject({
+      OPENAI_API_KEY: 'sk-attempt-secret',
+      DEEPSEEK_API_KEY: 'sk-deepseek',
+      DEEPSEEK_SEARCH_BASE_URL: 'https://api.deepseek.com',
+    });
+    expect(secretStore.get).toHaveBeenCalledWith('keychain:anyfusion/provider-deepseek');
+  });
+
+  it('keeps the Bing fallback when the DeepSeek credential is unresolvable', async () => {
+    const configuration = runtimeConfiguration();
+    configuration.providers.deepseek = {
+      protocol: 'openai-compatible',
+      baseUrl: 'https://api.deepseek.com/v1',
+      apiKeyRef: 'keychain:anyfusion/provider-deepseek',
+      region: 'international',
+      enabled: true,
+    };
+
+    const result = await resolveRuntimePrivateConfigurationBinding({
+      configuration,
+      authorizedBinding: binding(),
+      secretStore: recordingSecretStore({ 'keychain:anyfusion/provider-main': 'sk-attempt-secret' }),
+    });
+
+    expect(result.environment).toMatchObject({ OPENAI_API_KEY: 'sk-attempt-secret' });
+    expect(result.environment).not.toHaveProperty('DEEPSEEK_API_KEY');
+    expect(result.environment).not.toHaveProperty('DEEPSEEK_SEARCH_BASE_URL');
+  });
+
+  it('adds the DeepSeek search credential when the attempt itself runs on DeepSeek', async () => {
+    const configuration = runtimeConfiguration();
+    configuration.providers['provider-main'] = {
+      protocol: 'openai-compatible',
+      baseUrl: 'https://api.deepseek.com/v1',
+      apiKeyRef: 'keychain:anyfusion/provider-main',
+      region: 'international',
+      enabled: true,
+    };
+
+    const result = await resolveRuntimePrivateConfigurationBinding({
+      configuration,
+      authorizedBinding: binding(),
+      secretStore: recordingSecretStore({ 'keychain:anyfusion/provider-main': 'sk-deepseek' }),
+    });
+
+    expect(result.environment).toMatchObject({
+      OPENAI_API_KEY__PROVIDER_MAIN: 'sk-deepseek',
+      DEEPSEEK_API_KEY: 'sk-deepseek',
+      DEEPSEEK_SEARCH_BASE_URL: 'https://api.deepseek.com',
+    });
+  });
 });
 
 function binding(

@@ -10,15 +10,55 @@ Recorded from the `v0.1.21` internal release (2026-11-03); re-run unchanged for
 `v0.1.23` (2026-11-04): 14 assets, DMG 465,056,678 bytes in 12 parts, Runtime
 workflow 9m43s, DMG assembly 2m.
 
+Re-run for `v0.1.29` (2026-11-14): 15 assets, DMG 345,114,277 bytes in 9 parts,
+Runtime workflow 12m, DMG assembly under 1m, payload `0.1.29-desktoppayload-1741`
+passing the Desktop update gate against an installed `0.1.28` build. Two pitfalls
+that cost a retry:
+
+Re-run for `v0.1.30` (2026-11-14): 15 assets, DMG 345,451,303 bytes in 9 parts,
+Runtime workflow 11m, DMG assembly under 2m, payload
+`0.1.30-desktoppayload-1435` passing the Desktop update gate against the installed
+`0.1.29` build. The local payload build failed twice before producing a DMG, both
+times because the local build tree did not match CI:
+
+- `memory engine root must be a directory named "tdai"`: `--memory-root` takes
+  the engine directory itself, so copy the installed engine to
+  `<work>/memory/tdai` and pass that path.
+- `ENOENT .../payload/metawork/dist/pi-pdf/index.ts`: `npm run build` stopped at
+  `prepare-pi-pdf.mjs` because the pinned Python archive download failed
+  (`curl: (16) Error in the HTTP2 framing layer`), leaving `dist/pi-pdf` with an
+  empty `python/` and no source files. Rebuild the two caches from an already
+  published payload (`~/.metawork/desktop-support/<payload>/dist/pi-pdf`) into
+  `.tmp/pi-pdf-python/<sha256>/` and `.tmp/pi-pdf-dependencies/<fingerprint>/`
+  with the matching `ready` files, then rerun `prepare-pi-pdf.mjs`; it re-verifies
+  the interpreter and the `pypdf`/`pdfplumber`/`pypdfium2`/`PIL` imports.
+
+- `internal-desktop-upload.yml` requires `source_commit` as the **full 40-character**
+  SHA and `target_commitish` of the draft release to equal it. A draft created
+  without `--target` records the branch name (`main`), so patch it first with
+  `gh api -X PATCH repos/OWNER/REPO/releases/ID -f tag_name=vVERSION -f target_commitish=$FULL_SHA`.
+  Patch `tag_name` in the same request: patching only the target turns the draft's
+  tag into an `untagged-…` placeholder and `gh release view vVERSION` stops working.
+- Upload parts in batches of four (each ~1 minute) and confirm `split` produced
+  exactly `part_count` files before dispatching the workflow.
+
 ## What gets published
+
+For `v0.1.31` (2026-11-16), the local DMG consumed the signed CI arm64 archives
+directly: all assets use `0.1.31-build-3619af8`, with locked Pi 1.5.0. The DMG is
+345,572,953 bytes (nine 40 MiB upload parts). Image verification, the app seal,
+and the real Desktop update gate from `0.1.30-preview.20261115` passed. The
+15 uploaded assets' GitHub SHA-256 digests and sizes match the local verified
+files. See [the release record](../plans/2026-11-16-v0.1.31-release.md).
 
 | Asset | Target(s) | Built by |
 | --- | --- | --- |
 | `metawork-VERSION-build-<sha>.tar.gz` | `darwin-arm64`, `darwin-x64`, `linux-x64` | `internal-runtime-release.yml` |
-| `planner-VERSION-build-<sha>.tar.gz` | same three | `internal-runtime-release.yml` |
+| `pi-VERSION-build-<sha>.tar.gz` | same three | `internal-runtime-release.yml` |
 | `memory-VERSION-build-<sha>.tar.gz` | same three | `internal-runtime-release.yml` |
 | `manifest.<target>.json` (signed) | same three | `internal-runtime-release.yml` |
 | `install.sh` | — | `internal-runtime-release.yml` |
+| `pi-runtime-pin.json` | build-time Pi identity | `internal-runtime-release.yml` |
 | `MetaWork-darwin-arm64.dmg` | Apple Silicon only | built locally, assembled by `internal-desktop-upload.yml` |
 
 Not published by this path: the Intel DMG, native Windows (and `install.ps1`),
@@ -92,20 +132,30 @@ git push origin "$COMMIT:refs/tags/vVERSION"
 
 ```sh
 gh workflow run internal-runtime-release.yml \
-  -f release_tag=vVERSION -f source_ref=main
+  --ref vVERSION -f release_tag=vVERSION -f source_ref=vVERSION
 gh run list --workflow=internal-runtime-release.yml -L 1
 ```
 
 The workflow installs dependencies, prepares and verifies the pinned memory
 engine (FTS5 gate), builds the Runtime for its three native runners with
 `npm run build:release`, verifies signatures/hashes/revisions against the tag, and
-uploads 13 assets into the existing release with `--clobber`.
+uploads 14 assets into the existing draft release with `--clobber`. Dispatch
+against the immutable release tag so `GITHUB_SHA` and the checked-out source
+identify the same commit.
 
 ### 4. Build the Apple Silicon DMG locally
 
 A DMG cannot be produced by CI on the internal path (no Apple identity), and the
 payload must be prepared for the **same commit** as the Runtime archives, because
 `prepare-runtime.mjs` requires `sourceCommit` to start with the manifest revision.
+
+Prefer downloading the completed Runtime workflow's `metawork-darwin-arm64`
+artifact and passing that directory to `prepare-runtime.mjs --artifacts`. Include
+both the official Runtime public key and the local Desktop descriptor public key
+in `--trusted-keys`. This keeps the DMG on exactly the same signed Runtime, Pi
+and Memory archives as the Server release and avoids a second local package
+build. The local packaging command below is an alternative for standalone
+development verification, not the source of the public Server archives.
 
 ```sh
 W=.tmp/internal-release
@@ -210,9 +260,9 @@ gh api repos/IFOSR/metawork/releases/latest --jq .tag_name
 gh api repos/IFOSR/metawork/actions/workflows/371354739 --jq .state   # re-enable first
 ```
 
-Expected asset count: 13 Runtime/Planner/Memory assets + 4 extras (`install.sh`,
-3 manifests) counted inside those 13, plus the DMG — i.e. 14 assets with no
-`part-*` left behind.
+Expected asset count: 14 Runtime/Pi/Memory assets (nine archives, three manifests,
+`install.sh`, `pi-runtime-pin.json`) plus the DMG — 15 assets, with no `part-*`
+left behind. Additional checksum files, if published, increase that count.
 
 ## Pitfalls seen and fixed
 

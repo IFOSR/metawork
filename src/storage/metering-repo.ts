@@ -8,12 +8,15 @@
 import type Database from 'better-sqlite3';
 import { nanoid } from 'nanoid';
 import { validateModelUsageFilter } from '../metering/token-usage-filter.js';
+import { isUsageResource } from '../metering/usage-resource.js';
 import type {
   MeteringSpanRecord,
   ModelUsageFact,
   ModelUsageFilter,
   MeteringStore,
   PersistedUsageObservation,
+  ResourceUsageFilter,
+  ResourceUsageTotal,
 } from '../metering/ports.js';
 import type { CumulativeSnapshot, NormalizationIssue } from '../metering/usage-normalizer.js';
 
@@ -174,6 +177,40 @@ export class SqliteMeteringStore implements MeteringStore {
       providerResponseId: row.provider_response_id == null ? null : String(row.provider_response_id),
       normalizationVersion: String(row.normalization_version),
     };
+  }
+
+  /**
+   * Account-scoped totals for non-token resources (billed tool calls). Only
+   * reported, denominator-1 observations that count toward the total participate,
+   * so a replay or an unavailable declaration cannot move the number.
+   */
+  summarizeResourceUsage(input: ResourceUsageFilter): ResourceUsageTotal[] {
+    if (input.resources.length === 0) return [];
+    const placeholders = input.resources.map(() => '?').join(', ');
+    const rows = this.db.prepare(`
+      SELECT observation.resource AS resource, observation.metric AS metric, observation.unit AS unit,
+             SUM(CAST(observation.quantity_numerator AS INTEGER)) AS quantity,
+             COUNT(*) AS observations
+      FROM usage_observations AS observation
+      JOIN query_usage_contexts AS context ON context.query_id = observation.query_id
+      WHERE context.account_id = ?
+        AND observation.captured_at >= ? AND observation.captured_at < ?
+        AND observation.resource IN (${placeholders})
+        AND observation.quantity_denominator = '1'
+        AND observation.quality = 'reported'
+        AND observation.counts_toward_total = 1
+      GROUP BY observation.resource, observation.metric, observation.unit
+      ORDER BY observation.resource, observation.metric
+    `).all(input.accountId, input.from, input.to, ...input.resources) as Array<{
+      resource: string; metric: string; unit: string; quantity: number | string; observations: number;
+    }>;
+    return rows.filter(row => isUsageResource(row.resource)).map(row => ({
+      resource: row.resource as ResourceUsageTotal['resource'],
+      metric: row.metric,
+      unit: row.unit,
+      quantity: String(row.quantity),
+      observations: Number(row.observations),
+    }));
   }
 
   openSpan(span: MeteringSpanRecord): void {

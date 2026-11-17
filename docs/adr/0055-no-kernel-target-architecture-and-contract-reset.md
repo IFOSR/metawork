@@ -178,6 +178,25 @@ shapes, the `decision()` factory, `guardControlDecision()` and
 `src/execution/*-policy.ts` behind `ControlLoopPolicy`, and the durable workflow
 that persisted and replayed the ledger is deleted.
 
+Implementation checkpoint (2026-11-14, duplicate-dispatch recovery): the
+account-owned Runtime now serializes each Task's snapshot/decision/application
+section across workflow instances under the existing Server instance lock.
+Executor draining is outside that section; distinct user control intents remain
+independent events. Queue repair, slot convergence and periodic promotion share
+the same active-operation fact. The dispatch repository reports only a typed
+live-owner conflict after full batch rollback; other unknown outcomes remain
+fenced. The existing postcondition inspector handles pending and retry-authorized
+recovery, strictly proves obsolete ordinary dispatches against completed owner
+receipts, and leaves a durable settlement tag for idempotent completion recovery.
+The current frontier owns ordinary safe retry; scans do not consume retry budget.
+Completion reuses certified results, the existing transaction and outbox, including
+repair after a succeeded conclusion; no lease table, decision ledger or replay
+engine is introduced. This assumes one writable Server protected by
+`runtime.lock`, not multi-process database writers. Local macOS arm64 + Web
+acceptance recovered the original four-result Task without changing its dispatch
+or receipt rows and completed a fresh four-node Task. See the
+[implementation record](../plans/2026-11-14-completed-task-blocked-by-duplicate-dispatch-recovery.md).
+
 Implementation checkpoint (2026-11-10, usage review R-08–R-10): the Web account
 usage surface and authenticated `/api/usage/timeline` now use the Metering owner
 read model, Beijing calendar intervals and exact canonical Token totals. The same

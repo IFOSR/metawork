@@ -1452,6 +1452,36 @@ sockets before reclaiming a confirmed stale socket and records the created
 device/inode so shutdown cannot unlink a replacement. Planner RPC preserves
 structured transport uncertainty and partial tool audit.
 
+### Duplicate dispatch and completion recovery (2026-11-14)
+
+The account-owned `ControlExecutionRuntime` serializes each Task's snapshot,
+decision and application across `TaskControlWorkflow` instances. Waiting for an
+Executor stays outside this section. Distinct resume/recovery events each read
+fresh facts and receive their own acknowledgement. Under the existing Server
+`runtime.lock`, queue-entry repair, slot convergence and periodic promotion use
+the same active-operation signal; durable reservation/version and residue checks
+still release real resource yields and recover stale startup records.
+
+`ControlDispatchItemRepo.insertBatch()` keeps its IMMEDIATE transaction and
+unique live-attempt constraint. A typed, fully rolled-back owner conflict becomes
+an explicit rejection followed by a fresh frontier check; unknown Workspace or
+database errors keep normal recovery. No historical attempt suppresses a legal
+continuation, fallback or repair.
+
+Startup/periodic recovery and `/task recovery` share one postcondition inspector
+for pending and retry-authorized items. Strict graph, generation, binding,
+Workspace and completed-receipt evidence can settle an obsolete ordinary dispatch
+without claiming that its own attempts ran. Its durable settlement tag selects
+unfinished completion after a restart, even when the Task already says succeeded.
+The existing completion boundary reuses certified results and a stable result/
+outbox identity, atomically fills summary, actual artifacts, interaction and graph
+closure, and delivers the answer. Executors are not rerun. Ordinary safe retries
+belong to the current frontier with the existing bounded budget; repeated scans
+do not increment authorization counts. Periodic recovery also delivers pending
+completion notifications. This adds no persistent lease or control ledger and
+does not support multiple database writers. See the
+[local implementation and Web acceptance record](../plans/2026-11-14-completed-task-blocked-by-duplicate-dispatch-recovery.md).
+
 ### Startup recovery configuration pins (2026-11-10, review R-12)
 
 Before recovery, the account resolves each distinct active Work Graph and
@@ -2034,6 +2064,15 @@ deterministic from the event and batch item.
 
 `ControlLoopPolicy` decides inside `TaskControlWorkflow`, a serial in-process drain with no event inbox, decision ledger or replay. Each decision is applied immediately through an idempotent Runtime handler; deduplicated events are remembered in memory, and an interrupted application records one `task_recovery_items` row that startup reconciliation, `/task recovery` and resolver operations read instead of a ledger. Startup reconciles recovery items, child dispatch items, execution-backend records and publication state before accepting input. Planner runs and bounded redacted tool summaries remain audited separately. `WorkGraphRuntimeService` derives graph facts without selecting strategy. `ControlExecutionRuntime` builds snapshots and applies decisions; `AttemptSupervisor` owns child launch; `SubtaskAttemptRunner` produces receipts and candidate commits; `WorkspacePublicationWorker` owns ordered integration and atomic completion publication.
 
+The runner's `running` Subtask state includes startup preparation. It is set
+before `beginRead()` so an early read-preparation failure can commit its failure
+receipt and release claims through the ordinary terminal boundary. The receipt
+distinguishes this stage from Executor launch; only proven transient preparation
+failures use the existing bounded retry policy. Workspace integrity failures stay
+fenced. A failed terminal write keeps both the original and persistence errors;
+no missing-row heuristic authorizes replay. See the
+[2026-11-15 repair record](../plans/2026-11-15-attempt-startup-failure-landing.md).
+
 The older `ExecutorRouter`, `ExecutorRoutingCoordinator`, `ExecutionPolicyPlanner`, and the `IntentOrchestrator` routing subsystem have been removed entirely — there is no separate executor-selection layer. Legacy route-intent names such as `repo_execution` and `research_workflow` survive only as affinity keys for ranking agent classes.
 
 ## Complex Task Strategy And Agentic Loop
@@ -2042,7 +2081,12 @@ Attempt evidence and upstream ResultReference access follow the registered
 Harness driver's support in the authorized configuration revision, including
 custom Pi/Codex AgentClasses. AgentClass names do not gate the service. Pi
 materializes its evidence extension for bound attempts even without web
-affordances; only the web tools follow those affordances. The service retains
+affordances; only the web tools follow those affordances. The attempt's
+`web_search` prefers DeepSeek's Search API when a DeepSeek Provider credential is
+configured (it reuses that key; there is no separate search key) and falls back
+to Bing HTML, while `web_fetch` uses DeepSeek's extraction API for research
+affordances and curl for workspace attempts so local services stay
+reachable. The service retains
 direct-dependency authorization and closes when the attempt ends.
 
 MetaWork can represent complex requests as a work graph instead of a single undifferentiated prompt. The graph has no explicit single/multi execution mode. `AnyFusionPlanningAgent` keeps work that one canonical AgentClass can deliver as one node and creates another node only at a controlled Routing Capability handoff. The shared pure rules reject malformed DAGs and mergeable same-AgentClass single chains, while reentrant adapters may now own multiple independent nodes in one frontier.

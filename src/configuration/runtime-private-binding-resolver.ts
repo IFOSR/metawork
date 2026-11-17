@@ -81,11 +81,14 @@ export async function resolveRuntimePrivateConfigurationBinding(
 
 
 
-  const environment = await resolveProviderEnvironment({
-    configuration,
-    providerRef: authorizedBinding.providerRef,
-    modelId: model.modelId,
-    secretStore,
+  const environment = Object.freeze({
+    ...await resolveProviderEnvironment({
+      configuration,
+      providerRef: authorizedBinding.providerRef,
+      modelId: model.modelId,
+      secretStore,
+    }),
+    ...await resolveDeepSeekSearchEnvironment({ configuration, secretStore }),
   });
   return Object.freeze({
     revisionId: configuration.revisionId,
@@ -163,6 +166,49 @@ function modelPolicyAllows(
   return agentClass.modelPolicy.mode === 'fixed'
     ? agentClass.modelPolicy.modelRef === modelRef
     : agentClass.modelPolicy.allowedModelRefs.includes(modelRef);
+}
+
+/**
+ * The web tools reuse the configured DeepSeek credential: there is no separate
+ * search key. A missing, invalid or unresolvable DeepSeek credential is not a
+ * binding error — the Executor falls back to its Bing backend instead.
+ */
+async function resolveDeepSeekSearchEnvironment(input: {
+  configuration: RuntimeConfigurationView;
+  secretStore: SecretStore;
+}): Promise<Readonly<Record<string, string>>> {
+  const entry = Object.entries(input.configuration.providers)
+    .filter(([, provider]) => provider.enabled)
+    .sort(([left], [right]) => left.localeCompare(right))
+    .find(([ref, provider]) => isDeepSeekProvider(ref, provider.baseUrl));
+  if (!entry) return {};
+  const [, provider] = entry;
+  try {
+    assertSecretReference(provider.apiKeyRef);
+    const apiKey = (await input.secretStore.get(provider.apiKeyRef)).trim();
+    if (!apiKey) return {};
+    return Object.freeze({
+      DEEPSEEK_API_KEY: apiKey,
+      DEEPSEEK_SEARCH_BASE_URL: deepSeekSearchBaseUrl(provider.baseUrl),
+    });
+  } catch {
+    return {};
+  }
+}
+
+function isDeepSeekProvider(providerRef: string, baseUrl: string): boolean {
+  if (providerRef.toLocaleLowerCase() === 'deepseek') return true;
+  try {
+    return new URL(baseUrl).hostname === 'api.deepseek.com';
+  } catch {
+    return false;
+  }
+}
+
+/** Search/Fetch live beside `/v1` on the provider endpoint. */
+function deepSeekSearchBaseUrl(baseUrl: string): string {
+  const trimmed = baseUrl.trim().replace(/\/+$/u, '').replace(/\/v1$/u, '');
+  return trimmed || 'https://api.deepseek.com';
 }
 
 async function resolveProviderEnvironment(input: {

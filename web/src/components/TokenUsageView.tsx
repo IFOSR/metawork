@@ -73,6 +73,12 @@ export function TokenUsageView({ http }: { http: HttpClient }) {
           ['自备模型', data.totals.onDemandTokens, '由你配置的 Provider 承担']] as const).map(([title, value, description], index) =>
           <section key={title} data-emphasis={index === 0}><span className="usage-card-label">{title}</span><strong>{format(value)}</strong><span>{description}</span></section>)}
       </div>
+      {data.web?.available && <section className="usage-web" aria-label="联网检索用量">
+        <div><span className="usage-section-kicker">WEB TOOLS</span><h3>联网检索</h3></div>
+        <strong>{format(data.web.searchRequests)}<small>次搜索</small></strong>
+        <strong>{format(data.web.fetchRequests)}<small>次抓取</small></strong>
+        <p>仅统计按次计费的后端请求（DeepSeek Search / Fetch），免费兜底后端与实际未计费的结果不计入。</p>
+      </section>}
       {data.totals.missingCalls > 0 && <p className="usage-notice" role="status">{data.totals.missingCalls} 次调用缺少完整用量，当前合计仅包含已记录 Token。</p>}
       {data.totals.unattributedCalls > 0 && <p className="usage-notice">归属未知：{format(data.totals.unattributedTokens)} Token（{data.totals.unattributedCalls} 次调用），计入总量，尚未归入官方额度或自备模型。</p>}
       <section className="usage-chart-panel" aria-label="按天用量趋势">
