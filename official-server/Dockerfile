@@ -6,7 +6,7 @@ WORKDIR /app
 ENV NODE_ENV=production
 COPY package.json package-lock.json ./
 RUN npm ci --omit=dev --ignore-scripts && npm cache clean --force
-COPY server.js business.js hub-payments.js mailer.js prompts.js admin.js ./
+COPY server.js business.js sandbox-scripts.js hub-payments.js mailer.js prompts.js admin.js ./
 COPY console-dist ./console-dist
 RUN mkdir -p /app/data && chown -R node:node /app
 USER node
