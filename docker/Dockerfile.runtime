@@ -115,6 +115,8 @@ COPY docker/planner-pi-config /opt/metaclaw/planner-pi-config
 COPY docker/tui-config.yaml /opt/metaclaw/default-config.yaml
 COPY scripts/smoke-planner-mcp.mjs /app/scripts/smoke-planner-mcp.mjs
 COPY scripts/smoke-metaclaw-real-task.mjs /app/scripts/smoke-metaclaw-real-task.mjs
+# local-sync 数据模式的配置快照协调器：sidecar 采集、restore init 还原。
+COPY scripts/local-sync-config.mjs /app/scripts/local-sync-config.mjs
 COPY --from=builder /app/dist/planning-agent-plan-v9.schema.json /opt/metaclaw/schema/planning-agent-plan-v9.schema.json
 
 RUN test "$(node --version)" = 'v22.19.0' \

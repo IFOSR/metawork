@@ -5,9 +5,12 @@
 
 const dataDir = () => process.env.SANDBOX_DATA_DIR ?? '/data';
 const syncRoot = () => process.env.SANDBOX_SYNC_ROOT ?? '/sync';
+// 配置快照协调器（随实例镜像提供）：配置目录必须整体快照并校验后发布，
+// 逐文件拷贝会拷出「激活指针与激活日志不成对」的撕裂快照，恢复后实例无法启动。
+const CONFIG_SCRIPT = '/app/scripts/local-sync-config.mjs';
 
 /**
- * 一次同步（SQLite 一致性快照 → git 镜像 → 其余文件增量）。
+ * 一次同步（SQLite 一致性快照 → 配置整体快照 → git 镜像 → 其余文件增量）。
  * 单步失败只影响该项不中断流程；SQLite 用 TRUNCATE checkpoint + 只拷主文件
  * （node:sqlite 22.x 没有 backup() API，拷活库/wal 会得到不一致副本）。
  * name：实例资源名（mw-rt-<id>，无下划线），同步子目录与之一致。
@@ -19,12 +22,15 @@ DATA=${data}
 D=${syncRoot()}/${name}
 mkdir -p "$D/db" "$D/git" "$D/rest"
 find "$DATA" -type f \\( -name '*.db' -o -name '*.sqlite' -o -name '*.sqlite3' \\) ! -name '*-wal' ! -name '*-shm' 2>/dev/null | while read -r f; do
-  rel=\${f#"$DATA"/}; d="$D/db/\$(dirname "$rel")"; mkdir -p "$d"
+  rel=\${f#"$DATA"/}; d="$D/db/$(dirname "$rel")"; mkdir -p "$d"
   # node:sqlite（22.x）没有 backup()：先 TRUNCATE checkpoint 把 WAL 并入主文件，
   # 再只拷主文件——快照 = checkpoint 时刻的完整一致状态，之后的写入在新 -wal 里
   # 不污染拷贝。checkpoint 失败（写冲突）跳过本轮，下轮重试。
-  node -e 'const{DatabaseSync}=require("node:sqlite");try{const db=new DatabaseSync(process.argv[1]);db.exec("PRAGMA busy_timeout=2000");db.exec("PRAGMA wal_checkpoint(TRUNCATE)");db.close()}catch(e){process.exit(1)}' "$f" && cp -p "$f" "$d/\$(basename "$f").tmp" && mv -f "$d/\$(basename "$f").tmp" "$d/\$(basename "$f")"
+  node -e 'const{DatabaseSync}=require("node:sqlite");try{const db=new DatabaseSync(process.argv[1]);db.exec("PRAGMA busy_timeout=2000");db.exec("PRAGMA wal_checkpoint(TRUNCATE)");db.close()}catch(e){process.exit(1)}' "$f" && cp -p "$f" "$d/$(basename "$f").tmp" && mv -f "$d/$(basename "$f").tmp" "$d/$(basename "$f")"
 done
+# 配置：整体快照 + 校验后原子发布（撕裂的配置副本会让实例启动被拦）。
+CFG_DIR=$(node ${CONFIG_SCRIPT} config-dir "$DATA" 2>/dev/null || true)
+node ${CONFIG_SCRIPT} snapshot "$DATA" "$D" >/dev/null 2>&1 || true
 find "$DATA" -maxdepth 4 -type d -name .git 2>/dev/null | while read -r g; do
   w=$(dirname "$g"); n=$(echo "$w" | tr '/' '_')
   [ -d "$D/git/$n.git" ] || git init -q --bare "$D/git/$n.git"
@@ -36,6 +42,9 @@ NEWER=""
 # 戳取扫描开始时刻而非结束：扫描期间在写的文件 mtime 仍大于新戳，下轮必然重扫。
 NOW=$(date +%s)
 find "$DATA" -type f $NEWER ! -name '*-wal' ! -name '*-shm' ! -name '*.db' ! -name '*.sqlite*' 2>/dev/null | while read -r f; do
+  case "\$f" in
+    "\${CFG_DIR:-/nonexistent}"/*) continue ;;   # 配置由整体快照负责，逐文件拷贝会撕裂
+  esac
   rel=\${f#"$DATA"/}; d=$D/rest/$(dirname "$rel"); mkdir -p "$d"
   cp -p "$f" "$D/rest/$rel" 2>/dev/null || true
 done
@@ -48,6 +57,7 @@ touch -d "@$NOW" "$STAMP"
  * db/ 最后覆盖（checkpoint 后的主文件自含完整状态）；清掉恢复出来的遗留
  * -wal/-shm，它们属于旧的不一致状态，与快照主库不匹配。本地非空（容器崩溃
  * 后重启，emptyDir 随 Pod 保留）时不动本地数据，服务继续用本地现态。
+ * 配置目录由协调器整目录还原（覆盖 rest/ 里可能存在的旧式撕裂副本）。
  */
 export function sandboxRestoreScript(name) {
   const data = dataDir();
@@ -57,6 +67,7 @@ D=${syncRoot()}/${name}
 if [ -z "$(ls -A "$DATA" 2>/dev/null)" ]; then
   if [ -d "$D/rest" ]; then cp -a "$D/rest/." "$DATA/" 2>/dev/null || true; fi
   if [ -d "$D/db" ]; then cp -a "$D/db/." "$DATA/" 2>/dev/null || true; fi
+  node ${CONFIG_SCRIPT} restore "$DATA" "$D" >/dev/null 2>&1 || true
   find "$DATA" \\( -name '*-wal' -o -name '*-shm' \\) -delete 2>/dev/null
 fi
 `;

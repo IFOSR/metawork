@@ -1591,11 +1591,16 @@ test('local-sync data mode: emptyDir + sync sidecar, no instance PVC, close skip
     assert.ok(restore);
     assert.ok(restore.args[0].includes(`/sync/${resourceName}`));
     assert.ok(restore.args[0].includes('ls -A "$DATA"'));
+    // 配置目录由协调器整目录还原（逐文件拷贝会拷出撕裂的指针/日志对）。
+    assert.ok(restore.args[0].includes('local-sync-config.mjs restore'));
     const sidecar = podSpec.containers.find(container => container.name === 'sync');
     assert.ok(sidecar);
     // SQLite 走 checkpoint(TRUNCATE) + 拷主文件：22.x 的 node:sqlite 没有 backup()。
     assert.ok(sidecar.args[0].includes('wal_checkpoint(TRUNCATE)'));
     assert.ok(sidecar.args[0].includes('push -q --mirror'));
+    // 配置：整体快照（协调器校验后原子发布）+ 逐文件增量时排除配置目录。
+    assert.ok(sidecar.args[0].includes('local-sync-config.mjs snapshot'));
+    assert.ok(sidecar.args[0].includes('local-sync-config.mjs config-dir'));
     assert.ok(sidecar.lifecycle?.preStop?.exec?.command?.at(-1).includes('sleep 2'));
     assert.equal(podSpec.terminationGracePeriodSeconds, 300);
     // close：不尝试删除实例 PVC（该 PVC 不存在），标记 closed。
