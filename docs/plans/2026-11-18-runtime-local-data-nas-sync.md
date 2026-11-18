@@ -172,6 +172,14 @@ Pod（实例）
   同步纳入符号链接；Runtime 侧 `recover()` 在「提交日志已写但指针未切换」时补完
   切换（目标版本完整才自愈，真正损坏才阻断）——激活在两步之间被终止、Pod 重建、
   快照不完整这三类中断都不再让实例永远起不来。
+- **0.1.27.9**（公开模型目录失败不缓存，digest
+  `sha256:45bc36ead56c4c382bad47510f8f1eca62a745cbd5badc1fbda717aa8fcc9897`）：
+  「新增模型」第一次报「OpenRouter 未找到所选模型」、第二次就成功——根因是公开
+  目录的**首次拉取失败**（集群到 openrouter.ai 不通或被限流），失败结果被当作
+  有效快照缓存；失败快照没有 fetchedAt，TTL 判定失效，第二次调用重新拉取成功。
+  修复：只有拉取成功（status==='ready'）才写内存/磁盘缓存；失败结果只用一次即
+  丢弃。能力描述整理侧另有兜底（`resolveSummarizationModelFacts`）：目录里没有
+  该模型时用模型标识兜底，目录未就绪与「目录里没有这个模型」分开报错。
 - 记忆引擎补丁失效根因：Windows 检出把 `memory/tdai-metawork-compat.patch` 转成
   CRLF，`git apply` 报 corrupt 而 prepare 管线失败，引擎检出停留在补丁前状态
   （`.dockerignore` 只排除 node_modules，故过期检出被原样打进镜像）。
