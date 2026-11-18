@@ -166,7 +166,7 @@ describe('preferred user model routing', () => {
         pricing: { source: 'openrouter', exchangeRate: 7 },
       },
       { providerRef: 'custom-model-2', modelId: 'kimi-for-coding' },
-    )).rejects.toThrow(/官方内置 AI 兜底亦失败/u);
+    )).rejects.toThrow(/模型调用失败/u);
     expect(officialAi).toHaveBeenCalledTimes(1);
   });
 });

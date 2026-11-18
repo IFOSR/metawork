@@ -106,9 +106,12 @@ export class InternalLlmService {
         return { choices: [{ finish_reason: 'stop', message: { content: JSON.stringify(result) } }] };
       } catch (error) {
         if (preferredError !== null) {
-          const localReason = preferredError instanceof Error ? preferredError.message : String(preferredError);
-          const fallbackReason = error instanceof Error ? error.message : String(error);
-          throw new InternalLlmError(`用户配置模型（${preferredModelId ?? requestedModelId ?? '未知模型'}）本地调用失败（${localReason}），官方内置 AI 兜底亦失败（${fallbackReason}）。`);
+          // 面向用户的文案保持简洁：只区分「超时可重试」与「需检查配置」，不暴露
+          // 内部通道结构、模型标识或上游原始报错（诊断细节走服务端日志）。
+          const reasons = [preferredError, error].map(reason =>
+            reason instanceof Error ? reason.message : String(reason));
+          const timeoutish = reasons.some(reason => /超时|aborted|AbortError/iu.test(reason));
+          throw new InternalLlmError(timeoutish ? '模型调用超时，请重试。' : '模型调用失败，请检查模型配置或稍后重试。');
         }
         throw error;
       }
