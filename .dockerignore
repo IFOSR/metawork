@@ -11,6 +11,10 @@ projects
 metaclaw-tasks
 .tmp
 .tmp-*
+# Pi PDF 解释器与依赖是**构建输入**：prepare-pi-pdf 会复用 .tmp 下的缓存，
+# 缓存进不了构建上下文就等于每次容器构建都要联网下载（外网不通时构建直接失败）。
+!.tmp/pi-pdf-python/**
+!.tmp/pi-pdf-dependencies/**
 .deepseek
 .git
 *.db
