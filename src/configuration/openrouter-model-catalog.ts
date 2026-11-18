@@ -325,17 +325,19 @@ export class OpenRouterModelCatalog {
     const now = this.options.now?.() ?? Date.now();
     const fetchedAtMs = this.snapshot?.fetchedAt ? Date.parse(this.snapshot.fetchedAt) : NaN;
     const ttl = this.options.cacheTtlMs ?? DEFAULT_CACHE_TTL_MS;
-    if (!options.forceRefresh && this.snapshot && Number.isFinite(fetchedAtMs) && now - fetchedAtMs < ttl) {
+    // 已就绪且在 TTL 内的快照直接复用；失败快照（无 fetchedAt）永不满足此条件。
+    if (!options.forceRefresh && this.snapshot && this.snapshot.status === 'ready'
+      && Number.isFinite(fetchedAtMs) && now - fetchedAtMs < ttl) {
       return this.snapshot;
     }
     if (this.inFlight) return this.inFlight;
     this.inFlight = this.fetchSnapshot().finally(() => { this.inFlight = undefined; });
     const result = await this.inFlight;
     if (result.status === 'ready') {
+      // 只有「拉取成功」的快照才允许覆盖/缓存；失败结果只用一次即丢弃，
+      // 绝不落入内存或磁盘缓存——否则首次拉取失败会被永久当成「目录里没有这个模型」。
       this.snapshot = result;
       await this.persistDiskCache(result);
-    } else if (!this.snapshot) {
-      this.snapshot = result;
     }
     return this.snapshot ?? result;
   }

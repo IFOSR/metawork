@@ -129,4 +129,28 @@ describe('OpenRouterModelCatalog', () => {
     expect(second.models['demo/model']).toBeDefined();
     expect(requestedUrl).toContain('output_modalities=text,decisions');
   });
+
+  it('does not cache an initial fetch failure as if it were a successful snapshot', async () => {
+    // 首次拉取失败（集群访问公开目录不通）时，失败结果不能被缓存成「目录里没有
+    // 这个模型」；第二次调用应重新拉取，成功后即用成功结果。
+    let calls = 0;
+    const catalog = new OpenRouterModelCatalog({
+      fetchImpl: async () => {
+        calls += 1;
+        if (calls === 1) throw new Error('network down');
+        return new Response(JSON.stringify({ data: [{ id: 'ok/model' }] }), {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+        });
+      },
+      cacheTtlMs: 0,
+    });
+    const first = await catalog.getSnapshot();
+    expect(first.status).toBe('unavailable');
+    expect(calls).toBe(1);
+    const second = await catalog.getSnapshot();
+    expect(second.status).toBe('ready');
+    expect(second.models['ok/model']).toBeDefined();
+    expect(calls).toBe(2);
+  });
 });
