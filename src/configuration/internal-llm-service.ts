@@ -106,12 +106,17 @@ export class InternalLlmService {
         return { choices: [{ finish_reason: 'stop', message: { content: JSON.stringify(result) } }] };
       } catch (error) {
         if (preferredError !== null) {
-          // 面向用户的文案保持简洁：只区分「超时可重试」与「需检查配置」，不暴露
-          // 内部通道结构、模型标识或上游原始报错（诊断细节走服务端日志）。
-          const reasons = [preferredError, error].map(reason =>
-            reason instanceof Error ? reason.message : String(reason));
-          const timeoutish = reasons.some(reason => /超时|aborted|AbortError/iu.test(reason));
-          throw new InternalLlmError(timeoutish ? '模型调用超时，请重试。' : '模型调用失败，请检查模型配置或稍后重试。');
+          // 面向用户的文案只给「可操作的原因」，不暴露内部通道结构或上游原始报错；
+          // 完整原因留在服务端日志里（诊断用）。两条通道都失败时分别归因，
+          // 否则用户看到一句「调用失败」既不知道该改模型还是该登录。
+          const localReason = errorMessageOf(preferredError);
+          const fallbackReason = errorMessageOf(error);
+          console.error(
+            `[internal-llm] model call failed: local=${localReason} fallback=${fallbackReason}`,
+          );
+          throw new InternalLlmError(
+            `模型调用失败：${classifyCallFailure(localReason)}；官方内置 AI ${classifyCallFailure(fallbackReason)}。`,
+          );
         }
         throw error;
       }
@@ -203,3 +208,38 @@ export class InternalLlmService {
 }
 
 class InternalLlmError extends Error {}
+
+/** 错误原文（仅用于服务端诊断，不直接呈现给用户）。 */
+function errorMessageOf(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
+
+/**
+ * 把失败原因归类成用户可操作的一句话：超时、凭据问题、未登录官方账号、权益失效、
+ * 上游 HTTP 状态、其他。不回显上游原始报文。
+ */
+export function classifyCallFailure(reason: string): string {
+  const text = String(reason ?? '');
+  if (/未找到本机 Web|登录 MetaWork 官方账号|session_invalid|未登录官方账号/iu.test(text)) {
+    return '未登录官方账号，请先在控制台点「进入实例」完成登录';
+  }
+  if (/entitlement_inactive|权益|订阅已过期|revoked/iu.test(text)) {
+    return '官方账号权益不可用';
+  }
+  if (/超时|aborted|AbortError|ETIMEDOUT/iu.test(text)) {
+    return '请求超时，请重试';
+  }
+  if (/暂时无法连接|ECONNREFUSED|fetch failed|ENOTFOUND/iu.test(text)) {
+    return '无法连接上游服务，请检查网络或端点地址';
+  }
+  const status = /HTTP (\d{3})/u.exec(text);
+  if (status) {
+    return status[1] === '401' || status[1] === '403'
+      ? `上游拒绝请求（HTTP ${status[1]}），请检查 API Key 或端点地址`
+      : `上游返回 HTTP ${status[1]}`;
+  }
+  if (/模型|model/iu.test(text)) {
+    return '上游未接受该模型，请检查模型 ID';
+  }
+  return '调用失败，请检查模型配置';
+}

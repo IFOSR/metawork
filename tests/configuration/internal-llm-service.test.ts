@@ -4,7 +4,7 @@ import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { CredentialsFileSecretStore } from '../../src/configuration/credentials-file-secret-store.js';
 import { loadInternalSettingsAssistantConfig } from '../../src/configuration/internal-settings-assistant-config.js';
-import { InternalLlmService, PreferredModelError } from '../../src/configuration/internal-llm-service.js';
+import { classifyCallFailure, InternalLlmService, PreferredModelError } from '../../src/configuration/internal-llm-service.js';
 import { ModelRoutingProfileService } from '../../src/configuration/model-routing-profile-service.js';
 import { MODEL_SUMMARY_PROMPT } from '../../src/configuration/model-summary-prompt.js';
 
@@ -261,5 +261,27 @@ describe('installation-owned internal LLM', () => {
       await expect(service.summarize({ modelId: 'public/model', capabilities: [], pricing: { source: 'openrouter', exchangeRate: 7 } }))
         .rejects.toThrow('原能力描述未修改');
     }
+  });
+});
+
+describe('模型调用失败原因归类', () => {
+  it('把常见失败归类成可操作的一句话（不回显上游原始报文）', () => {
+    expect(classifyCallFailure('This operation was aborted')).toContain('超时');
+    expect(classifyCallFailure('HTTP 401')).toContain('API Key');
+    expect(classifyCallFailure('请先在本机 Web 或 Desktop 登录 MetaWork 官方账号。')).toContain('未登录官方账号');
+    expect(classifyCallFailure('HTTP 404')).toContain('HTTP 404');
+    expect(classifyCallFailure('some raw upstream text')).toBe('调用失败，请检查模型配置');
+  });
+
+  it('两条通道都失败时分别归因，并给出可操作提示', async () => {
+    const officialAi = vi.fn(async () => { throw new Error('请先在本机 Web 或 Desktop 登录 MetaWork 官方账号。'); });
+    const fetchImpl = vi.fn(async () => { throw new Error('This operation was aborted'); });
+    const service = new InternalLlmService({
+      officialAi, fetchImpl,
+      preferredModel: async () => ({ baseUrl: 'https://user.example/v1', apiKey: 'k', modelId: 'm' }),
+    });
+    await expect(service.generate({
+      action: '模型信息提炼', operation: 'model_summary', data: { models: [] },
+    })).rejects.toThrow(/未登录官方账号/iu);
   });
 });
