@@ -145,7 +145,9 @@ Pod（实例）
   → set image 1.5.20 → 注入 `RUNTIME_DATA_MODE`/`RUNTIME_SYNC_MOUNT` 与同步卷
   挂载 → 老实例确认数据后 admin close（云盘/PVC 一并删除）→ 用户侧重建即
   local-sync 实例。
-- 实例镜像线：`anyfusion-runtime:0.1.27.1`（含 main 交付修复，版本号走实例
-  自己的 0.1.27.x 线，与平台安装包 GitHub Release 版本无关联）；已推送 ACR
-  （推送需生产 `RUNTIME_IMAGE` 完整仓库地址）；`RUNTIME_IMAGE` 配置按计划与
-  local-sync 一同切换。
+- 实例镜像线：`anyfusion-runtime` 0.1.27.1 → **0.1.27.2**（超时自动重试）→
+  **0.1.27.3**（模型调用报错文案简化；digest
+  `sha256:5104454318c85702aed84072cd6ec686042006d0eebdf9d25a506b7e82568080`），
+  版本号走实例自己的 0.1.27.x 线，与平台安装包 GitHub Release 版本无关联；
+  均已推送 ACR。`RUNTIME_IMAGE` 已由用户切至 0.1.27.1 并更新实例；
+  0.1.27.3 推送后用户随时切 Secret 并点更新即可。
