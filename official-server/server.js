@@ -873,10 +873,13 @@ async function detectServiceReady(sandboxId, podName, expectedImage) {
     const status = deployment.data.status;
     const generation = deployment.data?.metadata?.generation ?? 0;
     const observed = status.observedGeneration ?? 0;
-    const replicas = status.replicas ?? 0;
+    // 期望副本来自 spec；status.replicas 是**实际** Pod 总数——Recreate 滚动时旧
+    // ReplicaSet 的 Pod 还在 Terminating，总数会临时大于期望值，用它做下限会把
+    // 已就绪的新 Pod 误判成未就绪，实例于是永远停在「更新中」。
+    const desired = Number(deployment.data?.spec?.replicas ?? 1);
     const updated = status.updatedReplicas ?? 0;
     const available = status.availableReplicas ?? 0;
-    if (observed < generation || updated < replicas || available < replicas) {
+    if (observed < generation || updated < desired || available < updated) {
       return { ready: false, phase };
     }
   }
@@ -1079,9 +1082,15 @@ function sandboxDeploymentManifest(row, name) {
           ...(localSync ? [{
             // 同步 sidecar：周期快照到 NAS；preStop 在终止前强制同步一次，
             // 把计划内停止（停机/升级）的丢失窗口压到 ≈0。
+            // trap 让 SIGTERM 立刻结束等待中的 sleep：否则旧 Pod 会在 Terminating
+            // 里滞留到 sleep 自然醒（最长一个同步周期），拖慢每一次滚动/停机恢复。
             name: 'sync', image: row.image, imagePullPolicy: 'IfNotPresent',
             command: ['/bin/sh', '-c'],
-            args: [`while true; do\n${sandboxSyncOnceScript(sandboxResourceName(row.id))}\nsleep ${runtimeEnv.syncInterval}\ndone`],
+            args: [
+              `trap 'exit 0' TERM INT\n`
+              + `while true; do\n${sandboxSyncOnceScript(sandboxResourceName(row.id))}\n`
+              + `sleep ${runtimeEnv.syncInterval} &\nwait $!\ndone`,
+            ],
             lifecycle: { preStop: { exec: { command: ['/bin/sh', '-c', `${sandboxSyncOnceScript(sandboxResourceName(row.id))}\nsleep 2`] } } },
             resources: LOCAL_HELPER_RESOURCES,
             volumeMounts: [

@@ -26,6 +26,9 @@ const k8sObjects = new Map();
 let k8sFailNext = null;
 // 桩的 Pod 镜像覆盖：模拟"旧 Pod 还在、新 Pod 还没起来"的升级窗口。
 let stubPodImageOverride = null;
+// 覆盖 Deployment 的 rollout 状态（模拟 Recreate 滚动时旧 ReplicaSet 的 Pod 仍在 Terminating：
+// 实际 Pod 总数临时大于期望副本数）。
+let stubDeploymentStatus = null;
 // 桩的兜底镜像：直接 seed 进数据库的实例没有对应的 Deployment 对象，桩无法从
 // 模板取到镜像，只能回退到配置的期望镜像（真实集群里该 Deployment 一定存在）。
 let stubFallbackImage = 'registry.test/metawork/sandbox:0.1.25';
@@ -198,7 +201,8 @@ before(async () => {
       if (plural === 'deployments') {
         const generation = Number(stored.metadata?.generation ?? 1);
         const replicas = Number(stored.spec?.replicas ?? 1);
-        return done(200, { ...stored, status: { observedGeneration: generation, replicas, updatedReplicas: replicas, availableReplicas: replicas } });
+        const status = { observedGeneration: generation, replicas, updatedReplicas: replicas, availableReplicas: replicas, ...(stubDeploymentStatus ?? {}) };
+        return done(200, { ...stored, status });
       }
       return done(200, stored);
     }
@@ -1598,6 +1602,8 @@ test('local-sync data mode: emptyDir + sync sidecar, no instance PVC, close skip
     // SQLite 走 checkpoint(TRUNCATE) + 拷主文件：22.x 的 node:sqlite 没有 backup()。
     assert.ok(sidecar.args[0].includes('wal_checkpoint(TRUNCATE)'));
     assert.ok(sidecar.args[0].includes('push -q --mirror'));
+    // sidecar 必须响应 SIGTERM 立即退出，否则旧 Pod 会在 Terminating 里滞留。
+    assert.ok(sidecar.args[0].includes("trap 'exit 0' TERM INT"));
     // 配置：整体快照（协调器校验后原子发布）+ 逐文件增量时排除配置目录。
     assert.ok(sidecar.args[0].includes('local-sync-config.mjs snapshot'));
     assert.ok(sidecar.args[0].includes('local-sync-config.mjs config-dir'));
@@ -1609,4 +1615,27 @@ test('local-sync data mode: emptyDir + sync sidecar, no instance PVC, close skip
     const pvcDeletes = k8sCalls.filter(item => item.method === 'DELETE' && item.plural === 'persistentvolumeclaims').map(item => item.name);
     assert.ok(!pvcDeletes.includes(`${resourceName}-data`));
   } finally { isolated.kill(); await whenExited(isolated); }
+});
+
+test('a lingering old pod during a recreate rollout does not keep the instance from becoming ready', async () => {
+  // Recreate 滚动时旧 ReplicaSet 的 Pod 仍在 Terminating：Deployment 的 status.replicas
+  // （实际 Pod 总数）会临时大于期望副本数。就绪判定必须按「新模板 Pod 已就位且可用」，
+  // 而不是按实际总数——否则实例会永远停在「更新中」。
+  const { token } = await registerLogin('rollout-linger@example.com');
+  assert.equal((await api('/v1/orders', { plan: 'trial', idempotencyKey: 'rollout-linger-trial-001' }, token)).status, 201);
+  const created = await api('/v1/runtimes', { idempotencyKey: 'rollout-linger-0001' }, token);
+  assert.equal(created.status, 202);
+  const instanceId = created.body.sandbox.sandboxId;
+  stubDeploymentStatus = { replicas: 2, updatedReplicas: 1, availableReplicas: 1 };
+  try {
+    const deadline = Date.now() + 5000;
+    let status = null;
+    while (Date.now() < deadline) {
+      await new Promise(resolve => setTimeout(resolve, 25));
+      status = (await api(`/v1/runtimes/${instanceId}`, undefined, token)).body.sandbox?.status ?? null;
+      if (status === 'running') break;
+    }
+    assert.equal(status, 'running', 'a lingering old pod must not block readiness');
+    assert.equal((await api(`/v1/runtimes/${instanceId}`, undefined, token)).body.sandbox.serviceReady, true);
+  } finally { stubDeploymentStatus = null; }
 });
