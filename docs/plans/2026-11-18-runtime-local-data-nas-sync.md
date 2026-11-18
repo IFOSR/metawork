@@ -127,3 +127,15 @@ Pod（实例）
 
 集群侧待办：ops apply baseline PVC → `RUNTIME_DATA_MODE=local-sync` 切换 →
 真实实例冷启动恢复与 60s 同步观测。
+
+## 推送批次（2026-11-18）
+
+- 镜像 `official-server:1.5.19` 已推送
+  （digest `sha256:6a4319ce5e14c47626a0bf86ac4e3546e36efaa2e7b549e8ffebd8a6d19645c1`，
+  WSL Docker 构建，`--provenance=false --sbom=false`，部署清单已同步 tag）。
+- 代码提交：`cf117eb8`（分支 `local/container-deploy-integration-squashed`，
+  含 2026-11-17 控制台/订阅批次与 2026-11-18 local-sync 批次，22 文件）。
+- 集群升级与 local-sync 启用（用户执行）：apply sandbox-baseline（同步卷 PVC）
+  → set image 1.5.19 → 注入 `RUNTIME_DATA_MODE`/`RUNTIME_SYNC_MOUNT` 与同步卷
+  挂载 → 老实例确认数据后 admin close（云盘/PVC 一并删除）→ 用户侧重建即
+  local-sync 实例。
