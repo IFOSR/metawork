@@ -162,6 +162,16 @@ Pod（实例）
   撕裂副本丢弃并保留上一份好快照。同步时逐文件增量排除配置目录，恢复时整目录
   还原（覆盖旧式快照里的坏副本；无快照时清空配置目录，由应用按 bootstrap
   重新播种，实例仍可启动）。
+- **0.1.27.6**（激活指针符号链接修复 + Runtime 恢复自愈，digest
+  `sha256:2bc7a8d5cf2a7d22321b7618d24506ae0c3aa49c5bf5fa34504985c94938f547`）：
+  配置的激活指针 `active` 是指向 `revisions/<id>` 的**符号链接**（不是写着版本号
+  的普通文件）。此前同步用 `find -type f` 跳过链接 → 快照缺指针；协调器也按普通
+  文件读指针 → 判定不一致 → 从不发布配置快照。恢复后配置带着「已提交日志 + 完整
+  版本目录、却没有指针」，启动即被 `configuration_recovery_blocked` 拦下。修复：
+  协调器按 `readlink` 读版本、`cpSync` 用 `verbatimSymlinks` 保留相对目标；增量
+  同步纳入符号链接；Runtime 侧 `recover()` 在「提交日志已写但指针未切换」时补完
+  切换（目标版本完整才自愈，真正损坏才阻断）——激活在两步之间被终止、Pod 重建、
+  快照不完整这三类中断都不再让实例永远起不来。
 - 记忆引擎补丁失效根因：Windows 检出把 `memory/tdai-metawork-compat.patch` 转成
   CRLF，`git apply` 报 corrupt 而 prepare 管线失败，引擎检出停留在补丁前状态
   （`.dockerignore` 只排除 node_modules，故过期检出被原样打进镜像）。
