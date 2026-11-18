@@ -145,9 +145,17 @@ Pod（实例）
   → set image 1.5.20 → 注入 `RUNTIME_DATA_MODE`/`RUNTIME_SYNC_MOUNT` 与同步卷
   挂载 → 老实例确认数据后 admin close（云盘/PVC 一并删除）→ 用户侧重建即
   local-sync 实例。
-- 实例镜像线：`anyfusion-runtime` 0.1.27.1 → **0.1.27.2**（超时自动重试）→
-  **0.1.27.3**（模型调用报错文案简化；digest
-  `sha256:5104454318c85702aed84072cd6ec686042006d0eebdf9d25a506b7e82568080`），
+- 实例镜像线：`anyfusion-runtime` 0.1.27.1 → **0.1.27.2**（模型调用超时自动重试）→
+  **0.1.27.3**（模型调用报错文案简化）→ **0.1.27.4**（记忆引擎补兼容补丁：
+  `memory/tdai-metawork-compat.patch` 未生效导致引擎缺 `/v3/metawork/*` 路由，
+  记忆写入/召回/用量 drain 全 404；digest
+  `sha256:97cd9d3c03db9b9f17df6a1d554540986cb8c3ed5e2bab7460ae59068cc2a1b0`），
   版本号走实例自己的 0.1.27.x 线，与平台安装包 GitHub Release 版本无关联；
   均已推送 ACR。`RUNTIME_IMAGE` 已由用户切至 0.1.27.1 并更新实例；
-  0.1.27.3 推送后用户随时切 Secret 并点更新即可。
+  0.1.27.4 推送后用户切 Secret 并点更新即可。
+- 记忆引擎补丁失效根因：Windows 检出把 `memory/tdai-metawork-compat.patch` 转成
+  CRLF，`git apply` 报 corrupt 而 prepare 管线失败，引擎检出停留在补丁前状态
+  （`.dockerignore` 只排除 node_modules，故过期检出被原样打进镜像）。
+  修复：`npm run prepare:memory-engine` 重新检出并应用补丁（GitHub 直连不稳时
+  remote 走 `https://gh-proxy.com/https://github.com/...`），并加
+  `.gitattributes` 的 `*.patch text eol=lf` 防复发。
