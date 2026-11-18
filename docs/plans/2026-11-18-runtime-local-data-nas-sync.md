@@ -180,6 +180,17 @@ Pod（实例）
   修复：只有拉取成功（status==='ready'）才写内存/磁盘缓存；失败结果只用一次即
   丢弃。能力描述整理侧另有兜底（`resolveSummarizationModelFacts`）：目录里没有
   该模型时用模型标识兜底，目录未就绪与「目录里没有这个模型」分开报错。
+- **0.1.27.10**（恢复不再清空配置 + 报错分别归因 + 429 限流可重试，digest
+  `sha256:c9e7dd16e47c12c7a556d5fa4f6cc90a6acb3b9f8fc6684dbed711f8bc610e0f`）：
+  ① 恢复路径在**没有配置快照时不再清空本地配置**（清空会让应用重新播种
+  bootstrap，用户在设置里配好的 Provider 与模型全部丢失——真实事故）；
+  ② 模型调用失败时把本地通道与官方兜底**分别归因**（超时 / 上游 HTTP 状态 /
+  未登录官方账号 / 权益不可用 / 上游限流），原始原因进服务端日志；
+  ③ 上游 429（限流）单独归类并在本地调用侧自动重试一次，官方服务透传
+  `official_ai_rate_limited`。
+  附带修复构建链路：`.dockerignore` 放行 `.tmp/pi-pdf-python/**` 与
+  `.tmp/pi-pdf-dependencies/**`（它们是构建输入），此前排除导致每次容器构建都要
+  联网下载嵌入式 Python，外网不通时构建直接失败。
 - 记忆引擎补丁失效根因：Windows 检出把 `memory/tdai-metawork-compat.patch` 转成
   CRLF，`git apply` 报 corrupt 而 prepare 管线失败，引擎检出停留在补丁前状态
   （`.dockerignore` 只排除 node_modules，故过期检出被原样打进镜像）。
