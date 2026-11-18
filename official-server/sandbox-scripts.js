@@ -41,12 +41,12 @@ NEWER=""
 [ -f "$STAMP" ] && NEWER="-newer $STAMP"
 # 戳取扫描开始时刻而非结束：扫描期间在写的文件 mtime 仍大于新戳，下轮必然重扫。
 NOW=$(date +%s)
-find "$DATA" -type f $NEWER ! -name '*-wal' ! -name '*-shm' ! -name '*.db' ! -name '*.sqlite*' 2>/dev/null | while read -r f; do
+find "$DATA" \\( -type f -o -type l \\) $NEWER ! -name '*-wal' ! -name '*-shm' ! -name '*.db' ! -name '*.sqlite*' 2>/dev/null | while read -r f; do
   case "\$f" in
     "\${CFG_DIR:-/nonexistent}"/*) continue ;;   # 配置由整体快照负责，逐文件拷贝会撕裂
   esac
   rel=\${f#"$DATA"/}; d=$D/rest/$(dirname "$rel"); mkdir -p "$d"
-  cp -p "$f" "$D/rest/$rel" 2>/dev/null || true
+  cp -a "$f" "$D/rest/$rel" 2>/dev/null || true
 done
 touch -d "@$NOW" "$STAMP"
 `;

@@ -15,7 +15,7 @@
 //   node local-sync-config.mjs config-dir <dataDir>          打印配置目录（无则空行）
 //   node local-sync-config.mjs snapshot  <dataDir> <snapRoot> 采集并发布配置快照
 //   node local-sync-config.mjs restore   <dataDir> <snapRoot> 用快照还原配置目录
-import { copyFileSync, cpSync, existsSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { copyFileSync, cpSync, existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, readlinkSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { createHash } from 'node:crypto';
 import { basename, dirname, join, resolve } from 'node:path';
 
@@ -46,8 +46,21 @@ export function findConfigDir(dataDir) {
   return null;
 }
 
-function readActive(configDir) {
-  try { return readFileSync(join(configDir, ACTIVE_FILE), 'utf8').trim() || null; } catch { return null; }
+/**
+ * 读激活指针：它是**指向版本目录的符号链接**（revisions/<id>），不是普通文件。
+ * 读取目标名（basename）作为当前激活版本；指针缺失/不可读时返回 null。
+ */
+export function readActive(configDir) {
+  try {
+    const link = readlinkSync(join(configDir, ACTIVE_FILE));
+    return basename(link) || null;
+  } catch {
+    try {
+      const target = statSync(join(configDir, ACTIVE_FILE));
+      // 兼容早期把版本号写进普通文件的形态。
+      return target.isFile() ? readFileSync(join(configDir, ACTIVE_FILE), 'utf8').trim() || null : null;
+    } catch { return null; }
+  }
 }
 
 function readJournal(configDir) {
@@ -111,7 +124,9 @@ export function snapshotConfig(dataDir, snapRoot) {
   mkdirSync(staging, { recursive: true });
   try {
     // 复制配置树（revisions 体积小，一次性整体复制；版本内容在提交后不再变更）。
-    cpSync(configDir, staging, { recursive: true });
+    // verbatimSymlinks：保留激活指针的相对目标（revisions/<id>）。默认行为会把
+    // 目标改写成绝对路径，副本里的指针会指向快照目录而非自身。
+    cpSync(configDir, staging, { recursive: true, verbatimSymlinks: true });
   } catch {
     rmSync(staging, { recursive: true, force: true });
     return { status: 'copy-failed' };
@@ -139,7 +154,7 @@ export function restoreConfig(dataDir, snapRoot) {
   if (configDir) rmSync(configDir, { recursive: true, force: true });
   if (!existsSync(target)) return { status: 'no-snapshot' };
   try {
-    cpSync(target, configDir ?? join(resolve(dataDir), 'config'), { recursive: true });
+    cpSync(target, configDir ?? join(resolve(dataDir), 'config'), { recursive: true, verbatimSymlinks: true });
   } catch {
     return { status: 'restore-failed' };
   }

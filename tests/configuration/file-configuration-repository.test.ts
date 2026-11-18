@@ -155,6 +155,45 @@ describe('FileConfigurationRepository', () => {
     await repository.replaceActivePointer('missing-revision');
     await expect(repository.recover()).rejects.toBeInstanceOf(RecoveryBlockedError);
   });
+
+  it('completes an interrupted cutover instead of blocking startup', async () => {
+    // 激活在「写提交日志 → 切指针」之间被中断（进程被终止 / Pod 重建 / 快照不完整）：
+    // 日志已提交但指针没切过去。目标版本在写日志前已通过完整性校验，补完切换即可自愈。
+    const root = await mkdtemp(join(tmpdir(), 'anyfusion-config-interrupted-'));
+    roots.push(root);
+    const repository = new FileConfigurationRepository(join(root, 'config'));
+    await repository.initialize();
+    await repository.writeRevision({
+      revisionId: 'revision-1',
+      contentHash: 'hash-1',
+      files: { 'config.yaml': dump(config(), { noRefs: true, sortKeys: true }) },
+    });
+    await repository.activateRevision('revision-1', null, 'activation-1');
+    await repository.writeRevision({
+      revisionId: 'revision-2',
+      contentHash: 'hash-2',
+      files: { 'config.yaml': dump(config(), { noRefs: true, sortKeys: true }) },
+    });
+    // 直接写「已提交」日志并让指针停在旧版本：模拟切换被中断。
+    await writeFile(
+      join(root, 'config', 'activation-journal.json'),
+      JSON.stringify({
+        transactionId: 'activation-interrupted',
+        previousRevisionId: 'revision-1',
+        nextRevisionId: 'revision-2',
+        schemaVersion: 1,
+        phase: 'committed',
+      }),
+    );
+    await repository.replaceActivePointer('revision-1');
+
+    const recovered = await repository.recover();
+    expect(recovered.status).toBe('recovered');
+    expect(recovered.activeRevisionId).toBe('revision-2');
+    // 指针已补到目标版本，配置可正常读取。
+    const snapshot = await repository.getActiveSnapshot();
+    expect(snapshot).toBeTruthy();
+  });
 });
 
 async function removeImmutableTree(root: string): Promise<void> {

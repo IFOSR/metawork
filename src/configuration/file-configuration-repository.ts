@@ -212,11 +212,22 @@ export class FileConfigurationRepository {
         await this.journal.writeCommitted(journal);
         return { status: 'recovered', activeRevisionId };
       }
-      throw new RecoveryBlockedError('prepared activation journal does not match active pointer');
+      // 指针缺失（既不是上一版也不是目标版）：激活在切指针前后被中断。目标版本
+      // 在写 prepared 日志之前已通过完整性校验，补完切换即可自愈。
+      await this.assertActiveHealthy(journal.nextRevisionId);
+      await this.replaceActivePointer(journal.nextRevisionId);
+      await this.journal.writeCommitted(journal);
+      return { status: 'recovered', activeRevisionId: journal.nextRevisionId };
     }
 
     if (activeRevisionId !== journal.nextRevisionId) {
-      throw new RecoveryBlockedError('committed activation journal does not match active pointer');
+      // 已提交日志但指针不在目标版本上：激活在「写日志 → 切指针」之间被中断
+      // （进程被终止、Pod 重建、或从一次不完整的快照恢复）。目标版本在写日志之前
+      // 已完整落盘并通过校验——补完这次切换即可自愈，而不是让实例永远起不来。
+      // 目标版本本身不完整时才说明真的损坏，此时才阻断启动。
+      await this.assertActiveHealthy(journal.nextRevisionId);
+      await this.replaceActivePointer(journal.nextRevisionId);
+      return { status: 'recovered', activeRevisionId: journal.nextRevisionId };
     }
     await this.assertActiveHealthy(activeRevisionId);
     return { status: 'healthy', activeRevisionId };

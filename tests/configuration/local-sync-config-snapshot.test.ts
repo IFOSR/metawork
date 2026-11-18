@@ -1,11 +1,12 @@
 import { describe, expect, it } from 'vitest';
 import { createHash } from 'node:crypto';
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, unlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
   findConfigDir,
   isConsistentSnapshot,
+  readActive,
   restoreConfig,
   revisionIsIntact,
   snapshotConfig,
@@ -22,7 +23,10 @@ function workspace(): string {
   return root;
 }
 
-/** 造一个配置目录：active 指针 + 激活日志 + 版本内容（清单含哈希）。 */
+/**
+ * 造一个配置目录：active 是**指向版本目录的符号链接**（revisions/<id>），
+ * 与仓库的 replaceActivePointer 形态一致；另有激活日志与版本内容（清单含哈希）。
+ */
 function makeConfig(
   root: string,
   options: { phase?: 'prepared' | 'committed'; previous?: string | null; next?: string; active?: string | null; tamper?: boolean } = {},
@@ -43,7 +47,10 @@ function makeConfig(
       files: [{ path: 'providers.json', sha256: revisionId === next && options.tamper ? '0'.repeat(64) : sha256 }],
     }));
   }
-  if (active !== null) writeFileSync(join(configDir, 'active'), `${active}\n`);
+  if (active !== null) {
+    rmSync(join(configDir, 'active'), { force: true });
+    symlinkSync(join('revisions', active), join(configDir, 'active'));
+  }
   if (options.phase) {
     writeFileSync(join(configDir, 'activation-journal.json'), JSON.stringify({
       phase: options.phase, previousRevisionId: previous, nextRevisionId: next, identity: 'act-1',
@@ -59,6 +66,13 @@ describe('local-sync 配置快照协调器', () => {
     expect(findConfigDir(root)).toBe(configDir);
   });
 
+  it('激活指针是符号链接：按目标名读出版本', () => {
+    const root = workspace();
+    const configDir = makeConfig(root, { phase: 'committed', next: 'rev-2' });
+    // 指针是 revisions/<id> 的符号链接，不是写着版本号的普通文件。
+    expect(readActive(configDir)).toBe('rev-2');
+  });
+
   it('判定日志与指针的成对一致性（与仓库 recover 同口径）', () => {
     const root = workspace();
     const committed = makeConfig(root, { phase: 'committed', next: 'rev-2', active: 'rev-2' });
@@ -66,6 +80,9 @@ describe('local-sync 配置快照协调器', () => {
     // 撕裂：日志已提交到 rev-2，指针仍指向 rev-1。
     const torn = makeConfig(root, { phase: 'committed', next: 'rev-3', active: 'rev-1' });
     expect(isConsistentSnapshot(torn)).toBe(false);
+    // 指针缺失（激活在两步之间被中断）同样是不一致。
+    const missingPointer = makeConfig(root, { phase: 'committed', next: 'rev-4', active: null });
+    expect(isConsistentSnapshot(missingPointer)).toBe(false);
     // prepared 阶段：指针停在上一版本或下一版本都可恢复。
     const preparedPrevious = makeConfig(root, { phase: 'prepared', previous: 'rev-1', next: 'rev-2', active: 'rev-1' });
     expect(isConsistentSnapshot(preparedPrevious)).toBe(true);
@@ -88,16 +105,17 @@ describe('local-sync 配置快照协调器', () => {
     mkdirSync(dataDir, { recursive: true });
     makeConfig(dataDir, { phase: 'committed', next: 'rev-2', active: 'rev-2' });
     expect(snapshotConfig(dataDir, snapRoot).status).toBe('published');
-    expect(readFileSync(join(snapRoot, 'config', 'active'), 'utf8').trim()).toBe('rev-2');
+    // 快照里的指针仍是符号链接（相对目标 revisions/<id>），随目录一起复制。
+    expect(readActive(join(snapRoot, 'config'))).toBe('rev-2');
 
     // 配置在提交与指针切换之间被撕裂 → 本轮丢弃，上一份好快照仍在。
     const configDir = findConfigDir(dataDir)!;
-    writeFileSync(join(configDir, 'active'), 'rev-1\n');
+    unlinkSync(join(configDir, 'active'));
     writeFileSync(join(configDir, 'activation-journal.json'), JSON.stringify({
       phase: 'committed', previousRevisionId: 'rev-1', nextRevisionId: 'rev-2', identity: 'act-2',
     }));
     expect(snapshotConfig(dataDir, snapRoot).status).toBe('inconsistent');
-    expect(readFileSync(join(snapRoot, 'config', 'active'), 'utf8').trim()).toBe('rev-2');
+    expect(readActive(join(snapRoot, 'config'))).toBe('rev-2');
   });
 
   it('还原时整目录替换配置，快照缺失则清空（实例仍能以 bootstrap 配置启动）', () => {
@@ -107,11 +125,11 @@ describe('local-sync 配置快照协调器', () => {
     mkdirSync(dataDir, { recursive: true });
     makeConfig(dataDir, { phase: 'committed', next: 'rev-2', active: 'rev-2' });
     snapshotConfig(dataDir, snapRoot);
-    // 现场配置被撕裂（模拟旧式快照里的坏副本）。
+    // 现场配置被撕裂（模拟旧式快照里的坏副本：只有日志没有指针）。
     const configDir = findConfigDir(dataDir)!;
-    writeFileSync(join(configDir, 'active'), 'rev-1\n');
+    unlinkSync(join(configDir, 'active'));
     expect(restoreConfig(dataDir, snapRoot).status).toBe('restored');
-    expect(readFileSync(join(configDir, 'active'), 'utf8').trim()).toBe('rev-2');
+    expect(readActive(configDir)).toBe('rev-2');
     // 无快照：配置目录被清空，应用会重新播种 bootstrap 配置。
     rmSync(join(snapRoot, 'config'), { recursive: true, force: true });
     expect(restoreConfig(dataDir, snapRoot).status).toBe('no-snapshot');
