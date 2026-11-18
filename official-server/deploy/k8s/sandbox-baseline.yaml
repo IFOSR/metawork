@@ -81,4 +81,4 @@ spec:
   storageClassName: cloud-nas-cnfs
   resources:
     requests:
-      storage: 1Ti
+      storage: 50Gi
