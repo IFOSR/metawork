@@ -3,6 +3,7 @@ import { createHash } from 'node:crypto';
 import { existsSync, realpathSync } from 'node:fs';
 import { chmod, copyFile, mkdir, readFile, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
+import { pathToFileURL } from 'node:url';
 import { promisify } from 'node:util';
 import { resolveMetaWorkPaths } from '../installation/paths.js';
 import {
