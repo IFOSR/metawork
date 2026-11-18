@@ -172,6 +172,8 @@ export class OfficialServiceClient {
         throw new OfficialAuthorizationError(({ trial_already_used: '该账号已使用过试用', account_exists: '账号已存在', invalid_account: '请填写有效邮箱及 12–128 位密码', idempotency_conflict: '订单请求冲突，请刷新', active_plan_conflict: '当前套餐不支持此操作', rate_limited: '请求过于频繁，请稍后重试', daily_limit: '今日内置 AI 额度已用完', request_already_processed: '此请求已处理，请刷新后重试', invalid_input: '业务输入超出限制或格式不正确', invalid_operation: '不支持的内置 AI 操作' } as Record<string, string>)[code]!, 'request_rejected');
       }
       if (code === 'official_ai_unavailable') throw new OfficialAuthorizationError('MetaWork 内置 AI 暂时不可用', 'official_ai_unavailable');
+      // 上游限流是配额/频率问题（稍后重试即可），与服务故障要分开告知。
+      if (code === 'official_ai_rate_limited') throw new OfficialAuthorizationError('MetaWork 内置 AI 上游限流，请稍后重试', 'official_ai_rate_limited');
       if (code === 'payment_unavailable') throw new OfficialAuthorizationError('支付功能暂未开放，请稍后重试', 'payment_unavailable');
       if (['order_not_found', 'order_not_payable', 'payment_order_expired', 'payment_order_state_conflict'].includes(code)) {
         throw new OfficialAuthorizationError('订单不存在或当前不可支付', 'request_rejected');

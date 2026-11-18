@@ -193,7 +193,14 @@ export class InternalLlmService {
             }),
           },
         );
-        if (!response.ok) throw new Error(`HTTP ${response.status}`);
+        if (!response.ok) {
+          // 限流（429）是暂时性的：重试有意义；其它 4xx/5xx 是确定性问题不重试。
+          if (response.status === 429 && attempt < 2) {
+            await new Promise(resolve => setTimeout(resolve, 1_500));
+            continue;
+          }
+          throw new Error(`HTTP ${response.status}`);
+        }
         return await response.json();
       } catch (error) {
         const aborted = error instanceof Error && error.name === 'AbortError';
@@ -228,6 +235,9 @@ export function classifyCallFailure(reason: string): string {
   }
   if (/超时|aborted|AbortError|ETIMEDOUT/iu.test(text)) {
     return '请求超时，请重试';
+  }
+  if (/429|限流|rate.?limit|too many requests/iu.test(text)) {
+    return '上游限流，请稍后重试';
   }
   if (/暂时无法连接|ECONNREFUSED|fetch failed|ENOTFOUND/iu.test(text)) {
     return '无法连接上游服务，请检查网络或端点地址';

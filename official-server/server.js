@@ -399,6 +399,9 @@ async function callModel(operation, input) {
     return JSON.parse(content.trim().replace(/^```(?:json)?\s*([\s\S]*?)\s*```$/u, '$1'));
   } catch {
     console.error('official_ai_failed', JSON.stringify({ operation, stage, upstreamStatus, durationMs: Date.now() - started }));
+    // 上游限流（429）与上游不可用要分开：前者是配额/频率问题，稍后重试即可；
+    // 混成同一个 503 会让用户以为服务坏了。
+    if (upstreamStatus === 429) fail(503, 'official_ai_rate_limited');
     fail(503, 'official_ai_unavailable');
   }
 }

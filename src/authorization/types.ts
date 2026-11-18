@@ -103,6 +103,7 @@ export class OfficialAuthorizationError extends Error {
       | 'payment_unavailable'
       | 'verification_unavailable'
       | 'official_ai_unavailable'
+      | 'official_ai_rate_limited'
       | 'official_protocol_error',
   ) {
     super(message);

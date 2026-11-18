@@ -285,3 +285,27 @@ describe('模型调用失败原因归类', () => {
     })).rejects.toThrow(/未登录官方账号/iu);
   });
 });
+
+describe('上游限流（429）的处理', () => {
+  it('把 429 归类为「上游限流」，与超时、服务故障区分开', () => {
+    expect(classifyCallFailure('HTTP 429')).toContain('限流');
+    expect(classifyCallFailure('MetaWork 内置 AI 上游限流，请稍后重试')).toContain('限流');
+    expect(classifyCallFailure('HTTP 429')).not.toContain('超时');
+  });
+
+  it('本地模型返回 429 时自动重试一次（限流是暂时性的）', async () => {
+    let calls = 0;
+    const fetchImpl = vi.fn(async () => {
+      calls += 1;
+      if (calls === 1) return new Response('rate limited', { status: 429 });
+      return new Response(JSON.stringify({ choices: [{ finish_reason: 'stop', message: { content: '{}' } }] }), { status: 200 });
+    });
+    const service = new InternalLlmService({
+      fetchImpl,
+      preferredModel: async () => ({ baseUrl: 'https://user.example/v1', apiKey: 'k', modelId: 'm' }),
+    });
+    const result = await service.generate({ action: '模型信息提炼', operation: 'model_summary', data: { models: [] } });
+    expect(calls).toBe(2);
+    expect(result).toBeTruthy();
+  });
+});
