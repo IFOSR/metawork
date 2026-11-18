@@ -235,7 +235,7 @@ import {
   providerModelListRequest,
   fingerprintProviderCredential,
 } from '../configuration/provider-model-discovery.js';
-import { matchOpenRouterModel, OpenRouterModelCatalog } from '../configuration/openrouter-model-catalog.js';
+import { matchOpenRouterModel, OpenRouterModelCatalog, resolveSummarizationModelFacts } from '../configuration/openrouter-model-catalog.js';
 import { SettingsAssistant } from '../configuration/settings-assistant.js';
 import { InternalLlmService } from '../configuration/internal-llm-service.js';
 import { resolvePreferredModel } from '../configuration/preferred-model-resolver.js';
@@ -3120,11 +3120,17 @@ export async function main(cliCommand = parseCliArgs(process.argv.slice(2))) {
         },
         summarizeModelInformation: async (catalogModelId, preferredModel) => {
           const catalog = await openRouterModelCatalog.getSnapshot();
-          const model = catalog.models[catalogModelId];
-          if (!model) throw new Error('OpenRouter 未找到所选模型，请重新获取模型信息。');
+          // 目录里没有这个模型（自定义 Provider）或目录暂时不可用时，用模型标识
+          // 兜底让整理流程跑完，而不是让「新增模型」整条流程以 500 收场。
+          const resolved = resolveSummarizationModelFacts({
+            catalog,
+            catalogModelId,
+            preferredModelId: preferredModel?.modelId ?? null,
+          });
+          if (!resolved.model) throw new Error(resolved.error ?? '未找到所选模型的公开信息，请重新获取模型信息。');
           let degraded: DegradationNotice | undefined;
           const routingNotes = await modelRoutingProfiles.summarize(
-            model,
+            resolved.model,
             preferredModel,
             notice => { degraded = notice; },
           );

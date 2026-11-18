@@ -438,3 +438,36 @@ function positiveInteger(value: unknown): number | undefined {
   const numeric = typeof value === 'number' ? value : Number(value);
   return Number.isSafeInteger(numeric) && numeric >= 1_024 ? numeric : undefined;
 }
+
+/**
+ * 解析「能力描述整理」要用的模型事实。
+ *
+ * 目录（OpenRouter 公开目录）只收录公开目录条目，自定义 Provider 的模型不在其中；
+ * 目录本身还可能暂时不可用（集群访问公开目录不通、限流等）。两种情况都不能让
+ * 「新增模型」整条流程以 500 收场：优先按 id 精确命中，其次按 id 规范匹配，
+ * 再退到用户自己 Provider 的模型标识兜底（事实较薄，但流程可完成）。
+ *
+ * 目录未就绪与「目录里确实没有这个模型」必须分开报错：前者是可重试的临时故障，
+ * 报成「未找到该模型」会让用户以为自己选错了模型。
+ */
+export function resolveSummarizationModelFacts(input: {
+  catalog: OpenRouterCatalogSnapshot | undefined;
+  catalogModelId: string;
+  preferredModelId?: string | null;
+}): { model?: OpenRouterModelMetadata; error?: string } {
+  const catalog = input.catalog;
+  const preferredModelId = input.preferredModelId?.trim() || undefined;
+  const exact = catalog?.models[input.catalogModelId];
+  if (exact) return { model: exact };
+  if (preferredModelId) {
+    const matched = matchOpenRouterModel(catalog, preferredModelId);
+    if (matched) return { model: matched };
+    // 自定义 Provider 的模型：目录里没有它，用模型标识兜底让整理流程跑完。
+    return { model: { modelId: preferredModelId, capabilities: [] } };
+  }
+  return {
+    error: catalog?.status === 'ready'
+      ? '未找到所选模型的公开信息，请重新获取模型信息。'
+      : '公开模型目录暂时不可用，请稍后重试。',
+  };
+}
