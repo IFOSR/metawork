@@ -4,6 +4,7 @@ import { DAG_NODE_HEIGHT, DAG_NODE_WIDTH, layoutWorkGraph, workGraphNodeLabel } 
 import { workGraphExecutionState } from '../work-graph-status';
 
 export interface WorkGraphNodeDetail {
+  executionState?: NonNullable<WorkGraphPresentationProjection['nodes'][number]['executionState']>;
   statusLabel: string;
   binding: string;
   step: string;
@@ -58,7 +59,7 @@ export function WorkGraphDiagram({ projection, selectedId, onSelect, nodeDetail 
                 aria-label={`子任务 ${numbers.get(node.id)}：${workGraphNodeLabel(node)}${detail ? `，${detail.statusLabel}，${detail.binding}，${detail.step}` : ''}`}
                 title={workGraphNodeLabel(node)}
                 data-runnable={node.runnable}
-                data-status={node.executionState ?? workGraphExecutionState(node.status)}
+                data-status={detail?.executionState ?? node.executionState ?? workGraphExecutionState(node.status)}
                 onClick={() => onSelect(node.id)}>
                 <span className="work-graph-diagram-node-meta">
                   <span>子任务 {numbers.get(node.id)}</span>

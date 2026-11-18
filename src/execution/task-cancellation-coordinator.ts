@@ -412,9 +412,30 @@ export class TaskCancellationCoordinator {
     const publication = this.deps.publicationRepo.find(`publication_accepted_${expected.attemptId}`);
     const receipt = new ExecutorAttemptReceiptRepo(this.deps.db).findByAttemptId(expected.attemptId);
     const revision = this.deps.workGraphRevisionRepo.findActive(expected.taskId);
-    return Boolean(publication && !['cancelled', 'conflicted'].includes(publication.status)
+    const subtask = this.deps.subtaskRepo.findById(expected.subtaskId);
+    if (subtask?.generationId !== expected.generationId || subtask.graphRevision !== expected.graphRevision
+      || !['awaiting_decision', 'awaiting_integration', 'done'].includes(subtask.status)) return false;
+    const superseded = this.deps.db.prepare(`SELECT 1 FROM executor_attempt_receipts newer
+      JOIN executor_attempt_receipts source ON source.attempt_id = ?
+      WHERE newer.subtask_id = source.subtask_id AND newer.generation_id = source.generation_id
+        AND (newer.completed_at > source.completed_at OR (newer.completed_at = source.completed_at AND newer.rowid > source.rowid))
+        AND NOT (newer.attempt_kind = 'contract_correction'
+          AND newer.terminal_state IN ('executor_failed','contract_blocked','heartbeat_lost','cancelled_or_stale'))
+      LIMIT 1`).get(expected.attemptId);
+    const activeSuccessor = this.deps.db.prepare(`SELECT 1 FROM dispatch_items d
+      JOIN executor_attempt_receipts source ON source.attempt_id = ?
+      WHERE d.subtask_id = source.subtask_id AND d.generation_id = source.generation_id
+        AND d.attempt_id != source.attempt_id AND d.created_at > source.started_at
+        AND d.status IN ('pending_launch','launching','running','cancelling') LIMIT 1`).get(expected.attemptId);
+    if (superseded || activeSuccessor) return false;
+    const accepted = this.deps.db.prepare(`SELECT 1 FROM task_state_changes
+      WHERE task_id = ? AND operation_key = ?`).get(expected.taskId,
+      `accept_result:${expected.attemptId}:${expected.resultId}`);
+    // Conversation Git completes accepted results directly; no legacy
+    // workspace_publications row exists, including when validation failed.
+    return Boolean((accepted || (publication && !['cancelled', 'conflicted'].includes(publication.status)
       && publication.taskId === expected.taskId && publication.subtaskId === expected.subtaskId
-      && publication.generationId === expected.generationId && receipt?.graphRevision === expected.graphRevision
+      && publication.generationId === expected.generationId)) && receipt?.graphRevision === expected.graphRevision
       && revision?.generationId === expected.generationId && revision.revision === expected.graphRevision
       && receipt.taskId === expected.taskId && receipt.subtaskId === expected.subtaskId
       && safeProjectionId(receipt) === expected.resultId);

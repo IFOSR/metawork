@@ -69,6 +69,49 @@ afterEach(() => {
 });
 
 describe('Completion Protocol result-first assessment', () => {
+  it.each(['report', 'edit'] as const)('certifies a delivered %s without an irrelevant no-change explanation', deliveryKind => {
+    const workspaceRoot = root();
+    writeFileSync(join(workspaceRoot, 'report.md'), '# Final report');
+    const result = validate({
+      current: subtask({ deliveryKind, fileOutputs: ['report.md'] }),
+      workspaceRoot,
+      workspaceDelta: delta([{ path: 'report.md', beforeHash: null, afterHash: 'hash' }]),
+      rawResponse: response({ evidence: ['Report prepared and checked'], reportPath: 'report.md' }, ''),
+    });
+    expect(result).toMatchObject({ ok: true, body: '# Final report', warnings: [],
+      normalizedArtifacts: [join(realpathSync(workspaceRoot), 'report.md')],
+      assessment: { result: { kind: 'complete' }, certification: { status: 'certified', violations: [] } },
+    });
+  });
+
+  it('certifies an inline answer without a no-change explanation', () => {
+    expect(validate({ current: subtask({ fileOutputs: [] }), rawResponse: response({ evidence: ['Checked'] }) }))
+      .toMatchObject({ ok: true, normalizedArtifacts: [], warnings: [],
+        assessment: { certification: { status: 'certified' } } });
+  });
+
+  it('retains the substantive no-change check for an edit without an explanation', () => {
+    const result = validate({ current: subtask({ deliveryKind: 'edit' }),
+      rawResponse: response({ evidence: ['Checked'] }) });
+    expect(result).toMatchObject({ ok: true, assessment: { certification: {
+      status: 'uncertified', violations: [expect.objectContaining({ code: 'completion_no_change_reason_mismatch' })],
+    } } });
+    expect(result.assessment.certification.violations.some(item => item.code === 'completion_malformed')).toBe(false);
+  });
+
+  it.each(['missing_output', 'missing_delta', 'truncated_delta', 'missing_evidence', 'invalid_explanation'] as const)(
+    'does not bypass other completion checks when normalizing an omitted field (%s)', defect => {
+      const result = validate({
+        current: subtask({ fileOutputs: defect === 'missing_output' ? ['report.md'] : [] }),
+        workspaceDelta: defect === 'missing_delta' ? null : delta([], { finalTruncated: defect === 'truncated_delta' }),
+        rawResponse: response({ evidence: defect === 'missing_evidence' ? [] : ['Checked'],
+          ...(defect === 'invalid_explanation' ? { noChangeReason: 123 } : {}) }),
+      });
+      expect(result.assessment.certification.status).toBe('uncertified');
+      expect(result.assessment.certification.violations.length).toBeGreaterThan(0);
+    },
+  );
+
   it('preserves inline table and chart data without manufacturing artifacts', () => {
     const body = '| 季度 | 收入 |\n| --- | ---: |\n| Q1 | 120 |\n\n```chart\n'
       + JSON.stringify({ version: 1, type: 'bar', title: '收入', labels: ['Q1'], series: [{ name: '收入', values: [120] }], unit: '万元' })

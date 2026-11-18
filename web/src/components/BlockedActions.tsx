@@ -102,7 +102,10 @@ export function BlockedActions({ ws, http, conversationId, taskId, fallbackStatu
     canRetryRemaining,
     canResolveRecovery,
   });
-  const recommendation = primaryAction === 'accept_candidate' && !candidateAction?.publicationId
+  const acceptedDelivery = acceptAction?.actionId.startsWith('accepted_delivery:') === true;
+  const recommendation = acceptedDelivery
+    ? '接受决定已保存。处理交付错误后，可重试同一结果的交付，无需重新执行任务。'
+    : primaryAction === 'accept_candidate' && !candidateAction?.publicationId
     ? '下一步：检查已有结果后，点「接受部分结果并继续」。'
     : recommendationFor(primaryAction);
 
@@ -164,12 +167,12 @@ export function BlockedActions({ ws, http, conversationId, taskId, fallbackStatu
     const expectedResult = pendingDecision?.expectedResult;
     if (!expectedResult || busy) return;
     setBusy(true);
-    setMessage(kind === 'accept_task_result' ? '正在接受结果…' : '正在提交重新执行…');
+    setMessage(kind === 'accept_task_result' ? (acceptedDelivery ? '正在重试交付…' : '正在接受结果…') : '正在提交重新执行…');
     try {
       const result = await ws.control(conversationId, { kind, expectedResult }, () => undefined);
       setMessage(result.status === 'rejected'
         ? result.reason ?? '结果操作已过期，请等待任务刷新后重试。'
-        : kind === 'accept_task_result' ? '已接受，任务正在进入交付。' : '已提交重新执行，任务状态正在刷新。');
+        : kind === 'accept_task_result' ? '交付请求已提交，请查看最新任务状态。' : '已提交重新执行，任务状态正在刷新。');
     } catch (error) {
       setMessage(error instanceof Error ? error.message : '提交失败，请刷新任务后重试。');
     } finally {
@@ -240,7 +243,7 @@ export function BlockedActions({ ws, http, conversationId, taskId, fallbackStatu
                 card renders exactly those actions and highlights that one. */}
             {canAcceptResult && (
               <button type="button" className={primaryAction === 'accept_result' ? 'primary' : undefined}
-                disabled={busy} onClick={() => void resolveResult('accept_task_result')}>接受并交付</button>
+                disabled={busy} onClick={() => void resolveResult('accept_task_result')}>{acceptedDelivery ? '重试交付' : '接受并交付'}</button>
             )}
             {canAcceptCandidate && (
               <button type="button" className={primaryAction === 'accept_candidate' ? 'primary' : undefined}

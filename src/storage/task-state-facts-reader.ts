@@ -1,5 +1,5 @@
 import { WorkspaceGitRepo } from './workspace-git-repo.js';
-import { readPendingTaskResults } from './pending-task-result.js';
+import { readAcceptedResultContinuations, readPendingTaskResults } from './pending-task-result.js';
 import type Database from 'better-sqlite3';
 import type { SubtaskStatus } from '../core/types.js';
 import type { ControlDispatchItemStatus } from '../control/control-contracts.js';
@@ -121,6 +121,7 @@ export class SqliteTaskStateFactsReader implements TaskStateFactsPort {
       replans,
       pendingResult,
       pendingResults,
+      acceptedResultContinuations: readAcceptedResultContinuations(this.deps.db, taskId),
       pendingPermission,
       service,
       serviceRequired: task.startServiceAfterPublish === true

@@ -376,7 +376,7 @@ export class SubtaskAttemptRunner {
       }
       const livePath = join(input.rootPath, ...path.split('/'));
       const live = await readFile(livePath).catch(() => null);
-      if (live && createHash('sha256').update(live).digest('hex') !== afterHash) {
+      if (!live || createHash('sha256').update(live).digest('hex') !== afterHash) {
         throw new Error('结果工作区在封存后已被修改，请重新确认接受');
       }
     }

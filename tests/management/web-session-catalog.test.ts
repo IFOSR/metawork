@@ -374,6 +374,7 @@ describe('WebSessionCatalog', () => {
           id: 'sub_1',
           title: 'Analyze data',
           status: 'running',
+          resultDelivery: { status: 'uncertain', error: 'token=secret-value delivery failed' },
           executor: 'pi-agent',
           attempts: [{
             attemptId: 'attempt_1',
@@ -396,5 +397,9 @@ describe('WebSessionCatalog', () => {
     const attempt = (await fixture.presentationStore.read(created.session.id))
       ?.turns[0]?.executionTimeline?.stages[0]?.subtasks?.[0]?.attempts[0];
     expect(attempt).toMatchObject({ progressHistory: [{ text: 'token=[REDACTED] analyzing data' }] });
+    expect((await fixture.presentationStore.read(created.session.id))
+      ?.turns[0]?.executionTimeline?.stages[0]?.subtasks?.[0]?.resultDelivery).toEqual({
+      status: 'uncertain', error: 'token=[REDACTED] delivery failed',
+    });
   });
 });

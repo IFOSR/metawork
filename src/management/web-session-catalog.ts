@@ -509,6 +509,13 @@ function sanitizeTimelineStage(stage: TimelineStage): TimelineStage {
         id: sanitizeInteractionTraceText(subtask.id, 160),
         title: sanitizeInteractionTraceText(subtask.title, 500),
         status: sanitizeInteractionTraceText(subtask.status, 80),
+        ...(subtask.resultDelivery ? {
+          resultDelivery: {
+            status: subtask.resultDelivery.status,
+            error: subtask.resultDelivery.error === null ? null
+              : sanitizeInteractionTraceText(subtask.resultDelivery.error, 512),
+          },
+        } : {}),
         ...(subtask.executor ? {
           executor: sanitizeInteractionTraceText(subtask.executor, 160),
         } : {}),

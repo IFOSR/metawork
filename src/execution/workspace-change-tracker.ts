@@ -3,6 +3,7 @@ import { existsSync, lstatSync, readFileSync, readdirSync, readlinkSync, statSyn
 import { isAbsolute, relative, resolve, sep } from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { isWorkspaceRelativePath } from '../workspace/workspace-path.js';
+import { isRuntimeWorkspacePath } from '../workspace/runtime-workspace-path.js';
 
 export interface WorkspaceState {
   kind: 'git_status_v1';
@@ -50,7 +51,7 @@ export function captureWorkspaceState(workspaceRoot: string): WorkspaceState {
   }
   const paths: Record<string, string | null> = {};
   const lineCounts: Record<string, number | null> = {};
-  const entries = result.stdout.split('\0').filter(Boolean);
+  const entries = result.stdout.split('\0').filter(entry => entry && !isRuntimeWorkspacePath(statusPath(entry) ?? ''));
   for (const entry of entries.slice(0, MAX_TRACKED_PATHS)) {
     const relativePath = statusPath(entry);
     if (!relativePath) continue;
@@ -87,6 +88,7 @@ export function captureWorkspaceStateAtPaths(
   const root = resolve(workspaceRoot);
 
   const visit = (relativePath: string): void => {
+    if (isRuntimeWorkspacePath(relativePath)) return;
     if (truncated) return;
     if (visited >= MAX_TRACKED_PATHS) {
       truncated = true;
@@ -168,6 +170,7 @@ export function deriveWorkspaceDelta(before: WorkspaceState, after: WorkspaceSta
   const changed: WorkspaceDeltaEntry[] = [];
   const paths = new Set([...Object.keys(before.paths), ...Object.keys(after.paths)]);
   for (const path of [...paths].sort()) {
+    if (isRuntimeWorkspacePath(path)) continue;
     const beforeHash = before.paths[path] ?? null;
     const afterHash = after.paths[path] ?? null;
     if (beforeHash !== afterHash) changed.push({ path, beforeHash, afterHash });
@@ -225,6 +228,10 @@ export function parseWorkspaceDelta(value: unknown): WorkspaceDelta | null {
     if (typeof item.path !== 'string'
       || (typeof item.beforeHash !== 'string' && item.beforeHash !== null)
       || (typeof item.afterHash !== 'string' && item.afterHash !== null)) return null;
+    // Historical immutable observations can include Runtime-created inputs.
+    // Project the same business-file boundary used by Git sealing; never edit
+    // the observation or relax checks for any business file.
+    if (isRuntimeWorkspacePath(item.path)) continue;
     changed.push({
       path: item.path,
       beforeHash: item.beforeHash,

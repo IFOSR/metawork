@@ -1,6 +1,6 @@
 import { WorkspaceGitRepo } from './workspace-git-repo.js';
 import { deriveRecoverySafety } from '../routing/types.js';
-import { readPendingTaskResult } from './pending-task-result.js';
+import { readAcceptedResultContinuations, readPendingTaskResult } from './pending-task-result.js';
 import type Database from 'better-sqlite3';
 import type { TaskActivityFactsReader } from '../task/task-activity-facts.js';
 import { ACTIVE_REPLAN_STATUSES, RESIDUAL_PUBLICATION_STATUSES, type TaskViewFacts } from '../task/task-view.js';
@@ -49,6 +49,7 @@ export class SqliteTaskActivityFacts implements TaskActivityFactsReader {
     return { workspaceMerge:new WorkspaceGitRepo(this.db).summary(task.id, (this.db.prepare("SELECT generation_id FROM work_graph_revisions WHERE task_id=? ORDER BY revision DESC LIMIT 1").get(task.id) as {generation_id:string}|undefined)?.generation_id),pendingDecision: expectedResult ? { owner: 'user', reason: 'uncertified_result',
       resultId: expectedResult.resultId, attemptId: expectedResult.attemptId, expectedResult,
       actions: retrySafe ? ['accept_result', 'retry_attempt'] : ['accept_result'] } : null, task, pendingPermission, capacityWaiting, deliveryState, serviceState, dispatches: dispatch ? [dispatch] : [], replanJobs: replan ? [replan] : [],
+      acceptedResultContinuations: readAcceptedResultContinuations(this.db, task.id),
       uncertainApplications: recovery ? [recovery] : [], publications: publication ? [publication] : [],
       retryWakeAt: retry?.resumeAt ?? null, retryWakeRecoveryRequired: Boolean(recoveryWake),
       subtasks: this.db.prepare(`SELECT id, status FROM subtasks WHERE task_id = ? AND graph_revision =

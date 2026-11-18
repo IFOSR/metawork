@@ -5,6 +5,7 @@ import {
 } from '../../src/management/execution-projector.js';
 import type { Subtask, Task } from '../../src/core/types.js';
 import { EMPTY_TASK_STATE_DETAIL } from '../../src/task/task-state.js';
+import { projectTaskView } from '../../src/task/task-view.js';
 
 function makeTask(overrides: Partial<Task> = {}): Task {
   return {
@@ -62,7 +63,6 @@ function makeProjector(overrides: Partial<ExecutionProjectorDeps> = {}): Executi
   return new ExecutionProjector({
     subtaskRepo: { listByTask: () => [] },
     receiptRepo: { listByTask: () => [] },
-    decisionRepo: { listTimelineByTask: () => [] },
     publicationRepo: { listIntegratedByTaskIds: () => [], hasBlockingResidue: () => false },
     attemptRuntimeRepo: { find: () => null },
     dispatchItemRepo: { listByTask: () => [] },
@@ -71,6 +71,23 @@ function makeProjector(overrides: Partial<ExecutionProjectorDeps> = {}): Executi
 }
 
 describe('ExecutionProjector', () => {
+  it.each(['pending', 'sending', 'uncertain'] as const)('projects accepted delivery facts without rewriting receipt or Subtask status (%s)', status => {
+    const subtask = makeSubtask({ status: 'awaiting_decision' });
+    const task = makeTask({ status: status === 'uncertain' ? 'needs_action' : 'running' });
+    const timeline = makeProjector({
+      subtaskRepo: { listByTask: () => [subtask] },
+      taskView: () => projectTaskView({ task, subtasks: [subtask], dispatches: [], receipts: [],
+        publications: [], replanJobs: [], uncertainApplications: [], completionResidue: [],
+        pendingPermission: null, retryWakeAt: null, result: null,
+        acceptedResultContinuations: [{ id: 'effect', status, error: status === 'uncertain' ? 'changed' : null,
+          result: { taskId: task.id, generationId: 'gen_1', graphRevision: 1,
+            subtaskId: subtask.id, attemptId: 'attempt', resultId: 'result' } }],
+      }),
+    }).project(task);
+    const stage = timeline.stages.find(item => item.phase === 'execution');
+    expect(stage?.status).toBe(status === 'uncertain' ? 'blocked' : 'running');
+    expect(stage?.subtasks?.[0]).toMatchObject({ status: 'awaiting_decision', resultDelivery: { status } });
+  });
   it('空 task 所有阶段 pending', () => {
     const timeline = makeProjector().project(makeTask());
     expect(timeline.stages.map(stage => [stage.phase, stage.status])).toEqual([
@@ -116,11 +133,11 @@ describe('ExecutionProjector', () => {
     expect(timeline.status).toBe('needs_action');
   });
 
-  it('有 decisions 时 authorization done', () => {
+  it('有已授权 dispatch 时 authorization done', () => {
     const timeline = makeProjector({
-      decisionRepo: {
-        listTimelineByTask: () => [
-          { action: 'authorize', subtaskId: 'sub_1', taskId: 'task_1', reason: '材料齐全' },
+      dispatchItemRepo: {
+        listByTask: () => [
+          { subtaskId: 'sub_1', taskId: 'task_1', authorizedBinding: { agentClassRef: 'pi-agent' } },
         ],
       },
     }).project(makeTask());
@@ -128,9 +145,9 @@ describe('ExecutionProjector', () => {
     const authorization = timeline.stages[1];
     expect(authorization.status).toBe('done');
     expect(authorization.decisions?.[0]).toEqual({
-      type: 'authorize',
+      type: 'authorize_dispatch',
       subtask: 'sub_1',
-      reason: '材料齐全',
+      reason: 'pi-agent',
     });
   });
 

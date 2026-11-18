@@ -60,6 +60,7 @@ export interface TimelineSubtask {
   id: string;
   title: string;
   status: string;
+  resultDelivery?: { status: 'pending' | 'sending' | 'uncertain' | 'failed'; error: string | null };
   executor?: string;
   harness?: string;
   provider?: string;
@@ -172,7 +173,7 @@ export class ExecutionProjector {
       stages: [
         this.projectPlanning(subtasks),
         this.projectAuthorization(dispatchItems),
-        this.projectExecution(subtasks, receipts, dispatchItems, runtimeFor),
+        this.projectExecution(subtasks, receipts, dispatchItems, runtimeFor, view.acceptedResultContinuations),
         this.projectVerification(subtasks, receipts),
         this.projectDelivery(task, subtasks, publication),
       ],
@@ -215,12 +216,17 @@ export class ExecutionProjector {
     receipts: TimelineReceiptRecord[],
     dispatchItems: TimelineDispatchItemRecord[],
     runtimeFor: (attemptId: string) => TimelineRuntimeRecord | null,
+    continuations: TaskView['acceptedResultContinuations'] = [],
   ): TimelineStage {
     if (subtasks.length === 0) {
       return { phase: 'execution', status: 'pending' };
     }
 
-    const statuses = new Set(subtasks.map(subtask => subtask.status));
+    const deliveryBySubtask = new Map(continuations.map(item => [item.result.subtaskId, item]));
+    const statuses = new Set(subtasks.map(subtask => {
+      const delivery = deliveryBySubtask.get(subtask.id);
+      return delivery && ['pending', 'sending'].includes(delivery.status) ? 'awaiting_integration' : subtask.status;
+    }));
     let status: StageStatus;
     if (statuses.has('running')) {
       status = 'running';
@@ -261,6 +267,10 @@ export class ExecutionProjector {
           id: subtask.id,
           title: subtask.title,
           status: subtask.status,
+          ...(deliveryBySubtask.has(subtask.id) ? { resultDelivery: {
+            status: deliveryBySubtask.get(subtask.id)!.status,
+            error: deliveryBySubtask.get(subtask.id)!.error,
+          } } : {}),
           executor: subtaskDispatches[0]?.authorizedBinding.agentClassRef
             ?? subtaskReceipts[0]?.agentClassName
             ?? subtask.executorBindings[0]?.agentClassRef,

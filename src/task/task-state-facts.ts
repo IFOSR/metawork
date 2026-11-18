@@ -11,7 +11,7 @@
 
 import type { SubtaskStatus, Task } from '../core/types.js';
 import type { ControlDispatchItemStatus } from '../control/control-contracts.js';
-import type { PendingResultIdentity } from './safe-result-identity.js';
+import type { AcceptedResultContinuation, PendingResultIdentity } from './safe-result-identity.js';
 import { isServiceReadyState } from './local-service.js';
 import {
   createTaskReason,
@@ -118,6 +118,7 @@ export interface TaskStateRawFacts {
   /** An uncertified result that still needs an explicit user decision. */
   readonly pendingResult: PendingResultIdentity | null;
   readonly pendingResults?: readonly PendingResultIdentity[];
+  readonly acceptedResultContinuations?: readonly AcceptedResultContinuation[];
   readonly pendingPermission: { readonly requestId: string } | null;
   readonly service: TaskRawServiceFact | null;
   /** The authorized graph requires the Task to start and take over a service. */
@@ -183,6 +184,15 @@ const RECOVERABLE_BLOCK_FAILURE_KINDS = new Set([
   'configuration', 'adapter', 'permission', 'stale',
 ]);
 
+export function acceptedResultDeliveryAction(continuation: AcceptedResultContinuation): TaskPendingAction | null {
+  if (continuation.status !== 'uncertain' && continuation.status !== 'failed') return null;
+  return { actionId: `accepted_delivery:${continuation.id}`, kind: 'accept_result',
+    label: '重试已接受结果的交付', result: continuation.result,
+    reason: createTaskReason('delivery_failed',
+      `结果已接受，但交付失败：${continuation.error ?? '请检查交付条件后重试。'}`,
+      [`effect:${continuation.id}`, `result:${continuation.result.resultId}`]) };
+}
+
 export function readTaskEvaluationInput(raw: TaskStateRawFacts): TaskEvaluationInput {
   const receiptsBySubtask = new Map<string, TaskRawReceiptFact[]>();
   for (const receipt of raw.receipts) {
@@ -212,6 +222,10 @@ export function readTaskEvaluationInput(raw: TaskStateRawFacts): TaskEvaluationI
   const waitingForAvailability = raw.replans.some(replan => replan.status === 'waiting_for_availability');
 
   const pendingActions: TaskPendingAction[] = [];
+  for (const continuation of raw.acceptedResultContinuations ?? []) {
+    const action = acceptedResultDeliveryAction(continuation);
+    if (action) pendingActions.push(action);
+  }
   for (const pendingResult of raw.pendingResults ?? (raw.pendingResult ? [raw.pendingResult] : [])) {
     pendingActions.push({
       actionId: `accept:${pendingResult.subtaskId}:${pendingResult.attemptId}:${pendingResult.resultId}`,
@@ -344,7 +358,8 @@ export function readTaskEvaluationInput(raw: TaskStateRawFacts): TaskEvaluationI
   const publishing = raw.publications.some(publication => (
     publication.status === 'pending' || publication.status === 'applying'
   ));
-  const delivering = raw.publications.some(
+  const delivering = (raw.slot === 'held' && (raw.acceptedResultContinuations ?? [])
+    .some(item => item.status === 'pending' || item.status === 'sending')) || raw.publications.some(
     publication => publication.deliveryStatus === 'pending' && !publication.awaitingAcceptance,
   );
   // An unverified external outcome is not a live operation: the driver must be

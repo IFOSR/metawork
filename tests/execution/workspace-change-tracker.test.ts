@@ -3,9 +3,28 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { describe, expect, it } from 'vitest';
-import { captureWorkspaceState, captureWorkspaceStateAtPaths, deriveWorkspaceDelta } from '../../src/execution/workspace-change-tracker.js';
+import { captureWorkspaceState, captureWorkspaceStateAtPaths, deriveWorkspaceDelta, parseWorkspaceDelta } from '../../src/execution/workspace-change-tracker.js';
 
 describe('workspace change tracker', () => {
+  it('excludes runtime inputs from capture and old observations without excluding similarly named business files', () => {
+    const root = mkdtempSync(join(tmpdir(), 'metawork-runtime-inputs-'));
+    try {
+      spawnSync('git', ['init'], { cwd: root });
+      const before = captureWorkspaceState(root);
+      mkdirSync(join(root, '.metawork-tmp', 'attempt', 'inputs'), { recursive: true });
+      writeFileSync(join(root, '.metawork-tmp', 'attempt', 'inputs', 'upstream.md'), 'input');
+      writeFileSync(join(root, '.metawork-tmp-report.md'), 'business result');
+      writeFileSync(join(root, 'report.md'), 'report');
+      const delta = deriveWorkspaceDelta(before, captureWorkspaceState(root));
+      expect(delta.changed.map(item => item.path)).toEqual(['.metawork-tmp-report.md', 'report.md']);
+      const historical = { ...delta, changed: [...delta.changed,
+        { path: '.metawork-tmp/attempt/inputs/upstream.md', beforeHash: null, afterHash: 'old-input-hash' }] };
+      expect(parseWorkspaceDelta(historical)).toEqual(delta);
+      expect(historical.changed).toHaveLength(3);
+      expect(captureWorkspaceStateAtPaths(root, ['.metawork-tmp', 'report.md']).paths)
+        .toEqual({ 'report.md': delta.changed[1]!.afterHash });
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  });
   it('does not attribute unchanged user dirty files to an attempt', () => {
     const root = mkdtempSync(join(tmpdir(), 'metaclaw-workspace-delta-'));
     try {

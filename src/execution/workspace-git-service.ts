@@ -7,6 +7,7 @@ import { execFile, spawn } from 'node:child_process';
 import { lstat, mkdir, readFile, readdir, readlink, realpath, rm, stat, writeFile } from 'node:fs/promises';
 import { dirname, isAbsolute, join, relative, resolve } from 'node:path';
 import { boundedPathSegment } from '../utils/bounded-path-segment.js';
+import { isRuntimeWorkspacePath } from '../workspace/runtime-workspace-path.js';
 import type { ConversationGitWorktree, GitTreeEntry, WorkspaceGitRoot } from '../workspace/workspace-git-contracts.js';
 export type { ConversationGitWorktree, WorkspaceGitRoot } from '../workspace/workspace-git-contracts.js';
 
@@ -343,7 +344,7 @@ export class WorkspaceGitService {
     const walk = async (directory: string, prefix = ''): Promise<void> => {
       for (const item of await readdir(directory, { withFileTypes: true })) {
         const path = prefix ? `${prefix}/${item.name}` : item.name;
-        if (item.name.toLowerCase() === '.git' || (!prefix && item.name === '.metawork-tmp') || item.name.startsWith('.metawork-write-')) continue;
+        if (item.name.toLowerCase() === '.git' || isRuntimeWorkspacePath(prefix ? `${prefix}/${item.name}` : item.name)) continue;
         if (EXCLUDED.has(item.name) && !retained.some(file => file === path || file.startsWith(`${path}/`))) continue;
         assertGitPath(path);
         const absolute = join(directory, item.name);
@@ -477,8 +478,7 @@ export function assertGitPath(path: string): void {
 }
 function isExcludedSourcePath(path: string): boolean {
   const segments = path.split('/');
-  return segments.some(segment => EXCLUDED.has(segment) || segment.startsWith('.metawork-write-'))
-    || segments[0] === '.metawork-tmp';
+  return segments.some(segment => EXCLUDED.has(segment)) || isRuntimeWorkspacePath(path);
 }
 function within(root: string, path: string): boolean { const rel = relative(root, path); return rel === '' || (!rel.startsWith('..') && !isAbsolute(rel)); }
 async function exists(path: string): Promise<boolean> { return lstat(path).then(() => true, () => false); }

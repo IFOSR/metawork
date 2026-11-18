@@ -100,6 +100,23 @@ function input(): WorkGraphPresentationInput {
 }
 
 describe('WorkGraphPresentationProjector', () => {
+  it.each(['pending', 'sending', 'uncertain', 'failed'] as const)('projects accepted delivery without rewriting the receipt or frontier (%s)', status => {
+    const facts = input();
+    facts.subtasks = facts.subtasks.map(node => node.id.endsWith('_docs')
+      ? { ...node, status: 'awaiting_decision' } : node);
+    facts.acceptedResultContinuations = [{
+      id: 'delivery-1', status, error: null,
+      result: { taskId: 'task-1', generationId: 'generation-1', graphRevision: 1,
+        subtaskId: 'task-1_r1_docs', attemptId: 'attempt-1', resultId: 'result-1' },
+    }];
+    const result = new WorkGraphPresentationProjector().project(facts);
+    const blocked = status === 'uncertain' || status === 'failed';
+    expect(result.nodes.find(node => node.id.endsWith('_docs'))).toMatchObject({
+      status: 'awaiting_decision', executionState: blocked ? 'blocked' : 'waiting', runnable: false,
+      schedulingDetail: blocked ? '结果已接受，交付受阻，可重试交付' : '结果已接受，等待交付',
+    });
+    expect(result.currentRunnableFrontier).not.toContain('task-1_r1_docs');
+  });
   it('projects a resource wait independently of the dependency frontier', () => {
     const facts = input();
     facts.subtasks = facts.subtasks.map(node => node.id.endsWith('_docs') ? {...node, resourceWaitAccess: 'read'} : node);
@@ -136,7 +153,7 @@ describe('WorkGraphPresentationProjector', () => {
       status: 'running',
       routing: [{
         executorDisplayName: 'Codex',
-        harnessDisplayName: 'Codex CLI',
+        harnessDisplayName: 'Codex Harness',
         policy: 'auto',
         selected: {
           providerDisplayName: 'OpenAI',
