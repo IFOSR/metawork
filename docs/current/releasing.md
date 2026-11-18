@@ -2,8 +2,10 @@
 
 Root, Web and Desktop package/lock versions must match. Prepare release notes,
 CHANGELOG and a release plan before tagging. Published releases are immutable;
-use a new version for future releases. The current published release is `v0.1.17`: macOS Desktop and Runtime,
-plus Linux x64 and Windows x64 Server/Web/TUI Runtime packages.
+use a new version for future releases. The current published release is `v0.1.31`:
+the Apple Silicon (macOS arm64) Desktop DMG; Intel DMG and Windows packages are
+not published; Linux and Intel Server archives are built but full user
+acceptance is scoped to macOS arm64 + Web (ADR-0055 D14).
 
 An internal build (ad-hoc signed, not notarized, Apple Silicon DMG only) uses a
 different path that needs no Apple material: see

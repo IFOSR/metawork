@@ -12,6 +12,13 @@
 - [2026-11-16 v0.1.31 Release 与 DMG](plans/2026-11-16-v0.1.31-release.md)
   —— 启动准备失败修复的版本发布、签名资产核验和 Apple Silicon DMG 升级门禁。
 
+- [官方服务实例创建与查询方案（一期）](plans/2026-11-09-official-runtime-provisioning-design.md)
+  —— `POST/GET /v1/runtimes` 六步创建管线、一账号一实例、免密登录；官方控制台；实例升级就绪语义/模板漂移检测/存量自愈（1.5.6–1.5.13 逐批记录见文档 §11）。2026-11-12 起扩展覆盖三个专项（§12–§14）：**工作目录根限制与目录新建**（`METAWORK_WORKSPACE_ROOT` 限根、页内新建目录）、**未激活模型的 AI 辅助可用性**（官方内置 AI 兜底 + degraded 如实告知 + 待激活 Provider 暂存区）、**容器直跑镜像与引擎统一**（镜像即版本、上游固定版本 Pi 1.5.0 + kimi 兼容注入，ADR-0056）。镜像线：official-server 1.5.13 / anyfusion-runtime 0.1.27.0。
+
+- [结果恢复与停止状态闭环](plans/2026-11-04-result-recovery-deadlock-fix.md)
+  —— 2026-11-05 已发布 v0.1.25，真实浏览器及安装升级验收通过。
+
+
 - [2026-11-12 账单与记忆画像展示优化](plans/2026-11-12-billing-memory-presentation.md)
   —— 账号 Token 汇总、趋势与明细重排；记忆增加整体画像、主题分布和可核对摘要，保留 L1/L2/L3 管理；8788 桌面、窄屏和错误重试验证通过。
 
