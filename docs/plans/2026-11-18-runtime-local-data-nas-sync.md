@@ -146,6 +146,6 @@ Pod（实例）
   挂载 → 老实例确认数据后 admin close（云盘/PVC 一并删除）→ 用户侧重建即
   local-sync 实例。
 - 实例镜像线：`anyfusion-runtime:0.1.27.1`（含 main 交付修复，版本号走实例
-  自己的 0.1.27.x 线，与平台安装包 GitHub Release 版本无关联）；已构建待推送
+  自己的 0.1.27.x 线，与平台安装包 GitHub Release 版本无关联）；已推送 ACR
   （推送需生产 `RUNTIME_IMAGE` 完整仓库地址）；`RUNTIME_IMAGE` 配置按计划与
   local-sync 一同切换。
