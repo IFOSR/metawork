@@ -162,30 +162,40 @@ export class InternalLlmService {
     input: { action: string; system?: string; data: unknown },
     model: { baseUrl: string; apiKey: string; modelId: string; system?: string },
   ): Promise<unknown> {
-    const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), 60_000);
-    try {
-      const response = await (this.deps.fetchImpl ?? fetch)(
-        `${model.baseUrl.replace(/\/+$/u, '')}/chat/completions`, {
-          method: 'POST',
-          headers: { Accept: 'application/json', 'Content-Type': 'application/json', Authorization: `Bearer ${model.apiKey}` },
-          signal: controller.signal,
-          // 不发 temperature 等采样参数：部分固定订阅模型（如 kimi-for-coding）
-          // 只接受特定值，参数交由 Provider 默认值。
-          body: JSON.stringify({
-            model: model.modelId,
-            messages: [
-              { role: 'system', content: model.system ?? input.system ?? 'Return a JSON business result for the supplied data.' },
-              { role: 'user', content: JSON.stringify(input.data) },
-            ],
-          }),
-        },
-      );
-      if (!response.ok) throw new Error(`HTTP ${response.status}`);
-      return await response.json();
-    } finally {
-      clearTimeout(timer);
+    // 首次调用是全冷链路（新 Pod 首次 DNS/TCP/TLS + 供应商网关冷启动），60 秒
+    // 预算可能不够：超时后网关已热，自动重试一次即可命中（仅对超时重试，HTTP
+    // 4xx/5xx 是确定性问题不重试）。
+    for (let attempt = 1; attempt <= 2; attempt++) {
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), 60_000);
+      try {
+        const response = await (this.deps.fetchImpl ?? fetch)(
+          `${model.baseUrl.replace(/\/+$/u, '')}/chat/completions`, {
+            method: 'POST',
+            headers: { Accept: 'application/json', 'Content-Type': 'application/json', Authorization: `Bearer ${model.apiKey}` },
+            signal: controller.signal,
+            // 不发 temperature 等采样参数：部分固定订阅模型（如 kimi-for-coding）
+            // 只接受特定值，参数交由 Provider 默认值。
+            body: JSON.stringify({
+              model: model.modelId,
+              messages: [
+                { role: 'system', content: model.system ?? input.system ?? 'Return a JSON business result for the supplied data.' },
+                { role: 'user', content: JSON.stringify(input.data) },
+              ],
+            }),
+          },
+        );
+        if (!response.ok) throw new Error(`HTTP ${response.status}`);
+        return await response.json();
+      } catch (error) {
+        const aborted = error instanceof Error && error.name === 'AbortError';
+        if (attempt < 2 && aborted) continue;
+        throw error;
+      } finally {
+        clearTimeout(timer);
+      }
     }
+    throw new Error('模型调用未执行');
   }
 }
 
