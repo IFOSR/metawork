@@ -1639,3 +1639,23 @@ test('a lingering old pod during a recreate rollout does not keep the instance f
     assert.equal((await api(`/v1/runtimes/${instanceId}`, undefined, token)).body.sandbox.serviceReady, true);
   } finally { stubDeploymentStatus = null; }
 });
+
+test('readiness follows the deployment template image even when the ledger lags behind', async () => {
+  // 复现生产现场：更新期间改了 RUNTIME_IMAGE，续跑把模板换到新镜像，但台账的
+  // image 列仍是旧版本。就绪判定必须以模板为准——否则已经跑上新镜像的 Pod 永远
+  // 判成未就绪，实例一直停在「更新中」。
+  const { token } = await registerLogin('stale-ledger@example.com');
+  assert.equal((await api('/v1/orders', { plan: 'trial', idempotencyKey: 'stale-ledger-trial-001' }, token)).status, 201);
+  const created = await api('/v1/runtimes', { idempotencyKey: 'stale-ledger-0001' }, token);
+  assert.equal(created.status, 202);
+  const instanceId = created.body.sandbox.sandboxId;
+  const deadline = Date.now() + 5000;
+  while (Date.now() < deadline) {
+    await new Promise(resolve => setTimeout(resolve, 25));
+    if ((await api(`/v1/runtimes/${instanceId}`, undefined, token)).body.sandbox?.status === 'running') break;
+  }
+  // 把台账的 image 列改成过时版本（模拟续跑只换模板没同步台账）。
+  db.prepare("UPDATE runtimes SET image='registry.test/metawork/sandbox:0.0.1-stale' WHERE id=?").run(instanceId);
+  const view = (await api(`/v1/runtimes/${instanceId}`, undefined, token)).body.sandbox;
+  assert.equal(view.serviceReady, true, 'readiness must follow the template image, not the stale ledger');
+});

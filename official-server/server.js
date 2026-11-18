@@ -720,6 +720,9 @@ async function provision(sandboxId) {
         return;
       }
       await patchDeploymentTemplate(name, sandboxDeploymentManifest({ ...row, image: runtimeEnv.image }, name));
+      // 模板换成了当前配置镜像，台账必须同步：否则 image 列继续停留在旧版本，
+      // 台账、就绪判定与控制台展示三者对不上。
+      db.prepare('UPDATE runtimes SET image=?, updated_at=? WHERE id=?').run(runtimeEnv.image, now(), sandboxId);
       await waitForReady(sandboxId, name);
       return;
     }
@@ -859,7 +862,14 @@ async function detectServiceReady(sandboxId, podName, expectedImage) {
   const items = pod.data?.items ?? [];
   const live = items.filter(item => !item.metadata?.deletionTimestamp);
   const phase = live.find(item => item.status?.phase)?.status?.phase ?? null;
-  const target = String(expectedImage ?? '');
+  // 期望镜像以**集群里 Deployment 模板**为准：台账的 image 列可能落后于模板
+  // （更新期间改了 RUNTIME_IMAGE，续跑只换了模板没同步台账），拿旧值比对会让
+  // 已经跑上新镜像的 Pod 永远判成未就绪，实例就卡在「更新中」。
+  const deployment = await k8sRequest('GET', `/apis/apps/v1/namespaces/${runtimeEnv.namespace}/deployments/${podName}`);
+  const templateImage = deployment.status === 200
+    ? deployment.data?.spec?.template?.spec?.containers?.[0]?.image
+    : undefined;
+  const target = String(templateImage || expectedImage || '');
   const ready = live.some(item => (
     // 镜像必须与期望一致：否则这是尚未被替换的旧 Pod。
     (!target || item.spec?.containers?.some(container => container.image === target))
@@ -868,7 +878,6 @@ async function detectServiceReady(sandboxId, podName, expectedImage) {
   if (!ready) return { ready: false, phase };
   // Pod 已就绪；再看 Deployment 是否收敛（observedGeneration 追上且副本就位）。
   // status 缺失时无法判定，不因此阻塞——镜像匹配 + Ready 已是充分证据。
-  const deployment = await k8sRequest('GET', `/apis/apps/v1/namespaces/${runtimeEnv.namespace}/deployments/${podName}`);
   if (deployment.status === 200 && deployment.data?.status) {
     const status = deployment.data.status;
     const generation = deployment.data?.metadata?.generation ?? 0;
