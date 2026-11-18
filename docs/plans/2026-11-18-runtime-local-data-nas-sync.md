@@ -152,7 +152,16 @@ Pod（实例）
   `sha256:97cd9d3c03db9b9f17df6a1d554540986cb8c3ed5e2bab7460ae59068cc2a1b0`），
   版本号走实例自己的 0.1.27.x 线，与平台安装包 GitHub Release 版本无关联；
   均已推送 ACR。`RUNTIME_IMAGE` 已由用户切至 0.1.27.1 并更新实例；
-  0.1.27.4 推送后用户切 Secret 并点更新即可。
+  0.1.27.5 推送后用户切 Secret 并点更新即可。
+- **0.1.27.5**（配置快照撕裂修复，digest
+  `sha256:604a897599a1c3b8af12839b420fe82efe60f0f2335a44e5e8a1d785fc201fca`）：
+  逐文件快照会把配置的「激活指针 + 激活日志」拷成不成对的一对，恢复后实例
+  启动被 `configuration_recovery_blocked` 拦下。修复引入
+  `scripts/local-sync-config.mjs`（随实例镜像提供）：配置目录整体复制 → 按仓库
+  `recover()` 同口径校验（日志/指针对 + 激活版本清单哈希）→ 通过才原子发布；
+  撕裂副本丢弃并保留上一份好快照。同步时逐文件增量排除配置目录，恢复时整目录
+  还原（覆盖旧式快照里的坏副本；无快照时清空配置目录，由应用按 bootstrap
+  重新播种，实例仍可启动）。
 - 记忆引擎补丁失效根因：Windows 检出把 `memory/tdai-metawork-compat.patch` 转成
   CRLF，`git apply` 报 corrupt 而 prepare 管线失败，引擎检出停留在补丁前状态
   （`.dockerignore` 只排除 node_modules，故过期检出被原样打进镜像）。
