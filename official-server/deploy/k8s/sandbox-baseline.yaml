@@ -65,3 +65,20 @@ spec:
       defaultRequest:
         cpu: 250m
         memory: 512Mi
+
+---
+# local-sync 数据模式的共享同步卷（RUNTIME_DATA_MODE=local-sync）：RWX NAS，
+# 每个实例占用子目录 mw-rt-<id>；创建实例前必须存在（storage 步会校验）。
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: metawork-runtime-sync
+  namespace: nexusfusionai
+  labels:
+    app.kubernetes.io/part-of: metawork-sandbox
+spec:
+  accessModes: ["ReadWriteMany"]
+  storageClassName: cloud-nas-cnfs
+  resources:
+    requests:
+      storage: 1Ti

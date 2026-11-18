@@ -72,7 +72,7 @@ describe('single settings activation boundary', () => {
 });
 
 describe('official account local authentication boundary', () => {
-  const fact = { status: 'active' as const, plan: 'internal_perpetual' as const, effectiveAt: new Date().toISOString(), expiresAt: null, revision: 1, serverTime: new Date().toISOString() };
+  const fact = { status: 'active' as const, plan: 'internal_perpetual' as const, effectiveAt: new Date().toISOString(), expiresAt: null, revision: 1, trialUsed: false, serverTime: new Date().toISOString() };
   function officialClient(overrides: Partial<ConstructorParameters<typeof LocalAuthorizationService>[0]['client']> = {}) {
     return {
       sendEmailCode: async () => ({ sent: true, expiresIn: 900 }),

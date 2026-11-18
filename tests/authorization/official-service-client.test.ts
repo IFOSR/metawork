@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import { OfficialServiceClient } from '../../src/authorization/official-service-client.js';
 
-const fact = { status: 'trial', plan: 'trial', effectiveAt: '2026-10-09T00:00:00Z', expiresAt: '2026-10-16T00:00:00Z', revision: 1, serverTime: '2026-10-09T00:00:00Z' };
+const fact = { status: 'trial', plan: 'trial', effectiveAt: '2026-10-09T00:00:00Z', expiresAt: '2026-10-16T00:00:00Z', revision: 1, trialUsed: true, serverTime: '2026-10-09T00:00:00Z' };
 function client(value: unknown, status = 200) {
   const fetchImpl = vi.fn<typeof fetch>(async () => Response.json(value, { status }));
   return { api: new OfficialServiceClient({ baseUrl: 'https://official.example', fetchImpl }), fetchImpl };

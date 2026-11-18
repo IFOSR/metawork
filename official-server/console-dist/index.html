@@ -5,68 +5,72 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>MetaWork</title>
   <link rel="icon" href="data:,">
-  <link rel="stylesheet" href="/console/style.css?v=1.5.18">
+  <link rel="stylesheet" href="/console/style.css?v=1.5.19">
 </head>
 <body>
   <!-- ─── 首页（公开落地页）─── -->
   <div id="app-home" class="hidden">
     <header class="site-nav">
-      <div class="site-brand">MetaWork</div>
+      <div class="site-brand"><span class="brand-mark">MW</span><span>MetaWork</span></div>
       <nav class="site-nav-right" id="home-nav-right"></nav>
     </header>
     <section class="hero">
+      <span class="hero-badge">面向持久化、可治理的 Agent 工作流</span>
       <h1>MetaWork</h1>
-      <p class="tagline">面向持久化、可治理 Agent 工作流的商业 AI Task OS。将自然语言需求转化为可持久化的任务与工作图，交付可验收的结果，而不是停留在一次聊天回复。</p>
-      <div class="cta" id="home-cta">
-        <button id="cta-register">注册账号</button>
-        <button id="cta-login" class="ghost">登录</button>
-      </div>
+      <p class="tagline">将自然语言需求转化为可持久化的任务与工作图，交付可验收的结果，而不是停留在一次聊天回复。</p>
+      <div class="cta" id="home-cta"></div>
+      <p class="hero-note">订阅包含软件使用权及合理额度的内置 AI；Manager / Executor 的模型费用另计。</p>
     </section>
     <section class="why">
       <h2>为什么用 MetaWork</h2>
       <div class="why-grid">
-        <div class="card"><h3>持久工作</h3><p>任务、工作图、结果、恢复事实和审计记录可跨进程重启保留。</p></div>
-        <div class="card"><h3>受控执行</h3><p>Planner 负责提出工作，ControlKernel 负责授权状态变化，Executor 只执行明确获批的尝试。</p></div>
-        <div class="card"><h3>多端统一</h3><p>Desktop、Web、TUI 与飞书客户端使用同一套版本化命令与事件平面，查看同一批任务与会话。</p></div>
-        <div class="card"><h3>可解释路由</h3><p>每个获批尝试都固定到配置版本以及完整的模型与权限绑定。</p></div>
+        <div class="card feature"><h3>持久工作</h3><p>任务、工作图、结果、恢复事实和审计记录可跨进程重启保留。</p></div>
+        <div class="card feature"><h3>受控执行</h3><p>Planner 负责提出工作，ControlKernel 负责授权状态变化，Executor 只执行明确获批的尝试。</p></div>
+        <div class="card feature"><h3>多端统一</h3><p>Desktop、Web、TUI 与飞书客户端使用同一套版本化命令与事件平面，查看同一批任务与会话。</p></div>
+        <div class="card feature"><h3>可解释路由</h3><p>每个获批尝试都固定到配置版本以及完整的模型与权限绑定。</p></div>
       </div>
     </section>
     <section class="landing-plans">
       <h2>套餐与价格</h2>
+      <p class="section-note">试用每账号仅可激活一次；付费套餐可重复购买，同一种订阅续费时长自动叠加。</p>
       <div id="home-plans" class="plans-grid">加载中…</div>
     </section>
-    <footer class="footer">© 2026 上海元聚变人工智能科技有限公司 · MetaWork · <span style="opacity:.6">v1.5.18</span></footer>
+    <footer class="footer">© 2026 上海元聚变人工智能科技有限公司 · MetaWork · <span style="opacity:.6">v1.5.19</span></footer>
   </div>
 
   <!-- ─── 登录 / 注册 ─── -->
   <div id="app-auth" class="hidden">
     <header class="site-nav">
-      <div class="site-brand">MetaWork</div>
+      <div class="site-brand"><span class="brand-mark">MW</span><span>MetaWork</span></div>
       <nav class="site-nav-right">
         <button id="auth-back-home" class="nav-link">返回首页</button>
       </nav>
     </header>
     <div class="auth-card card">
+      <div class="auth-head">
+        <h1>账号登录</h1>
+        <p>此账号供本机的 Web、Desktop、TUI 和飞书共用。</p>
+      </div>
       <div class="tabs">
         <button id="tab-login" class="tab active">登录</button>
         <button id="tab-register" class="tab">注册</button>
       </div>
       <form id="form-login" class="stack">
-        <label>邮箱<input id="login-email" type="email" required autocomplete="email"></label>
+        <label>邮箱<input id="login-email" type="email" required autocomplete="email" placeholder="you@example.com"></label>
         <label>密码（至少 12 位）<input id="login-password" type="password" required minlength="12" autocomplete="current-password"></label>
-        <button type="submit">登录</button>
+        <button type="submit" class="btn primary block">登录</button>
         <p id="login-error" class="error"></p>
       </form>
       <form id="form-register" class="stack hidden">
-        <label>邮箱<input id="reg-email" type="email" required autocomplete="email"></label>
+        <label>邮箱<input id="reg-email" type="email" required autocomplete="email" placeholder="you@example.com"></label>
         <label>密码（至少 12 位）<input id="reg-password" type="password" required minlength="12" autocomplete="new-password"></label>
         <label>邮箱验证码
           <span class="row">
-            <input id="reg-code" required maxlength="6">
-            <button id="btn-send-code" type="button" class="ghost">发送验证码</button>
+            <input id="reg-code" required maxlength="6" inputmode="numeric" placeholder="6 位验证码">
+            <button id="btn-send-code" type="button" class="btn ghost">发送验证码</button>
           </span>
         </label>
-        <button type="submit">注册</button>
+        <button type="submit" class="btn primary block">注册并登录</button>
         <p id="register-error" class="error"></p>
       </form>
       <p class="hint">遇到问题？在 MetaWork 应用内联系支持。</p>
@@ -86,49 +90,114 @@
       <nav class="sidebar-nav" id="console-nav"></nav>
       <div class="sidebar-footer">
         <div id="console-user" class="sidebar-user"></div>
-        <button id="btn-home" class="ghost small">返回首页</button>
-        <button id="btn-logout" class="danger small">退出登录</button>
+        <button id="btn-home" class="btn ghost small block">返回首页</button>
+        <button id="btn-logout" class="btn danger small block">退出登录</button>
       </div>
     </aside>
     <main class="main">
       <header class="main-header">
-        <h1 id="console-title">实例</h1>
+        <div class="main-header-text">
+          <h1 id="console-title">实例</h1>
+          <p id="console-subtitle" class="main-subtitle"></p>
+        </div>
+        <div class="main-header-actions" id="console-header-actions"></div>
       </header>
       <div class="content">
+        <!-- 实例 -->
         <section id="view-instances" class="hidden">
-          <div class="card">
-            <h2>我的实例</h2>
+          <div class="card" id="instance-card">
+            <div class="card-head">
+              <h2>我的实例</h2>
+              <span id="instance-status" class="pill"></span>
+            </div>
             <div id="instance-detail" class="stack">加载中…</div>
-            <div id="instance-actions" class="row" style="margin-top: 14px;"></div>
+            <div id="instance-actions" class="row wrap" style="margin-top: 16px;"></div>
             <p id="instances-hint" class="hint"></p>
           </div>
+          <div class="card">
+            <h2>实例说明</h2>
+            <ul class="bullet-list">
+              <li>权益失效后实例会自动停机（数据保留），续费后回到本页自动重启。</li>
+            </ul>
+          </div>
         </section>
+
+        <!-- 套餐 -->
         <section id="view-plans" class="hidden">
           <div class="card">
-            <h2>购买套餐</h2>
+            <div class="card-head">
+              <h2>购买套餐</h2>
+              <span id="plan-entitlement-hint" class="hint"></span>
+            </div>
             <div id="plan-cards" class="plans-grid">加载中…</div>
-            <div id="pay-panel" class="pay-panel hidden">
-              <p id="pay-status"></p>
+            <p class="hint">试用每个账号仅可激活一次；付费套餐可无限次购买，同一种订阅续费时长叠加，更换套餐按购买时间重新计算。</p>
+          </div>
+          <div class="card hidden" id="pay-panel">
+            <div class="card-head">
+              <h2>扫码支付</h2>
+              <span id="pay-status" class="pill"></span>
+            </div>
+            <div class="pay-body">
               <div id="pay-qr" class="qr"></div>
-              <p class="hint">请使用微信扫码完成支付；支付成功后本页自动更新。</p>
+              <div class="pay-meta">
+                <p id="pay-amount" class="pay-amount"></p>
+                <p id="pay-countdown" class="hint"></p>
+                <p class="hint">请使用微信扫码完成支付，支付成功后本页自动开通权益。</p>
+                <div class="row wrap" id="pay-actions"></div>
+              </div>
             </div>
           </div>
         </section>
+
+        <!-- 账户 -->
         <section id="view-account" class="hidden">
           <div class="card">
-            <h2>账户信息</h2>
-            <div id="account-email" class="kv"></div>
-            <div id="account-created" class="kv"></div>
-            <div id="account-id" class="kv"></div>
-            <div id="account-entitlement" class="kv" style="margin-top: 14px;"></div>
-            <button id="btn-refresh-entitlement" class="ghost small">刷新权益</button>
+            <div class="card-head">
+              <h2>权益</h2>
+              <span id="account-entitlement-pill" class="pill"></span>
+            </div>
+            <div id="account-entitlement" class="stat-grid"></div>
+            <div class="row wrap" style="margin-top: 16px;">
+              <button id="btn-refresh-entitlement" class="btn ghost">刷新权益</button>
+              <button id="btn-orders" class="btn ghost">查询订单</button>
+            </div>
+          </div>
+          <div class="card">
+            <div class="card-head">
+              <h2>账户信息</h2>
+            </div>
+            <div class="stat-grid">
+              <div class="stat"><span class="stat-label">邮箱</span><span class="stat-value" id="account-email">—</span></div>
+              <div class="stat"><span class="stat-label">注册时间</span><span class="stat-value" id="account-created">—</span></div>
+              <div class="stat"><span class="stat-label">账户 ID</span><span class="stat-value mono" id="account-id">—</span></div>
+            </div>
           </div>
         </section>
       </div>
     </main>
   </div>
 
+  <!-- ─── 订单列表 ─── -->
+  <dialog id="orders-dialog" class="modal">
+    <div class="modal-head">
+      <div>
+        <small class="eyebrow">METAWORK ORDERS</small>
+        <h2>订单列表</h2>
+      </div>
+      <button type="button" class="icon-btn" aria-label="关闭订单列表" data-close="orders-dialog">✕</button>
+    </div>
+    <div class="tabs" role="tablist" aria-label="订单类型">
+      <button id="orders-tab-pending" class="tab active" role="tab">待支付</button>
+      <button id="orders-tab-paid" class="tab" role="tab">已支付</button>
+    </div>
+    <div id="orders-list" class="orders-list"></div>
+    <p class="hint">退款请联系客服；二维码 30 分钟有效，过期后可继续支付换新码。</p>
+  </dialog>
+
+  <!-- ─── 提示 ─── -->
+  <div id="toast-stack" class="toast-stack" aria-live="polite"></div>
+
   <script src="/console/vendor/qrcode.js?v=1.4.4"></script>
-  <script src="/console/app.js?v=1.5.18"></script>
+  <script src="/console/app.js?v=1.5.19"></script>
 </body>
 </html>

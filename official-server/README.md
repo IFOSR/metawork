@@ -10,13 +10,15 @@
 
 - `POST /v1/auth/email/code`、`POST /v1/auth/register { email, password, code }`：邮箱注册（ADR-0050）。发码向邮箱投递 6 位验证码（15 分钟有效、5 次尝试上限、同邮箱重发作废旧码），注册须携带验证码，成功即邮箱已验证；经通用 SMTP（nodemailer）投递，`SMTP_*` 未配置时返回 503 `email_unavailable`。
 - `POST /v1/auth/login`、`GET /v1/auth/session`、`POST /v1/auth/logout`：邮箱+密码登录（原体系，ADR-0047）。
-- `GET /v1/entitlement`、`GET /v1/plans`、`POST /v1/orders`。
+- `GET /v1/entitlement`、`GET /v1/plans`、`POST /v1/orders`。`GET /v1/entitlement` 的 `entitlement` 含 `trialUsed`：账号是否曾激活过试用（试用每账号仅一次，购买后也不可再开通），客户端据此禁用试用入口而不是让用户撞上 `trial_already_used`。
 - `GET /v1/orders`、`GET /v1/orders/{id}`、`POST /v1/orders/{id}/pay`、`POST /v1/payments/notify`：订阅支付（ADR-0048）。pay 惰性创建 OPC Hub 订单并预支付返回 `qr_code_url`；GET 就地与 Hub 对账（按单 5 秒节流）；notify 为网关回调，HMAC 验签 + 事务结算 + 幂等，免 IP 限流。结算只信回调与查单事实，金额按订单价整数分校验，重复回调不重复加时长，无法结算的真实资金落 `payment_incidents` 人工对账。
 - `POST /v1/ai/operation`：固定 operation、requestId、input。提示词由 `prompts.js` 按 operation 选择，输入作为业务数据传入，模型返回的 JSON 交给本地设置消费者解释。
 - `POST /v1/runtimes`、`GET /v1/runtimes/{id}`、`GET /v1/runtimes`：实例（托管 Runtime 工作负载）创建与查询，方案见 `docs/plans/2026-11-09-official-runtime-provisioning-design.md`。创建需有效权益（402），幂等键按账号隔离，一账号仅一个活跃实例（409 `sandbox_exists`）；服务端经 in-cluster ServiceAccount 在 `nexusfusionai` namespace 顺序创建 PVC → Deployment → Service → Ingress 并等待就绪（响应含 `steps` 五步进度与专属域名 `<slug>.metawork.nexusfusionai.com`）。任一步失败回滚已建资源并落 `failed`（不占名额可重建）；服务重启打断的 provisioning 由确定性命名 get-or-create 续跑。生命周期：权益失效超宽限（默认 1 天）→ 停机 `suspended`（scale 0，PVC 保留）；续费后查询即重启同一实例（数据/域名不变）；停机超 30 天或 running 30 天无本人查询 → 标记 `recycle_pending`，不自动删除；删除仅经 SSH loopback 管理入口 `admin.js runtimes close`。
 - `POST /v1/runtimes/{id}/access-url`、`GET /v1/runtime-access/{redeem,verify}`、`POST /v1/runtime-access/session`（免密登录）：access-url 返回一次性钥匙链接（默认 60 秒，绑定账号+实例+域名）；打开后兑换长期门票 Cookie（HttpOnly+Secure，随 revoke/access_generation 失效）并由实例 Runtime 自动采纳官方会话（免密码登录、权益在线核验刷新）。除 `/_auth/redeem` 外全部实例路径经 nginx auth-url 门禁（无门票 401）。`RUNTIME_IMAGE` 未配置时创建返回 503 `instance_unavailable`；其余 `RUNTIME_*` 键均有缺省值。
 
-订单 `idempotencyKey` 长度 8–128，使用字母、数字、下划线或连字符。键按账号隔离，重复请求不得换套餐。试用七天，仅一次。月/年订单经 OPC Hub（微信 Native 扫码）真实结算：期内同套餐续费从 `max(now, expiresAt)` 按 `addCalendarMonths` 顺延，过期/试用转付费从支付确认时间起算；结算须核验交易、金额、币种、账号和订单，事务性去重。退款通道本期完整接入但仅管理员/客服发起（全额退、不限窗口、成功后恢复购买前权益状态；存在更新 revision 或 duplicate 笔时保持权益并标记人工），Web/TUI/飞书不出现退款入口。变更套餐另行定义。未配置 `PAYMENT_HUB_*` 时支付与退款关闭，行为与未接入一致。
+订单 `idempotencyKey` 长度 8–128，使用字母、数字、下划线或连字符。键按账号隔离，重复请求不得换套餐。试用七天，每账号仅一次（`licenses` 里存在 trial 记录即不可再开，续费与购买都不改变这一事实；重复下单返回 409 `trial_already_used`）。月/年订单经 OPC Hub（微信 Native 扫码）真实结算，可无限次购买：**只有同一种订阅才能叠加**——当前权益仍是同一个付费套餐且未到期时，续费从 `max(now, expiresAt)` 按 `addCalendarMonths` 顺延；跨套餐（月↔年）、试用转付费与已过期都按购买时间重新计算，不叠加上一个套餐的剩余时长。结算须核验交易、金额、币种、账号和订单，事务性去重。退款通道本期完整接入但仅管理员/客服发起（全额退、不限窗口、成功后恢复购买前权益状态；存在更新 revision 或 duplicate 笔时保持权益并标记人工），Web/TUI/飞书不出现退款入口。内部永久权益仍不可再购（409 `active_plan_conflict`）。未配置 `PAYMENT_HUB_*` 时支付与退款关闭，行为与未接入一致。
+
+控制台（`console-dist/`，静态零依赖）由本服务同源托管：`/` 是公开首页，`/console` 及其视图路由 `/console/instances`、`/console/plans`、`/console/account` 是后台，`/console/login`、`/console/register` 是登录注册。视图路由没有对应文件时回落到 SPA 入口（`index.html`），因此刷新停留在当前页面、地址可直接分享；`/console/<name>.js|css` 等真实静态资源照常返回，缺失的静态资源仍是 404。套餐页的试用按钮按 `trialUsed` 判定（已用过即不可再开通），付费套餐可反复购买，按上文的叠加规则计算时长；账户页「刷新权益」旁的「查询订单」复用 `/v1/orders`、pay、close 接口，可继续支付或取消待支付订单。实例由控制台在权益生效后自动补齐：没有活跃实例（从未创建，或旧实例已销毁/失败）就创建一个；已停机（`suspended`）的实例由本服务的查询路径按可用权益拉起同一实例（数据与域名不变），控制台不重复创建。部署时 `console-dist/` 需与 `server.js` 一并替换（源文件即产物，无需构建）。
 
 管理命令（SSH 后使用；账号以 `email` 定位；`refund` 第二参数匹配 32 位 hex 时解析为 hub 订单号，其余为原因）：
 

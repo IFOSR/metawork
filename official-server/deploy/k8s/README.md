@@ -79,8 +79,73 @@ cd official-server && PAYMENT_HUB_BASE_URL=https://opchub-openapi.metafusion.cn 
 
 ## 运维要点
 
-- **存储**：PVC 使用集群阿里云 NAS 存储类 `cloud-nas-cnfs`（网络附加，节点故障/Pod 迁移数据不丢）。SQLite 单写者低频写入，NAS 可承载，但**多副本与多挂载仍被禁止**（NAS 虽支持多挂载，双进程写同一 SQLite 文件会损坏数据）；上线验收先建账号/订单即真实写库验证。
-- **备份**：`kubectl -n nexusfusionai exec deploy/metawork-official -- node -e "require('node:sqlite').DatabaseSync ... .backup"` 或停服拷贝整个数据目录；不要只拷主文件忽略 WAL。NAS 不是备份，定期把备份同步到集群外。
+- **存储**：实例数据盘 PVC 默认使用阿里云 ESSD 云盘存储类 `alicloud-disk-essd`（块存储，单路延迟 ~1ms；此前 NAS `cloud-nas-cnfs` 的 fsync 往返 ~46ms/事务是实例卡顿主因，已弃用）。SQLite 单写者，**多副本与多挂载仍被禁止**（双进程写同一 SQLite 文件会损坏数据）；上线验收先建账号/订单即真实写库验证。
+- **备份**：`kubectl -n nexusfusionai exec deploy/metawork-official -- node -e "require('node:sqlite').DatabaseSync ... .backup"` 或停服拷贝整个数据目录；不要只拷主文件忽略 WAL。云盘不是备份，定期把备份同步到集群外。
 - **升级**：`kubectl set image` 后 Recreate 会先停旧再起新（秒级停机）；常规 schema 升级是 `CREATE TABLE IF NOT EXISTS`，启动即完成，回滚 = 换回旧镜像 tag（schema 只增不改，向后兼容）。**例外——2026-10-20 登录体系两次重建了 accounts 表**（邮箱验证码版为 email/password_hash schema）：跨版本的旧镜像配新库会因缺列直接报错，不存在向后兼容；升级必须按[运行指南](../../docs/current/official-account-operations.md)的数据前置核对 + 旧库备份流程执行，回滚需同时恢复备份旧库与旧镜像。
 - **限流**：Ingress 后 `TRUST_PROXY` 不可信（代理非 loopback），per-IP 限流退化为全局桶，已通过 `HTTP_RATE_MAX`/`AUTH_RATE_MAX` 环境变量调高，注册发码另有本机日预算熔断 `EMAIL_DAILY_MAX`（默认 100/上海自然日）；notify 路由免限流。
 - **扩容禁止**：不要把副本数调到 1 以上，也不要把 PVC 换成可多挂载的读写卷——SQLite 双写会损坏数据。多实例需先迁移 PostgreSQL 等服务端数据库，属独立立项。
+
+## 实例数据模式（local-sync）
+
+实例数据盘默认云盘 PVC（`RUNTIME_DATA_MODE=pvc`，数据随盘持久）。可选
+`RUNTIME_DATA_MODE=local-sync`：数据放 **Pod 内本地盘（emptyDir）**，写入
+μs 级、Pod 不绑任何节点；**NAS 是事实源**，sidecar 每 60 秒把用户数据
+（SQLite 经 backup API 一致性快照、git 工作区 `push --mirror`、其余文件
+按 mtime 增量）同步到共享同步卷的 `mw-rt-<id>/` 子目录；新 Pod 冷启动时由
+restore init 容器从快照恢复（约 1–3 分钟）。停机/升级经 preStop 强制同步，
+丢失窗口 ≈0；节点整机故障丢最近一个同步间隔的数据。设计记录见
+[`docs/plans/2026-11-18-runtime-local-data-nas-sync.md`](../../docs/plans/2026-11-18-runtime-local-data-nas-sync.md)。
+
+启用步骤（一次性）：
+
+1. 应用同步卷 PVC（已加入 `sandbox-baseline.yaml`）：
+   `kubectl apply -f deploy/k8s/sandbox-baseline.yaml`；缺失时实例创建报
+   `sync_pvc_missing` 落 failed。
+2. 给官方服务注入模式与挂载（挂载后 admin close 会连带删除实例 NAS 子目录）：
+   ```sh
+   kubectl -n nexusfusionai set env deploy/metawork-official \
+     RUNTIME_DATA_MODE=local-sync RUNTIME_SYNC_MOUNT=/sync
+   kubectl -n nexusfusionai patch deploy/metawork-official --type=strategic -p '
+   spec:
+     template:
+       spec:
+         containers:
+           - name: metawork-official
+             volumeMounts:
+               - { name: runtime-sync, mountPath: /sync }
+         volumes:
+           - name: runtime-sync
+             persistentVolumeClaim: { claimName: metawork-runtime-sync }'
+   ```
+3. 存量云盘实例不受影响（仍 pvc 语义）；切换后新建实例即 local-sync。模式
+   变更会让存量实例显示「重建实例」——需要迁到 local-sync 的实例由用户重建。
+   不想迁移的账号保持旧实例运行即可（drift 提示只影响更新入口）。
+
+恢复/回滚：`RUNTIME_DATA_MODE=pvc` 重建实例即回到云盘模式；NAS 上的快照
+目录在 close 时才删除，回滚期间数据仍在。
+
+## 实例性能调优（pvc 模式）
+
+实例数据盘默认 ESSD 云盘（Runtime 端 SQLite 已是 WAL + `synchronous=NORMAL`，fsync 放大已处理）。仍嫌慢时按序尝试：
+
+1. **升 PL1 档**（IOPS 约 2–4 倍）：在集群里建一个 PL1 StorageClass，再用 `RUNTIME_STORAGE_CLASS=alicloud-disk-essd-pl1` 让新实例使用；只影响新实例，存量实例需重建才受益。
+
+   ```yaml
+   apiVersion: storage.k8s.io/v1
+   kind: StorageClass
+   metadata:
+     name: alicloud-disk-essd-pl1
+   provisioner: diskplugin.csi.alibabacloud.com
+   parameters:
+     type: cloud_essd
+     performanceLevel: PL1
+   reclaimPolicy: Delete
+   volumeBindingMode: WaitForFirstConsumer
+   allowVolumeExpansion: true
+   ```
+
+   `volumeBindingMode: WaitForFirstConsumer` 必须保留：先等 Pod 调度再建盘，避免可用区不匹配导致挂载失败或跨区慢挂载。
+2. **加大容量**：ESSD 基线 IOPS/吞吐随容量增长；`RUNTIME_PVC_SIZE` 默认保持 `20Gi`，需要时调高（如 `50Gi`）；成本约 0.5 元/Gi·月。
+3. **本地盘诉求走 local-sync 模式**：见上文「实例数据模式（local-sync）」。不要把 PVC 直接换成本地 StorageClass——数据不跟随 Pod 迁移节点（Recreate/节点漂移后数据不在），与「数据保留」承诺冲突；local-sync 用 NAS 异步快照解决了这个问题。
+
+另注意：任务执行的整体耗时大头是模型 API 延迟；换盘只改善实例内页面加载、工作区文件操作与 SQLite/git 小 IO。启动/恢复的分钟级等待主要来自云盘 attach（10–60 秒）+ 调度 + 拉镜像，属块存储固有成本。

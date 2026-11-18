@@ -5,7 +5,7 @@ import { establishWebSession } from '../auth';
 export interface OfficialStatus {
   state: 'logged_out' | 'active' | 'pending_payment' | 'expired' | 'revoked' | 'unavailable';
   account: { email: string; displayName?: string } | null;
-  entitlement: { plan: string | null; expiresAt: string | null } | null;
+  entitlement: { plan: string | null; expiresAt: string | null; trialUsed?: boolean } | null;
   reason?: string;
 }
 interface Plan { plan: 'trial' | 'monthly' | 'annual'; amountCny: string; duration: string; payment: string }
@@ -224,6 +224,8 @@ export function OfficialAccountPanel({ onStatus }: { onStatus: (status: Official
     setMessage(projection.state === 'active' ? '已登录，权益已刷新。' : `已登录，${stateLabels[projection.state]}。`);
   });
   const active = status?.state === 'active';
+  // 试用是每账号一次的激活：服务端给出 trialUsed 时按它判定，旧服务端回落到"当前权益就是试用"。
+  const trialSpent = Boolean(status?.entitlement?.trialUsed) || status?.entitlement?.plan === 'trial';
   return <>
     <div className="official-account-bar">
       <span><span className="official-indicator" data-active={active} />{status ? stateLabels[status.state] : '正在确认官方账号状态'}</span>
@@ -262,8 +264,8 @@ export function OfficialAccountPanel({ onStatus }: { onStatus: (status: Official
           <h3>{planLabels[plan.plan]}</h3>
           <p className="official-price">¥{plan.amountCny}<small> / {plan.duration}</small></p>
           {plan.plan === 'trial' && <p>每个账号仅可开通一次</p>}
-          <button type="button" disabled={!status?.account || busy || (plan.plan === 'trial' && Boolean(status?.entitlement?.plan))} onClick={() => void choosePlan(plan)}>
-            {plan.plan === 'trial' ? (status?.entitlement?.plan ? '试用不可重复开通' : '开通试用') : '订阅'}
+          <button type="button" disabled={!status?.account || busy || (plan.plan === 'trial' && (trialSpent || active))} onClick={() => void choosePlan(plan)}>
+            {plan.plan === 'trial' ? (trialSpent ? '试用不可重复开通' : active ? '已有有效权益' : '开通试用') : '订阅'}
           </button>
         </article>)}
       </section>

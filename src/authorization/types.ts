@@ -27,6 +27,8 @@ export interface OfficialEntitlement {
   readonly effectiveAt: string | null;
   readonly expiresAt: string | null;
   readonly revision: number;
+  /** 账号是否曾激活过试用；试用每账号仅一次，购买后也不可再开通。 */
+  readonly trialUsed: boolean;
   readonly serverTime: string;
 }
 

@@ -6,7 +6,7 @@ import { OfficialAuthorizationError, type OfficialOrderPaymentResult, type Offic
 const epoch = Date.parse('2026-10-09T00:00:00Z');
 const day = 86400000;
 function entitlement(offset = 0) {
-  return { status: 'trial' as const, plan: 'trial' as const, effectiveAt: new Date(epoch).toISOString(), expiresAt: new Date(epoch + 7 * day).toISOString(), revision: 1, serverTime: new Date(epoch + offset).toISOString() };
+  return { status: 'trial' as const, plan: 'trial' as const, effectiveAt: new Date(epoch).toISOString(), expiresAt: new Date(epoch + 7 * day).toISOString(), revision: 1, trialUsed: true, serverTime: new Date(epoch + offset).toISOString() };
 }
 function paymentRow(status: OfficialPaymentView['status'] = 'pending'): OfficialPaymentView {
   return { hubOrderNo: 'a'.repeat(32), attempt: 1, status, amountCents: 990, qrCodeUrl: null, expiresAt: null, paidAt: null, channelOrderNo: null };

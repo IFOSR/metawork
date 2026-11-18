@@ -243,7 +243,10 @@ function parseEntitlement(value: unknown): OfficialEntitlement {
     status: z.enum(['active', 'trial', 'pending_payment', 'expired', 'revoked', 'unknown']),
     plan: z.enum(['trial', 'monthly', 'annual', 'internal_perpetual']).nullable(),
     effectiveAt: timestamp.nullable(), expiresAt: timestamp.nullable(),
-    revision: z.number().int().nonnegative(), serverTime: timestamp,
+    revision: z.number().int().nonnegative(),
+    // 旧服务端没有该字段：按 false 处理（等价于旧行为——只有当前权益就是试用时才禁用试用按钮）。
+    trialUsed: z.boolean().optional().default(false),
+    serverTime: timestamp,
   }).safeParse(value);
   if (!result.success || (['active', 'trial'].includes(result.data.status)
     && (!result.data.plan || !result.data.effectiveAt || (result.data.plan !== 'internal_perpetual' && !result.data.expiresAt)))) {

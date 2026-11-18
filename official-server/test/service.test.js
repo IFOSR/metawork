@@ -373,6 +373,32 @@ test('trial activation is atomic, once per account, and has a seven day expiry',
   assert.equal(fact.status, 'trial'); assert.ok(Math.abs(Date.parse(fact.expiresAt) - Date.parse(fact.effectiveAt) - 7 * 86400000) < 1000);
   assert.equal(db.prepare("SELECT count(*) AS n FROM licenses WHERE account_id = ? AND plan = 'trial'").get(accountA).n, 1);
 });
+test('the entitlement fact reports whether the trial was already spent', async () => {
+  // 已开过试用的账号：trialUsed 为真，之后再开试用仍被拒绝（付费购买不改变这一事实）。
+  const spent = (await api('/v1/entitlement', undefined, tokenA)).body.entitlement;
+  assert.equal(spent.trialUsed, true);
+  const again = await api('/v1/orders', { plan: 'trial', idempotencyKey: 'trial-again-001' }, tokenA);
+  assert.equal(again.status, 409); assert.equal(again.body.code, 'trial_already_used');
+  // 未开过试用的账号：trialUsed 为假，可以激活一次。
+  const fresh = await registerLogin('trial-fresh@example.com');
+  const fact = (await api('/v1/entitlement', undefined, fresh.token)).body.entitlement;
+  assert.equal(fact.trialUsed, false);
+});
+test('the console serves the SPA entry for view routes and keeps static assets separate', async () => {
+  const page = await fetch(`${base}/console/plans`);
+  assert.equal(page.status, 200);
+  assert.match(page.headers.get('content-type') ?? '', /text\/html/u);
+  assert.ok((await page.text()).includes('app-console'));
+  const entry = await fetch(`${base}/console`);
+  assert.equal(entry.status, 200);
+  const root = await fetch(`${base}/`);
+  assert.equal(root.status, 200);
+  const script = await fetch(`${base}/console/app.js`);
+  assert.equal(script.status, 200);
+  assert.match(script.headers.get('content-type') ?? '', /javascript/u);
+  // 不存在的静态资源仍然 404：回落只作用于视图路由。
+  assert.equal((await fetch(`${base}/console/missing.js`)).status, 404);
+});
 const aiInput = { operation: 'responsibility_rewrite', requestId: 'rewrite-request-1', input: { agentClassRef: 'engineer', sourceText: '代码分析', intent: '', modelFacts: [] } };
 test('fixed AI uses provider defaults and retries the same request without quota gates', async () => {
   const result = await api('/v1/ai/operation', { ...aiInput, system: 'caller system', model: 'caller model' }, tokenA);
@@ -505,6 +531,49 @@ test('pay creates a signed hub order and the notify settles it exactly once', as
   const renewed = (await api('/v1/entitlement', undefined, token)).body.entitlement;
   assert.equal(Date.parse(renewed.expiresAt), Date.parse(addCalendarMonths(fact.expiresAt, 1)));
   assert.equal(licenseCount(), 2);
+});
+test('paid plans stack on every purchase; only the same plan stacks', async () => {
+  const { token, accountId } = await registerLogin('stack-a@example.com');
+  const monthly = await api('/v1/orders', { plan: 'monthly', idempotencyKey: 'stack-key-0001' }, token);
+  assert.equal(monthly.status, 201);
+  const monthlyPay = await api(`/v1/orders/${monthly.body.orderId}/pay`, {}, token);
+  markHubPaid(monthlyPay.body.payment.hubOrderNo);
+  await notifyPaid(monthlyPay.body.payment.hubOrderNo, 990);
+  const first = (await api('/v1/entitlement', undefined, token)).body.entitlement;
+  assert.equal(first.status, 'active'); assert.equal(first.plan, 'monthly');
+  // 跨套餐购买不再被拒，但按购买时间重新计算，不叠加上一个套餐的剩余时长。
+  const annual = await api('/v1/orders', { plan: 'annual', idempotencyKey: 'stack-key-0002' }, token);
+  assert.equal(annual.status, 201);
+  const annualPay = await api(`/v1/orders/${annual.body.orderId}/pay`, {}, token);
+  markHubPaid(annualPay.body.payment.hubOrderNo);
+  await notifyPaid(annualPay.body.payment.hubOrderNo, 9900);
+  const switched = (await api('/v1/entitlement', undefined, token)).body.entitlement;
+  assert.equal(switched.plan, 'annual');
+  // 跨套餐按购买时间重新计算：到期日是"现在 + 12 个月"，而不是"月度到期日 + 12 个月"。
+  assert.ok(Math.abs(Date.parse(switched.expiresAt) - Date.parse(addCalendarMonths(new Date().toISOString(), 12))) < 86400000);
+  assert.ok(Date.parse(switched.expiresAt) < Date.parse(addCalendarMonths(first.expiresAt, 12)));
+  // 同套餐再买一次继续叠加到当前到期日。
+  const again = await api('/v1/orders', { plan: 'annual', idempotencyKey: 'stack-key-0003' }, token);
+  assert.equal(again.status, 201);
+  const againPay = await api(`/v1/orders/${again.body.orderId}/pay`, {}, token);
+  markHubPaid(againPay.body.payment.hubOrderNo);
+  await notifyPaid(againPay.body.payment.hubOrderNo, 9900);
+  const stacked = (await api('/v1/entitlement', undefined, token)).body.entitlement;
+  assert.equal(Date.parse(stacked.expiresAt), Date.parse(addCalendarMonths(switched.expiresAt, 12)));
+  assert.equal(db.prepare('SELECT count(*) AS n FROM licenses WHERE account_id = ?').get(accountId).n, 3);
+  // 试用期间购买按购买时间重新计算，不把试用剩余天数折算进付费时长。
+  const trialAccount = await registerLogin('stack-b@example.com');
+  const trialOrder = await api('/v1/orders', { plan: 'trial', idempotencyKey: 'stack-key-0004' }, trialAccount.token);
+  assert.equal(trialOrder.status, 201);
+  const paid = await api('/v1/orders', { plan: 'monthly', idempotencyKey: 'stack-key-0005' }, trialAccount.token);
+  assert.equal(paid.status, 201);
+  const paidPay = await api(`/v1/orders/${paid.body.orderId}/pay`, {}, trialAccount.token);
+  markHubPaid(paidPay.body.payment.hubOrderNo);
+  await notifyPaid(paidPay.body.payment.hubOrderNo, 990);
+  const converted = (await api('/v1/entitlement', undefined, trialAccount.token)).body.entitlement;
+  assert.equal(converted.plan, 'monthly');
+  assert.ok(Date.parse(converted.expiresAt) > Date.now());
+  assert.ok(Date.parse(converted.expiresAt) - Date.now() < 40 * 86400000);
 });
 test('a stale attempt paid after close still settles; a second paid attempt only opens a duplicate incident', async () => {
   const { token, accountId } = await registerLogin('pay-b@example.com');
@@ -1016,6 +1085,33 @@ test('expired entitlement suspends the instance; renewal restarts the same insta
   sandboxD = { token, accountId, sandboxId: instanceId };
 });
 
+test('the instance list restarts a suspended instance once the entitlement is valid again', async () => {
+  // 控制台实例页读的是列表：续费后列表查询即重启同一实例（数据与域名不变）。
+  const { token, accountId } = await registerLogin('instance-list-resume@example.com');
+  assert.equal((await api('/v1/orders', { plan: 'trial', idempotencyKey: 'instance-list-trial-001' }, token)).status, 201);
+  const created = await api('/v1/runtimes', { idempotencyKey: 'instance-list-0001' }, token);
+  assert.equal(created.status, 202);
+  const instanceId = created.body.sandbox.sandboxId;
+  const deadline = Date.now() + 5000;
+  do {
+    assert.ok(Date.now() < deadline, 'list-resume instance did not reach running');
+    await new Promise(resolve => setTimeout(resolve, 20));
+  } while (db.prepare('SELECT status FROM runtimes WHERE id = ?').get(instanceId)?.status !== 'running');
+  db.prepare('UPDATE licenses SET expires_at = ? WHERE account_id = ?').run(new Date(Date.now() - 2 * 86400000).toISOString(), accountId);
+  assert.equal(await waitForStatus(token, instanceId, ['suspended']), 'suspended');
+  db.prepare("UPDATE licenses SET status = 'active', expires_at = ? WHERE account_id = ?").run(new Date(Date.now() + 30 * 86400000).toISOString(), accountId);
+  // 列表查询触发重启：状态离开 suspended。
+  const resumeDeadline = Date.now() + 5000;
+  let status = null;
+  while (Date.now() < resumeDeadline) {
+    await new Promise(resolve => setTimeout(resolve, 20));
+    const list = await api('/v1/runtimes', undefined, token);
+    status = list.body.sandboxes?.[0]?.status ?? null;
+    if (status !== 'suspended') break;
+  }
+  assert.ok(status && status !== 'suspended', `suspended instance was not restarted by the list view: ${status}`);
+});
+
 test('a long-suspended instance is marked recycle_pending and only close enables recreation', async () => {
   db.prepare('UPDATE licenses SET expires_at = ? WHERE account_id = ?').run(new Date(Date.now() - 2 * 86400000).toISOString(), sandboxD.accountId);
   assert.equal(await waitForStatus(sandboxD.token, sandboxD.sandboxId, ['suspended']), 'suspended');
@@ -1422,3 +1518,90 @@ test('session exchange consumes the et and only works after the gate redeem', as
   assert.ok(db.prepare('SELECT id FROM sessions WHERE instance_id = ?').get(sandboxA.sandboxId));
 });
 
+
+test('cross-data-mode updates are refused and the view hides update/rebuild entries', async () => {
+  // 模式是全局 env：模拟 ops 切换后，存量实例必须进入「不一致」状态——
+  // 视图隐藏更新/重建入口，升级被 409 data_mode_conflict 拒绝（否则跨模式换
+  // 模板会让云盘数据留在盘外不可见）。
+  const { token } = await registerLogin('mode-guard@example.com');
+  assert.equal((await api('/v1/orders', { plan: 'trial', idempotencyKey: 'mode-guard-trial-001' }, token)).status, 201);
+  const created = await api('/v1/runtimes', { idempotencyKey: 'mode-guard-0001' }, token);
+  assert.equal(created.status, 202);
+  const instanceId = created.body.sandbox.sandboxId;
+  assert.equal(await waitForStatus(token, instanceId, ['running']), 'running');
+  db.prepare("UPDATE runtimes SET data_mode = 'local-sync' WHERE id = ?").run(instanceId);
+  const view = (await api(`/v1/runtimes/${instanceId}`, undefined, token)).body.sandbox;
+  assert.equal(view.dataModeMismatch, true);
+  assert.equal(view.updateAvailable, false);
+  assert.equal(view.templateDrifted, false);
+  const upgrade = await api(`/v1/runtimes/${instanceId}/upgrade`, {}, token);
+  assert.equal(upgrade.status, 409);
+  assert.equal(upgrade.body.code, 'data_mode_conflict');
+  // 恢复一致后标志消失（测试镜像与期望一致，本就无更新可做）。
+  db.prepare("UPDATE runtimes SET data_mode = 'pvc' WHERE id = ?").run(instanceId);
+  const restored = (await api(`/v1/runtimes/${instanceId}`, undefined, token)).body.sandbox;
+  assert.equal(restored.dataModeMismatch, false);
+});
+test('local-sync data mode: emptyDir + sync sidecar, no instance PVC, close skips PVC delete', async () => {
+  // 隔离服务实例（文件末尾运行，避免污染共享 k8s 计数）；同步卷由种子化的 PVC 代表。
+  const port = await freePort();
+  k8sObjects.set('persistentvolumeclaims/metawork-runtime-sync', { metadata: { name: 'metawork-runtime-sync', namespace: 'nexusfusionai' }, spec: { accessModes: ['ReadWriteMany'] } });
+  const isolated = spawn(process.execPath, [fileURLToPath(new URL('../server.js', import.meta.url))], { cwd: root, env: { ...process.env, NODE_ENV: 'test', PORT: String(port), HOST: '127.0.0.1', DATABASE_PATH: join(root, 'test-local-sync.sqlite'), ADMIN_TOKEN: admin, SMTP_HOST: 'smtp.test', SMTP_PORT: '587', SMTP_USER: 'metawork-test', SMTP_PASS: 'test-smtp-pass', SMTP_FROM: 'MetaWork <noreply@metawork.test>', K8S_API_BASE: `http://127.0.0.1:${k8sStub.address().port}`, RUNTIME_IMAGE: 'registry.test/metawork/sandbox:0.1.25', RUNTIME_ACCESS_SECRET: 'test-runtime-access-secret-0123456789abcdef', RUNTIME_RATE_MAX: '100000', RETENTION_SWEEP_MS: '200', RUNTIME_READY_POLL_MS: '10', RUNTIME_EXPIRE_GRACE_DAYS: '0', RUNTIME_DATA_MODE: 'local-sync', RUNTIME_SYNC_INTERVAL_SECONDS: '60' }, stdio: ['ignore', 'pipe', 'pipe'] });
+  try {
+    await once(isolated.stdout, 'data');
+    const alt = `http://127.0.0.1:${port}`;
+    const call = async (path, body, token) => {
+      const response = await fetch(`${alt}${path}`, { method: body === undefined ? 'GET' : 'POST', headers: { 'Content-Type': 'application/json', ...(token ? { Authorization: `Bearer ${token}` } : {}) }, ...(body === undefined ? {} : { body: JSON.stringify(body) }) });
+      return { status: response.status, body: response.status === 204 ? null : await response.json() };
+    };
+    const password = 'test-password-12345';
+    assert.equal((await call('/v1/auth/email/code', { email: 'local-sync@example.com' })).status, 200);
+    const outbox = await call('/v1/admin/email-outbox', {}, admin);
+    const code = outbox.body.emails.at(-1).text.match(/(\d{6})/u)[1];
+    assert.equal((await call('/v1/auth/register', { email: 'local-sync@example.com', password, code })).status, 201);
+    const login = await call('/v1/auth/login', { email: 'local-sync@example.com', password });
+    assert.equal(login.status, 200);
+    const token = login.body.sessionToken;
+    assert.equal((await call('/v1/orders', { plan: 'trial', idempotencyKey: 'local-sync-trial-001' }, token)).status, 201);
+    const created = await call('/v1/runtimes', { idempotencyKey: 'local-sync-0001' }, token);
+    assert.equal(created.status, 202);
+    const instanceId = created.body.sandbox.sandboxId;
+    const deadline = Date.now() + 5000;
+    let status = null;
+    while (Date.now() < deadline) {
+      await new Promise(resolve => setTimeout(resolve, 25));
+      status = (await call(`/v1/runtimes/${instanceId}`, undefined, token)).body.sandbox?.status ?? null;
+      if (status === 'running') break;
+    }
+    assert.equal(status, 'running');
+    const resourceName = `mw-rt-${instanceId.slice(3)}`;
+    // 不创建实例 PVC；storage 步校验的是共享同步卷。
+    assert.ok(!k8sObjects.has(`persistentvolumeclaims/${resourceName}-data`));
+    const deployment = k8sObjects.get(`deployments/${resourceName}`);
+    assert.ok(deployment);
+    const podSpec = deployment.spec.template.spec;
+    const volumes = podSpec.volumes;
+    assert.deepEqual(volumes.map(volume => volume.name).sort(), ['data', 'sync']);
+    assert.ok(volumes.find(volume => volume.name === 'data').emptyDir);
+    assert.equal(volumes.find(volume => volume.name === 'sync').persistentVolumeClaim.claimName, 'metawork-runtime-sync');
+    // main 容器不挂同步卷（实例间隔离）；restore init + sync sidecar 都挂。
+    const main = podSpec.containers.find(container => container.name === 'server');
+    assert.deepEqual(main.volumeMounts.map(mount => mount.name), ['data']);
+    const restore = podSpec.initContainers.find(container => container.name === 'restore');
+    assert.ok(restore);
+    assert.ok(restore.args[0].includes(`/sync/${resourceName}`));
+    assert.ok(restore.args[0].includes('ls -A "$DATA"'));
+    const sidecar = podSpec.containers.find(container => container.name === 'sync');
+    assert.ok(sidecar);
+    // SQLite 走 checkpoint(TRUNCATE) + 拷主文件：22.x 的 node:sqlite 没有 backup()。
+    assert.ok(sidecar.args[0].includes('wal_checkpoint(TRUNCATE)'));
+    assert.ok(sidecar.args[0].includes('push -q --mirror'));
+    assert.ok(sidecar.lifecycle?.preStop?.exec?.command?.at(-1).includes('sleep 2'));
+    assert.equal(podSpec.terminationGracePeriodSeconds, 300);
+    // close：不尝试删除实例 PVC（该 PVC 不存在），标记 closed。
+    assert.equal((await call('/v1/admin/runtimes/close', { sandboxId: instanceId }, admin)).status, 200);
+    assert.equal((await call(`/v1/runtimes/${instanceId}`, undefined, token)).body.sandbox.status, 'closed');
+    const pvcDeletes = k8sCalls.filter(item => item.method === 'DELETE' && item.plural === 'persistentvolumeclaims').map(item => item.name);
+    assert.ok(!pvcDeletes.includes(`${resourceName}-data`));
+  } finally { isolated.kill(); await whenExited(isolated); }
+});

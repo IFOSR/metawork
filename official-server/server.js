@@ -1,6 +1,6 @@
 import { createHash, createHmac, randomBytes, scrypt, timingSafeEqual } from 'node:crypto';
 import { promisify } from 'node:util';
-import { mkdirSync, readFileSync } from 'node:fs';
+import { mkdirSync, readFileSync, rmSync } from 'node:fs';
 import { dirname, extname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { DatabaseSync } from 'node:sqlite';
@@ -8,6 +8,7 @@ import { createServer, request as httpRequest } from 'node:http';
 import { request as httpsRequest } from 'node:https';
 import { prompts } from './prompts.js';
 import { parseHubDatetime, refundRestoreRevision, settlementExpiry, yuanToCents } from './business.js';
+import { sandboxRestoreScript, sandboxSyncOnceScript } from './sandbox-scripts.js';
 import { createHubClient, HubError } from './hub-payments.js';
 import { createMailer } from './mailer.js';
 
@@ -144,6 +145,10 @@ db.exec(`
 `);
 // 存量库补列（新建表已含该列，重复执行按列已存在吞掉）。
 try { db.exec("ALTER TABLE runtimes ADD COLUMN suspend_at TEXT"); } catch { /* 列已存在 */ }
+// 实例创建时的数据模式（pvc/local-sync）。模式是全局 env：切换后存量实例
+// 不允许跨模式原地更新（模板换成 emptyDir 会把云盘数据留在盘外不可见），
+// 必须重建迁移。旧实例列缺省视为 pvc。
+try { db.exec("ALTER TABLE runtimes ADD COLUMN data_mode TEXT"); } catch { /* 列已存在 */ }
 try { db.exec("ALTER TABLE runtimes ADD COLUMN access_generation INTEGER NOT NULL DEFAULT 1"); } catch { /* 列已存在 */ }
 // applied_image：实际运行的镜像引用（就绪后才写入）。image 只是期望值——点更新按钮
 // 瞬间就变了，不代表容器已经在跑它。service_ready：服务真正可用的标志，前端
@@ -166,9 +171,28 @@ const runtimeEnv = {
   // 存储类默认 ESSD 云盘（alicloud-disk-essd，最小 20Gi）：块存储单路延迟
   // ~1ms，替代 NAS（CNFS）的 ~46ms/事务——SQLite/git 的小笔写入密集，
   // NAS 的 fsync 网络往返是实例卡顿的主因。已存在的 NAS PVC 不受影响。
+  // 追求更高 IOPS 可在集群里建 PL1 档 StorageClass 并用 RUNTIME_STORAGE_CLASS
+  // 指向它（见 deploy/k8s/README.md「实例性能调优」）。
   storageClass: env.RUNTIME_STORAGE_CLASS || 'alicloud-disk-essd',
   recycleDays: Number(env.RUNTIME_RECYCLE_DAYS ?? 30) || 30,
+  // 容量保持 20Gi（ESSD 最小档）。基线 IOPS/吞吐随容量增长，但成本按 Gi 计——
+  // 需要更高性能时优先升 PL 档（见 deploy/k8s/README.md「实例性能调优」），
+  // 其次再用 RUNTIME_PVC_SIZE 加大容量。
   pvcSize: env.RUNTIME_PVC_SIZE || '20Gi',
+  // 实例数据模式（RUNTIME_DATA_MODE）：
+  //   'pvc'（默认）= 云盘 PVC，数据随盘持久（现状）。
+  //   'local-sync' = Pod 内本地盘（emptyDir）+ NAS 异步同步：写入 μs 级、Pod
+  //     不绑节点；NAS 是事实源，冷启动从快照恢复（分钟级），节点故障丢最近
+  //     一个同步间隔的数据。设计见 docs/plans/2026-11-18-runtime-local-data-nas-sync.md。
+  dataMode: env.RUNTIME_DATA_MODE === 'local-sync' ? 'local-sync' : 'pvc',
+  // local-sync 共享同步卷：RWX NAS PVC（ops 预建，见 deploy/k8s/sandbox-baseline.yaml），
+  // 每实例占用子目录 mw-rt-<id>。
+  syncPvc: env.RUNTIME_SYNC_PVC || 'metawork-runtime-sync',
+  syncInterval: Number(env.RUNTIME_SYNC_INTERVAL_SECONDS ?? 60) || 60,
+  localDataSize: env.RUNTIME_LOCAL_DATA_SIZE || '25Gi',
+  terminationGraceSeconds: Number(env.RUNTIME_TERMINATION_GRACE_SECONDS ?? 300) || 300,
+  // 官方服务自身挂载同一同步卷的路径：设置后 admin close 连带删除实例的 NAS 子目录。
+  syncMount: env.RUNTIME_SYNC_MOUNT || '',
   readyPollMs: Number(env.RUNTIME_READY_POLL_MS ?? 2000) || 2000,
   // 就绪等待上限：覆盖镜像拉取 + 容器启动的完整窗口；就绪判定按镜像匹配
   // （detectServiceReady），超时后由查询/维护 sweep 继续收敛，状态不会卡死。
@@ -245,9 +269,11 @@ async function route(request, response) {
   // 控制台静态托管：公开路径（/、/console/*），与 API 前缀（/v1、/admin）无交集；仅 GET、防穿越。
   if (request.method === 'GET') {
     if (path === '/' || path === '/index.html') return serveConsoleStatic(response, 'index.html');
-    if (path.startsWith('/console/')) {
+    if (path === '/console' || path.startsWith('/console/')) {
       const relative = path.slice('/console/'.length);
-      if (!relative || relative.includes('..') || relative.includes('\\')) fail(404, 'not_found');
+      if (relative.includes('..') || relative.includes('\\')) fail(404, 'not_found');
+      // 视图路由（/console/plans）没有对应文件，回落到 SPA 入口，刷新停留在原页面。
+      if (!relative || !extname(relative)) return serveConsoleStatic(response, 'index.html');
       return serveConsoleStatic(response, relative);
     }
   }
@@ -291,14 +317,17 @@ async function route(request, response) {
       if (existing) { if (existing.plan !== body.plan) fail(409, 'idempotency_conflict'); return existing; }
       const current = entitlement(session.account.id);
       if (body.plan === 'trial') {
-        if (db.prepare("SELECT id FROM licenses WHERE account_id = ? AND plan = 'trial'").get(session.account.id)) fail(409, 'trial_already_used');
+        // 试用是每账号一次的激活：licenses 里已有 trial 记录就不可再开（无论当前权益是否还有效）。
+        if (trialUsed(session.account.id)) fail(409, 'trial_already_used');
         if (usable(current)) fail(409, 'active_plan_conflict');
-      } else if (usable(current) && (current.plan === 'internal_perpetual' || !['trial', body.plan].includes(current.plan))) fail(409, 'active_plan_conflict');
+      } else if (usable(current) && current.plan === 'internal_perpetual') fail(409, 'active_plan_conflict');
+      // 付费套餐可无限购买；只有同套餐续费才叠加时长，跨套餐按购买时间重新计算。
       const order = { id: id('ord'), account_id: session.account.id, plan: body.plan, amount_cny: selected.amountCny, currency: 'CNY', status: body.plan === 'trial' ? 'confirmed' : 'pending_payment', idempotency_key: key, created_at: now() };
       db.prepare('INSERT INTO orders (id, account_id, plan, amount_cny, currency, status, idempotency_key, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)').run(...Object.values(order));
       if (body.plan === 'trial') grant(session.account.id, 'trial', new Date(Date.now() + 7 * 86400000).toISOString());
       return order;
     });
+    // 试用激活后由控制台补齐实例（客户端流程，服务端不代为创建）。
     return send(response, 201, orderView(result));
   }
   const payMatch = /^\/v1\/orders\/([A-Za-z0-9_-]+)\/pay$/u.exec(path);
@@ -434,9 +463,19 @@ async function adminRoute(request, response, path) {
     // VPA 已退役：存量实例 close 时兜底删除（先于 Deployment，404 视为已不存在）。
     const vpaDelete = await k8sRequest('DELETE', `/apis/autoscaling.k8s.io/v1/namespaces/${runtimeEnv.namespace}/verticalpodautoscalers/${sandboxResourceName(row.id)}`);
     if (vpaDelete.status !== 200 && vpaDelete.status !== 404) fail(502, 'k8s_delete_failed');
-    for (const resource of SANDBOX_RESOURCES.slice().reverse()) {
+    // local-sync 没有实例 PVC 可删；pvc 模式逆序删除（PVC 最后删）。
+    const deletable = runtimeEnv.dataMode === 'local-sync'
+      ? SANDBOX_RESOURCES.slice().reverse().filter(resource => resource.plural !== 'persistentvolumeclaims')
+      : SANDBOX_RESOURCES.slice().reverse();
+    for (const resource of deletable) {
       const result = await k8sRequest('DELETE', `${resource.apiPath}/namespaces/${runtimeEnv.namespace}/${resource.plural}/${sandboxTargetName(resource, sandboxResourceName(row.id))}`);
       if (result.status !== 200 && result.status !== 404) fail(502, 'k8s_delete_failed');
+    }
+    // local-sync：实例的持久数据 = NAS 同步子目录（快照即全部），close 语义是
+    // 全部删除；官方服务未挂载同步卷时跳过并记日志（需人工清理）。
+    if (runtimeEnv.dataMode === 'local-sync' && runtimeEnv.syncMount) {
+      try { rmSync(resolve(runtimeEnv.syncMount, sandboxResourceName(row.id)), { recursive: true, force: true }); }
+      catch (error) { console.error('sandbox_sync_dir_cleanup_failed', JSON.stringify({ sandboxId: row.id, reason: String(error?.message ?? error).slice(0, 120) })); }
     }
     db.prepare("UPDATE runtimes SET status='closed', updated_at=? WHERE id=?").run(now(), row.id);
     return send(response, 200, { closed: true });
@@ -509,13 +548,13 @@ async function createSandbox(request, response, session) {
     name: body.name ?? null, slug: uniqueSlug(body.name), tier: 'small', image: runtimeEnv.image,
     status: 'provisioning', domain: null, pod_phase: null, vpa_json: null,
     steps_json: JSON.stringify(SANDBOX_STEPS.map(stepName => ({ name: stepName, status: 'pending' }))),
-    last_access_at: null, created_at: now(), updated_at: now(),
+    last_access_at: null, created_at: now(), updated_at: now(), data_mode: runtimeEnv.dataMode,
   };
   // slug 与"一账号一活跃沙盒"都由唯一索引兜底；索引冲突按同一业务错误呈现。
   for (let attempt = 0; attempt < 3; attempt++) {
     row.domain = `${row.slug}.${runtimeEnv.baseDomain}`;
     try {
-      db.prepare('INSERT INTO runtimes (id, account_id, idempotency_key, name, slug, tier, image, status, domain, pod_phase, vpa_json, steps_json, last_access_at, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)')
+      db.prepare('INSERT INTO runtimes (id, account_id, idempotency_key, name, slug, tier, image, status, domain, pod_phase, vpa_json, steps_json, last_access_at, created_at, updated_at, data_mode) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)')
         .run(...Object.values(row));
       break;
     } catch {
@@ -551,6 +590,9 @@ async function sandboxListView(response, session) {
   for (const row of rows) {
     if (row.status === 'running' && !row.service_ready) {
       await refreshLive(row);
+    } else if (row.status === 'suspended') {
+      // 续费后查询即重启同一实例（数据/域名不变）：列表也是一次 owner 查询。
+      await refreshLive(row);
     }
   }
   const fresh = rows.map(row => db.prepare('SELECT * FROM runtimes WHERE id = ?').get(row.id) ?? row);
@@ -564,16 +606,21 @@ async function sandboxListView(response, session) {
 function sandboxView(row, templateDrifted = false) {
   const expectedImage = row.image ?? '';
   const appliedImage = row.applied_image ?? '';
+  // 数据模式是全局 env：不一致时更新/重建入口必须隐藏（升级会被 409 拒绝，
+  // 且跨模式换模板会让云盘数据留在盘外不可见），迁移走 close + 重建。
+  const dataModeMismatch = (row.data_mode ?? 'pvc') !== runtimeEnv.dataMode;
   return {
     sandboxId: row.id, name: row.name, tier: row.tier, status: row.status, domain: row.domain,
     // 版本显示**实际运行**的镜像：期望值在点更新按钮的瞬间就变了，拿它当"版本"
     // 会让用户以为新版本已经跑起来了。
     version: imageTag(appliedImage || expectedImage),
-    updateAvailable: Boolean(runtimeEnv.image && expectedImage !== runtimeEnv.image
+    updateAvailable: !dataModeMismatch && Boolean(runtimeEnv.image && expectedImage !== runtimeEnv.image
       && ['running', 'suspended'].includes(row.status)),
     latestVersion: imageTag(runtimeEnv.image),
     /** 部署配置已变更，存量实例仍是旧模板：需要重建才能生效。 */
-    templateDrifted,
+    templateDrifted: dataModeMismatch ? false : templateDrifted,
+    /** 实例创建时的数据模式与当前服务模式不一致：更新/重建不可用。 */
+    dataModeMismatch,
     /** 服务真正可用（容器内 Web 已就绪）。不可用时不提供进入入口。 */
     serviceReady: Boolean(row.service_ready),
     podPhase: row.pod_phase ?? null, resources: TIER_RESOURCES[row.tier] ?? null,
@@ -599,17 +646,27 @@ function touchLastAccess(sandboxId, lastAccessAt) {
   db.prepare('UPDATE runtimes SET last_access_at=?, updated_at=? WHERE id=?').run(now(), now(), sandboxId);
 }
 
+// 停机实例的恢复：权益恢复可用后把 Deployment 拉回 1 副本并续跑创建管线。
+// 数据与域名不变；恢复失败保持停机，等下次查询再试。
+async function resumeSuspendedRuntime(row) {
+  if (!usable(entitlement(row.account_id))) return false;
+  const scaled = await scaleSandboxDeployment(sandboxResourceName(row.id), 1);
+  if (!(scaled.status >= 200 && scaled.status < 300)) return false;
+  markStepPending(row.id, 'ready');
+  db.prepare("UPDATE runtimes SET status='provisioning', pod_phase=NULL, service_ready=0, updated_at=? WHERE id=? AND status='suspended'").run(now(), row.id);
+  void provision(row.id);
+  return true;
+}
+
+// 权益生效后自动补齐实例由控制台负责（客户端流程），服务端只提供"查询即重启"：
+// 停机实例在 owner 查询时按可用权益拉回，实例的创建与命名仍由客户端显式发起。
+
 async function refreshLive(row) {
   // 服务重启打断的 provisioning：查询路径触发续跑（管线幂等）。
   if (row.status === 'provisioning' && !inflightSandboxes.has(row.id)) void provision(row.id);
   // 停机实例的重启入口：续费后权益恢复 usable，owner 回来查询即重启同一实例（数据/域名不变）。
   if (row.status === 'suspended') {
-    if (!usable(entitlement(row.account_id))) return;
-    const scaled = await scaleSandboxDeployment(sandboxResourceName(row.id), 1);
-    if (!(scaled.status >= 200 && scaled.status < 300)) return;
-    markStepPending(row.id, 'ready');
-    db.prepare("UPDATE runtimes SET status='provisioning', pod_phase=NULL, service_ready=0, updated_at=? WHERE id=? AND status='suspended'").run(now(), row.id);
-    void provision(row.id);
+    await resumeSuspendedRuntime(row);
     return;
   }
   if (!['provisioning', 'running'].includes(row.status)) return;
@@ -657,6 +714,11 @@ async function provision(sandboxId) {
     const name = sandboxResourceName(sandboxId);
     if (row.status === 'updating') {
       // 版本更新被打断（服务器重启等）：模板 PATCH 幂等，补一次后继续等就绪。
+      // 模式在更新被接受后又被 env 切换的极端情况：拒绝跨模式补 patch（实例落 failed 可重建）。
+      if ((row.data_mode ?? 'pvc') !== runtimeEnv.dataMode) {
+        markStepFailed(sandboxId, 'ready', 'data_mode_conflict');
+        return;
+      }
       await patchDeploymentTemplate(name, sandboxDeploymentManifest({ ...row, image: runtimeEnv.image }, name));
       await waitForReady(sandboxId, name);
       return;
@@ -666,7 +728,14 @@ async function provision(sandboxId) {
     for (const resource of SANDBOX_RESOURCES) {
       if (previousSteps.find(entry => entry.name === resource.step)?.status === 'done') { created.push({ resource, target: sandboxTargetName(resource, name) }); continue; }
       try {
-        await applyResource(resource, sandboxTargetName(resource, name), resource.manifest(row, name));
+        if (runtimeEnv.dataMode === 'local-sync' && resource.step === 'storage') {
+          // local-sync：数据盘在 Pod 内（emptyDir），不建实例 PVC；storage 步改为
+          // 校验共享同步卷已就位（ops 预建，缺失说明 baseline 未应用）。
+          const check = await k8sRequest('GET', `/api/v1/namespaces/${runtimeEnv.namespace}/persistentvolumeclaims/${runtimeEnv.syncPvc}`);
+          if (check.status !== 200) throw new Error('sync_pvc_missing');
+        } else {
+          await applyResource(resource, sandboxTargetName(resource, name), resource.manifest(row, name));
+        }
       } catch (error) {
         const reason = String(error?.message ?? error).slice(0, 120);
         console.error('sandbox_step_failed', JSON.stringify({ step: resource.step, reason }));
@@ -904,8 +973,15 @@ function sandboxPvcManifest(row, name) {
   };
 }
 
+// local-sync 模式的辅助容器资源：untar/同步是 IO 密集，配额给足下限即可。
+const LOCAL_HELPER_RESOURCES = { requests: { cpu: '100m', memory: '256Mi' }, limits: { cpu: '1', memory: '1Gi' } };
+
 function sandboxDeploymentManifest(row, name) {
   const labels = { app: name, ...sandboxLabels(row.id) };
+  // local-sync 数据模式：/data 是 Pod 内 emptyDir（读写全本地），数据经 sync
+  // sidecar 异步落 NAS；restore init 在新 Pod 冷启动时先恢复快照。main 容器
+  // 不挂同步卷——用户代码触不到其他实例的快照目录。
+  const localSync = runtimeEnv.dataMode === 'local-sync';
   // 容器直跑镜像（见 ADR-0056）：镜像即版本，PVC 只放数据。启动脚本只做三件事——
   // 清遗留运行锁、建 app/current 兼容层（Runtime 多处按
   // appCurrent/dist 查找 schema 与扩展，指向 /app 即可零改动工作）、前台启动。
@@ -935,6 +1011,19 @@ function sandboxDeploymentManifest(row, name) {
       resources: TIER_RESOURCES[row.tier],
     }]
     : [];
+  // local-sync 的恢复 init：新 Pod（本地目录为空）先从 NAS 快照恢复数据。
+  const restoreInitContainers = localSync
+    ? [{
+      name: 'restore', image: row.image, imagePullPolicy: 'IfNotPresent',
+      command: ['/bin/sh', '-c'], args: [sandboxRestoreScript(sandboxResourceName(row.id))],
+      resources: LOCAL_HELPER_RESOURCES,
+      volumeMounts: [
+        { name: 'data', mountPath: '/data' },
+        { name: 'sync', mountPath: '/sync' },
+      ],
+    }]
+    : [];
+  const initContainers = [...restoreInitContainers, ...workspaceInitContainers];
   return {
     apiVersion: 'apps/v1', kind: 'Deployment',
     metadata: { name, namespace: runtimeEnv.namespace, labels },
@@ -944,7 +1033,8 @@ function sandboxDeploymentManifest(row, name) {
       template: {
         metadata: { labels },
         spec: {
-          ...(workspaceInitContainers.length ? { initContainers: workspaceInitContainers } : {}),
+          ...(localSync ? { terminationGracePeriodSeconds: runtimeEnv.terminationGraceSeconds } : {}),
+          ...(initContainers.length ? { initContainers } : {}),
           containers: [{
             name: 'server', image: row.image, imagePullPolicy: 'IfNotPresent',
             command: ['/bin/sh', '-c'], args: [startScript],
@@ -977,16 +1067,36 @@ function sandboxDeploymentManifest(row, name) {
             ],
             ports: [{ name: 'web', containerPort: runtimeEnv.port }],
             // 直跑镜像后启动只剩拉镜像 + 起进程；探针沿用现成清单的 GET /。
-            readinessProbe: { httpGet: { path: '/', port: 'web' }, initialDelaySeconds: 10, periodSeconds: 10, failureThreshold: 60 },
+            // 5 秒周期让 Ready 条件在实际可服务后 ~5s 内翻转（service_ready 与
+            // 「进入实例」入口随之提前）；120×5s 仍保留 600s 慢启动窗口。
+            readinessProbe: { httpGet: { path: '/', port: 'web' }, initialDelaySeconds: 5, periodSeconds: 5, failureThreshold: 120 },
             resources: TIER_RESOURCES[row.tier],
             volumeMounts: [
               { name: 'data', mountPath: '/data' },
               ...workspaceVolumeMounts,
             ],
-          }],
+          },
+          ...(localSync ? [{
+            // 同步 sidecar：周期快照到 NAS；preStop 在终止前强制同步一次，
+            // 把计划内停止（停机/升级）的丢失窗口压到 ≈0。
+            name: 'sync', image: row.image, imagePullPolicy: 'IfNotPresent',
+            command: ['/bin/sh', '-c'],
+            args: [`while true; do\n${sandboxSyncOnceScript(sandboxResourceName(row.id))}\nsleep ${runtimeEnv.syncInterval}\ndone`],
+            lifecycle: { preStop: { exec: { command: ['/bin/sh', '-c', `${sandboxSyncOnceScript(sandboxResourceName(row.id))}\nsleep 2`] } } },
+            resources: LOCAL_HELPER_RESOURCES,
+            volumeMounts: [
+              { name: 'data', mountPath: '/data' },
+              { name: 'sync', mountPath: '/sync' },
+            ],
+          }] : [])],
           // 私有仓库拉取凭据（可选）：Secret 需预先建在同 namespace（docker-registry 类型）。
           ...(env.RUNTIME_IMAGE_PULL_SECRET ? { imagePullSecrets: [{ name: env.RUNTIME_IMAGE_PULL_SECRET }] } : {}),
-          volumes: [{ name: 'data', persistentVolumeClaim: { claimName: `${name}-data` } }],
+          volumes: localSync
+            ? [
+              { name: 'data', emptyDir: { sizeLimit: runtimeEnv.localDataSize } },
+              { name: 'sync', persistentVolumeClaim: { claimName: runtimeEnv.syncPvc } },
+            ]
+            : [{ name: 'data', persistentVolumeClaim: { claimName: `${name}-data` } }],
         },
       },
     },
@@ -1217,6 +1327,9 @@ async function instanceUpgrade(request, response, session, sandboxId) {
   if (!runtimeEnv.image) fail(503, 'instance_unavailable');
   // 状态门禁在前：终态/部署中/更新中的实例不可升级。
   if (!['provisioning', 'running', 'suspended', 'updating', 'recycle_pending'].includes(row.status)) fail(409, 'instance_not_upgradable');
+  // 数据模式门禁：模式是全局 env，跨模式原地更新会把 Pod 模板整体换成另一类卷
+  // （云盘→emptyDir 会让数据留在盘外不可见）。迁移必须 close + 重建。
+  if ((row.data_mode ?? 'pvc') !== runtimeEnv.dataMode) fail(409, 'data_mode_conflict');
   const name = sandboxResourceName(sandboxId);
   const expectedManifest = sandboxDeploymentManifest({ ...row, image: runtimeEnv.image }, name);
   // 镜像相同不一定是"已是最新"：部署配置（环境变量、挂载、initContainer、发布号）
@@ -1832,13 +1945,18 @@ function grant(accountId, plan, expiresAt, status = 'active') {
 function entitlement(accountId) {
   const row = db.prepare('SELECT * FROM licenses WHERE account_id = ? ORDER BY revision DESC, rowid DESC LIMIT 1').get(accountId);
   const timestamp = now();
+  const trial = trialUsed(accountId);
   if (!row) {
     const pending = db.prepare("SELECT id FROM orders WHERE account_id = ? AND status = 'pending_payment' LIMIT 1").get(accountId);
-    return { status: pending ? 'pending_payment' : 'unknown', plan: null, effectiveAt: null, expiresAt: null, revision: 0, serverTime: timestamp };
+    return { status: pending ? 'pending_payment' : 'unknown', plan: null, effectiveAt: null, expiresAt: null, revision: 0, trialUsed: trial, serverTime: timestamp };
   }
   let status = row.status;
   if (status === 'active' && row.expires_at && Date.parse(row.expires_at) <= Date.now()) status = 'expired';
-  return { status: row.plan === 'trial' && status === 'active' ? 'trial' : status, plan: row.plan, effectiveAt: row.effective_at, expiresAt: row.expires_at, revision: row.revision, serverTime: timestamp };
+  return { status: row.plan === 'trial' && status === 'active' ? 'trial' : status, plan: row.plan, effectiveAt: row.effective_at, expiresAt: row.expires_at, revision: row.revision, trialUsed: trial, serverTime: timestamp };
+}
+/** 账号是否曾激活过试用：licenses 里存在 trial 记录即为是（试用每账号仅一次）。 */
+function trialUsed(accountId) {
+  return Boolean(db.prepare("SELECT id FROM licenses WHERE account_id = ? AND plan = 'trial'").get(accountId));
 }
 function usable(value) { return ['active', 'trial'].includes(value.status) && (!value.expiresAt || Date.parse(value.expiresAt) > Date.now()) && Date.parse(value.effectiveAt) <= Date.now(); }
 function publicPlans() { return [{ plan: 'trial', amountCny: '0.00', currency: 'CNY', duration: '7 天', payment: 'activate' }, { plan: 'monthly', amountCny: '9.90', currency: 'CNY', duration: '自然月', payment: 'pending_payment' }, { plan: 'annual', amountCny: '99.00', currency: 'CNY', duration: '自然年', payment: 'pending_payment' }]; }
