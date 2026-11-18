@@ -145,15 +145,17 @@ export function snapshotConfig(dataDir, snapRoot) {
 
 /**
  * 用快照还原配置目录：整目录替换，保证启动看到的是校验过的日志/指针对。
- * 快照缺失时清空配置目录——应用会以 bootstrap 配置重新播种，实例仍可启动
- * （凭据在 secrets/ 下另行恢复，只有模型选择需要重选）。
+ *
+ * **没有快照时不动本地配置**：清空配置会让应用按 bootstrap 重新播种，用户在设置里
+ * 配好的 Provider 与模型全部丢失（真实事故：协调器从未发布过配置快照时，恢复路径
+ * 清空了配置）。空目录的新实例由应用自己播种，无需在这里清空。
  */
 export function restoreConfig(dataDir, snapRoot) {
   const configDir = findConfigDir(dataDir);
   const target = join(resolve(snapRoot), 'config');
-  if (configDir) rmSync(configDir, { recursive: true, force: true });
   if (!existsSync(target)) return { status: 'no-snapshot' };
   try {
+    if (configDir) rmSync(configDir, { recursive: true, force: true });
     cpSync(target, configDir ?? join(resolve(dataDir), 'config'), { recursive: true, verbatimSymlinks: true });
   } catch {
     return { status: 'restore-failed' };

@@ -118,7 +118,7 @@ describe('local-sync 配置快照协调器', () => {
     expect(readActive(join(snapRoot, 'config'))).toBe('rev-2');
   });
 
-  it('还原时整目录替换配置，快照缺失则清空（实例仍能以 bootstrap 配置启动）', () => {
+  it('还原时整目录替换配置；没有快照时不动本地配置（避免清空用户配置）', () => {
     const root = workspace();
     const dataDir = join(root, 'data');
     const snapRoot = join(root, 'sync');
@@ -130,9 +130,12 @@ describe('local-sync 配置快照协调器', () => {
     unlinkSync(join(configDir, 'active'));
     expect(restoreConfig(dataDir, snapRoot).status).toBe('restored');
     expect(readActive(configDir)).toBe('rev-2');
-    // 无快照：配置目录被清空，应用会重新播种 bootstrap 配置。
+    // 没有配置快照时：**不得清空本地配置**——清空会让应用重新播种 bootstrap，
+    // 用户在设置里配好的 Provider 与模型会全部丢失（真实事故）。
     rmSync(join(snapRoot, 'config'), { recursive: true, force: true });
+    const before = readActive(configDir);
     expect(restoreConfig(dataDir, snapRoot).status).toBe('no-snapshot');
-    expect(findConfigDir(dataDir)).toBeNull();
+    expect(readActive(configDir)).toBe(before);
+    expect(findConfigDir(dataDir)).toBe(configDir);
   });
 });
