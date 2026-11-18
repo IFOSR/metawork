@@ -309,3 +309,21 @@ describe('上游限流（429）的处理', () => {
     expect(result).toBeTruthy();
   });
 });
+
+describe('模型调用的输出长度限制', () => {
+  it('本地模型调用必须显式带 max_tokens（否则服务商会按模型最大输出核算 TPM 并 429）', async () => {
+    const fetchImpl = vi.fn(async () => new Response(
+      JSON.stringify({ choices: [{ finish_reason: 'stop', message: { content: '{}' } }] }),
+      { status: 200 },
+    ));
+    const service = new InternalLlmService({
+      fetchImpl,
+      preferredModel: async () => ({ baseUrl: 'https://user.example/v1', apiKey: 'k', modelId: 'm' }),
+    });
+    await service.generate({ action: '模型信息提炼', operation: 'model_summary', data: { models: [] } });
+    const body = JSON.parse(String(fetchImpl.mock.calls[0]![1]?.body));
+    expect(typeof body.max_tokens).toBe('number');
+    expect(body.max_tokens).toBeGreaterThan(0);
+    expect(body.max_tokens).toBeLessThanOrEqual(8_192);
+  });
+});

@@ -186,6 +186,10 @@ export class InternalLlmService {
             // 只接受特定值，参数交由 Provider 默认值。
             body: JSON.stringify({
               model: model.modelId,
+              // 必须显式限制输出长度：省略 max_tokens 时服务商会按模型最大输出
+              // （部分供应商 100K+）核算 TPM 配额并直接 429 拒绝，尽管实际产出
+              // 只有几千 token。业务产出契约本身也是几百到几千 token。
+              max_tokens: 4_096,
               messages: [
                 { role: 'system', content: model.system ?? input.system ?? 'Return a JSON business result for the supplied data.' },
                 { role: 'user', content: JSON.stringify(input.data) },

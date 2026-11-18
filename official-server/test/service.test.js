@@ -411,7 +411,9 @@ test('fixed AI uses provider defaults and retries the same request without quota
   assert.equal(result.body.model, undefined); assert.equal(result.body.usage, undefined);
   assert.equal(upstreamBody.model, 'private-model');
   assert.ok(upstreamBody.messages[0].content.includes('职责编辑助手'));
-  assert.equal(upstreamBody.max_tokens, undefined);
+  // max_tokens 必须显式给出（省略时服务商会按模型最大输出核算 TPM 并 429 拒绝）；
+  // 采样参数（temperature/thinking）仍交由 Provider 默认值。
+  assert.equal(upstreamBody.max_tokens, 4_096);
   assert.equal(upstreamBody.thinking, undefined);
   assert.equal(upstreamBody.temperature, undefined);
   // Historical usage cannot become a daily admission gate.

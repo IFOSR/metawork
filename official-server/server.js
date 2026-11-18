@@ -385,7 +385,9 @@ async function callModel(operation, input) {
     const upstream = await fetch(`${env.MODEL_BASE_URL.replace(/\/+$/u, '')}/chat/completions`, {
       method: 'POST', redirect: 'error',
       headers: { Authorization: `Bearer ${env.MODEL_API_KEY}`, 'Content-Type': 'application/json' },
-      body: JSON.stringify({ model: env.MODEL_ID,
+      // 显式限制输出长度：省略 max_tokens 时服务商会按模型最大输出（部分供应商
+      // 100K+）核算 TPM 配额并直接 429 拒绝，尽管本业务的产出只有几千 token。
+      body: JSON.stringify({ model: env.MODEL_ID, max_tokens: 4_096,
         messages: [{ role: 'system', content: prompts[operation] }, { role: 'user', content: JSON.stringify(input) }] }),
     });
     upstreamStatus = upstream.status;
