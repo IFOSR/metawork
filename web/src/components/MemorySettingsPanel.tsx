@@ -61,13 +61,10 @@ export function MemorySettingsPanel({ api, draft, onChange, disabled, configurat
         .filter(([, model]) => model.providerRef === providerRef)
         .map(([modelRef, model]) => ({
           modelRef,
-          modelId: model.capabilities.length === 0
-            // 「查不到能力标签」≠「不支持结构化输出」：自定义 Provider 的模型没有
-            // 公开目录标签，运行时校验 JSON 输出即可。标签未知时标出来。
-            ? `${model.modelId} · 能力待确认`
-            : model.modelId,
-          supportsStructuredOutput: model.capabilities.length === 0
-            || model.capabilities.includes('structured-output'),
+          modelId: model.modelId,
+          // 沿用 main 的严格口径：记忆抽取模型须显式声明 structured-output
+          // 能力（自定义 Provider 的模型没有公开目录标签，故不在候选内）。
+          supportsStructuredOutput: model.capabilities.includes('structured-output'),
           enabled: model.enabled !== false,
         })),
     });

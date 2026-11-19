@@ -180,12 +180,10 @@ export function createMemoryManagementQuery(options: MemoryManagementOptions): M
             modelRef: candidateRef,
             modelId: candidate.modelId,
             displayName: candidate.description?.split('\n')[0]?.slice(0, 120) || candidate.modelId,
-            // 「查不到能力标签」≠「不支持结构化输出」：自定义 Provider 的模型不在
-            // 公开目录里，标签常为空。记忆整理真正需要 JSON 输出的能力由运行时
-            // 校验（解析失败即报错），这里不该把未知当成不支持——否则用户自己
-            // 配的模型永远无法用于记忆。
-            supportsStructuredOutput: candidate.capabilities.length === 0
-              || candidate.capabilities.includes('structured-output'),
+            // 记忆整理必须结构化输出：沿用 main 的严格口径（模型须显式声明
+            // structured-output 能力）。自定义 Provider 的模型没有公开目录标签，
+            // 因此不作为记忆抽取模型候选——这是产品约束，不在此放宽。
+            supportsStructuredOutput: candidate.capabilities.includes('structured-output'),
             enabled: candidate.enabled,
 
           }));
