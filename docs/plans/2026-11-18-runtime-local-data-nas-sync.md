@@ -221,3 +221,9 @@ Pod（实例）
   「取消订单」后 `#pay-panel` 与二维码均不可见、列表显示「暂无待支付订单」；
   扫码支付后 Hub 回调付款，3 秒内区块消失并提示「支付成功，权益已开通。」，
   截图确认无空白白框残留。
+- 镜像 `anyfusion-runtime:0.1.27.16` 已推送（digest
+  `sha256:7a1adb5ad3d4d86e919c2db595ea4175e3e8f3b945379f9564db9b0a4a1d2b57`，
+  代码 `35abd3c4`）：应用内「账户」面板（`web/src/components/OfficialAccountPanel.tsx`，
+  随 `web/dist` 进实例镜像）同源修复——取消订单时收起对应二维码（否则它指向
+  一张已作废的订单），轮询补 `closed`/`refunded` 分支（订单作废后二维码不再
+  一直挂着）。该面板的二维码在独立 dialog，支付成功时已随 `payment` 置空关闭。
