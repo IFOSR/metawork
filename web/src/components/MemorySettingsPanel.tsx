@@ -30,7 +30,7 @@ export interface MemorySettingsPanelProps {
   /** 配置草稿里的 Provider/模型：用户新加但尚未「保存并激活」的模型也在其中。
    *  记忆的抽取模型必须与智能体同源可选——否则刚添加的模型在智能体里能选、
    *  在记忆里却选不到。 */
-  draftProviders?: Record<string, { providerRef: string; displayName: string; protocol?: string; enabled?: boolean }>;
+  draftProviders?: Record<string, { providerRef: string; displayName: string; baseUrl?: string; protocol?: string; enabled?: boolean }>;
   draftModels?: Record<string, { ref: string; providerRef: string; modelId: string; capabilities: string[]; enabled?: boolean }>;
 }
 
@@ -62,6 +62,7 @@ export function MemorySettingsPanel({ api, draft, onChange, disabled, configurat
         .map(([modelRef, model]) => ({
           modelRef,
           modelId: model.modelId,
+          displayName: model.modelId,
           // 沿用 main 的严格口径：记忆抽取模型须显式声明 structured-output
           // 能力（自定义 Provider 的模型没有公开目录标签，故不在候选内）。
           supportsStructuredOutput: model.capabilities.includes('structured-output'),
