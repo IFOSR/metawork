@@ -1210,8 +1210,10 @@ export function SettingsPanel({
       if (routingDegraded) setLoadError(routingDegraded);
       return { routingNotes: result.routingNotes, ...(routingDegraded ? { routingDegraded } : {}) };
     } catch (error) {
-      const routingError = `公开信息已获取，但能力描述整理失败：${(error as Error).message}`;
-      setLoadError(routingError);
+      // 能力描述整理是**锦上添花**：失败只意味着资料没整理好，模型本身已经可用。
+      // 这里不抛全局错误（那会让「模型已添加」看起来像失败），只把原因带回给调用方，
+      // 由它在模型条目上给出温和提示。
+      const routingError = `能力描述未能自动整理：${(error as Error).message}`;
       return { routingError };
     }
   };
@@ -1467,6 +1469,21 @@ export function SettingsPanel({
     const loadingKey = `${providerRef}:${modelId}`;
     setModelAddLoading(loadingKey);
     const openRouterFacts = await fetchOpenRouterFactsForModel(providerRef, modelId);
+    // 新模型的 ref 与 setCatalog 里生成的一致（先算出来，才能把状态挂到正确的条目上）。
+    let refIndex = Object.keys(catalog?.models ?? {}).length + 1;
+    let targetRef = `${providerRef}-${refIndex}`;
+    while (catalog?.models?.[targetRef]) {
+      refIndex += 1;
+      targetRef = `${providerRef}-${refIndex}`;
+    }
+    // 能力描述整理失败不影响模型添加：模型已加入并带 Provider 公布的能力/描述，
+    // 只是资料未经 AI 提炼——在条目上如实告知，不把整个操作呈现为失败。
+    if (openRouterFacts.routingError) {
+      setModelInfoStatus(current => ({
+        ...current,
+        [targetRef]: { status: 'error', message: `模型已添加，${openRouterFacts.routingError}` },
+      }));
+    }
     setCatalog(current => {
       if (!current || Object.values(current.models).some(model => (
         model.providerRef === providerRef && model.modelId === modelId

@@ -293,20 +293,19 @@ describe('上游限流（429）的处理', () => {
     expect(classifyCallFailure('HTTP 429')).not.toContain('超时');
   });
 
-  it('本地模型返回 429 时自动重试一次（限流是暂时性的）', async () => {
+  it('本地模型返回 429 时不自动重试（配额被拒时重试只会再消耗一次配额）', async () => {
     let calls = 0;
     const fetchImpl = vi.fn(async () => {
       calls += 1;
-      if (calls === 1) return new Response('rate limited', { status: 429 });
-      return new Response(JSON.stringify({ choices: [{ finish_reason: 'stop', message: { content: '{}' } }] }), { status: 200 });
+      return new Response('rate limited', { status: 429 });
     });
     const service = new InternalLlmService({
       fetchImpl,
       preferredModel: async () => ({ baseUrl: 'https://user.example/v1', apiKey: 'k', modelId: 'm' }),
     });
-    const result = await service.generate({ action: '模型信息提炼', operation: 'model_summary', data: { models: [] } });
-    expect(calls).toBe(2);
-    expect(result).toBeTruthy();
+    await expect(service.generate({ action: '模型信息提炼', operation: 'model_summary', data: { models: [] } }))
+      .rejects.toThrow(/限流/u);
+    expect(calls).toBe(1);
   });
 });
 

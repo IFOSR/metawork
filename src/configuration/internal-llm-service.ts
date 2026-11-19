@@ -87,7 +87,9 @@ export class InternalLlmService {
       try {
         return await this.completeOnPreferredModel(input, preferred);
       } catch (error) {
-        if (!this.deps.officialAi) throw error;
+        // 没有官方兜底时，原始错误（如 HTTP 429）不得直接透给用户：同样归类成
+        // 可操作的一句话。
+        if (!this.deps.officialAi) throw new InternalLlmError(classifyCallFailure(errorMessageOf(error)));
         preferredError = error;
       }
     }
@@ -198,11 +200,9 @@ export class InternalLlmService {
           },
         );
         if (!response.ok) {
-          // 限流（429）是暂时性的：重试有意义；其它 4xx/5xx 是确定性问题不重试。
-          if (response.status === 429 && attempt < 2) {
-            await new Promise(resolve => setTimeout(resolve, 1_500));
-            continue;
-          }
+          // 429 是配额/频率被拒：立刻重试只会再消耗一次配额、让限流更严重，
+          // 不自动重试——如实告诉用户「上游限流，请稍后重试」。超时才重试（那是
+          // 链路冷启动的暂时性问题）。
           throw new Error(`HTTP ${response.status}`);
         }
         return await response.json();
