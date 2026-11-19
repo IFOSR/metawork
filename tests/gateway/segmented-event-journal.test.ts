@@ -30,20 +30,22 @@ async function fixture() {
 }
 
 describe('appendable Gateway journal', () => {
-  it('keeps a failed compaction batch pending until its source bytes are available', async () => {
+  it('quarantines a lost segment file so maintenance converges and continuity holds', async () => {
     const { root, journal, index } = await fixture();
     await journal.append(event(1));
-    await journal.append(event(2));
     const segment = index.segments('local-default', 'conv_one', 0)[0]!;
-    const path = join(root, 'local-default', 'conv_one.segments', `${segment.id}.json`);
-    const body = await readFile(path);
-    await rm(path);
-    await expect(journal.compact('local-default', 'conv_one')).rejects.toMatchObject({ code: 'ENOENT' });
-    await expect(journal.compact('local-default', 'conv_one')).rejects.toMatchObject({ code: 'ENOENT' });
-    expect(index.segments('local-default', 'conv_one', 0)).toHaveLength(2);
-    await writeFile(path, body);
-    await journal.compact('local-default', 'conv_one');
-    expect((await journal.replay('local-default', 'conv_one')).deltas.map(item => item.eventId)).toEqual(['event_1', 'event_2']);
+    await rm(join(root, 'local-default', 'conv_one.segments', `${segment.id}.json`));
+    // 方案 B：丢失分段（Pod 重建/快照恢复时遗失）数据不可恢复，维护首轮即
+    // 用墓碑隔离并收敛，而不是永远 ENOENT。墓碑是真实文件，严格读取得空列表。
+    await journal.maintain('local-default', 'conv_one');
+    await journal.maintain('local-default', 'conv_one');
+    expect(index.hasSegment('local-default', 'conv_one', segment.id)).toBe(false);
+    expect((await journal.replay('local-default', 'conv_one')).deltas).toEqual([]);
+    // 墓碑沿用原分段序号范围：流连续不破，后续追加接在 sequence 2。
+    expect((await journal.append(event(2))).sequence).toBe(2);
+    expect((await journal.replay('local-default', 'conv_one')).deltas.map(item => item.eventId)).toEqual(['event_2']);
+    expect((await readdir(join(root, 'local-default', 'conv_one.segments'))).sort())
+      .toEqual(index.segments('local-default', 'conv_one', 0).map(item => `${item.id}.json`).sort());
   });
   it('imports every retained legacy fact rather than an already-compacted replay projection', async () => {
     const { journal, legacy } = await fixture();
@@ -226,5 +228,24 @@ describe('appendable Gateway journal', () => {
     await journal.compact('local-default', 'conv_one');
     expect(await journal.replay('local-default', 'conv_one', 0)).toEqual(before);
     expect((await journal.append(event(0))).sequence).toBe(1);
+  });
+});
+
+describe('丢失的分段文件', () => {
+  it('维护自动隔离丢失分段并收敛，存活分段不受影响', async () => {
+    // Pod 重建/快照恢复可能丢失个别分段文件：维护主动扫描并隔离丢失分段
+    // （墓碑替换），同流的存活分段照常压缩合并、可回放。
+    const { root, journal, index } = await fixture();
+    await journal.append(event(1));
+    await journal.append(event(2));
+    const segment = index.segments('local-default', 'conv_one', 0)[0]!;
+    // 每次追加独立成段：删除的是 event_1 所在分段，event_2 在另一分段存活。
+    await rm(join(root, 'local-default', 'conv_one.segments', `${segment.id}.json`));
+    await journal.maintain('local-default', 'conv_one');
+    await journal.maintain('local-default', 'conv_one');
+    // 隔离后：丢失分段被墓碑替换，索引里不再引用丢失文件。
+    expect(index.hasSegment('local-default', 'conv_one', segment.id)).toBe(false);
+    const deltas = (await journal.replay('local-default', 'conv_one')).deltas.map(item => item.eventId);
+    expect(deltas).toEqual(['event_2']);
   });
 });

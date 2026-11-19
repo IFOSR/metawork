@@ -1,6 +1,7 @@
 import { recordNavigationRead } from '../utils/navigation-diagnostics.js';
 import { randomUUID } from 'node:crypto';
 import { mkdir, open, opendir, readFile, rename, unlink, rm } from 'node:fs/promises';
+import { existsSync } from 'node:fs';
 import type { Dir } from 'node:fs';
 import { resolve } from 'node:path';
 import { isPathInsideDirectory } from '../utils/paths.js';
@@ -213,28 +214,73 @@ export class SegmentedEventJournal implements EventJournal {
   /** One maintenance pass bounds both metadata/body work and directory entries. */
   maintain(accountId: string, conversationId: string): Promise<{ done: boolean; didWork: boolean }> {
     return this.serialized(accountId, conversationId, async () => {
-      if (this.index.isDeleted?.(accountId, conversationId)) throw new Error('conversation_deleted');
-      const state = await this.ensureStream(accountId, conversationId);
-      // `done` alone cannot tell an idle pass from the batch that finally
-      // converges a stream, so the pass reports the durable progress it made.
-      const traceBefore = this.index.traceCheckpoint(accountId, conversationId) ?? 0;
-      const viewBefore = this.readModel?.head(accountId, conversationId)?.journalSequence ?? 0;
-      const indexed = await this.rebuildTraceBatch(accountId, conversationId, state.lastSequence);
-      const projected = await this.rebuildViewBatch(accountId, conversationId, state.lastSequence);
-      await this.compactBatch(accountId, conversationId);
-      await this.cleanupOrphans(accountId, conversationId);
-      const pendingCleanup = this.cleanupDirectories.has(this.directory(accountId, conversationId));
-      const done = indexed && projected && !pendingCleanup;
-      const traceAfter = this.index.traceCheckpoint(accountId, conversationId) ?? 0;
-      const viewAfter = this.readModel?.head(accountId, conversationId)?.journalSequence ?? 0;
-      return {
-        done,
-        didWork: !done
-          || traceAfter !== traceBefore
-          || viewAfter !== viewBefore
-          || pendingCleanup,
-      };
+      // 分段文件可能丢失（Pod 重建/快照恢复时遗失）：首轮维护会以 ENOENT 失败，
+      // 此时隔离丢失的分段（墓碑替换）并重试一次，日志即可收敛而非永远刷 ENOENT。
+      try {
+        return await this.maintainOnce(accountId, conversationId);
+      } catch (error) {
+        // 兜底：未预料的 ENOENT 也走一次隔离再重试；正常路径由 maintainOnce
+        // 开头的主动扫描完成隔离。
+        if (!((error as NodeJS.ErrnoException).code === 'ENOENT')) throw error;
+        const lost = await this.quarantineLostSegments(accountId, conversationId);
+        if (!lost.length) throw error;
+        return await this.maintainOnce(accountId, conversationId);
+      }
     });
+  }
+
+  private async maintainOnce(accountId: string, conversationId: string): Promise<{ done: boolean; didWork: boolean }> {
+    if (this.index.isDeleted?.(accountId, conversationId)) throw new Error('conversation_deleted');
+    const state = await this.ensureStream(accountId, conversationId);
+    // 维护路径全部是宽恕读，不会再抛 ENOENT，所以这里主动扫描索引里指向
+    // 已丢失文件的分段（Pod 重建/快照恢复时遗失）并隔离——否则压缩合并不
+    // 到的丢失条目（如仅剩单段）会永远残留，面向用户的 replay 仍会 ENOENT。
+    await this.quarantineLostSegments(accountId, conversationId);
+    // `done` alone cannot tell an idle pass from the batch that finally
+    // converges a stream, so the pass reports the durable progress it made.
+    const traceBefore = this.index.traceCheckpoint(accountId, conversationId) ?? 0;
+    const viewBefore = this.readModel?.head(accountId, conversationId)?.journalSequence ?? 0;
+    const indexed = await this.rebuildTraceBatch(accountId, conversationId, state.lastSequence);
+    const projected = await this.rebuildViewBatch(accountId, conversationId, state.lastSequence);
+    await this.compactBatch(accountId, conversationId);
+    await this.cleanupOrphans(accountId, conversationId);
+    const pendingCleanup = this.cleanupDirectories.has(this.directory(accountId, conversationId));
+    const done = indexed && projected && !pendingCleanup;
+    const traceAfter = this.index.traceCheckpoint(accountId, conversationId) ?? 0;
+    const viewAfter = this.readModel?.head(accountId, conversationId)?.journalSequence ?? 0;
+    return {
+      done,
+      didWork: !done
+        || traceAfter !== traceBefore
+        || viewAfter !== viewBefore
+        || pendingCleanup,
+    };
+  }
+
+  /**
+   * 隔离磁盘上已丢失的分段：把它们的索引条目替换为一个空墓碑分段。
+   *
+   * 文件丢失（Pod 重建/快照恢复时遗失）后数据无法找回，但日志必须能收敛——
+   * 否则维护每次都 ENOENT、无限重试。丢失的事件视为不可恢复并记录。
+   */
+  async quarantineLostSegments(accountId: string, conversationId: string): Promise<string[]> {
+    const entries = this.index.segments(accountId, conversationId, 0, Number.MAX_SAFE_INTEGER);
+    const lost = entries.filter(segment => !existsSync(this.segmentPath(accountId, conversationId, segment.id)));
+    if (!lost.length) return [];
+    for (const segment of lost) {
+      // 逐段隔离：墓碑沿用该分段自身的序号范围，避免与存活分段的区间重叠
+      // （cursor/resume 都依赖序号区间的连续覆盖）。先写文件再替换索引，
+      // 与压缩同一崩溃安全次序。
+      const tombstone = await this.writeTombstoneSegment(accountId, conversationId, segment);
+      this.index.replaceSegments(accountId, conversationId, [segment], tombstone);
+    }
+    for (const segment of lost) {
+      await unlink(this.segmentPath(accountId, conversationId, segment.id)).catch(error => {
+        if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+      });
+    }
+    console.error(`journal_segment_quarantined: ${JSON.stringify({ accountId, conversationId, segments: lost.map(segment => segment.id) })}`);
+    return lost.map(segment => segment.id);
   }
 
   private async rebuildTraceBatch(accountId: string, conversationId: string, lastSequence: number): Promise<boolean> {
@@ -246,7 +292,7 @@ export class SegmentedEventJournal implements EventJournal {
       this.index.indexTraceEvents(accountId, conversationId, [], lastSequence);
       return true;
     }
-    const events = await this.readSegment(accountId, conversationId, segment.id);
+    const events = await this.readSegmentForgiving(accountId, conversationId, segment);
     this.index.indexTraceEvents(accountId, conversationId, projectIndexedTraceEvents(events), segment.lastSequence);
     return segment.lastSequence === lastSequence;
   }
@@ -281,7 +327,7 @@ export class SegmentedEventJournal implements EventJournal {
       return true;
     }
     const segment = this.index.segments(accountId, conversationId, checkpoint, 1)[0];
-    const events = segment ? await this.readSegment(accountId, conversationId, segment.id) : [];
+    const events = segment ? await this.readSegmentForgiving(accountId, conversationId, segment) : [];
     const through = segment?.lastSequence ?? lastSequence;
     new ConversationReadProjector(view).apply(accountId, conversationId, events, through);
     return through === lastSequence;
@@ -319,7 +365,7 @@ export class SegmentedEventJournal implements EventJournal {
         return;
       }
       const events: GatewayEventEnvelope[] = [];
-      for (const segment of segments) events.push(...await this.readSegment(accountId, conversationId, segment.id));
+      for (const segment of segments) events.push(...await this.readSegmentForgiving(accountId, conversationId, segment));
       const next = await this.writeSegment(accountId, conversationId, events);
       this.index.replaceSegments(accountId, conversationId, segments, next);
       // A failed read/write must retry the same batch. Advancing before commit
@@ -413,10 +459,40 @@ export class SegmentedEventJournal implements EventJournal {
     return events;
   }
 
+  /**
+   * 维护路径专用的容错读取：分段**文件**丢失（Pod 重建/快照恢复时遗失）时返回空
+   * 并记录——数据已无法找回，但日志必须能越过它收敛，不能永远 ENOENT 刷屏。
+   * 仅限维护路径：面向用户的 replay 仍走严格读取（此时该分段应已被压缩替换）。
+   */
+  private async readSegmentForgiving(accountId: string, conversationId: string, segment: JournalSegment): Promise<GatewayEventEnvelope[]> {
+    try {
+      return await this.readSegment(accountId, conversationId, segment.id);
+    } catch (error) {
+      if (!((error as NodeJS.ErrnoException).code === 'ENOENT')) throw error;
+      console.error(`journal_segment_lost: ${JSON.stringify({ accountId, conversationId, segment: segment.id, lastSequence: segment.lastSequence })}`);
+      return [];
+    }
+  }
+
   private async writeSegment(accountId: string, conversationId: string, events: readonly GatewayEventEnvelope[]): Promise<JournalSegment> {
     const body = JSON.stringify(events);
     const byteLength = Buffer.byteLength(body);
     if (byteLength > MAX_JOURNAL_SEGMENT_BYTES) throw new Error('journal_segment_oversized');
+    const id = await this.writeSegmentFile(accountId, conversationId, body);
+    return { id, firstSequence: events[0]!.sequence, lastSequence: events.at(-1)!.sequence, byteLength };
+  }
+
+  /**
+   * 丢失分段的空墓碑：文件真实存在（严格读取得到空列表），序号范围沿用原
+   * 分段，保持流的序号覆盖连续。隔离后 replay/resume 不再触碰丢失的文件。
+   */
+  private async writeTombstoneSegment(accountId: string, conversationId: string, segment: JournalSegment): Promise<JournalSegment> {
+    const id = await this.writeSegmentFile(accountId, conversationId, '[]');
+    return { id, firstSequence: segment.firstSequence, lastSequence: segment.lastSequence, byteLength: 2 };
+  }
+
+  /** Atomic segment-body write shared by event segments and quarantine tombstones. */
+  private async writeSegmentFile(accountId: string, conversationId: string, body: string): Promise<string> {
     const id = randomUUID();
     const directory = this.directory(accountId, conversationId);
     await mkdir(directory, { recursive: true, mode: 0o700 });
@@ -431,7 +507,7 @@ export class SegmentedEventJournal implements EventJournal {
       const dir = await open(directory, 'r');
       try { await dir.sync(); } finally { await dir.close(); }
     }
-    return { id, firstSequence: events[0]!.sequence, lastSequence: events.at(-1)!.sequence, byteLength };
+    return id;
   }
 
   private async writeSegments(
