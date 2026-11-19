@@ -123,6 +123,9 @@ export function OfficialAccountPanel({ onStatus }: { onStatus: (status: Official
   }, [refresh]);
   const cancelPending = useCallback(async (orderId: string) => {
     await request(`orders/${orderId}/close`, {});
+    // 取消的正是当前展示二维码的那笔订单时，二维码必须一起收起——否则它会
+    // 指向一张已经作废的订单。
+    setPayment(current => (current && current.order.orderId === orderId ? null : current));
     setMessage('订单已取消。');
     await loadOrders();
   }, [loadOrders]);
@@ -139,6 +142,13 @@ export function OfficialAccountPanel({ onStatus }: { onStatus: (status: Official
           setPayment(null); setMessage('支付成功，权益已开通。');
           await request('verify', {}).catch(() => undefined);
           void refresh(); void loadOrders();
+          return;
+        }
+        // 订单在服务端被关闭或退款：二维码已作废，收起并停止轮询。
+        if (value.order.status === 'closed' || value.order.status === 'refunded') {
+          setPayment(null);
+          setMessage(value.order.status === 'refunded' ? '订单已退款。' : '订单已关闭。');
+          void loadOrders();
           return;
         }
         if (value.payment?.expiresAt && Date.parse(value.payment.expiresAt) <= Date.now()) {

@@ -825,13 +825,29 @@
     showPayment({ ...(state.payment || {}), orderId, qrCodeUrl: payload.payment.qrCodeUrl, expiresAt: payload.payment.expiresAt });
   }
 
-  async function closePayment(orderId) {
-    const { ok, payload } = await api(`/v1/orders/${orderId}/close`, { method: 'POST', body: {} });
-    if (!ok) { toast(`取消订单失败：${payload && payload.code}`, 'bad'); return; }
+  /**
+   * 收起扫码支付区块。
+   *
+   * 这个区块只服务于「一笔还没付的订单」：付完或取消后它就该离开页面，
+   * 否则会留下一个空白二维码方块（内容已清但白底框还在），看着像坏掉。
+   */
+  function hidePayment() {
     clearInterval(state.pollTimer);
     state.pollTimer = null;
     state.payment = null;
+    state.payExpiresAt = null;
     $('pay-panel').classList.add('hidden');
+    $('pay-qr').textContent = '';
+    $('pay-amount').textContent = '';
+    $('pay-countdown').textContent = '';
+    $('pay-actions').textContent = '';
+    $('pay-status').textContent = '';
+  }
+
+  async function closePayment(orderId) {
+    const { ok, payload } = await api(`/v1/orders/${orderId}/close`, { method: 'POST', body: {} });
+    if (!ok) { toast(`取消订单失败：${payload && payload.code}`, 'bad'); return; }
+    hidePayment();
     toast('订单已取消。', 'info');
     await loadOrders();
   }
@@ -842,30 +858,24 @@
       const { ok, payload } = await api(`/v1/orders/${orderId}`);
       if (!ok || !payload.order) return;
       if (payload.order.status === 'paid') {
-        clearInterval(state.pollTimer);
-        state.pollTimer = null;
-        state.payment = null;
-        showPaymentSuccess();
+        // 付完了就不再有待支付订单，扫码区块随之收起（成功由 toast 与套餐卡
+        // 上的当前权益承载，订单列表的「已支付」页签里有完整记录）。
+        hidePayment();
         toast('支付成功，权益已开通。', 'ok');
         await refreshEntitlement();
         renderBuyPlans();
         await loadOrders();
         await autoCreateAfterEntitlement();
+        return;
+      }
+      // 订单在服务端被关闭或退款：不再有待支付订单，收起区块并停止轮询。
+      if (['closed', 'refunded'].includes(payload.order.status)) {
+        hidePayment();
+        toast(payload.order.status === 'refunded' ? '订单已退款。' : '订单已关闭。', 'info');
+        await loadOrders();
+        return;
       }
     }, 3000);
-  }
-
-  // 支付完成后保留面板作为收据：不再显示二维码和支付动作。
-  function showPaymentSuccess() {
-    const panel = $('pay-panel');
-    panel.classList.remove('hidden');
-    const status = $('pay-status');
-    status.textContent = '支付成功';
-    status.className = 'pill ok';
-    $('pay-qr').textContent = '';
-    $('pay-amount').textContent = '';
-    $('pay-countdown').textContent = '';
-    $('pay-actions').textContent = '';
   }
 
   /* ─── 订单 ─── */
@@ -950,6 +960,9 @@
   async function cancelOrder(order) {
     const { ok, payload } = await api(`/v1/orders/${order.orderId}/close`, { method: 'POST', body: {} });
     if (!ok) { toast(`取消订单失败：${payload && payload.code}`, 'bad'); return; }
+    // 取消的就是正在展示二维码的那笔订单时，扫码区块必须一起收起；取消的是
+    // 别的订单时不动当前二维码。
+    if (!state.payment || state.payment.orderId === order.orderId) hidePayment();
     toast('订单已取消。', 'info');
     await loadOrders();
   }
