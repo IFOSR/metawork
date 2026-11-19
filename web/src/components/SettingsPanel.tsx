@@ -2353,6 +2353,8 @@ export function SettingsPanel({
                       draft={memoryDraft}
                       onChange={setMemoryDraft}
                       disabled={editingDisabled}
+                      draftProviders={catalog?.providers}
+                      draftModels={catalog?.models}
                     />
                   )}
                   <section className="runtime-policy-section" aria-labelledby="runtime-policy-heading">

@@ -27,9 +27,14 @@ export interface MemorySettingsPanelProps {
   onChange: (draft: MemorySettingsDraft) => void;
   disabled?: boolean;
   configurationRevision?: string;
+  /** 配置草稿里的 Provider/模型：用户新加但尚未「保存并激活」的模型也在其中。
+   *  记忆的抽取模型必须与智能体同源可选——否则刚添加的模型在智能体里能选、
+   *  在记忆里却选不到。 */
+  draftProviders?: Record<string, { providerRef: string; displayName: string; protocol?: string; enabled?: boolean }>;
+  draftModels?: Record<string, { ref: string; providerRef: string; modelId: string; capabilities: string[]; enabled?: boolean }>;
 }
 
-export function MemorySettingsPanel({ api, draft, onChange, disabled, configurationRevision }: MemorySettingsPanelProps) {
+export function MemorySettingsPanel({ api, draft, onChange, disabled, configurationRevision, draftProviders, draftModels }: MemorySettingsPanelProps) {
   const [status, setStatus] = useState<MemoryStatusView | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [revision, setRevision] = useState(0);
@@ -40,9 +45,32 @@ export function MemorySettingsPanel({ api, draft, onChange, disabled, configurat
     }).catch(failure => { if (!controller.signal.aborted) setError((failure as Error).message); });
     return () => controller.abort();
   }, [api, configurationRevision, revision]);
+  // 服务端给的是**已激活配置**里的清单；草稿里的（尚未激活）也要能选：两份合并，
+  // 草稿补齐缺失项，已激活项保持服务端口径（能力标签以服务端为准）。
   const selectable = (status?.selectableProviders ?? []).filter(provider => !provider.unsupportedReason);
   const unsupported = (status?.selectableProviders ?? []).filter(provider => provider.unsupportedReason);
-  const provider = selectable.find(item => item.providerRef === draft.providerRef);
+  const merged = [...selectable];
+  for (const [providerRef, provider] of Object.entries(draftProviders ?? {})) {
+    if (merged.some(item => item.providerRef === providerRef)) continue;
+    merged.push({
+      providerRef,
+      displayName: provider.displayName || providerRef,
+      baseUrl: provider.baseUrl ?? '',
+      models: Object.entries(draftModels ?? {})
+        .filter(([, model]) => model.providerRef === providerRef)
+        .map(([modelRef, model]) => ({
+          modelRef,
+          modelId: model.modelId,
+          displayName: model.modelId,
+          // 「查不到能力标签」≠「不支持结构化输出」：自定义 Provider 的模型没有
+          // 公开目录标签，运行时校验 JSON 输出即可。
+          supportsStructuredOutput: model.capabilities.length === 0
+            || model.capabilities.includes('structured-output'),
+          enabled: model.enabled !== false,
+        })),
+    });
+  }
+  const provider = merged.find(item => item.providerRef === draft.providerRef);
   const models = (provider?.models ?? []).filter(model => model.supportsStructuredOutput && model.enabled);
   const engineNote = memoryEngineProblemNote(status?.engineProblem);
   const mode = status?.mode;
