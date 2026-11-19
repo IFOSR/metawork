@@ -104,6 +104,7 @@ export class OfficialAuthorizationError extends Error {
       | 'verification_unavailable'
       | 'official_ai_unavailable'
       | 'official_ai_rate_limited'
+      | 'official_ai_quota_exhausted'
       | 'official_protocol_error',
   ) {
     super(message);

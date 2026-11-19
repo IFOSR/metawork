@@ -379,6 +379,7 @@ async function callModel(operation, input) {
   const started = Date.now();
   let stage = 'configuration';
   let upstreamStatus;
+  let upstreamText = '';
   try {
     if (!env.MODEL_BASE_URL || !env.MODEL_API_KEY || !env.MODEL_ID) throw new Error();
     stage = 'upstream_request';
@@ -392,7 +393,11 @@ async function callModel(operation, input) {
     });
     upstreamStatus = upstream.status;
     stage = 'upstream_status';
-    if (!upstream.ok) throw new Error();
+    if (!upstream.ok) {
+      // 读上游原文：它写明了拒绝的真实原因（额度用尽 / 速率超限），据此分类。
+      upstreamText = await upstream.text().catch(() => '');
+      throw new Error();
+    }
     stage = 'upstream_response';
     const value = await upstream.json();
     // Return only the business JSON. Rendering/activation owns its required fields.
@@ -400,10 +405,18 @@ async function callModel(operation, input) {
     stage = 'output_json';
     return JSON.parse(content.trim().replace(/^```(?:json)?\s*([\s\S]*?)\s*```$/u, '$1'));
   } catch {
-    console.error('official_ai_failed', JSON.stringify({ operation, stage, upstreamStatus, durationMs: Date.now() - started }));
-    // 上游限流（429）与上游不可用要分开：前者是配额/频率问题，稍后重试即可；
-    // 混成同一个 503 会让用户以为服务坏了。
-    if (upstreamStatus === 429) fail(503, 'official_ai_rate_limited');
+    // 上游拒绝的真实原因要分清：**额度用尽**（等下个计费周期或加购，重试无用）
+    // 与 **速率超限**（等一会儿即可）。上游原文会写明（Kimi Coding 的
+    // exceeded_current_quota_error、百炼的 Throttling.*Quota），据此给出不同错误码。
+    let reason = '';
+    if (typeof upstreamText === 'string' && upstreamText) {
+      reason = upstreamText.replace(/\s+/gu, ' ').trim().slice(0, 200);
+    }
+    console.error('official_ai_failed', JSON.stringify({ operation, stage, upstreamStatus, durationMs: Date.now() - started, reason }));
+    if (upstreamStatus === 429) {
+      const quota = /exceeded_current_quota_error|allocation.?quota|quota|额度|余额|monthly usage|billing cycle|purchase extra/iu.test(reason);
+      fail(503, quota ? 'official_ai_quota_exhausted' : 'official_ai_rate_limited');
+    }
     fail(503, 'official_ai_unavailable');
   }
 }

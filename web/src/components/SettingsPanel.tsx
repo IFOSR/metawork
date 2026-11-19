@@ -1205,9 +1205,10 @@ export function SettingsPanel({
           ? { providerRef, modelId, ...(baseUrl ? { baseUrl } : {}) }
           : undefined,
       );
-      // 服务端改用官方内置 AI 时如实告知：模型尚未保存激活。
+      // 服务端改用官方内置 AI 时：结果已经出来，不是失败。用户指定的模型
+      // 没生效是配置状态（如尚未保存激活），不必在结果成功的流程里提示——
+      // 只要最终结果成功，就不打扰用户。
       const routingDegraded = degradationNotice(result.degraded);
-      if (routingDegraded) setLoadError(routingDegraded);
       return { routingNotes: result.routingNotes, ...(routingDegraded ? { routingDegraded } : {}) };
     } catch (error) {
       // 能力描述整理是**锦上添花**：失败只意味着资料没整理好，模型本身已经可用。
@@ -1476,14 +1477,8 @@ export function SettingsPanel({
       refIndex += 1;
       targetRef = `${providerRef}-${refIndex}`;
     }
-    // 能力描述整理失败不影响模型添加：模型已加入并带 Provider 公布的能力/描述，
-    // 只是资料未经 AI 提炼——在条目上如实告知，不把整个操作呈现为失败。
-    if (openRouterFacts.routingError) {
-      setModelInfoStatus(current => ({
-        ...current,
-        [targetRef]: { status: 'error', message: `模型已添加，${openRouterFacts.routingError}` },
-      }));
-    }
+    // 能力描述整理失败不影响模型添加：模型已加入并带 Provider 公布的能力/描述。
+    // 结果已经成功，就不提示——只有整体失败才报错。
     setCatalog(current => {
       if (!current || Object.values(current.models).some(model => (
         model.providerRef === providerRef && model.modelId === modelId

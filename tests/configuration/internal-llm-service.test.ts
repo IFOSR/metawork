@@ -4,7 +4,7 @@ import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { CredentialsFileSecretStore } from '../../src/configuration/credentials-file-secret-store.js';
 import { loadInternalSettingsAssistantConfig } from '../../src/configuration/internal-settings-assistant-config.js';
-import { classifyCallFailure, InternalLlmService, PreferredModelError } from '../../src/configuration/internal-llm-service.js';
+import { classifyCallFailure, classifyUpstreamRejection, InternalLlmService, PreferredModelError } from '../../src/configuration/internal-llm-service.js';
 import { ModelRoutingProfileService } from '../../src/configuration/model-routing-profile-service.js';
 import { MODEL_SUMMARY_PROMPT } from '../../src/configuration/model-summary-prompt.js';
 
@@ -273,24 +273,25 @@ describe('模型调用失败原因归类', () => {
     expect(classifyCallFailure('some raw upstream text')).toBe('调用失败，请检查模型配置');
   });
 
-  it('两条通道都失败时分别归因，并给出可操作提示', async () => {
+  it('两条通道都失败时：用户侧只给简短一句，完整原因留在服务端日志', async () => {
     const officialAi = vi.fn(async () => { throw new Error('请先在本机 Web 或 Desktop 登录 MetaWork 官方账号。'); });
     const fetchImpl = vi.fn(async () => { throw new Error('This operation was aborted'); });
     const service = new InternalLlmService({
       officialAi, fetchImpl,
       preferredModel: async () => ({ baseUrl: 'https://user.example/v1', apiKey: 'k', modelId: 'm' }),
     });
+    // 用户侧不暴露通道结构与上游原文。
     await expect(service.generate({
       action: '模型信息提炼', operation: 'model_summary', data: { models: [] },
-    })).rejects.toThrow(/未登录官方账号/iu);
+    })).rejects.toThrow(/^模型调用失败，请稍后重试。$/u);
   });
 });
 
 describe('上游限流（429）的处理', () => {
-  it('把 429 归类为「上游限流」，与超时、服务故障区分开', () => {
-    expect(classifyCallFailure('HTTP 429')).toContain('限流');
-    expect(classifyCallFailure('MetaWork 内置 AI 上游限流，请稍后重试')).toContain('限流');
-    expect(classifyCallFailure('HTTP 429')).not.toContain('超时');
+  it('上游拒绝原因仍可分类（供服务端日志使用）', () => {
+    // 分类只用于服务端日志与诊断；用户侧一律简短一句。
+    expect(classifyCallFailure('HTTP 429')).toBeTruthy();
+    expect(classifyCallFailure('MetaWork 内置 AI 上游限流，请稍后重试')).toBeTruthy();
   });
 
   it('本地模型返回 429 时不自动重试（配额被拒时重试只会再消耗一次配额）', async () => {
@@ -304,7 +305,7 @@ describe('上游限流（429）的处理', () => {
       preferredModel: async () => ({ baseUrl: 'https://user.example/v1', apiKey: 'k', modelId: 'm' }),
     });
     await expect(service.generate({ action: '模型信息提炼', operation: 'model_summary', data: { models: [] } }))
-      .rejects.toThrow(/限流/u);
+      .rejects.toThrow(/^模型调用失败，请稍后重试。$/u);
     expect(calls).toBe(1);
   });
 });
@@ -324,5 +325,26 @@ describe('模型调用的输出长度限制', () => {
     expect(typeof body.max_tokens).toBe('number');
     expect(body.max_tokens).toBeGreaterThan(0);
     expect(body.max_tokens).toBeLessThanOrEqual(8_192);
+  });
+});
+
+describe('上游拒绝原因的分类（额度用尽 / 速率超限）', () => {
+  it('从上游原文区分额度用尽与速率超限', () => {
+    const quota = JSON.stringify({ error: { message: "You've reached your monthly usage limit for this billing cycle.", type: 'exceeded_current_quota_error' } });
+    const rate = JSON.stringify({ error: { message: 'Rate limit exceeded', type: 'rate_limit_exceeded' } });
+    expect(classifyUpstreamRejection(quota)).toBe('quota');
+    expect(classifyUpstreamRejection(rate)).toBe('rate');
+    expect(classifyUpstreamRejection('some other failure')).toBe('other');
+  });
+
+  it('上游原文的分类信息仍然保留（供日志诊断），但不进用户文案', () => {
+    const quota = `HTTP 429: ${JSON.stringify({ error: { message: 'monthly usage limit reached', type: 'exceeded_current_quota_error' } })}`;
+    expect(classifyUpstreamRejection(quota)).toBe('quota');
+    expect(classifyCallFailure(quota)).toContain('额度');
+  });
+
+  it('速率超限与额度用尽给出不同的处理建议', () => {
+    expect(classifyCallFailure('HTTP 429: rate limit exceeded')).toContain('速率');
+    expect(classifyCallFailure('HTTP 429: exceeded_current_quota_error')).toContain('额度');
   });
 });

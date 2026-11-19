@@ -87,9 +87,9 @@ export class InternalLlmService {
       try {
         return await this.completeOnPreferredModel(input, preferred);
       } catch (error) {
-        // 没有官方兜底时，原始错误（如 HTTP 429）不得直接透给用户：同样归类成
-        // 可操作的一句话。
-        if (!this.deps.officialAi) throw new InternalLlmError(classifyCallFailure(errorMessageOf(error)));
+        // 没有官方兜底时同样只给一句简短提示；原始原因写日志。
+        console.error(`[internal-llm] model call failed: ${errorMessageOf(error)}`);
+        if (!this.deps.officialAi) throw new InternalLlmError('模型调用失败，请稍后重试。');
         preferredError = error;
       }
     }
@@ -108,17 +108,14 @@ export class InternalLlmService {
         return { choices: [{ finish_reason: 'stop', message: { content: JSON.stringify(result) } }] };
       } catch (error) {
         if (preferredError !== null) {
-          // 面向用户的文案只给「可操作的原因」，不暴露内部通道结构或上游原始报错；
-          // 完整原因留在服务端日志里（诊断用）。两条通道都失败时分别归因，
-          // 否则用户看到一句「调用失败」既不知道该改模型还是该登录。
+          // 用户侧只给一句简短提示；两条通道各自的完整原因（含上游原文）写服务端
+          // 日志，诊断看日志、界面不刷细节。
           const localReason = errorMessageOf(preferredError);
           const fallbackReason = errorMessageOf(error);
           console.error(
             `[internal-llm] model call failed: local=${localReason} fallback=${fallbackReason}`,
           );
-          throw new InternalLlmError(
-            `模型调用失败：${classifyCallFailure(localReason)}；官方内置 AI ${classifyCallFailure(fallbackReason)}。`,
-          );
+          throw new InternalLlmError('模型调用失败，请稍后重试。');
         }
         throw error;
       }
@@ -203,7 +200,10 @@ export class InternalLlmService {
           // 429 是配额/频率被拒：立刻重试只会再消耗一次配额、让限流更严重，
           // 不自动重试——如实告诉用户「上游限流，请稍后重试」。超时才重试（那是
           // 链路冷启动的暂时性问题）。
-          throw new Error(`HTTP ${response.status}`);
+          // 带上上游原文的一小段：厂商会写明是速率超限还是额度耗尽，用户据此
+          // 判断该等还是该提额。
+          const excerpt = await readErrorExcerpt(response);
+          throw new Error(`HTTP ${response.status}${excerpt ? `: ${excerpt}` : ''}`);
         }
         return await response.json();
       } catch (error) {
@@ -226,6 +226,49 @@ function errorMessageOf(error: unknown): string {
 }
 
 /**
+ * 读上游错误响应的一小段原文（≤ 200 字，单行）。
+ *
+ * 上游会写明拒绝的真实原因，分类限流要靠它：
+ *   - `exceeded_current_quota_error` / `quota` / `额度` / `月度用量上限`
+ *     → **额度用尽**（等下个计费周期或加购，重试无用）；
+ *   - `rate_limit` / `速率` / `频率` / `Throttling.RateQuota`
+ *     → **速率超限**（等一会儿即可）。
+ */
+async function readErrorExcerpt(response: Response): Promise<string> {
+  try {
+    const text = (await response.text()).replace(/\s+/gu, ' ').trim();
+    return text.length > 200 ? `${text.slice(0, 200)}…` : text;
+  } catch {
+    return '';
+  }
+}
+
+/** 从上游原文里取出人能看懂的一句（厂商 message/code），不整段回显。 */
+export function upstreamHint(text: string): string {
+  const raw = String(text ?? '');
+  if (!raw) return '';
+  try {
+    const parsed = JSON.parse(raw) as Record<string, unknown>;
+    const error = (parsed.error ?? parsed) as Record<string, unknown>;
+    const message = typeof error.message === 'string' ? error.message : '';
+    const type = typeof error.type === 'string' ? error.type : '';
+    const code = typeof error.code === 'string' ? error.code : '';
+    const hint = message || type || code;
+    return hint ? hint.replace(/\s+/gu, ' ').slice(0, 120) : '';
+  } catch {
+    return raw.replace(/\s+/gu, ' ').slice(0, 120);
+  }
+}
+
+/** 上游拒绝原因分类：额度用尽 / 速率超限 / 其它。 */
+export function classifyUpstreamRejection(text: string): 'quota' | 'rate' | 'other' {
+  const raw = String(text ?? '');
+  if (/exceeded_current_quota_error|allocation.?quota|quota|额度|余额|monthly usage|billing cycle|purchase extra/iu.test(raw)) return 'quota';
+  if (/rate.?limit|too many requests|速率|频率|throttl/iu.test(raw)) return 'rate';
+  return 'other';
+}
+
+/**
  * 把失败原因归类成用户可操作的一句话：超时、凭据问题、未登录官方账号、权益失效、
  * 上游 HTTP 状态、其他。不回显上游原始报文。
  */
@@ -240,7 +283,13 @@ export function classifyCallFailure(reason: string): string {
   if (/超时|aborted|AbortError|ETIMEDOUT/iu.test(text)) {
     return '请求超时，请重试';
   }
-  if (/429|限流|rate.?limit|too many requests/iu.test(text)) {
+  if (/429|too many requests|throttl/iu.test(text)) {
+    // 上游原文已经说明是额度用尽还是速率超限：两种都不是「等一下就好」的同一种事，
+    // 用户据此决定等下个计费周期（额度）还是降低并发（速率）。
+    const kind = classifyUpstreamRejection(text);
+    const hint = upstreamHint(text);
+    if (kind === 'quota') return `上游额度已用尽${hint ? `（${hint}）` : ''}，需等待计费周期重置或加购用量`;
+    if (kind === 'rate') return `上游速率超限${hint ? `（${hint}）` : ''}，请稍后重试`;
     return '上游限流，请稍后重试';
   }
   if (/暂时无法连接|ECONNREFUSED|fetch failed|ENOTFOUND/iu.test(text)) {
