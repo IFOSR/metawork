@@ -54,16 +54,18 @@ export function MemorySettingsPanel({ api, draft, onChange, disabled, configurat
     if (merged.some(item => item.providerRef === providerRef)) continue;
     merged.push({
       providerRef,
-      displayName: provider.displayName || providerRef,
+      // 草稿里的 Provider 尚未激活：标出来，避免选了之后运行时才发现没生效。
+      displayName: `${provider.displayName || providerRef}（未激活）`,
       baseUrl: provider.baseUrl ?? '',
       models: Object.entries(draftModels ?? {})
         .filter(([, model]) => model.providerRef === providerRef)
         .map(([modelRef, model]) => ({
           modelRef,
-          modelId: model.modelId,
-          displayName: model.modelId,
-          // 「查不到能力标签」≠「不支持结构化输出」：自定义 Provider 的模型没有
-          // 公开目录标签，运行时校验 JSON 输出即可。
+          modelId: model.capabilities.length === 0
+            // 「查不到能力标签」≠「不支持结构化输出」：自定义 Provider 的模型没有
+            // 公开目录标签，运行时校验 JSON 输出即可。标签未知时标出来。
+            ? `${model.modelId} · 能力待确认`
+            : model.modelId,
           supportsStructuredOutput: model.capabilities.length === 0
             || model.capabilities.includes('structured-output'),
           enabled: model.enabled !== false,
